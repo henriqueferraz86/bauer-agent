@@ -314,16 +314,9 @@ bauer_tool_calls_total        — tool calls executadas
 bauer_rate_limited_total      — requisições bloqueadas por rate limit
 ```
 
-### Integração com Claw3D / Virtual Office
+### Integração com clientes OpenAI-compatible
 
-O `bauer serve` é compatível com o protocolo OpenAI SSE. Configure no Claw3D:
-
-```
-url:         http://localhost:7770
-adapterType: custom
-```
-
-O header `X-Hermes-Session-Id` é respeitado para retomada de sessão entre requisições.
+O `bauer serve` expõe `/v1/chat/completions` no formato OpenAI SSE — funciona com qualquer cliente que suporte a API OpenAI (LangChain, LlamaIndex, Open WebUI, etc.).
 
 ---
 
@@ -356,50 +349,30 @@ bauer gateway
 bauer gateway --port 18789 --bauer-url http://localhost:7770
 ```
 
-### Protocolo WebSocket (Hermes v3)
-
-O gateway implementa o protocolo Hermes WebSocket completo:
+### Eventos WebSocket suportados
 
 | Evento | Direção | Descrição |
 |---|---|---|
-| `connect.challenge` | → cliente | Handshake inicial com challenge |
-| `connect` | ← cliente | Resposta ao challenge |
-| `hello-ok` | → cliente | Conexão estabelecida com capacidades |
-| `chat.send` | ← cliente | Envia mensagem; inicia streaming |
-| `chat.abort` | ← cliente | Cancela run em andamento |
+| `chat.send` | ← cliente | Envia mensagem; inicia resposta em streaming |
+| `chat.abort` | ← cliente | Cancela resposta em andamento |
 | `chat.history` | ← cliente | Solicita histórico da sessão |
 | `agents.list` | ← cliente | Lista agents disponíveis |
 | `sessions.list` | ← cliente | Lista sessões |
 | `sessions.reset` | ← cliente | Limpa histórico de sessão |
-| `sessions.patch` | ← cliente | Atualiza metadados de sessão |
 | `models.list` | ← cliente | Lista modelos disponíveis |
 | `status` | ← cliente | Status do servidor |
-| `config.get` | ← cliente | Configuração ativa |
 | `heartbeat` | → cliente | Keepalive a cada 25s |
-
-**Capacidades anunciadas no `hello-ok`:**
-
-```json
-{
-  "protocol": 3,
-  "adapterType": "bauer",
-  "features": {
-    "methods": ["agents.list", "sessions.list", "chat.send", "chat.abort", ...],
-    "events": ["chat", "presence", "heartbeat"]
-  }
-}
-```
 
 ### Streaming de chat
 
-O gateway faz SSE bridge — cada chunk de texto do LLM é emitido como evento WebSocket `chat` em tempo real:
+Cada chunk de texto do LLM é emitido como evento WebSocket em tempo real:
 
 ```
 cliente → chat.send {message: "Olá"}
-gateway → res ok {status: "started", runId: "abc123"}
-gateway → event chat {type: "delta", content: "Ol"}
-gateway → event chat {type: "delta", content: "á!"}
-gateway → event chat {type: "final", content: "Olá! Como posso ajudar?"}
+gateway → res ok    {status: "started", runId: "abc123"}
+gateway → event     {type: "delta", content: "Ol"}
+gateway → event     {type: "delta", content: "á!"}
+gateway → event     {type: "final", content: "Olá! Como posso ajudar?"}
 ```
 
 ### Configuração de API key
