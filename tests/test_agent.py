@@ -229,14 +229,16 @@ def test_agent_clear_command(ws: Path, router: ToolRouter):
 
 
 def test_agent_model_command(ws: Path, router: ToolRouter, capsys):
-    """Comando /model mostra modelo atual sem chamar o LLM."""
+    """Comando /model abre seletor de modelo sem chamar o LLM."""
     from bauer.agent import run_agent_session
     from rich.console import Console
 
     client = _make_client()
     console = Console()
 
-    with patch("builtins.input", side_effect=["/model", EOFError]):
+    # Mocka o seletor interativo para não consumir stdin no CI
+    with patch("bauer.model_switcher.run_model_switcher"), \
+         patch("builtins.input", side_effect=["/model", EOFError]):
         run_agent_session(client, "test-model", 4096, console, router)
 
     client.chat_stream.assert_not_called()
@@ -250,7 +252,8 @@ def test_agent_modelo_alias(ws: Path, router: ToolRouter):
     client = _make_client()
     console = Console()
 
-    with patch("builtins.input", side_effect=["/modelo", EOFError]):
+    with patch("bauer.model_switcher.run_model_switcher"), \
+         patch("builtins.input", side_effect=["/modelo", EOFError]):
         run_agent_session(client, "test-model", 4096, console, router)
 
     client.chat_stream.assert_not_called()
