@@ -432,14 +432,48 @@ class ToolRouter:
 
         Também normaliza paths absolutos que modelos frequentemente geram:
           /workspace/foo.txt  → foo.txt   (strip do prefixo workspace)
-          /foo.txt            → foo.txt   (strip de / inicial)
+          /foo.txt            → foo.txt   (strip de / inicial — atalho de 1 componente)
+
+        Paths absolutos fora do workspace (múltiplos componentes) são bloqueados.
         """
-        # Normaliza: remove /workspace/ ou \workspace\ que o modelo adiciona
         ws_name = self.workspace.name
-        normalized = path.lstrip("/\\")
-        if normalized == ws_name or normalized.startswith(ws_name + "/") or normalized.startswith(ws_name + "\\"):
-            normalized = normalized[len(ws_name):].lstrip("/\\")
-        path = normalized or "."
+        p_raw = Path(path)
+
+        if p_raw.is_absolute():
+            non_root_parts = p_raw.parts[1:]  # remove '/' ou 'C:\' inicial
+
+            if non_root_parts and non_root_parts[0] == ws_name:
+                # Caso: /workspace_name/rest → tratar como caminho relativo 'rest'
+                path = "/".join(non_root_parts[1:]) if len(non_root_parts) > 1 else "."
+            elif len(non_root_parts) <= 1:
+                # Caso: /filename.txt → strip '/' e tratar como relativo
+                path = non_root_parts[0] if non_root_parts else "."
+            else:
+                # Caminho absoluto com múltiplos componentes fora do workspace
+                # → resolver diretamente e verificar se está dentro do workspace
+                try:
+                    resolved = p_raw.resolve()
+                except Exception as exc:
+                    raise SandboxError(f"Path invalido: '{path}': {exc}") from exc
+
+                workspace_str = str(self.workspace)
+                resolved_str = str(resolved)
+                sep = "/" if "/" in workspace_str else "\\"
+
+                if resolved_str != workspace_str and not resolved_str.startswith(workspace_str + sep):
+                    raise SandboxError(
+                        f"Acesso negado: '{path}' resolve para fora do workspace.\n"
+                        f"  Workspace: {self.workspace}\n"
+                        f"  Tentativa: {resolved}\n"
+                        f"Use apenas caminhos relativos dentro do workspace."
+                    )
+                return resolved
+        else:
+            # Caminho relativo: normaliza /workspace/ ou \workspace\ que o modelo adiciona
+            normalized = path.lstrip("/\\")
+            if normalized == ws_name or normalized.startswith(ws_name + "/") or normalized.startswith(ws_name + "\\"):
+                normalized = normalized[len(ws_name):].lstrip("/\\")
+            path = normalized or "."
 
         try:
             resolved = (self.workspace / path).resolve()
