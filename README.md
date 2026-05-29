@@ -1,4 +1,4 @@
-# Bauer Agent
+# 🤖 Bauer Agent
 
 Runtime adaptativo para LLMs locais e cloud.
 
@@ -7,23 +7,23 @@ Runtime adaptativo para LLMs locais e cloud.
 
 ---
 
-## Índice
+## 📋 Índice
 
-- [Instalação](#instalação)
-- [Configuração](#configuração)
-- [bauer agent](#bauer-agent)
-- [bauer serve](#bauer-serve)
-- [bauer gateway](#bauer-gateway)
-- [Providers suportados](#providers-suportados)
-- [Tools disponíveis](#tools-disponíveis)
-- [Docker](#docker)
-- [Desenvolvimento](#desenvolvimento)
+- [⚡ Instalação](#instalação)
+- [⚙️ Configuração](#configuração)
+- [🧠 bauer agent](#bauer-agent)
+- [🌐 bauer serve](#bauer-serve)
+- [🔌 bauer gateway](#bauer-gateway)
+- [🔗 Providers suportados](#providers-suportados)
+- [🛠️ Tools disponíveis](#tools-disponíveis)
+- [🐳 Docker](#docker)
+- [🧪 Desenvolvimento](#desenvolvimento)
 
 ---
 
-## Instalação
+## ⚡ Instalação
 
-### Linux (Debian/Ubuntu)
+### 🐧 Linux (Debian/Ubuntu)
 
 ```bash
 # 1. Dependências do sistema
@@ -44,7 +44,7 @@ pip install -e ".[server]"
 bauer doctor
 ```
 
-### Windows
+### 🪟 Windows
 
 ```powershell
 # 1. Clonar o repositório
@@ -62,11 +62,11 @@ pip install -e ".[server]"
 bauer doctor
 ```
 
-> **Nota Windows**: ao digitar API keys no seletor de modelos, o campo está mascarado — o texto não aparece enquanto você digita (comportamento normal do `getpass`).
+> **🔒 Nota Windows**: ao digitar API keys no seletor de modelos, o campo está mascarado — o texto não aparece enquanto você digita (comportamento normal do `getpass`).
 
 ---
 
-## Configuração
+## ⚙️ Configuração
 
 ### 1. Copie o `.env.example`
 
@@ -101,11 +101,11 @@ Verifica: provider ativo, modelo disponível, RAM, contexto aplicado, tool mode.
 
 ---
 
-## bauer agent
+## 🧠 bauer agent
 
 O **bauer agent** é o modo interativo principal — um assistente com memória, tools e suporte a agents especializados.
 
-### Chat básico
+### 💬 Chat básico
 
 ```bash
 bauer chat
@@ -121,7 +121,7 @@ bauer chat --resume                    # retoma última sessão explicitamente
 bauer chat --no-intro                  # pula a tela de introdução
 ```
 
-### Agents especializados
+### 🤖 Agents especializados
 
 Agents são perfis com system prompt, ferramentas e modelo próprios, definidos em `agents.yaml`.
 
@@ -135,13 +135,13 @@ bauer agent create
 # Iniciar agent
 bauer agent run <nome>
 
-# Exemplo:
+# Exemplos:
 bauer agent run python
 bauer agent run data-analyst
 bauer agent run henrique-ferraz
 ```
 
-Cada agent tem seu próprio histórico de sessão (`agent-<nome>.jsonl`) — retoma automaticamente de onde parou.
+Cada agent tem seu próprio histórico de sessão (`agent-<nome>.jsonl`) — retoma automaticamente de onde parou. 🔄
 
 **Estrutura de um agent (`agents.yaml`):**
 
@@ -159,7 +159,7 @@ Cada agent tem seu próprio histórico de sessão (`agent-<nome>.jsonl`) — ret
     Você é um engenheiro Python sênior...
 ```
 
-### Empresas (multi-tenant local)
+### 🏢 Empresas (multi-tenant local)
 
 Cada empresa tem workspace, memória e sessions isoladas:
 
@@ -172,43 +172,43 @@ bauer company info <slug> # detalhes
 
 Com empresa ativa, `bauer chat` e `bauer agent run` usam automaticamente o workspace isolado dela.
 
-### Orquestrador multi-passo
+### 🔀 Orquestrador multi-passo
 
 ```bash
 bauer orchestrate run "pesquise sobre Python 3.13 e crie um resumo"
 bauer orchestrate run "analise os arquivos do projeto e gere relatório" --interactive
 ```
 
-O orquestrador planeja a tarefa em passos com DAG de dependências, executa passos independentes em paralelo e salva progresso em disco.
+O orquestrador planeja a tarefa em passos com DAG de dependências, executa passos independentes em paralelo ⚡ e salva progresso em disco.
 
-### Comandos dentro da sessão
+### ⌨️ Comandos dentro da sessão
 
 | Comando | Descrição |
 |---|---|
-| `/model` | Troca provider/modelo ao vivo (sem reiniciar) |
-| `/status` | Tokens usados, budget e modelo atual |
-| `/clear` | Limpa histórico da sessão |
-| `/sessions` | Lista sessões salvas |
-| `/memory` | Lista arquivos de memória do agent |
-| `/memory search <query>` | Busca semântica na memória |
-| `/memory note <texto>` | Adiciona nota à memória |
-| `/project` | Exibe PROJECT.md e resumo de tarefas |
-| `/kanban` | Exibe board de tarefas (TASKS.md) |
-| `/task add <título>` | Adiciona tarefa ao Kanban |
-| `/task start <id>` | Marca tarefa como em andamento |
-| `/task done <id>` | Conclui tarefa |
-| `/spec list` | Lista specs do projeto |
-| `/spec new` | Cria novo spec (wizard) |
-| `/agents` | Lista agents disponíveis |
-| `/exit` | Encerra a sessão |
+| `/model` | 🔄 Troca provider/modelo ao vivo (sem reiniciar) |
+| `/status` | 📊 Tokens usados, budget e modelo atual |
+| `/clear` | 🗑️ Limpa histórico da sessão |
+| `/sessions` | 📁 Lista sessões salvas |
+| `/memory` | 🧠 Lista arquivos de memória do agent |
+| `/memory search <query>` | 🔍 Busca semântica na memória |
+| `/memory note <texto>` | 📝 Adiciona nota à memória |
+| `/project` | 📂 Exibe PROJECT.md e resumo de tarefas |
+| `/kanban` | 📋 Exibe board de tarefas (TASKS.md) |
+| `/task add <título>` | ➕ Adiciona tarefa ao Kanban |
+| `/task start <id>` | ▶️ Marca tarefa como em andamento |
+| `/task done <id>` | ✅ Conclui tarefa |
+| `/spec list` | 📄 Lista specs do projeto |
+| `/spec new` | ✨ Cria novo spec (wizard) |
+| `/agents` | 🤖 Lista agents disponíveis |
+| `/exit` | 👋 Encerra a sessão |
 
 ---
 
-## bauer serve
+## 🌐 bauer serve
 
 O **bauer serve** expõe o Bauer como uma API HTTP REST + Web UI, permitindo integração com outras aplicações, automações e uso remoto.
 
-### Iniciar o servidor
+### 🚀 Iniciar o servidor
 
 ```bash
 bauer serve
@@ -218,9 +218,9 @@ bauer serve --port 8080
 bauer serve --host 0.0.0.0 --port 7770   # aceita conexões externas
 ```
 
-A Web UI fica disponível em `http://localhost:7770` (interface de chat no browser).
+A Web UI fica disponível em `http://localhost:7770` (interface de chat no browser). 🖥️
 
-### Autenticação
+### 🔑 Autenticação
 
 Configure a API key no `config.yaml`:
 
@@ -241,7 +241,7 @@ curl -H "X-API-Key: sua-chave-secreta" http://localhost:7770/chat ...
 curl -H "Authorization: Bearer sua-chave-secreta" http://localhost:7770/chat ...
 ```
 
-### Rate limiting
+### 🚦 Rate limiting
 
 ```yaml
 serve:
@@ -252,43 +252,43 @@ serve:
 
 Retorna `429 Too Many Requests` com header `Retry-After` quando excedido. Desative com `requests: 0`.
 
-### Endpoints
+### 📡 Endpoints
 
-#### Públicos (sem auth)
-
-| Método | Endpoint | Descrição |
-|---|---|---|
-| `GET` | `/health` | Liveness check — `{"status": "ok", "model": "..."}` |
-| `GET` | `/status` | Modelo, contexto, tools disponíveis |
-| `GET` | `/tools` | Lista tools com schema |
-| `GET` | `/v1/models` | Lista modelos (OpenAI-compat) |
-| `GET` | `/metrics` | Métricas Prometheus (text/plain) |
-
-#### Autenticados
+#### 🔓 Públicos (sem auth)
 
 | Método | Endpoint | Descrição |
 |---|---|---|
-| `POST` | `/chat` | Envia mensagem, recebe resposta completa |
-| `GET` | `/stream` | Resposta em tempo real via SSE |
-| `GET` | `/sessions` | Lista sessões ativas |
-| `DELETE` | `/sessions/{id}` | Remove sessão |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible (batch ou stream) |
-| `POST` | `/models/switch` | Troca modelo ao vivo |
+| `GET` | `/health` | ❤️ Liveness check — `{"status": "ok", "model": "..."}` |
+| `GET` | `/status` | 📊 Modelo, contexto, tools disponíveis |
+| `GET` | `/tools` | 🛠️ Lista tools com schema |
+| `GET` | `/v1/models` | 📋 Lista modelos (OpenAI-compat) |
+| `GET` | `/metrics` | 📈 Métricas Prometheus (text/plain) |
 
-#### Exemplos de uso
+#### 🔒 Autenticados
+
+| Método | Endpoint | Descrição |
+|---|---|---|
+| `POST` | `/chat` | 💬 Envia mensagem, recebe resposta completa |
+| `GET` | `/stream` | ⚡ Resposta em tempo real via SSE |
+| `GET` | `/sessions` | 📁 Lista sessões ativas |
+| `DELETE` | `/sessions/{id}` | 🗑️ Remove sessão |
+| `POST` | `/v1/chat/completions` | 🔗 OpenAI-compatible (batch ou stream) |
+| `POST` | `/models/switch` | 🔄 Troca modelo ao vivo |
+
+#### 🧪 Exemplos de uso
 
 ```bash
-# Chat simples
+# 💬 Chat simples
 curl -X POST http://localhost:7770/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sua-chave" \
   -d '{"message": "Olá!", "session_id": "minha-sessao"}'
 
-# Streaming (SSE)
+# ⚡ Streaming (SSE)
 curl "http://localhost:7770/stream?message=Olá&session_id=s1" \
   -H "X-API-Key: sua-chave"
 
-# OpenAI-compatible (compatível com qualquer cliente OpenAI)
+# 🔗 OpenAI-compatible (compatível com qualquer cliente OpenAI)
 curl -X POST http://localhost:7770/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sua-chave" \
@@ -298,45 +298,45 @@ curl -X POST http://localhost:7770/v1/chat/completions \
     "stream": true
   }'
 
-# Métricas Prometheus
+# 📈 Métricas Prometheus
 curl http://localhost:7770/metrics
 ```
 
-#### Métricas Prometheus disponíveis
+#### 📈 Métricas Prometheus disponíveis
 
 ```
-bauer_uptime_seconds          — tempo online
-bauer_requests_total          — total de requisições HTTP
-bauer_requests_errors_total   — erros 5xx
-bauer_chat_requests_total     — chamadas ao /chat
-bauer_stream_requests_total   — chamadas ao /stream
-bauer_tool_calls_total        — tool calls executadas
-bauer_rate_limited_total      — requisições bloqueadas por rate limit
+bauer_uptime_seconds          — ⏱️ tempo online
+bauer_requests_total          — 📊 total de requisições HTTP
+bauer_requests_errors_total   — ❌ erros 5xx
+bauer_chat_requests_total     — 💬 chamadas ao /chat
+bauer_stream_requests_total   — ⚡ chamadas ao /stream
+bauer_tool_calls_total        — 🛠️ tool calls executadas
+bauer_rate_limited_total      — 🚦 requisições bloqueadas por rate limit
 ```
 
-### Integração com clientes OpenAI-compatible
+### 🔗 Integração com clientes OpenAI-compatible
 
 O `bauer serve` expõe `/v1/chat/completions` no formato OpenAI SSE — funciona com qualquer cliente que suporte a API OpenAI (LangChain, LlamaIndex, Open WebUI, etc.).
 
 ---
 
-## bauer gateway
+## 🔌 bauer gateway
 
-O **bauer gateway** é uma camada WebSocket que faz bridge entre clientes WebSocket (como o Claw3D) e o `bauer serve` (HTTP).
+O **bauer gateway** é uma camada WebSocket que faz bridge entre clientes WebSocket e o `bauer serve` (HTTP).
 
-### Arquitetura
+### 🏗️ Arquitetura
 
 ```
-Cliente WebSocket (Claw3D)
-        ↕  WebSocket ws://localhost:18789
-   bauer gateway
-        ↕  HTTP http://localhost:7770
-   bauer serve
+🖥️  Cliente WebSocket
+        ↕  ws://localhost:18789
+🔌  bauer gateway
+        ↕  http://localhost:7770
+🌐  bauer serve
         ↕
-   LLM (Ollama / Groq / OpenAI / etc.)
+🤖  LLM (Ollama / Groq / OpenAI / etc.)
 ```
 
-### Iniciar
+### 🚀 Iniciar
 
 ```bash
 # bauer serve precisa estar rodando primeiro
@@ -349,21 +349,21 @@ bauer gateway
 bauer gateway --port 18789 --bauer-url http://localhost:7770
 ```
 
-### Eventos WebSocket suportados
+### 📡 Eventos WebSocket suportados
 
 | Evento | Direção | Descrição |
 |---|---|---|
-| `chat.send` | ← cliente | Envia mensagem; inicia resposta em streaming |
-| `chat.abort` | ← cliente | Cancela resposta em andamento |
-| `chat.history` | ← cliente | Solicita histórico da sessão |
-| `agents.list` | ← cliente | Lista agents disponíveis |
-| `sessions.list` | ← cliente | Lista sessões |
-| `sessions.reset` | ← cliente | Limpa histórico de sessão |
-| `models.list` | ← cliente | Lista modelos disponíveis |
-| `status` | ← cliente | Status do servidor |
-| `heartbeat` | → cliente | Keepalive a cada 25s |
+| `chat.send` | ← cliente | 💬 Envia mensagem; inicia resposta em streaming |
+| `chat.abort` | ← cliente | ⛔ Cancela resposta em andamento |
+| `chat.history` | ← cliente | 📜 Solicita histórico da sessão |
+| `agents.list` | ← cliente | 🤖 Lista agents disponíveis |
+| `sessions.list` | ← cliente | 📁 Lista sessões |
+| `sessions.reset` | ← cliente | 🗑️ Limpa histórico de sessão |
+| `models.list` | ← cliente | 📋 Lista modelos disponíveis |
+| `status` | ← cliente | 📊 Status do servidor |
+| `heartbeat` | → cliente | 💓 Keepalive a cada 25s |
 
-### Streaming de chat
+### ⚡ Streaming de chat
 
 Cada chunk de texto do LLM é emitido como evento WebSocket em tempo real:
 
@@ -375,7 +375,7 @@ gateway → event     {type: "delta", content: "á!"}
 gateway → event     {type: "final", content: "Olá! Como posso ajudar?"}
 ```
 
-### Configuração de API key
+### 🔑 Configuração de API key
 
 ```bash
 bauer gateway --api-key sua-chave-secreta
@@ -385,67 +385,67 @@ O gateway repassa a key automaticamente para o `bauer serve` em todas as requisi
 
 ---
 
-## Providers suportados
+## 🔗 Providers suportados
 
 | Provider | Variável de ambiente | Notas |
 |---|---|---|
-| **Ollama** (local) | — | Modelos locais; sem custo; requer Ollama rodando |
-| **Groq** | `GROQ_API_KEY` | Rápido; tier gratuito generoso |
-| **OpenAI** | `OPENAI_API_KEY` | GPT-4o, o1, etc. |
-| **Anthropic** | `ANTHROPIC_API_KEY` | Claude 3.5 Sonnet, Claude 3 Opus |
-| **Google Gemini** | `GEMINI_API_KEY` | Gemini 1.5 Pro/Flash |
-| **Mistral** | `MISTRAL_API_KEY` | Mistral Large, Codestral |
-| **DeepSeek** | `DEEPSEEK_API_KEY` | DeepSeek-V3, R1 |
-| **xAI** | `XAI_API_KEY` | Grok |
-| **Together AI** | `TOGETHER_API_KEY` | Llama, Qwen e outros open-source |
-| **OpenRouter** | `OPENROUTER_API_KEY` | Agregador — acesso a +200 modelos |
-| **Azure OpenAI** | `AZURE_OPENAI_API_KEY` | GPT via Azure |
-| **GitHub Models** | `GITHUB_TOKEN` | Modelos via GitHub Marketplace |
-| **GitHub Copilot** | — | Auth via Device Flow do GitHub |
-| **LM Studio / vLLM** | — | Qualquer endpoint OpenAI-compatible |
+| 🖥️ **Ollama** (local) | — | Modelos locais; sem custo; requer Ollama rodando |
+| ⚡ **Groq** | `GROQ_API_KEY` | Rápido; tier gratuito generoso |
+| 🟢 **OpenAI** | `OPENAI_API_KEY` | GPT-4o, o1, etc. |
+| 🟣 **Anthropic** | `ANTHROPIC_API_KEY` | Claude 3.5 Sonnet, Claude 3 Opus |
+| 🔵 **Google Gemini** | `GEMINI_API_KEY` | Gemini 1.5 Pro/Flash |
+| 🟠 **Mistral** | `MISTRAL_API_KEY` | Mistral Large, Codestral |
+| 🐋 **DeepSeek** | `DEEPSEEK_API_KEY` | DeepSeek-V3, R1 |
+| ✖️ **xAI** | `XAI_API_KEY` | Grok |
+| 🤝 **Together AI** | `TOGETHER_API_KEY` | Llama, Qwen e outros open-source |
+| 🔀 **OpenRouter** | `OPENROUTER_API_KEY` | Agregador — acesso a +200 modelos |
+| ☁️ **Azure OpenAI** | `AZURE_OPENAI_API_KEY` | GPT via Azure |
+| 🐙 **GitHub Models** | `GITHUB_TOKEN` | Modelos via GitHub Marketplace |
+| 🐙 **GitHub Copilot** | — | Auth via Device Flow do GitHub |
+| 🔧 **LM Studio / vLLM** | — | Qualquer endpoint OpenAI-compatible |
 
 ---
 
-## Tools disponíveis
+## 🛠️ Tools disponíveis
 
-### Arquivo
+### 📁 Arquivo
 | Tool | Descrição |
 |---|---|
-| `list_dir` | Lista arquivos e diretórios |
-| `read_file` | Lê conteúdo de arquivo |
-| `write_file` | Escreve/sobrescreve arquivo |
-| `append_file` | Adiciona conteúdo ao final |
-| `create_dir` | Cria diretório |
-| `delete_file` | Remove arquivo |
-| `move_file` | Move ou renomeia arquivo |
-| `diff_files` | Compara dois arquivos |
-| `search_text` | Busca texto em arquivo |
+| `list_dir` | 📂 Lista arquivos e diretórios |
+| `read_file` | 📖 Lê conteúdo de arquivo |
+| `write_file` | ✏️ Escreve/sobrescreve arquivo |
+| `append_file` | ➕ Adiciona conteúdo ao final |
+| `create_dir` | 📁 Cria diretório |
+| `delete_file` | 🗑️ Remove arquivo |
+| `move_file` | 📦 Move ou renomeia arquivo |
+| `diff_files` | 🔍 Compara dois arquivos |
+| `search_text` | 🔎 Busca texto em arquivo |
 
-### Busca
+### 🔍 Busca
 | Tool | Descrição |
 |---|---|
-| `glob_files` | Encontra arquivos por padrão glob |
-| `regex_search` | Busca com regex em arquivos |
+| `glob_files` | 🌐 Encontra arquivos por padrão glob |
+| `regex_search` | 🔬 Busca com regex em arquivos |
 
-### Utilidade
+### ⚙️ Utilidade
 | Tool | Descrição |
 |---|---|
-| `calculate` | Avalia expressão matemática |
-| `datetime_now` | Data e hora atual |
-| `json_query` | Consulta JSON com path |
-| `encode_decode` | Base64, URL encoding, hash |
+| `calculate` | 🧮 Avalia expressão matemática |
+| `datetime_now` | 🕐 Data e hora atual |
+| `json_query` | 📊 Consulta JSON com path |
+| `encode_decode` | 🔐 Base64, URL encoding, hash |
 
-### Opcionais
+### 🔓 Opcionais
 | Tool | Descrição | Requer |
 |---|---|---|
-| `run_command` | Executa comando shell | config `allow_shell: true` |
-| `web_search` | Busca na web | `SERPAPI_KEY` ou similar |
-| `web_fetch` | Faz GET em URL | — |
-| `http_request` | HTTP GET/POST genérico | — |
+| `run_command` | 💻 Executa comando shell | config `allow_shell: true` |
+| `web_search` | 🌐 Busca na web | `SERPAPI_KEY` ou similar |
+| `web_fetch` | 📥 Faz GET em URL | — |
+| `http_request` | 🌍 HTTP GET/POST genérico | — |
 
 ---
 
-## Docker
+## 🐳 Docker
 
 ```bash
 # Sobe Bauer + Ollama no mesmo container
@@ -455,7 +455,7 @@ docker compose up -d
 docker compose logs -f
 
 # API disponível em http://localhost:8000
-# O modelo padrão (qwen2.5-coder:3b) é baixado automaticamente no primeiro boot
+# O modelo padrão (qwen2.5-coder:3b) é baixado automaticamente no primeiro boot 🚀
 ```
 
 Para mudar o modelo padrão:
@@ -468,7 +468,7 @@ environment:
 
 ---
 
-## Desenvolvimento
+## 🧪 Desenvolvimento
 
 ```bash
 # Instalar com dependências de dev
@@ -488,8 +488,8 @@ bauer doctor --providers   # testa conectividade de todos os providers
 
 ---
 
-## Princípio do projeto
+## 💡 Princípio do projeto
 
 > Subir sem dor é mais importante que ter muitas features.
 
-Ordem: confiável → adaptativo → aprendiz → especializado.
+Ordem: confiável → adaptativo → aprendiz → especializado. 🚀
