@@ -24,6 +24,10 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "websockets>=12.0",
 ]
 server = [
     "fastapi>=0.110",
@@ -50,3 +54,4 @@ exclude = ["tests*", "memory*", "workspace*", "logs*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
