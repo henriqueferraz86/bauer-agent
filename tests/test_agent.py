@@ -1,0 +1,256 @@
+"""Testes do loop do agente com Tool Bridge (Fase 6)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from bauer.agent import MAX_TOOL_TURNS, _build_system_prompt, _try_parse_tool
+from bauer.tool_router import ToolRouter
+
+
+@pytest.fixture
+def ws(tmp_path: Path) -> Path:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "hello.txt").write_text("hello", encoding="utf-8")
+    return workspace
+
+
+@pytest.fixture
+def router(ws: Path) -> ToolRouter:
+    return ToolRouter(workspace=ws)
+
+
+# --- _try_parse_tool --------------------------------------------------------
+
+
+def test_parse_tool_valid_action(router: ToolRouter):
+    response = '{"action": "list_dir", "args": {"path": "."}}'
+    result = _try_parse_tool(response, router)
+    assert result is not None
+    assert result["action"] == "list_dir"
+
+
+def test_parse_tool_returns_none_for_text(router: ToolRouter):
+    result = _try_parse_tool("Olá! Como posso ajudar?", router)
+    assert result is None
+
+
+def test_parse_tool_returns_none_for_invalid_json(router: ToolRouter):
+    result = _try_parse_tool("isso nao e json", router)
+    assert result is None
+
+
+def test_parse_tool_handles_markdown_block(router: ToolRouter):
+    response = '```json\n{"action": "read_file", "args": {"path": "hello.txt"}}\n```'
+    result = _try_parse_tool(response, router)
+    assert result is not None
+    assert result["action"] == "read_file"
+
+
+def test_parse_tool_returns_none_for_partial_json(router: ToolRouter):
+    result = _try_parse_tool('{"sem_action": true}', router)
+    assert result is None
+
+
+def test_parse_tool_ignores_unknown_action(router: ToolRouter):
+    """Ação inventada pelo modelo ('responda', 'current_time', etc.) é ignorada."""
+    result = _try_parse_tool('{"action": "responda"}', router)
+    assert result is None
+
+
+def test_parse_tool_ignores_unknown_action_with_trailing_text(router: ToolRouter):
+    """JSON com action inválida + texto extra → tudo tratado como texto."""
+    response = '{"action": "current_time"}\n\nSao 14h30.'
+    result = _try_parse_tool(response, router)
+    assert result is None
+
+
+def test_parse_tool_extracts_json_from_mixed_response(router: ToolRouter):
+    """JSON de tool válida + texto extra → extrai só a tool action."""
+    response = '{"action": "list_dir", "args": {"path": "."}}\n\nVou listar os arquivos.'
+    result = _try_parse_tool(response, router)
+    assert result is not None
+    assert result["action"] == "list_dir"
+
+
+# --- _build_system_prompt ---------------------------------------------------
+
+
+def test_system_prompt_lists_tools(router: ToolRouter):
+    prompt = _build_system_prompt(router)
+    assert "list_dir" in prompt
+    assert "read_file" in prompt
+    assert "write_file" in prompt
+    assert "search_text" in prompt
+
+
+def test_system_prompt_has_json_format(router: ToolRouter):
+    prompt = _build_system_prompt(router)
+    assert '"action"' in prompt
+    assert '"args"' in prompt
+
+
+def test_system_prompt_mentions_portugues(router: ToolRouter):
+    prompt = _build_system_prompt(router)
+    assert "portugues" in prompt.lower() or "português" in prompt.lower()
+
+
+# --- run_agent_session (integração) -----------------------------------------
+
+
+def _make_client(*responses: str) -> MagicMock:
+    """Cria mock de OllamaClient que retorna respostas em sequência."""
+    client = MagicMock()
+    response_iter = iter(responses)
+
+    def chat_stream_side_effect(*args, **kwargs):
+        return iter([next(response_iter)])
+
+    client.chat_stream.side_effect = chat_stream_side_effect
+    return client
+
+
+def test_agent_text_response_no_tool(ws: Path, router: ToolRouter):
+    """Resposta de texto puro — sem tool call."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Olá! Como posso ajudar?")
+    console = Console()
+
+    with patch("builtins.input", side_effect=["oi", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    assert client.chat_stream.call_count == 1
+
+
+def test_agent_single_tool_call(ws: Path, router: ToolRouter):
+    """Modelo chama uma tool e depois responde com texto."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    tool_action = '{"action": "list_dir", "args": {"path": "."}}'
+    final_response = "Os arquivos são: hello.txt"
+    client = _make_client(tool_action, final_response)
+    console = Console()
+
+    with patch("builtins.input", side_effect=["liste os arquivos", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    assert client.chat_stream.call_count == 2
+
+
+def test_agent_tool_result_fed_back(ws: Path, router: ToolRouter):
+    """Resultado da tool é adicionado ao contexto antes da próxima chamada."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    tool_action = '{"action": "list_dir", "args": {"path": "."}}'
+    final_response = "Vi os arquivos: hello.txt"
+    client = _make_client(tool_action, final_response)
+    console = Console()
+
+    with patch("builtins.input", side_effect=["liste", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    # Segunda chamada deve incluir o resultado da tool no payload
+    second_call_payload = client.chat_stream.call_args_list[1][0][1]
+    contents = [m["content"] for m in second_call_payload]
+    assert any("Resultado de list_dir" in c for c in contents)
+
+
+def test_agent_max_tool_turns_protection(ws: Path, router: ToolRouter):
+    """Agente para após MAX_TOOL_TURNS tool calls consecutivos."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    # Modelo fica chamando list_dir infinitamente
+    tool_action = '{"action": "list_dir", "args": {"path": "."}}'
+    # Resposta final após MAX+1 chamadas
+    responses = [tool_action] * (MAX_TOOL_TURNS + 1)
+    client = _make_client(*responses)
+    console = Console()
+
+    with patch("builtins.input", side_effect=["faça algo", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    # Não deve ter mais de MAX_TOOL_TURNS + 1 chamadas (MAX tool calls + 1 final)
+    assert client.chat_stream.call_count <= MAX_TOOL_TURNS + 1
+
+
+def test_agent_tool_error_does_not_crash(ws: Path, router: ToolRouter):
+    """Erro na tool é capturado e enviado ao modelo — não crasha o agente."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    # Tenta ler arquivo inexistente
+    tool_action = '{"action": "read_file", "args": {"path": "nao_existe.txt"}}'
+    final_response = "Arquivo nao encontrado, desculpe."
+    client = _make_client(tool_action, final_response)
+    console = Console()
+
+    with patch("builtins.input", side_effect=["leia nao_existe.txt", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    # Deve ter feito 2 chamadas (tool + resposta) sem cravar
+    assert client.chat_stream.call_count == 2
+
+
+def test_agent_exit_command(ws: Path, router: ToolRouter):
+    """Comando /exit encerra o loop sem chamar o modelo."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/exit"]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()
+
+
+def test_agent_clear_command(ws: Path, router: ToolRouter):
+    """Comando /clear limpa o contexto sem chamar o modelo."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Olá!")
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/clear", "oi", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    assert client.chat_stream.call_count == 1
+
+
+def test_agent_model_command(ws: Path, router: ToolRouter, capsys):
+    """Comando /model mostra modelo atual sem chamar o LLM."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/model", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()
+
+
+def test_agent_modelo_alias(ws: Path, router: ToolRouter):
+    """/modelo e alias de /model — nao chama o LLM."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/modelo", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()

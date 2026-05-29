@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bauer Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #58a6ff;
+    }
+
+    #status-bar {
+      font-size: 12px;
+      color: #8b949e;
+      display: flex;
+      gap: 16px;
+    }
+
+    #status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #3fb950;
+      display: inline-block;
+      margin-right: 4px;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .message {
+      max-width: 780px;
+      width: 100%;
+    }
+
+    .message.user { align-self: flex-start; }
+    .message.assistant { align-self: flex-end; }
+
+    .bubble {
+      padding: 10px 14px;
+      border-radius: 8px;
+      line-height: 1.6;
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .user .bubble {
+      background: #1f6feb;
+      color: #ffffff;
+      border-bottom-left-radius: 2px;
+    }
+
+    .assistant .bubble {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-bottom-right-radius: 2px;
+    }
+
+    .label {
+      font-size: 11px;
+      color: #8b949e;
+      margin-bottom: 4px;
+      padding: 0 4px;
+    }
+
+    .assistant .label { text-align: right; }
+
+    .tool-call {
+      font-size: 12px;
+      color: #d2a679;
+      font-style: italic;
+      margin: 4px 0;
+      align-self: center;
+    }
+
+    #typing {
+      display: none;
+      align-self: flex-end;
+      color: #8b949e;
+      font-size: 13px;
+      padding: 0 4px;
+    }
+
+    #typing.visible { display: block; }
+
+    footer {
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      padding: 12px 20px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    #input-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    #input {
+      flex: 1;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #c9d1d9;
+      font-size: 14px;
+      padding: 10px 14px;
+      resize: none;
+      line-height: 1.5;
+      min-height: 44px;
+      max-height: 160px;
+      outline: none;
+      font-family: inherit;
+    }
+
+    #input:focus { border-color: #58a6ff; }
+
+    #send-btn {
+      background: #238636;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 10px 18px;
+      height: 44px;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+
+    #send-btn:hover { background: #2ea043; }
+    #send-btn:disabled { background: #21262d; color: #484f58; cursor: default; }
+
+    #session-id {
+      font-size: 11px;
+      color: #484f58;
+      margin-top: 6px;
+      text-align: right;
+    }
+
+    /* --- model picker --- */
+    #model-picker {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 20px;
+      right: 20px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+      z-index: 101;
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+    }
+
+    #model-picker.visible { display: block; }
+
+    #model-picker-header {
+      padding: 8px 16px;
+      font-size: 11px;
+      color: #8b949e;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #model-picker-header span { font-weight: 600; color: #c9d1d9; }
+
+    .model-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .model-item:hover { background: #21262d; }
+
+    .model-item.active-model {
+      background: #1c2d3a;
+    }
+
+    .model-star {
+      color: #e3b341;
+      font-size: 12px;
+      width: 14px;
+    }
+
+    .model-name {
+      font-size: 13px;
+      color: #c9d1d9;
+      flex: 1;
+    }
+
+    .model-badge {
+      font-size: 10px;
+      background: #238636;
+      color: #fff;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .model-picker-close {
+      cursor: pointer;
+      color: #8b949e;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+
+    .model-picker-close:hover { color: #c9d1d9; }
+
+    /* --- slash command menu --- */
+    #cmd-menu {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 20px;
+      right: 20px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+      z-index: 100;
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+    }
+
+    #cmd-menu.visible { display: block; }
+
+    .cmd-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .cmd-item:hover, .cmd-item.active {
+      background: #21262d;
+    }
+
+    .cmd-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #58a6ff;
+      min-width: 120px;
+    }
+
+    .cmd-desc {
+      font-size: 12px;
+      color: #8b949e;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Bauer Agent</h1>
+  <div id="status-bar">
+    <span><span id="status-dot"></span><span id="model-label">carregando...</span></span>
+    <span id="session-label"></span>
+  </div>
+</header>
+
+<div id="messages"></div>
+<div id="typing">bauer está digitando...</div>
+
+<footer>
+  <div id="model-picker">
+    <div id="model-picker-header">
+      Modelos instalados — clique para trocar
+      <span class="model-picker-close" id="model-picker-close">✕</span>
+    </div>
+    <div id="model-picker-list"></div>
+  </div>
+  <div id="cmd-menu"></div>
+  <div id="input-row">
+    <textarea id="input" rows="1" placeholder="Digite sua mensagem ou / para comandos..." autofocus></textarea>
+    <button id="send-btn">Enviar</button>
+  </div>
+  <div id="session-id"></div>
+</footer>
+
+<script>
+  const messagesEl = document.getElementById('messages');
+  const inputEl    = document.getElementById('input');
+  const sendBtn    = document.getElementById('send-btn');
+  const typingEl   = document.getElementById('typing');
+  const modelLabel = document.getElementById('model-label');
+  const sessionLabel = document.getElementById('session-label');
+  const sessionIdEl  = document.getElementById('session-id');
+  const statusDot    = document.getElementById('status-dot');
+  const cmdMenu       = document.getElementById('cmd-menu');
+  const modelPicker   = document.getElementById('model-picker');
+  const modelPickerList = document.getElementById('model-picker-list');
+  document.getElementById('model-picker-close').addEventListener('click', hideModelPicker);
+
+  let sessionId  = null;
+  let isStreaming = false;
+  let serverStatus = {};
+
+  // --- Comandos disponíveis ---
+  const COMMANDS = [
+    { name: '/clear',   desc: 'Limpar o histórico do chat',              client: true  },
+    { name: '/status',  desc: 'Mostrar modelo, contexto e sessão atual', client: true  },
+    { name: '/models',  desc: 'Listar todos os modelos instalados',      client: true  },
+    { name: '/model',   desc: 'Mostrar modelo ativo',                    client: true  },
+    { name: '/help',    desc: 'Listar todos os comandos disponíveis',    client: true  },
+    { name: '/tools',   desc: 'Listar tools disponíveis no agente',      client: false },
+    { name: '/memory',  desc: 'Ver resumo da memória do agente',         client: false },
+  ];
+
+  // --- Status do servidor ---
+  async function loadStatus() {
+    try {
+      const r = await fetch('/status');
+      if (!r.ok) throw new Error();
+      serverStatus = await r.json();
+      modelLabel.textContent = serverStatus.model || 'desconhecido';
+      statusDot.style.background = '#3fb950';
+    } catch {
+      modelLabel.textContent = 'offline';
+      statusDot.style.background = '#f85149';
+    }
+  }
+
+  loadStatus();
+
+  // --- Mensagens ---
+  function addMessage(role, text) {
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = role === 'user' ? 'você' : 'bauer';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+
+    div.appendChild(label);
+    div.appendChild(bubble);
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return bubble;
+  }
+
+  function addSystem(text) {
+    const div = document.createElement('div');
+    div.className = 'tool-call';
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addToolCall(name) {
+    addSystem(`→ executando: ${name}`);
+  }
+
+  // --- Comandos client-side ---
+  function runClientCommand(cmd) {
+    switch (cmd) {
+      case '/clear':
+      case '/limpar':
+        messagesEl.innerHTML = '';
+        addSystem('Histórico limpo.');
+        break;
+
+      case '/status':
+      case '/stats':
+        addSystem(
+          `modelo: ${serverStatus.model || '?'} | ` +
+          `contexto: ${serverStatus.context_tokens || '?'} tokens | ` +
+          `sessão: ${sessionId || 'nova'} | ` +
+          `auth: ${serverStatus.auth_enabled ? 'sim' : 'não'}`
+        );
+        break;
+
+      case '/model':
+      case '/modelo':
+        addSystem(`modelo ativo: ${serverStatus.model || '?'}`);
+        break;
+
+      case '/models':
+        showModelPicker();
+        break;
+
+      case '/help':
+        const lines = COMMANDS.map(c => `${c.name.padEnd(12)} — ${c.desc}`).join('\n');
+        addSystem('Comandos disponíveis:\n' + lines);
+        break;
+
+      default:
+        return false; // não tratado client-side
+    }
+    return true;
+  }
+
+  // --- Enviar mensagem ---
+  async function sendMessage(text) {
+    if (!text.trim() || isStreaming) return;
+
+    // Tenta comando client-side primeiro
+    const firstWord = text.trim().split(/\s+/)[0].toLowerCase();
+    if (firstWord.startsWith('/') && runClientCommand(firstWord)) return;
+
+    isStreaming = true;
+    sendBtn.disabled = true;
+    inputEl.disabled = true;
+
+    addMessage('user', text);
+    typingEl.classList.add('visible');
+
+    const params = new URLSearchParams({ message: text });
+    if (sessionId) params.append('session_id', sessionId);
+
+    let bubble   = null;
+    let fullText = '';
+
+    try {
+      const response = await fetch(`/stream?${params}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith('event: tool')) {
+            // próxima linha data: terá o nome da tool
+            continue;
+          }
+          if (line.startsWith('event: done')) continue;
+
+          if (line.startsWith('data: ')) {
+            const payload = line.slice(6);
+
+            // session_id no evento done (8 hex chars)
+            if (payload.length === 8 && /^[a-f0-9]+$/.test(payload)) {
+              sessionId = payload;
+              sessionLabel.textContent = `sessão: ${sessionId}`;
+              sessionIdEl.textContent  = `ID: ${sessionId}`;
+              continue;
+            }
+
+            if (!bubble) {
+              typingEl.classList.remove('visible');
+              bubble = addMessage('assistant', '');
+            }
+            fullText += payload;
+            bubble.textContent = fullText;
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        }
+      }
+    } catch (err) {
+      typingEl.classList.remove('visible');
+      addMessage('assistant', `Erro: ${err.message}`);
+    }
+
+    typingEl.classList.remove('visible');
+    isStreaming   = false;
+    sendBtn.disabled = false;
+    inputEl.disabled = false;
+    inputEl.focus();
+  }
+
+  // --- Model picker ---
+  let _pickerOpenedAt = 0;
+
+  function hideModelPicker() {
+    modelPicker.classList.remove('visible');
+  }
+
+  async function showModelPicker() {
+    _pickerOpenedAt = Date.now();
+    modelPickerList.innerHTML = '<div class="model-item" style="color:#8b949e">carregando...</div>';
+    modelPicker.classList.add('visible');
+    hideCmdMenu();
+
+    try {
+      const r = await fetch('/models');
+      const d = await r.json();
+      modelPickerList.innerHTML = '';
+      d.installed.forEach(m => {
+        const isActive = m === d.active;
+        const item = document.createElement('div');
+        item.className = 'model-item' + (isActive ? ' active-model' : '');
+        item.innerHTML =
+          `<span class="model-star">${isActive ? '★' : ''}</span>` +
+          `<span class="model-name">${m}</span>` +
+          (isActive ? '<span class="model-badge">ativo</span>' : '');
+        if (!isActive) {
+          item.addEventListener('click', () => switchModel(m));
+        }
+        modelPickerList.appendChild(item);
+      });
+      if (!d.installed.length) {
+        modelPickerList.innerHTML = '<div class="model-item" style="color:#8b949e">nenhum modelo encontrado</div>';
+      }
+    } catch {
+      modelPickerList.innerHTML = '<div class="model-item" style="color:#f85149">erro ao buscar modelos</div>';
+    }
+  }
+
+  async function switchModel(name) {
+    hideModelPicker();
+    addSystem(`Trocando para '${name}'...`);
+    try {
+      const r = await fetch('/models/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: name }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || r.status);
+      serverStatus.model = d.active;
+      modelLabel.textContent = d.active;
+      addSystem(`Modelo trocado para '${d.active}'.`);
+    } catch (e) {
+      addSystem(`Erro ao trocar modelo: ${e.message}`);
+    }
+    inputEl.focus();
+  }
+
+  // --- Slash command menu ---
+  let cmdActiveIndex = -1;
+  let cmdVisible = [];
+
+  function showCmdMenu(query) {
+    hideModelPicker();
+    const q = query.toLowerCase();
+    cmdVisible = COMMANDS.filter(c => c.name.startsWith(q));
+    if (!cmdVisible.length) { hideCmdMenu(); return; }
+
+    cmdMenu.innerHTML = '';
+    cmdVisible.forEach((c, i) => {
+      const item = document.createElement('div');
+      item.className = 'cmd-item' + (i === cmdActiveIndex ? ' active' : '');
+      item.innerHTML = `<span class="cmd-name">${c.name}</span><span class="cmd-desc">${c.desc}</span>`;
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        selectCmd(i);
+      });
+      cmdMenu.appendChild(item);
+    });
+    cmdMenu.classList.add('visible');
+  }
+
+  function hideCmdMenu() {
+    cmdMenu.classList.remove('visible');
+    cmdActiveIndex = -1;
+    cmdVisible = [];
+  }
+
+  function selectCmd(index) {
+    if (index < 0 || index >= cmdVisible.length) return;
+    inputEl.value = cmdVisible[index].name + ' ';
+    hideCmdMenu();
+    inputEl.focus();
+  }
+
+  function moveCmdSelection(delta) {
+    if (!cmdVisible.length) return;
+    cmdActiveIndex = (cmdActiveIndex + delta + cmdVisible.length) % cmdVisible.length;
+    showCmdMenu(inputEl.value);
+  }
+
+  // --- Eventos ---
+  sendBtn.addEventListener('click', () => {
+    const text = inputEl.value.trim();
+    if (text) {
+      inputEl.value = '';
+      inputEl.style.height = 'auto';
+      hideCmdMenu();
+      sendMessage(text);
+    }
+  });
+
+  inputEl.addEventListener('keydown', (e) => {
+    if (cmdMenu.classList.contains('visible')) {
+      if (e.key === 'ArrowDown')  { e.preventDefault(); moveCmdSelection(1);  return; }
+      if (e.key === 'ArrowUp')    { e.preventDefault(); moveCmdSelection(-1); return; }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        if (cmdActiveIndex >= 0) selectCmd(cmdActiveIndex);
+        else if (cmdVisible.length === 1) selectCmd(0);
+        else sendBtn.click();
+        return;
+      }
+      if (e.key === 'Escape') { hideCmdMenu(); return; }
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+
+    const val = inputEl.value;
+    if (val.startsWith('/')) {
+      cmdActiveIndex = -1;
+      showCmdMenu(val);
+    } else {
+      hideCmdMenu();
+    }
+  });
+
+  inputEl.addEventListener('blur', () => {
+    setTimeout(hideCmdMenu, 150);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (Date.now() - _pickerOpenedAt < 200) return; // ignorar click que abriu o picker
+    if (!modelPicker.contains(e.target)) hideModelPicker();
+  });
+</script>
+</body>
+</html>

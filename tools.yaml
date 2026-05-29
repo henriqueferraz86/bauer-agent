@@ -1,0 +1,143 @@
+# tools.yaml — Catálogo de tools disponíveis no Bauer Tool Bridge.
+# Referência legível. O ToolRouter usa este arquivo para documentar as tools,
+# mas a lógica de execução fica em tool_router.py.
+
+tools:
+
+  list_dir:
+    description: "Lista arquivos e diretórios dentro do workspace"
+    risk: low
+    requires_confirmation: false
+    args:
+      path:
+        type: string
+        description: "Caminho relativo ao workspace (ex: '.' ou 'src/')"
+        required: true
+    example:
+      action: list_dir
+      args:
+        path: "."
+
+  read_file:
+    description: "Lê o conteúdo de um arquivo dentro do workspace"
+    risk: low
+    requires_confirmation: false
+    args:
+      path:
+        type: string
+        description: "Caminho relativo ao workspace"
+        required: true
+    example:
+      action: read_file
+      args:
+        path: "README.md"
+
+  write_file:
+    description: "Escreve ou sobrescreve um arquivo dentro do workspace"
+    risk: medium
+    requires_confirmation: false
+    args:
+      path:
+        type: string
+        description: "Caminho relativo ao workspace"
+        required: true
+      content:
+        type: string
+        description: "Conteúdo a escrever"
+        required: true
+    example:
+      action: write_file
+      args:
+        path: "output.txt"
+        content: "Conteúdo do arquivo"
+
+  search_text:
+    description: "Busca texto em arquivos dentro do workspace (grep simples)"
+    risk: low
+    requires_confirmation: false
+    args:
+      pattern:
+        type: string
+        description: "Texto ou expressão a buscar"
+        required: true
+      path:
+        type: string
+        description: "Caminho relativo ao workspace para buscar (padrão: '.')"
+        required: false
+    example:
+      action: search_text
+      args:
+        pattern: "def main"
+        path: "."
+
+  run_command:
+    description: "Executa comando shell dentro do workspace (requer shell_enabled: true)"
+    risk: high
+    requires_confirmation: true
+    disabled_by_default: true
+    args:
+      command:
+        type: string
+        description: "Comando a executar"
+        required: true
+      confirm:
+        type: boolean
+        description: "Confirma execução de comandos de risco médio"
+        required: false
+        default: false
+    example:
+      action: run_command
+      args:
+        command: "python script.py"
+        confirm: false
+    blocked_patterns:
+      - "rm -rf /"
+      - "mkfs"
+      - "dd if="
+      - "shutdown"
+      - "reboot"
+      - "chmod -R 777 /"
+      - "curl | bash"
+      - "wget | bash"
+
+  web_search:
+    description: "Pesquisa na web e retorna resultados com titulos, links e snippets."
+    risk: low
+    requires_confirmation: false
+    disabled_by_default: true
+    args:
+      query:
+        type: string
+        description: "Termo de pesquisa"
+        required: true
+      max_results:
+        type: integer
+        description: "Maximo de resultados (default: 5, max: 10)"
+        required: false
+        default: 5
+    example:
+      action: web_search
+      args:
+        query: "ultimas noticias inteligencia artificial 2026"
+        max_results: 5
+
+  web_fetch:
+    description: "Busca o conteudo de uma URL e retorna como texto."
+    risk: low
+    requires_confirmation: false
+    disabled_by_default: true
+    args:
+      url:
+        type: string
+        description: "URL completa (ex: https://example.com)"
+        required: true
+      max_chars:
+        type: integer
+        description: "Maximo de caracteres (default: 5000)"
+        required: false
+        default: 5000
+    example:
+      action: web_fetch
+      args:
+        url: "https://example.com"
+        max_chars: 3000

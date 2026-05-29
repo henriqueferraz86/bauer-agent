@@ -1,0 +1,77 @@
+# Registry de modelos conhecidos.
+# Campos ram_base_mb e ram_per_1k_ctx_mb conforme Decisão 3 (fórmula de RAM segura).
+# Valores iniciais são estimativas; o learning_engine (Fase 7) refina por máquina.
+
+models:
+  "qwen2.5-coder:3b":
+    provider: ollama
+    ram_base_mb: 2400
+    ram_per_1k_ctx_mb: 35
+    max_context_safe: 32768
+    supports_tools: false
+    ram_profile: low
+    recommended_for:
+      - code_simple
+      - shell
+      - automation
+
+  "qwen2.5-coder:7b":
+    provider: ollama
+    ram_base_mb: 5200
+    ram_per_1k_ctx_mb: 70
+    max_context_safe: 32768
+    supports_tools: false
+    ram_profile: medium
+    recommended_for:
+      - coding
+      - refactor
+
+  "llama3.1:8b":
+    provider: ollama
+    ram_base_mb: 5800
+    ram_per_1k_ctx_mb: 80
+    max_context_safe: 32768
+    supports_tools: partial
+    ram_profile: medium
+
+  "qwen2.5:7b":
+    provider: ollama
+    ram_base_mb: 5000
+    ram_per_1k_ctx_mb: 65
+    max_context_safe: 32768
+    supports_tools: false
+    ram_profile: medium
+    recommended_for:
+      - general
+      - orchestration_light
+
+  "qwen2.5:14b":
+    provider: ollama
+    ram_base_mb: 9000
+    ram_per_1k_ctx_mb: 120
+    max_context_safe: 32768
+    supports_tools: false
+    ram_profile: high
+    recommended_for:
+      - orchestration
+      - reasoning
+      - multi_agent
+
+  "qwen2.5:32b":
+    provider: ollama
+    ram_base_mb: 20000
+    ram_per_1k_ctx_mb: 250
+    max_context_safe: 32768
+    supports_tools: false
+    ram_profile: high
+    recommended_for:
+      - orchestration
+      - reasoning
+
+  "phi3:mini":
+    provider: ollama
+    ram_base_mb: 2200
+    ram_per_1k_ctx_mb: 30
+    max_context_safe: 16384
+    supports_tools: false
+    ram_profile: low

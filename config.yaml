@@ -1,0 +1,44 @@
+agent:
+  name: Bauer Agent
+  workspace: ./workspace
+logging:
+  file: ./logs/bauer.log
+  level: info
+model:
+  auto_downgrade_context: true
+  minimum_context: 8192
+  name: deepseek-v4-flash-free
+  provider: opencode
+  requested_context: 128000
+ollama:
+  api_key: ''
+  host: http://localhost:11434
+  timeout_seconds: 120
+openai:
+  api_key: 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
+  host: https://api.groq.com/openai
+  timeout_seconds: 60
+openrouter:
+  api_key: ''
+  timeout_seconds: 60
+router:
+  code_model: Impulse2000/smollm3:latest
+  direct_model: qwen3:0.6b
+  enabled: true
+  reasoning_model: phi4-mini:latest
+  router_model: qwen3:0.6b
+runtime:
+  profile: low
+  ram_limit_mb: 4096
+  safety_margin_mb: 1024
+serve:
+  api_key: ''
+  host: 0.0.0.0
+  port: 8000
+  workers: 1
+tools:
+  max_output_kb: 50
+  safe_mode: true
+  shell_enabled: true
+  timeout_seconds: 30
+  web_enabled: true

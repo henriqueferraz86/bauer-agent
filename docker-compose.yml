@@ -1,0 +1,79 @@
+services:
+
+  # ── Ollama — interno, nunca exposto para fora ──────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bauer-ollama
+    volumes:
+      - ollama_models:/root/.ollama        # modelos persistem entre restarts
+    # SEM ports: — Ollama só é acessível internamente via rede Docker
+    environment:
+      # Descarrega o modelo da RAM imediatamente após cada resposta.
+      # Essencial para CPU/baixa RAM: só 1 modelo ocupa memória por vez.
+      # Com GPU, mude para "5m" (cache quente entre chamadas).
+      - OLLAMA_KEEP_ALIVE=0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    # ── GPU NVIDIA: descomente para usar CUDA ──────────────────────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ── Init — baixa os modelos na primeira vez (sai após concluir) ───────────
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: bauer-ollama-init
+    volumes:
+      - ollama_models:/root/.ollama
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: >
+      sh -c "
+        echo '==> Baixando modelos...' &&
+        ollama pull qwen3:0.6b &&
+        ollama pull phi4-mini &&
+        ollama pull Impulse2000/smollm3 &&
+        echo '==> Modelos prontos.'
+      "
+    restart: "no"
+
+  # ── Bauer Agent — único ponto de entrada externo ───────────────────────────
+  bauer:
+    build: .
+    container_name: bauer-agent
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./models.yaml:/app/models.yaml:ro
+      - bauer_workspace:/app/workspace
+      - bauer_memory:/app/memory
+      - bauer_logs:/app/logs
+    ports:
+      - "8000:8000"                        # único serviço exposto
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_HOST=http://ollama:11434    # Ollama interno
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  ollama_models:      # modelos Ollama (~6 GB com os 3 modelos)
+  bauer_workspace:
+  bauer_memory:
+  bauer_logs:
