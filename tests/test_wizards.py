@@ -783,14 +783,13 @@ class TestRunModelSwitcher:
     def test_groq_with_existing_key(self, tmp_path):
         cfg = _write_config(tmp_path)
         env_file = cfg.parent / ".env"
-        env_file.write_text("OPENAI_API_KEY=groq-key\n", encoding="utf-8")
-        # provider "7"=groq, model "1"
+        env_file.write_text("GROQ_API_KEY=groq-key\n", encoding="utf-8")
+        # provider "7"=groq, model "1"=llama-3.3-70b-versatile
         with patch("rich.prompt.Prompt.ask", side_effect=["7", "1"]):
             run_model_switcher(cfg)
         raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-        # groq is internally "openai"
-        assert raw["model"]["provider"] == "openai"
-        assert "groq.com" in raw.get("openai", {}).get("host", "")
+        assert raw["model"]["provider"] == "groq"
+        assert raw["model"]["name"] == "llama-3.3-70b-versatile"
 
     def test_openrouter_cancel_model(self, tmp_path):
         cfg = _write_config(tmp_path)
