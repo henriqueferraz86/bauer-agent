@@ -182,7 +182,7 @@ except ImportError:
     _make_prompt_session = None  # type: ignore[assignment]
     _PT_STYLE = None             # type: ignore[assignment]
 
-MAX_TOOL_TURNS = 10
+MAX_TOOL_TURNS = 30
 
 
 _SPEC_FORMAT_HINT = """
