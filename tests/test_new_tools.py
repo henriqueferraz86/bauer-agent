@@ -490,36 +490,34 @@ class TestMcpCall:
         import sys
         import types
         monkeypatch.setenv("MCP_SERVER_MEU_SERVER", "python -m meu_server")
-        # Simula mcp instalado com chamada bem-sucedida
+
+        # Simula mcp instalado — DEVE estar em sys.modules antes de _mcp_call importar
         fake_mcp = types.ModuleType("mcp")
+        fake_mcp.ClientSession = MagicMock()
+        fake_mcp.StdioServerParameters = MagicMock()
+        fake_mcp_client = types.ModuleType("mcp.client")
+        fake_mcp_stdio = types.ModuleType("mcp.client.stdio")
+        fake_mcp_stdio.stdio_client = MagicMock()
+
         fake_result = MagicMock()
         fake_text_content = MagicMock()
         fake_text_content.text = "resultado mcp"
         fake_result.content = [fake_text_content]
 
-        async def fake_call_tool(name, arguments):
-            return fake_result
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = MagicMock(return_value=mock_session)
-        mock_session.__aexit__ = MagicMock(return_value=False)
-        mock_session.initialize = MagicMock(return_value=None)
-        mock_session.call_tool = fake_call_tool
-
-        import asyncio
-
-        async def fake_initialize():
-            pass
-        mock_session.initialize = fake_initialize
-
-        # Usa patch direto no _mcp_call chamando _get_mcp_server_cmd e asyncio.run
-        with patch.object(router, "_get_mcp_server_cmd", return_value=["python", "-m", "meu_server"]):
-            with patch("asyncio.run", return_value="resultado mcp"):
-                result = router._mcp_call({
-                    "server": "meu_server",
-                    "tool": "hello",
-                    "arguments": {"x": 1},
-                })
+        # Injeta mcp no sys.modules e bypassa asyncio.run retornando diretamente
+        mcp_modules = {
+            "mcp": fake_mcp,
+            "mcp.client": fake_mcp_client,
+            "mcp.client.stdio": fake_mcp_stdio,
+        }
+        with patch.dict("sys.modules", mcp_modules):
+            with patch.object(router, "_get_mcp_server_cmd", return_value=["python", "-m", "meu_server"]):
+                with patch("asyncio.run", return_value="resultado mcp"):
+                    result = router._mcp_call({
+                        "server": "meu_server",
+                        "tool": "hello",
+                        "arguments": {"x": 1},
+                    })
         assert "resultado mcp" in result
 
 

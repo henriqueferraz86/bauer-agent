@@ -322,7 +322,9 @@ class TestImageGenerate:
         assert "https://" in result
 
     def test_openai_import_error_levanta(self, router_with_client):
-        with patch("builtins.__import__", side_effect=lambda n, *a, **k: (_ for _ in ()).throw(ImportError("no openai")) if n == "openai" else __import__(n, *a, **k)):
+        # spec=[] → sem atributos → cai no else que faz `import openai`
+        router_with_client._llm_client = MagicMock(spec=[])
+        with patch.dict("sys.modules", {"openai": None}):
             with pytest.raises(ToolError, match="openai"):
                 router_with_client._image_generate({"prompt": "teste"})
 
@@ -392,8 +394,9 @@ class TestTextToSpeech:
         assert "nova" in result
 
     def test_openai_import_error_levanta(self, router_with_client):
-        real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
-        with patch("builtins.__import__", side_effect=lambda n, *a, **k: (_ for _ in ()).throw(ImportError()) if n == "openai" else __import__(n, *a, **k)):
+        # spec=[] → sem atributos → cai no else que faz `import openai`
+        router_with_client._llm_client = MagicMock(spec=[])
+        with patch.dict("sys.modules", {"openai": None}):
             with pytest.raises(ToolError, match="openai"):
                 router_with_client._text_to_speech({"text": "t", "output_file": "o.mp3"})
 

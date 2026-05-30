@@ -115,26 +115,27 @@ class TestToolRouterSearchText:
 
 class TestToolRouterWebSearch:
     def test_web_search_no_query_raises(self, tmp_path: Path):
+        # query check happens before _web access — web_enabled not required
         router = ToolRouter(workspace=tmp_path)
         with pytest.raises(ToolError, match="query"):
             router._web_search({})
 
     def test_web_search_ddgs_not_installed(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         with patch.dict("sys.modules", {"ddgs": None}):
             with pytest.raises(ToolError, match="ddgs"):
                 router._web_search({"query": "python testing"})
 
     def test_web_search_ddgs_exception(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_ddgs = MagicMock()
         mock_ddgs.DDGS.return_value.__enter__.return_value.text.side_effect = Exception("rate limit")
         with patch.dict("sys.modules", {"ddgs": mock_ddgs}):
-            with pytest.raises(ToolError, match="Erro na pesquisa"):
+            with pytest.raises(ToolError, match="rate limit"):
                 router._web_search({"query": "test"})
 
     def test_web_search_empty_results(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_ddgs = MagicMock()
         mock_ddgs.DDGS.return_value.__enter__.return_value.text.return_value = iter([])
         with patch.dict("sys.modules", {"ddgs": mock_ddgs}):
@@ -142,7 +143,7 @@ class TestToolRouterWebSearch:
         assert "Nenhum resultado" in result
 
     def test_web_search_returns_results(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_ddgs = MagicMock()
         fake_results = [
             {"title": "Python docs", "href": "https://python.org", "body": "Official Python docs"},
@@ -157,25 +158,26 @@ class TestToolRouterWebSearch:
 
 class TestToolRouterWebFetch:
     def test_web_fetch_no_url_raises(self, tmp_path: Path):
+        # url check happens before _web access — web_enabled not required
         router = ToolRouter(workspace=tmp_path)
         with pytest.raises(ToolError, match="url"):
             router._web_fetch({})
 
     def test_web_fetch_invalid_url_raises(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         with pytest.raises(ToolError, match="http"):
             router._web_fetch({"url": "ftp://not-allowed.com"})
 
     def test_web_fetch_timeout_raises(self, tmp_path: Path):
         import httpx
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
             with pytest.raises(ToolError, match="Timeout"):
                 router._web_fetch({"url": "https://example.com"})
 
     def test_web_fetch_http_error_raises(self, tmp_path: Path):
         import httpx
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_resp = MagicMock()
         mock_resp.status_code = 404
         error = httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)
@@ -184,24 +186,25 @@ class TestToolRouterWebFetch:
                 router._web_fetch({"url": "https://example.com"})
 
     def test_web_fetch_generic_exception_raises(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         with patch("httpx.get", side_effect=Exception("connection error")):
             with pytest.raises(ToolError, match="Erro ao acessar"):
                 router._web_fetch({"url": "https://example.com"})
 
     def test_web_fetch_binary_content_type(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "image/png"}
         mock_resp.text = b"binary data"
         with patch("httpx.get", return_value=mock_resp):
             result = router._web_fetch({"url": "https://example.com/image.png"})
-        assert "binario" in result.lower() or "Conteudo" in result
+        # Result is "[Conteúdo binário — content-type: image/png]" — check ASCII-safe substrings
+        assert "content-type" in result or "bin" in result.lower() or "image" in result
 
     def test_web_fetch_empty_content(self, tmp_path: Path):
         """Conteúdo vazio depois de extrair texto."""
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/html"}
@@ -209,10 +212,10 @@ class TestToolRouterWebFetch:
         with patch("httpx.get", return_value=mock_resp), \
              patch.dict("sys.modules", {"bs4": None}):
             result = router._web_fetch({"url": "https://example.com"})
-        assert "vazio" in result.lower() or isinstance(result, str)
+        assert isinstance(result, str) and len(result) > 0
 
     def test_web_fetch_success_with_text(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/html"}
@@ -225,7 +228,7 @@ class TestToolRouterWebFetch:
     def test_web_fetch_bs4_exception_falls_back(self, tmp_path: Path):
         """bs4 falha → usa resp.text diretamente."""
         import sys
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/html"}
@@ -239,7 +242,7 @@ class TestToolRouterWebFetch:
         assert isinstance(result, str)
 
     def test_web_fetch_truncates_long_content(self, tmp_path: Path):
-        router = ToolRouter(workspace=tmp_path)
+        router = ToolRouter(workspace=tmp_path, web_enabled=True)
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/plain"}

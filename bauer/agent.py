@@ -554,6 +554,113 @@ def _ctx_result_for_context(action: str, result: str) -> tuple[str, bool]:
     return result, False
 
 
+def _format_tool_display(action: str, result: str) -> str:
+    """Formata o resultado de uma tool para exibição no terminal.
+
+    Filtra ruído técnico (headers de formato, paths temporários) e
+    mostra apenas o que é relevante para o usuário:
+    - execute_code: ✓/✗ + stdout útil ou resumo de erro
+    - read_file / write_file / edit_file: confirmação + linha count
+    - list_dir / glob_files: contagem + primeiros itens
+    - http_request: status + primeiros 100 chars do body
+    - Genérico: primeiros 150 chars limpos
+
+    Returns uma Rich markup string (uma linha, raramente duas).
+    """
+    r = result.strip()
+    lines = r.splitlines()
+
+    # ── execute_code ──────────────────────────────────────────────────────────
+    if action == "execute_code":
+        # Extrai exit code
+        exit_code = 0
+        exit_line = next((l for l in lines if l.startswith("exit:")), None)
+        if exit_line:
+            try:
+                exit_code = int(exit_line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+
+        # Separa blocos stdout / stderr (ignora headers "--- stdout ---" etc.)
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        section = None
+        for l in lines:
+            if l.startswith("exit:"):
+                continue
+            if l.strip() in ("--- stdout ---", "-- stdout --"):
+                section = "out"
+                continue
+            if l.strip() in ("--- stderr ---", "-- stderr --"):
+                section = "err"
+                continue
+            if section == "out" and l.strip():
+                stdout_lines.append(l)
+            elif section == "err" and l.strip():
+                stderr_lines.append(l)
+            elif section is None and l.strip() and not l.startswith("---"):
+                # resultado sem seções separadas
+                stdout_lines.append(l)
+
+        if exit_code == 0:
+            if stdout_lines:
+                first = stdout_lines[0][:120]
+                extra = len(stdout_lines) - 1
+                suffix = f" [dim](+{extra} linhas)[/dim]" if extra > 0 else ""
+                return f"[green]✓[/green] [dim]{first}[/dim]{suffix}"
+            return "[green]✓[/green]"
+        else:
+            # Erro: mostra stderr resumido (limpa paths temporários)
+            err_clean = [
+                l for l in stderr_lines
+                if "Temp\\" not in l and "tmp" not in l.lower()[:20]
+            ] or stderr_lines
+            if err_clean:
+                first_err = err_clean[0][:120]
+                extra_err = len(err_clean) - 1
+                suffix = f" [dim](+{extra_err} linhas)[/dim]" if extra_err > 0 else ""
+                return f"[red]✗ exit {exit_code}[/red] [dim]{first_err}[/dim]{suffix}"
+            return f"[red]✗ exit {exit_code}[/red]"
+
+    # ── read_file ─────────────────────────────────────────────────────────────
+    if action == "read_file":
+        n = len([l for l in lines if l.strip()])
+        # Mostra a primeira linha de conteúdo se tiver
+        first = lines[0][:80].strip() if lines else ""
+        return f"[dim]{n} linhas — {first}{'…' if len(lines[0]) > 80 else ''}[/dim]" if first else f"[dim]{n} linhas[/dim]"
+
+    # ── write_file / edit_file / patch_file ───────────────────────────────────
+    if action in ("write_file", "edit_file", "patch_file", "create_file"):
+        first = lines[0][:120] if lines else r[:120]
+        ok = "✗" if ("erro" in first.lower() or "error" in first.lower()) else "✓"
+        color = "red" if ok == "✗" else "green"
+        return f"[{color}]{ok}[/{color}] [dim]{first}[/dim]"
+
+    # ── list_dir / glob_files ─────────────────────────────────────────────────
+    if action in ("list_dir", "glob_files", "regex_search"):
+        items = [l.strip() for l in lines if l.strip()]
+        n = len(items)
+        if n == 0:
+            return "[dim](vazio)[/dim]"
+        show = ", ".join(items[:4])
+        suffix = f" … +{n-4}" if n > 4 else ""
+        return f"[dim]{n} itens — {show}{suffix}[/dim]"
+
+    # ── http_request ──────────────────────────────────────────────────────────
+    if action == "http_request":
+        first = lines[0][:120] if lines else r[:120]
+        return f"[dim]{first}[/dim]"
+
+    # ── delegate_task ─────────────────────────────────────────────────────────
+    if action == "delegate_task":
+        first = lines[0][:120] if lines else r[:120]
+        return f"[cyan]⇢[/cyan] [dim]{first}[/dim]"
+
+    # ── genérico ──────────────────────────────────────────────────────────────
+    short = r[:150]
+    return f"[dim]{short}{'…' if len(r) > 150 else ''}[/dim]"
+
+
 def _collect_response(
     client: OllamaClient,
     model_name: str,
@@ -1515,24 +1622,18 @@ def run_agent_session(
                         break
 
                     action_name = action_dict.get("action", "?")
-                    console.print(f"[dim]  -> {action_name}[/dim]")
 
                     try:
                         tool_result = router.execute(action_dict)
                     except (ToolError, SandboxError) as exc:
                         tool_result = f"[Erro: {exc}]"
 
-                    # Preview no terminal (300 chars) — sempre mostra o resultado real
-                    preview = tool_result[:300] + ("..." if len(tool_result) > 300 else "")
-                    console.print(f"[dim]{preview}[/dim]")
+                    # Display inteligente — filtra ruído, mostra apenas o relevante
+                    display_line = _format_tool_display(action_name, tool_result)
+                    console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
 
                     # Comprime resultado para o contexto — reduz impacto de resultados grandes
                     ctx_result, was_compressed = _ctx_result_for_context(action_name, tool_result)
-                    if was_compressed:
-                        console.print(
-                            f"[dim cyan]  ↓ comprimido para contexto: "
-                            f"{len(tool_result)} → {len(ctx_result)} chars[/dim cyan]"
-                        )
 
                     combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
                     cli_tool_log.append({"tool": action_name, "result": tool_result[:300]})

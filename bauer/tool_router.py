@@ -1162,6 +1162,29 @@ class ToolRouter:
                 python = _find_bauer_python(shell_runner.workspace)
                 cmd_str = f'"{python}" -m bauer.cli {rest}' if rest else f'"{python}" -m bauer.cli'
 
+            # `cd` é builtin do shell — não existe como processo externo.
+            # Retorna orientação em vez de erro opaco da allowlist.
+            import sys
+            import re as _re
+            _cd_match = _re.match(r"^cd\s+(.+)$", cmd_str.strip())
+            if cmd_str.strip() == "cd" or _cd_match:
+                target = _cd_match.group(1).strip() if _cd_match else "."
+                return (
+                    f"[run_command] 'cd' nao pode ser executado como subprocesso — "
+                    f"e um builtin do shell sem efeito fora dele.\n"
+                    f"Alternativas:\n"
+                    f"  • Use 'list_dir' com path='{target}' para listar o diretorio\n"
+                    f"  • Use 'read_file' com path='{target}/arquivo' para ler arquivos\n"
+                    f"  • Passe o caminho completo nos proximos comandos: "
+                    f"  run_command 'python {target}/script.py'"
+                )
+
+            # `which` nao existe no Windows — traduz automaticamente para `where`.
+            if sys.platform == "win32":
+                _which_match = _re.match(r"^which\s+(.+)$", cmd_str.strip())
+                if _which_match:
+                    cmd_str = f"where {_which_match.group(1)}"
+
             try:
                 result = shell_runner.run(cmd_str, confirm=confirm)
             except ShellError as exc:
@@ -3303,17 +3326,20 @@ class ToolRouter:
             raise ToolError(f"image_generate: size deve ser um de {valid_sizes}.")
 
         try:
-            import openai
             # Descobre qual objeto tem .images.generate:
-            # 1) self._llm_client (caso mock direto)
+            # 1) self._llm_client (caso mock direto — não precisa de openai instalado)
             # 2) self._llm_client._client (caso wrapper bauer sobre openai.OpenAI)
-            # 3) cria openai.OpenAI com credenciais do cliente
+            # 3) cria openai.OpenAI com credenciais (exige openai instalado)
             _lc = self._llm_client
             if hasattr(_lc, "images") and callable(getattr(getattr(_lc, "images", None), "generate", None)):
                 client_obj = _lc
             elif hasattr(getattr(_lc, "_client", None), "images"):
                 client_obj = _lc._client
             else:
+                try:
+                    import openai
+                except ImportError:
+                    raise ToolError("image_generate: requer 'pip install openai'.")
                 base_url = getattr(_lc, "base_url", None) or "https://api.openai.com/v1"
                 api_key = getattr(_lc, "api_key", None) or ""
                 client_obj = openai.OpenAI(api_key=api_key, base_url=base_url)
@@ -3323,8 +3349,6 @@ class ToolRouter:
                 kw["quality"] = quality
             response = client_obj.images.generate(**kw)
             img_url = response.data[0].url
-        except ImportError:
-            raise ToolError("image_generate: requer 'pip install openai'.")
         except ToolError:
             raise
         except Exception as exc:
@@ -3371,12 +3395,11 @@ class ToolRouter:
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            import openai
             _lc = self._llm_client
             # Descobre o objeto com .audio.speech.create:
             # 1) self._llm_client direto (mocks e openai.OpenAI wrappers expostos)
             # 2) self._llm_client._client (wrapper bauer)
-            # 3) cria openai.OpenAI com credenciais
+            # 3) cria openai.OpenAI com credenciais (exige openai instalado)
             if hasattr(_lc, "audio") and callable(getattr(getattr(_lc, "audio", None), "speech", None) and
                                                    getattr(getattr(getattr(_lc, "audio", None), "speech", None), "create", None) or None):
                 client_obj = _lc
@@ -3385,14 +3408,16 @@ class ToolRouter:
             elif hasattr(getattr(_lc, "_client", None), "audio"):
                 client_obj = _lc._client
             else:
+                try:
+                    import openai
+                except ImportError:
+                    raise ToolError("text_to_speech: requer 'pip install openai'.")
                 base_url = getattr(_lc, "base_url", None) or "https://api.openai.com/v1"
                 api_key = getattr(_lc, "api_key", None) or ""
                 client_obj = openai.OpenAI(api_key=api_key, base_url=base_url)
 
             response = client_obj.audio.speech.create(model=model, voice=voice, input=text)
             response.stream_to_file(str(dest))
-        except ImportError:
-            raise ToolError("text_to_speech: requer 'pip install openai'.")
         except ToolError:
             raise
         except Exception as exc:

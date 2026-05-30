@@ -412,7 +412,8 @@ class WebDispatcher:
             for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
                 tag.decompose()
             text = soup.get_text(separator="\n", strip=True)
-        except ImportError:
+        except Exception:
+            # bs4 não instalado ou falha interna — usa texto bruto como fallback
             text = resp.text
 
         lines = [l.strip() for l in text.splitlines() if l.strip()]
