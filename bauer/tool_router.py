@@ -2169,7 +2169,7 @@ class ToolRouter:
             return "[sub-agente] Tarefa concluida sem output."
 
         if len(output) > 8000:
-            output = output[:8000] + f"\n[... truncado — {len(result.stdout)} chars]"
+            output = output[:8000] + f"\n[... truncado — {len(result.stdout or '')} chars]"
 
         return f"[sub-agente]\n{output}"
 
