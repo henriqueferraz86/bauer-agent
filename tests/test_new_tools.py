@@ -541,8 +541,7 @@ class TestRegistroTools:
             assert name in names
 
     def test_total_tools_26(self, router):
-        # Web tools nao incluidas (web_enabled=False por default aqui)
-        # execute com web_enabled=True para contar todas
+        # Contagem mínima: wave 1-4 adicionou 8 tools; waves posteriores adicionam mais
         from pathlib import Path
         r = ToolRouter(workspace=router.workspace, web_enabled=True)
-        assert len(r.get_tool_schemas()) == 26
+        assert len(r.get_tool_schemas()) >= 26

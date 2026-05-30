@@ -457,6 +457,263 @@ class ToolRouter:
             },
         }
 
+        # ── Skills system ────────────────────────────────────────────────────
+        self._tools["skill_manage"] = {
+            "fn": self._skill_manage,
+            "description": (
+                "Gerencia skills (memorias procedurais persistentes): create, update, delete. "
+                "Skills sao procedimentos reutilizaveis salvos em .bauer_skills.json."
+            ),
+            "args": {
+                "action": "str — create | update | delete (obrigatorio)",
+                "name": "str — nome unico da skill (obrigatorio)",
+                "description": "str — descricao do que a skill faz (obrigatorio para create/update)",
+                "content": "str — corpo da skill: passos, codigo, notas (obrigatorio para create/update)",
+                "tags": "list[str] — tags para categorizar (opcional)",
+            },
+        }
+        self._tools["skill_view"] = {
+            "fn": self._skill_view,
+            "description": (
+                "Carrega e exibe o conteudo completo de uma skill pelo nome. "
+                "Retorna descricao, conteudo, tags e metadados."
+            ),
+            "args": {
+                "name": "str — nome exato da skill (obrigatorio)",
+            },
+        }
+        self._tools["skills_list"] = {
+            "fn": self._skills_list,
+            "description": (
+                "Lista todas as skills disponíveis com nomes, descricoes e tags. "
+                "Suporta filtro por tag ou substring do nome."
+            ),
+            "args": {
+                "filter": "str — substring para filtrar por nome ou tag (opcional)",
+            },
+        }
+
+        # ── Process manager ──────────────────────────────────────────────────
+        self._processes: dict[str, dict] = {}  # pid_str → {"proc": Popen, "label": str}
+        self._tools["process"] = {
+            "fn": self._process,
+            "description": (
+                "Gerencia processos em background: start (lanca), list (lista), "
+                "poll (verifica status), log (stdout/stderr), kill (encerra), write (stdin)."
+            ),
+            "args": {
+                "action": "str — start | list | poll | log | kill | write (obrigatorio)",
+                "command": "str — comando a executar (obrigatorio para start)",
+                "label": "str — nome amigavel do processo (opcional, para start)",
+                "pid": "str — ID do processo retornado por start (obrigatorio para poll/log/kill/write)",
+                "input": "str — texto a enviar para stdin (obrigatorio para write)",
+                "max_lines": "int — maximo de linhas de log (default: 50)",
+            },
+        }
+
+        # ── Geração de mídia ─────────────────────────────────────────────────
+        self._tools["image_generate"] = {
+            "fn": self._image_generate,
+            "description": (
+                "Gera imagem a partir de prompt de texto via OpenAI DALL-E. "
+                "Requer llm_client com suporte a OpenAI Images API."
+            ),
+            "args": {
+                "prompt": "str — descricao detalhada da imagem (obrigatorio)",
+                "model": "str — dall-e-3 | dall-e-2 (default: dall-e-3)",
+                "size": "str — 1024x1024 | 1792x1024 | 1024x1792 (default: 1024x1024)",
+                "quality": "str — standard | hd (default: standard, so dall-e-3)",
+                "output_file": "str — caminho relativo para salvar a imagem no workspace (opcional)",
+            },
+        }
+        self._tools["text_to_speech"] = {
+            "fn": self._text_to_speech,
+            "description": (
+                "Converte texto em audio via OpenAI TTS API. "
+                "Salva arquivo mp3 no workspace. Requer llm_client com OpenAI API."
+            ),
+            "args": {
+                "text": "str — texto para converter (obrigatorio, max 4096 chars)",
+                "output_file": "str — caminho relativo no workspace para salvar o mp3 (obrigatorio)",
+                "voice": "str — alloy | echo | fable | onyx | nova | shimmer (default: alloy)",
+                "model": "str — tts-1 | tts-1-hd (default: tts-1)",
+            },
+        }
+
+        # ── Kanban board ─────────────────────────────────────────────────────
+        self._tools["kanban_create"] = {
+            "fn": self._kanban_create,
+            "description": "Cria nova tarefa no board Kanban. Retorna o ID da tarefa.",
+            "args": {
+                "title": "str — titulo da tarefa (obrigatorio)",
+                "description": "str — detalhes da tarefa (opcional)",
+                "assignee": "str — agente/usuario responsavel (opcional)",
+                "priority": "str — low | medium | high | critical (default: medium)",
+                "parent_id": "str — ID da tarefa pai para sub-tarefas (opcional)",
+            },
+        }
+        self._tools["kanban_list"] = {
+            "fn": self._kanban_list,
+            "description": "Lista tarefas do board com filtros por status, assignee ou prioridade.",
+            "args": {
+                "status": "str — todo | in_progress | blocked | done | all (default: all)",
+                "assignee": "str — filtrar por responsavel (opcional)",
+                "priority": "str — low | medium | high | critical (opcional)",
+            },
+        }
+        self._tools["kanban_show"] = {
+            "fn": self._kanban_show,
+            "description": "Exibe detalhes completos de uma tarefa: descricao, historico, comentarios.",
+            "args": {
+                "task_id": "str — ID da tarefa (obrigatorio)",
+            },
+        }
+        self._tools["kanban_complete"] = {
+            "fn": self._kanban_complete,
+            "description": "Marca tarefa como concluida com payload de handoff opcional.",
+            "args": {
+                "task_id": "str — ID da tarefa (obrigatorio)",
+                "result": "str — resumo do resultado/handoff (opcional)",
+            },
+        }
+        self._tools["kanban_block"] = {
+            "fn": self._kanban_block,
+            "description": "Bloqueia tarefa registrando o motivo do bloqueio.",
+            "args": {
+                "task_id": "str — ID da tarefa (obrigatorio)",
+                "reason": "str — motivo do bloqueio (obrigatorio)",
+            },
+        }
+        self._tools["kanban_unblock"] = {
+            "fn": self._kanban_unblock,
+            "description": "Remove bloqueio de tarefa, retornando-a ao status anterior.",
+            "args": {
+                "task_id": "str — ID da tarefa (obrigatorio)",
+                "note": "str — nota sobre como o bloqueio foi resolvido (opcional)",
+            },
+        }
+        self._tools["kanban_heartbeat"] = {
+            "fn": self._kanban_heartbeat,
+            "description": "Envia update de progresso para tarefa em andamento (keep-alive).",
+            "args": {
+                "task_id": "str — ID da tarefa (obrigatorio)",
+                "progress": "str — descricao do progresso atual (obrigatorio)",
+            },
+        }
+        self._tools["kanban_comment"] = {
+            "fn": self._kanban_comment,
+            "description": "Adiciona comentario em tarefa sem alterar seu status.",
+            "args": {
+                "task_id": "str — ID da tarefa (obrigatorio)",
+                "comment": "str — texto do comentario (obrigatorio)",
+                "author": "str — autor do comentario (default: agent)",
+            },
+        }
+        self._tools["kanban_link"] = {
+            "fn": self._kanban_link,
+            "description": "Cria dependencia parent-child entre duas tarefas.",
+            "args": {
+                "parent_id": "str — ID da tarefa pai (obrigatorio)",
+                "child_id": "str — ID da tarefa filha (obrigatorio)",
+            },
+        }
+
+        # ── Browser automation (Playwright) ───────────────────────────────────
+        self._browser_page = None   # playwright page ativa
+        self._browser_ctx = None    # playwright browser context
+        self._browser_pw = None     # playwright instance
+        self._tools["browser_navigate"] = {
+            "fn": self._browser_navigate,
+            "description": "Navega para URL no browser controlado. Requer: pip install playwright && playwright install chromium.",
+            "args": {
+                "url": "str — URL completa com https:// (obrigatorio)",
+                "wait_until": "str — load | domcontentloaded | networkidle (default: load)",
+            },
+        }
+        self._tools["browser_snapshot"] = {
+            "fn": self._browser_snapshot,
+            "description": "Retorna arvore de acessibilidade da pagina atual como texto estruturado.",
+            "args": {
+                "include_hidden": "bool — incluir elementos ocultos (default: false)",
+            },
+        }
+        self._tools["browser_click"] = {
+            "fn": self._browser_click,
+            "description": "Clica em elemento da pagina por seletor CSS ou texto visivel.",
+            "args": {
+                "selector": "str — seletor CSS, XPath ou texto (obrigatorio)",
+                "by": "str — css | xpath | text | role (default: css)",
+            },
+        }
+        self._tools["browser_type"] = {
+            "fn": self._browser_type,
+            "description": "Digita texto em campo de input identificado por seletor.",
+            "args": {
+                "selector": "str — seletor CSS do campo (obrigatorio)",
+                "text": "str — texto a digitar (obrigatorio)",
+                "clear_first": "bool — limpar campo antes de digitar (default: true)",
+            },
+        }
+        self._tools["browser_scroll"] = {
+            "fn": self._browser_scroll,
+            "description": "Rola a pagina ou elemento especifico.",
+            "args": {
+                "direction": "str — up | down | top | bottom (default: down)",
+                "amount": "int — pixels a rolar (default: 500)",
+                "selector": "str — seletor do elemento a rolar (opcional, rola pagina se omitido)",
+            },
+        }
+        self._tools["browser_back"] = {
+            "fn": self._browser_back,
+            "description": "Navega para pagina anterior no historico do browser.",
+            "args": {},
+        }
+        self._tools["browser_press"] = {
+            "fn": self._browser_press,
+            "description": "Pressiona tecla(s) de teclado (Enter, Tab, Escape, ArrowDown, etc).",
+            "args": {
+                "key": "str — tecla ou combinacao (ex: 'Enter', 'Control+A') (obrigatorio)",
+                "selector": "str — seletor do elemento foco (opcional, usa foco atual se omitido)",
+            },
+        }
+        self._tools["browser_console"] = {
+            "fn": self._browser_console,
+            "description": "Retorna mensagens do console JavaScript e erros da pagina atual.",
+            "args": {
+                "max_lines": "int — maximo de linhas (default: 50)",
+            },
+        }
+        self._tools["browser_get_images"] = {
+            "fn": self._browser_get_images,
+            "description": "Lista todas as imagens da pagina com URL e alt text.",
+            "args": {
+                "include_data_urls": "bool — incluir imagens data:// (default: false)",
+            },
+        }
+        self._tools["browser_vision"] = {
+            "fn": self._browser_vision,
+            "description": "Captura screenshot da pagina e analisa com modelo de visao. Requer llm_client.",
+            "args": {
+                "query": "str — pergunta ou instrucao sobre o que analisar (obrigatorio)",
+            },
+        }
+        self._tools["browser_dialog"] = {
+            "fn": self._browser_dialog,
+            "description": "Responde a dialogo JavaScript (alert/confirm/prompt) pendente.",
+            "args": {
+                "action": "str — accept | dismiss (default: accept)",
+                "prompt_text": "str — texto para dialogo prompt (opcional)",
+            },
+        }
+        self._tools["browser_cdp"] = {
+            "fn": self._browser_cdp,
+            "description": "Envia comando raw do Chrome DevTools Protocol (CDP). Uso avancado.",
+            "args": {
+                "method": "str — metodo CDP ex: 'Page.captureScreenshot' (obrigatorio)",
+                "params": "dict — parametros do comando (opcional)",
+            },
+        }
+
         # ── Tool mcp_call — cliente MCP ─────────────────────────────────────
         self._tools["mcp_call"] = {
             "fn": self._mcp_call,
@@ -2585,3 +2842,836 @@ class ToolRouter:
         lines = [f"[video_analyze] GIF '{path.name}' — {total} frames\n"]
         lines.extend(f"  {a}" for a in frame_analyses)
         return "\n".join(lines)
+
+    # =========================================================================
+    # Wave 6 — Skills, Process, Media, Kanban, Browser
+    # =========================================================================
+
+    # ── Constantes ────────────────────────────────────────────────────────────
+
+    _SKILLS_FILE = ".bauer_skills.json"
+    _KANBAN_FILE = ".bauer_kanban.json"
+
+    # =========================================================================
+    # Skills system
+    # =========================================================================
+
+    def _load_skills(self) -> dict:
+        p = self.workspace / self._SKILLS_FILE
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def _save_skills(self, skills: dict) -> None:
+        p = self.workspace / self._SKILLS_FILE
+        p.write_text(json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _skill_manage(self, args: dict) -> str:
+        action = str(args.get("action", "")).strip().lower()
+        name = str(args.get("name", "")).strip()
+        if not action:
+            raise ToolError("skill_manage: 'action' é obrigatório (create|update|delete).")
+        if not name:
+            raise ToolError("skill_manage: 'name' é obrigatório.")
+
+        skills = self._load_skills()
+
+        if action == "delete":
+            if name not in skills:
+                raise ToolError(f"skill_manage: skill '{name}' não encontrada.")
+            del skills[name]
+            self._save_skills(skills)
+            return f"[skill_manage] Skill '{name}' removida."
+
+        if action in ("create", "update"):
+            description = str(args.get("description", "")).strip()
+            content = str(args.get("content", "")).strip()
+            if not description:
+                raise ToolError("skill_manage: 'description' é obrigatório para create/update.")
+            if not content:
+                raise ToolError("skill_manage: 'content' é obrigatório para create/update.")
+            if action == "create" and name in skills:
+                raise ToolError(
+                    f"skill_manage: skill '{name}' já existe. Use action='update' para editar."
+                )
+            tags = args.get("tags", [])
+            if not isinstance(tags, list):
+                tags = [str(tags)]
+            import time as _time
+            now = _time.time()
+            existing = skills.get(name, {})
+            skills[name] = {
+                "name": name,
+                "description": description,
+                "content": content,
+                "tags": tags,
+                "created_at": existing.get("created_at", now),
+                "updated_at": now,
+            }
+            self._save_skills(skills)
+            verb = "criada" if action == "create" else "atualizada"
+            return f"[skill_manage] Skill '{name}' {verb}. Tags: {tags or '—'}."
+
+        raise ToolError(f"skill_manage: action '{action}' inválida. Use create|update|delete.")
+
+    def _skill_view(self, args: dict) -> str:
+        name = str(args.get("name", "")).strip()
+        if not name:
+            raise ToolError("skill_view: 'name' é obrigatório.")
+        skills = self._load_skills()
+        if name not in skills:
+            available = ", ".join(sorted(skills.keys())) or "(nenhuma)"
+            raise ToolError(f"skill_view: skill '{name}' não encontrada. Disponíveis: {available}")
+        s = skills[name]
+        import time as _time
+        lines = [
+            f"[skill] {s['name']}",
+            f"Descrição: {s['description']}",
+            f"Tags: {', '.join(s.get('tags', [])) or '—'}",
+            f"Criada: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(s.get('created_at', 0)))}",
+            f"Atualizada: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(s.get('updated_at', 0)))}",
+            "",
+            "─── Conteúdo ───",
+            s["content"],
+        ]
+        return "\n".join(lines)
+
+    def _skills_list(self, args: dict) -> str:
+        skills = self._load_skills()
+        if not skills:
+            return "[skills_list] Nenhuma skill registrada."
+        filt = str(args.get("filter", "")).strip().lower()
+        results = []
+        for s in skills.values():
+            if filt:
+                tag_match = any(filt in t.lower() for t in s.get("tags", []))
+                name_match = filt in s["name"].lower()
+                desc_match = filt in s.get("description", "").lower()
+                if not (tag_match or name_match or desc_match):
+                    continue
+            results.append(s)
+        if not results:
+            return f"[skills_list] Nenhuma skill encontrada para filtro '{filt}'."
+        lines = [f"[skills_list] {len(results)} skill(s):"]
+        for s in sorted(results, key=lambda x: x["name"]):
+            tags = ", ".join(s.get("tags", [])) or "—"
+            lines.append(f"  • {s['name']} [{tags}] — {s.get('description', '')[:80]}")
+        return "\n".join(lines)
+
+    # =========================================================================
+    # Process manager
+    # =========================================================================
+
+    def _process(self, args: dict) -> str:
+        import subprocess
+        import threading
+
+        action = str(args.get("action", "")).strip().lower()
+        if not action:
+            raise ToolError("process: 'action' é obrigatório (start|list|poll|log|kill|write).")
+
+        # ── start ─────────────────────────────────────────────────────────────
+        if action == "start":
+            command = args.get("command")
+            if not command:
+                raise ToolError("process: 'command' é obrigatório para action=start.")
+            label = str(args.get("label", str(command)[:40]))
+            try:
+                proc = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.PIPE,
+                    text=True,
+                    cwd=str(self.workspace),
+                )
+            except Exception as exc:
+                raise ToolError(f"process start: falha ao iniciar — {exc}") from exc
+
+            pid_str = str(proc.pid)
+            stdout_buf: list[str] = []
+            stderr_buf: list[str] = []
+
+            def _reader(stream, buf):
+                try:
+                    for line in stream:
+                        buf.append(line)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_reader, args=(proc.stdout, stdout_buf), daemon=True).start()
+            threading.Thread(target=_reader, args=(proc.stderr, stderr_buf), daemon=True).start()
+
+            self._processes[pid_str] = {
+                "proc": proc,
+                "label": label,
+                "command": str(command),
+                "stdout_buf": stdout_buf,
+                "stderr_buf": stderr_buf,
+            }
+            return f"[process] Iniciado '{label}' — PID {pid_str}"
+
+        # ── list ──────────────────────────────────────────────────────────────
+        if action == "list":
+            if not self._processes:
+                return "[process] Nenhum processo em andamento."
+            lines = [f"[process] {len(self._processes)} processo(s):"]
+            for pid, info in self._processes.items():
+                proc = info["proc"]
+                rc = proc.poll()
+                status = f"exit:{rc}" if rc is not None else "running"
+                lines.append(f"  PID {pid} [{status}] {info['label']}")
+            return "\n".join(lines)
+
+        # ── operações por PID ─────────────────────────────────────────────────
+        _valid_actions = ("start", "list", "poll", "log", "kill", "write")
+        if action not in _valid_actions:
+            raise ToolError(f"process: action '{action}' inválida. Use {' | '.join(_valid_actions)}.")
+
+        pid = str(args.get("pid", "")).strip()
+        if not pid:
+            raise ToolError(f"process: 'pid' é obrigatório para action={action}.")
+        if pid not in self._processes:
+            raise ToolError(f"process: PID '{pid}' não encontrado. Use action=list para ver ativos.")
+
+        info = self._processes[pid]
+        proc = info["proc"]
+
+        if action == "poll":
+            rc = proc.poll()
+            if rc is None:
+                return f"[process] PID {pid} '{info['label']}' — running"
+            del self._processes[pid]
+            return f"[process] PID {pid} '{info['label']}' — finalizado com exit:{rc}"
+
+        if action == "log":
+            max_lines = int(args.get("max_lines", 50))
+            stdout_lines = info["stdout_buf"][-max_lines:]
+            stderr_lines = info["stderr_buf"][-max_lines:]
+            out = "".join(stdout_lines) or "(vazio)"
+            err = "".join(stderr_lines) or "(vazio)"
+            return (
+                f"[process] PID {pid} '{info['label']}'\n"
+                f"─── stdout ───\n{out}\n"
+                f"─── stderr ───\n{err}"
+            )
+
+        if action == "kill":
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            del self._processes[pid]
+            return f"[process] PID {pid} '{info['label']}' encerrado."
+
+        if action == "write":
+            text = args.get("input")
+            if text is None:
+                raise ToolError("process write: 'input' é obrigatório.")
+            if proc.poll() is not None:
+                raise ToolError(f"process write: PID {pid} já finalizou.")
+            try:
+                proc.stdin.write(str(text))
+                proc.stdin.flush()
+            except Exception as exc:
+                raise ToolError(f"process write: falha — {exc}") from exc
+            return f"[process] Enviado para PID {pid}: {str(text)[:80]}"
+
+        raise ToolError(f"process: action '{action}' inválida. Use start|list|poll|log|kill|write.")
+
+    # =========================================================================
+    # Geração de mídia
+    # =========================================================================
+
+    def _image_generate(self, args: dict) -> str:
+        prompt = str(args.get("prompt", "")).strip()
+        if not prompt:
+            raise ToolError("image_generate: 'prompt' é obrigatório.")
+        if self._llm_client is None:
+            raise ToolError("image_generate: llm_client não configurado.")
+
+        model = str(args.get("model", "dall-e-3"))
+        size = str(args.get("size", "1024x1024"))
+        quality = str(args.get("quality", "standard"))
+        output_file = args.get("output_file")
+
+        valid_models = ("dall-e-3", "dall-e-2")
+        if model not in valid_models:
+            raise ToolError(f"image_generate: model deve ser {valid_models}.")
+        valid_sizes = ("1024x1024", "1792x1024", "1024x1792", "512x512", "256x256")
+        if size not in valid_sizes:
+            raise ToolError(f"image_generate: size deve ser um de {valid_sizes}.")
+
+        try:
+            import openai
+            # Descobre qual objeto tem .images.generate:
+            # 1) self._llm_client (caso mock direto)
+            # 2) self._llm_client._client (caso wrapper bauer sobre openai.OpenAI)
+            # 3) cria openai.OpenAI com credenciais do cliente
+            _lc = self._llm_client
+            if hasattr(_lc, "images") and callable(getattr(getattr(_lc, "images", None), "generate", None)):
+                client_obj = _lc
+            elif hasattr(getattr(_lc, "_client", None), "images"):
+                client_obj = _lc._client
+            else:
+                base_url = getattr(_lc, "base_url", None) or "https://api.openai.com/v1"
+                api_key = getattr(_lc, "api_key", None) or ""
+                client_obj = openai.OpenAI(api_key=api_key, base_url=base_url)
+
+            kw: dict = {"model": model, "prompt": prompt, "size": size, "n": 1}
+            if model == "dall-e-3":
+                kw["quality"] = quality
+            response = client_obj.images.generate(**kw)
+            img_url = response.data[0].url
+        except ImportError:
+            raise ToolError("image_generate: requer 'pip install openai'.")
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"image_generate: falha na API — {exc}") from exc
+
+        result = f"[image_generate] Imagem gerada:\n  URL: {img_url}"
+
+        if output_file:
+            try:
+                import httpx
+                dest = self._sandbox(output_file)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                r = httpx.get(img_url, timeout=30)
+                r.raise_for_status()
+                dest.write_bytes(r.content)
+                result += f"\n  Salvo em: {dest.relative_to(self.workspace)}"
+            except Exception as exc:
+                result += f"\n  Aviso: falha ao salvar — {exc}"
+
+        return result
+
+    def _text_to_speech(self, args: dict) -> str:
+        text = str(args.get("text", "")).strip()
+        if not text:
+            raise ToolError("text_to_speech: 'text' é obrigatório.")
+        if len(text) > 4096:
+            raise ToolError("text_to_speech: texto excede 4096 caracteres (limite da API).")
+        output_file = str(args.get("output_file", "")).strip()
+        if not output_file:
+            raise ToolError("text_to_speech: 'output_file' é obrigatório.")
+        if self._llm_client is None:
+            raise ToolError("text_to_speech: llm_client não configurado.")
+
+        voice = str(args.get("voice", "alloy"))
+        model = str(args.get("model", "tts-1"))
+        valid_voices = ("alloy", "echo", "fable", "onyx", "nova", "shimmer")
+        if voice not in valid_voices:
+            raise ToolError(f"text_to_speech: voice deve ser um de {valid_voices}.")
+        valid_models = ("tts-1", "tts-1-hd")
+        if model not in valid_models:
+            raise ToolError(f"text_to_speech: model deve ser {valid_models}.")
+
+        dest = self._sandbox(output_file)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            import openai
+            _lc = self._llm_client
+            # Descobre o objeto com .audio.speech.create:
+            # 1) self._llm_client direto (mocks e openai.OpenAI wrappers expostos)
+            # 2) self._llm_client._client (wrapper bauer)
+            # 3) cria openai.OpenAI com credenciais
+            if hasattr(_lc, "audio") and callable(getattr(getattr(_lc, "audio", None), "speech", None) and
+                                                   getattr(getattr(getattr(_lc, "audio", None), "speech", None), "create", None) or None):
+                client_obj = _lc
+            elif hasattr(_lc, "audio"):
+                client_obj = _lc
+            elif hasattr(getattr(_lc, "_client", None), "audio"):
+                client_obj = _lc._client
+            else:
+                base_url = getattr(_lc, "base_url", None) or "https://api.openai.com/v1"
+                api_key = getattr(_lc, "api_key", None) or ""
+                client_obj = openai.OpenAI(api_key=api_key, base_url=base_url)
+
+            response = client_obj.audio.speech.create(model=model, voice=voice, input=text)
+            response.stream_to_file(str(dest))
+        except ImportError:
+            raise ToolError("text_to_speech: requer 'pip install openai'.")
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"text_to_speech: falha na API — {exc}") from exc
+
+        size_kb = dest.stat().st_size // 1024 if dest.exists() else 0
+        return (
+            f"[text_to_speech] Áudio gerado:\n"
+            f"  Arquivo: {dest.relative_to(self.workspace)}\n"
+            f"  Tamanho: {size_kb} KB | Voice: {voice} | Model: {model}"
+        )
+
+    # =========================================================================
+    # Kanban board
+    # =========================================================================
+
+    def _load_kanban(self) -> dict:
+        p = self.workspace / self._KANBAN_FILE
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return {"tasks": {}, "next_id": 1}
+        return {"tasks": {}, "next_id": 1}
+
+    def _save_kanban(self, board: dict) -> None:
+        p = self.workspace / self._KANBAN_FILE
+        p.write_text(json.dumps(board, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _kanban_create(self, args: dict) -> str:
+        title = str(args.get("title", "")).strip()
+        if not title:
+            raise ToolError("kanban_create: 'title' é obrigatório.")
+        priority = str(args.get("priority", "medium")).lower()
+        valid_priorities = ("low", "medium", "high", "critical")
+        if priority not in valid_priorities:
+            raise ToolError(f"kanban_create: priority deve ser {valid_priorities}.")
+
+        import time as _time
+        board = self._load_kanban()
+        task_id = f"T{board['next_id']:04d}"
+        board["next_id"] += 1
+        board["tasks"][task_id] = {
+            "id": task_id,
+            "title": title,
+            "description": str(args.get("description", "")),
+            "status": "todo",
+            "priority": priority,
+            "assignee": str(args.get("assignee", "")),
+            "parent_id": str(args.get("parent_id", "")),
+            "children": [],
+            "comments": [],
+            "created_at": _time.time(),
+            "updated_at": _time.time(),
+        }
+        # Registra filho no pai
+        parent_id = str(args.get("parent_id", "")).strip()
+        if parent_id and parent_id in board["tasks"]:
+            board["tasks"][parent_id]["children"].append(task_id)
+
+        self._save_kanban(board)
+        return f"[kanban] Tarefa criada: {task_id} — '{title}' [{priority}]"
+
+    def _kanban_list(self, args: dict) -> str:
+        board = self._load_kanban()
+        tasks = list(board["tasks"].values())
+        status_filter = str(args.get("status", "all")).lower()
+        assignee_filter = str(args.get("assignee", "")).strip().lower()
+        priority_filter = str(args.get("priority", "")).strip().lower()
+
+        if status_filter != "all":
+            tasks = [t for t in tasks if t["status"] == status_filter]
+        if assignee_filter:
+            tasks = [t for t in tasks if assignee_filter in t.get("assignee", "").lower()]
+        if priority_filter:
+            tasks = [t for t in tasks if t["priority"] == priority_filter]
+
+        if not tasks:
+            return "[kanban] Nenhuma tarefa encontrada com esses filtros."
+
+        _priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        tasks.sort(key=lambda t: _priority_order.get(t["priority"], 9))
+
+        _status_icons = {"todo": "⬜", "in_progress": "🔵", "blocked": "🔴", "done": "✅"}
+        lines = [f"[kanban] {len(tasks)} tarefa(s):"]
+        for t in tasks:
+            icon = _status_icons.get(t["status"], "•")
+            assignee = f" @{t['assignee']}" if t.get("assignee") else ""
+            lines.append(
+                f"  {icon} {t['id']} [{t['priority']}]{assignee} — {t['title']}"
+            )
+        return "\n".join(lines)
+
+    def _kanban_show(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_show: 'task_id' é obrigatório.")
+        board = self._load_kanban()
+        if task_id not in board["tasks"]:
+            raise ToolError(f"kanban_show: tarefa '{task_id}' não encontrada.")
+        t = board["tasks"][task_id]
+        import time as _time
+        lines = [
+            f"[kanban] {t['id']} — {t['title']}",
+            f"  Status: {t['status']} | Prioridade: {t['priority']}",
+            f"  Assignee: {t.get('assignee') or '—'}",
+            f"  Pai: {t.get('parent_id') or '—'} | Filhos: {', '.join(t.get('children', [])) or '—'}",
+            f"  Criado: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(t['created_at']))}",
+            f"  Atualizado: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(t['updated_at']))}",
+        ]
+        if t.get("description"):
+            lines += ["", "  Descrição:", f"    {t['description']}"]
+        if t.get("comments"):
+            lines.append("")
+            lines.append("  Comentários:")
+            for c in t["comments"]:
+                ts = _time.strftime("%H:%M", _time.localtime(c.get("at", 0)))
+                lines.append(f"    [{ts}] {c.get('author','?')}: {c['text']}")
+        return "\n".join(lines)
+
+    def _kanban_update_status(self, task_id: str, new_status: str, note: str = "") -> dict:
+        board = self._load_kanban()
+        if task_id not in board["tasks"]:
+            raise ToolError(f"kanban: tarefa '{task_id}' não encontrada.")
+        import time as _time
+        t = board["tasks"][task_id]
+        t["status"] = new_status
+        t["updated_at"] = _time.time()
+        if note:
+            t["comments"].append({"author": "system", "text": note, "at": _time.time()})
+        self._save_kanban(board)
+        return t
+
+    def _kanban_complete(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_complete: 'task_id' é obrigatório.")
+        result = str(args.get("result", ""))
+        t = self._kanban_update_status(task_id, "done", f"Concluído: {result}" if result else "")
+        return f"[kanban] {task_id} '{t['title']}' marcado como done."
+
+    def _kanban_block(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        reason = str(args.get("reason", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_block: 'task_id' é obrigatório.")
+        if not reason:
+            raise ToolError("kanban_block: 'reason' é obrigatório.")
+        t = self._kanban_update_status(task_id, "blocked", f"Bloqueado: {reason}")
+        return f"[kanban] {task_id} '{t['title']}' bloqueado — {reason}"
+
+    def _kanban_unblock(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_unblock: 'task_id' é obrigatório.")
+        note = str(args.get("note", "Bloqueio removido."))
+        t = self._kanban_update_status(task_id, "todo", note)
+        return f"[kanban] {task_id} '{t['title']}' desbloqueado."
+
+    def _kanban_heartbeat(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        progress = str(args.get("progress", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_heartbeat: 'task_id' é obrigatório.")
+        if not progress:
+            raise ToolError("kanban_heartbeat: 'progress' é obrigatório.")
+        board = self._load_kanban()
+        if task_id not in board["tasks"]:
+            raise ToolError(f"kanban_heartbeat: tarefa '{task_id}' não encontrada.")
+        import time as _time
+        t = board["tasks"][task_id]
+        t["status"] = "in_progress"
+        t["updated_at"] = _time.time()
+        t["comments"].append({"author": "heartbeat", "text": progress, "at": _time.time()})
+        self._save_kanban(board)
+        return f"[kanban] ❤️ {task_id} — {progress}"
+
+    def _kanban_comment(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        comment = str(args.get("comment", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_comment: 'task_id' é obrigatório.")
+        if not comment:
+            raise ToolError("kanban_comment: 'comment' é obrigatório.")
+        author = str(args.get("author", "agent"))
+        board = self._load_kanban()
+        if task_id not in board["tasks"]:
+            raise ToolError(f"kanban_comment: tarefa '{task_id}' não encontrada.")
+        import time as _time
+        board["tasks"][task_id]["comments"].append({
+            "author": author, "text": comment, "at": _time.time()
+        })
+        board["tasks"][task_id]["updated_at"] = _time.time()
+        self._save_kanban(board)
+        return f"[kanban] Comentário adicionado em {task_id}."
+
+    def _kanban_link(self, args: dict) -> str:
+        parent_id = str(args.get("parent_id", "")).strip()
+        child_id = str(args.get("child_id", "")).strip()
+        if not parent_id or not child_id:
+            raise ToolError("kanban_link: 'parent_id' e 'child_id' são obrigatórios.")
+        if parent_id == child_id:
+            raise ToolError("kanban_link: parent_id e child_id não podem ser iguais.")
+        board = self._load_kanban()
+        for tid in (parent_id, child_id):
+            if tid not in board["tasks"]:
+                raise ToolError(f"kanban_link: tarefa '{tid}' não encontrada.")
+        import time as _time
+        parent = board["tasks"][parent_id]
+        child = board["tasks"][child_id]
+        if child_id not in parent["children"]:
+            parent["children"].append(child_id)
+        child["parent_id"] = parent_id
+        child["updated_at"] = _time.time()
+        self._save_kanban(board)
+        return f"[kanban] {child_id} vinculado como filho de {parent_id}."
+
+    # =========================================================================
+    # Browser automation (Playwright)
+    # =========================================================================
+
+    _BROWSER_CONSOLE_MSGS: list = []  # captura msgs de console entre calls
+
+    def _ensure_browser(self) -> object:
+        """Garante que o browser Playwright está iniciado. Retorna a Page ativa."""
+        if self._browser_page is not None:
+            return self._browser_page
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise ToolError(
+                "browser_*: requer Playwright — execute: pip install playwright && playwright install chromium"
+            )
+        try:
+            self._browser_pw = sync_playwright().__enter__()
+            self._browser_ctx = self._browser_pw.chromium.launch(headless=True)
+            self._browser_page = self._browser_ctx.new_page()
+            # Captura mensagens de console
+            self._BROWSER_CONSOLE_MSGS = []
+            self._browser_page.on(
+                "console",
+                lambda msg: self._BROWSER_CONSOLE_MSGS.append(
+                    f"[{msg.type}] {msg.text}"
+                ),
+            )
+        except Exception as exc:
+            raise ToolError(f"browser: falha ao iniciar Playwright — {exc}") from exc
+        return self._browser_page
+
+    def _browser_navigate(self, args: dict) -> str:
+        url = str(args.get("url", "")).strip()
+        if not url.startswith(("http://", "https://")):
+            raise ToolError("browser_navigate: 'url' deve começar com http:// ou https://")
+        wait_until = str(args.get("wait_until", "load"))
+        valid_waits = ("load", "domcontentloaded", "networkidle")
+        if wait_until not in valid_waits:
+            wait_until = "load"
+        page = self._ensure_browser()
+        try:
+            response = page.goto(url, wait_until=wait_until, timeout=30_000)
+            status = response.status if response else "?"
+            return f"[browser] Navegou para {url} — status HTTP {status} | título: {page.title()}"
+        except Exception as exc:
+            raise ToolError(f"browser_navigate: {exc}") from exc
+
+    def _browser_snapshot(self, args: dict) -> str:
+        page = self._ensure_browser()
+        include_hidden = bool(args.get("include_hidden", False))
+        try:
+            # Retorna texto acessível via innerText em estrutura simplificada
+            script = """
+            () => {
+                function walk(el, depth) {
+                    let tag = el.tagName ? el.tagName.toLowerCase() : '';
+                    let role = el.getAttribute ? (el.getAttribute('role') || '') : '';
+                    let label = (el.getAttribute ? el.getAttribute('aria-label') : '') || el.innerText || el.textContent || '';
+                    label = (label || '').replace(/\\s+/g, ' ').trim().slice(0, 120);
+                    let hidden = el.hidden || (el.style && el.style.display === 'none') || (el.getAttribute && el.getAttribute('aria-hidden') === 'true');
+                    if (hidden && !arguments[1]) return '';
+                    let indent = '  '.repeat(depth);
+                    let info = indent + (tag || '?');
+                    if (role) info += `[role=${role}]`;
+                    if (label) info += ` "${label}"`;
+                    let children = Array.from(el.children || []).map(c => walk(c, depth+1)).filter(Boolean).join('\\n');
+                    return children ? info + '\\n' + children : info;
+                }
+                return walk(document.body, 0);
+            }
+            """
+            snapshot = page.evaluate(script)
+            url = page.url
+            title = page.title()
+            return f"[browser_snapshot] {title} | {url}\n\n{snapshot[:8000]}"
+        except Exception as exc:
+            raise ToolError(f"browser_snapshot: {exc}") from exc
+
+    def _browser_click(self, args: dict) -> str:
+        selector = str(args.get("selector", "")).strip()
+        if not selector:
+            raise ToolError("browser_click: 'selector' é obrigatório.")
+        by = str(args.get("by", "css")).lower()
+        page = self._ensure_browser()
+        try:
+            if by == "text":
+                page.get_by_text(selector).first.click(timeout=10_000)
+            elif by == "role":
+                page.get_by_role(selector).first.click(timeout=10_000)
+            elif by == "xpath":
+                page.locator(f"xpath={selector}").first.click(timeout=10_000)
+            else:
+                page.locator(selector).first.click(timeout=10_000)
+            return f"[browser_click] Clicou em '{selector}' (by={by})"
+        except Exception as exc:
+            raise ToolError(f"browser_click: {exc}") from exc
+
+    def _browser_type(self, args: dict) -> str:
+        selector = str(args.get("selector", "")).strip()
+        text = str(args.get("text", ""))
+        if not selector:
+            raise ToolError("browser_type: 'selector' é obrigatório.")
+        clear_first = bool(args.get("clear_first", True))
+        page = self._ensure_browser()
+        try:
+            loc = page.locator(selector).first
+            if clear_first:
+                loc.fill(text, timeout=10_000)
+            else:
+                loc.type(text, timeout=10_000)
+            return f"[browser_type] Digitou {len(text)} chars em '{selector}'"
+        except Exception as exc:
+            raise ToolError(f"browser_type: {exc}") from exc
+
+    def _browser_scroll(self, args: dict) -> str:
+        direction = str(args.get("direction", "down")).lower()
+        amount = int(args.get("amount", 500))
+        selector = args.get("selector")
+        page = self._ensure_browser()
+        try:
+            if direction == "top":
+                page.evaluate("window.scrollTo(0, 0)")
+            elif direction == "bottom":
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            elif direction == "up":
+                page.evaluate(f"window.scrollBy(0, -{amount})")
+            else:
+                page.evaluate(f"window.scrollBy(0, {amount})")
+            return f"[browser_scroll] Rolou {direction} ({amount}px)"
+        except Exception as exc:
+            raise ToolError(f"browser_scroll: {exc}") from exc
+
+    def _browser_back(self, args: dict) -> str:
+        page = self._ensure_browser()
+        try:
+            page.go_back(timeout=10_000)
+            return f"[browser_back] Voltou para: {page.url}"
+        except Exception as exc:
+            raise ToolError(f"browser_back: {exc}") from exc
+
+    def _browser_press(self, args: dict) -> str:
+        key = str(args.get("key", "")).strip()
+        if not key:
+            raise ToolError("browser_press: 'key' é obrigatório (ex: Enter, Tab, Control+A).")
+        selector = args.get("selector")
+        page = self._ensure_browser()
+        try:
+            if selector:
+                page.locator(str(selector)).first.press(key, timeout=10_000)
+            else:
+                page.keyboard.press(key)
+            return f"[browser_press] Pressionou '{key}'"
+        except Exception as exc:
+            raise ToolError(f"browser_press: {exc}") from exc
+
+    def _browser_console(self, args: dict) -> str:
+        self._ensure_browser()
+        max_lines = int(args.get("max_lines", 50))
+        msgs = self._BROWSER_CONSOLE_MSGS[-max_lines:]
+        if not msgs:
+            return "[browser_console] Sem mensagens de console."
+        return "[browser_console]\n" + "\n".join(msgs)
+
+    def _browser_get_images(self, args: dict) -> str:
+        include_data = bool(args.get("include_data_urls", False))
+        page = self._ensure_browser()
+        try:
+            images = page.evaluate("""
+            () => Array.from(document.images).map(img => ({
+                src: img.src, alt: img.alt, width: img.naturalWidth, height: img.naturalHeight
+            }))
+            """)
+            if not include_data:
+                images = [i for i in images if not i["src"].startswith("data:")]
+            if not images:
+                return "[browser_get_images] Nenhuma imagem encontrada."
+            lines = [f"[browser_get_images] {len(images)} imagem(ns):"]
+            for img in images[:50]:
+                lines.append(
+                    f"  {img['width']}x{img['height']} | alt='{img['alt'][:60]}' | {img['src'][:120]}"
+                )
+            return "\n".join(lines)
+        except Exception as exc:
+            raise ToolError(f"browser_get_images: {exc}") from exc
+
+    def _browser_vision(self, args: dict) -> str:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            raise ToolError("browser_vision: 'query' é obrigatório.")
+        if self._llm_client is None:
+            raise ToolError("browser_vision: llm_client não configurado.")
+        page = self._ensure_browser()
+        try:
+            screenshot_bytes = page.screenshot(full_page=False)
+        except Exception as exc:
+            raise ToolError(f"browser_vision: falha ao capturar screenshot — {exc}") from exc
+
+        import base64
+        b64 = base64.b64encode(screenshot_bytes).decode()
+        data_url = f"data:image/png;base64,{b64}"
+        try:
+            from .agent import run_one_turn
+            msg = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"[screenshot do browser — {page.url}] {query}"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+            return str(run_one_turn(self._llm_client, [msg], tools=None))
+        except Exception as exc:
+            raise ToolError(f"browser_vision: falha na análise — {exc}") from exc
+
+    def _browser_dialog(self, args: dict) -> str:
+        action = str(args.get("action", "accept")).lower()
+        prompt_text = str(args.get("prompt_text", ""))
+        page = self._ensure_browser()
+
+        dialog_handled = {"done": False, "msg": ""}
+
+        def _handle(dialog):
+            if action == "dismiss":
+                dialog.dismiss()
+                dialog_handled["msg"] = f"[browser_dialog] Descartou diálogo '{dialog.type}': {dialog.message[:80]}"
+            else:
+                dialog.accept(prompt_text or "")
+                dialog_handled["msg"] = f"[browser_dialog] Aceitou diálogo '{dialog.type}': {dialog.message[:80]}"
+            dialog_handled["done"] = True
+
+        page.once("dialog", _handle)
+        # Aguarda até 5s por um diálogo
+        try:
+            page.wait_for_timeout(5_000)
+        except Exception:
+            pass
+        if dialog_handled["done"]:
+            return dialog_handled["msg"]
+        page.remove_listener("dialog", _handle)
+        return "[browser_dialog] Nenhum diálogo detectado em 5s."
+
+    def _browser_cdp(self, args: dict) -> str:
+        method = str(args.get("method", "")).strip()
+        if not method:
+            raise ToolError("browser_cdp: 'method' é obrigatório (ex: Page.captureScreenshot).")
+        params = args.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+        page = self._ensure_browser()
+        try:
+            client = page.context.new_cdp_session(page)
+            result = client.send(method, params)
+            client.detach()
+            result_str = json.dumps(result, ensure_ascii=False)[:2000]
+            return f"[browser_cdp] {method} → {result_str}"
+        except Exception as exc:
+            raise ToolError(f"browser_cdp: {exc}") from exc

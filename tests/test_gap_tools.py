@@ -588,7 +588,7 @@ class TestRegistro30Tools:
 
     def test_total_30_tools(self, ws):
         r = ToolRouter(workspace=ws, web_enabled=True)
-        assert len(r.get_tool_schemas()) == 30
+        assert len(r.get_tool_schemas()) >= 30  # cresce a cada wave
 
     def test_novas_4_tools_registradas(self, router):
         tools = router.available_tools()
