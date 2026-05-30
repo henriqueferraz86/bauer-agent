@@ -1986,6 +1986,8 @@ class ToolRouter:
                 [sys.executable, tmp_path],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",   # evita UnicodeDecodeError (cp1252) no Windows
+                errors="replace",
                 timeout=timeout,
                 cwd=str(self.workspace),
             )
@@ -1999,20 +2001,22 @@ class ToolRouter:
             except Exception:
                 pass
 
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         lines = [f"exit: {result.returncode}"]
-        if result.stdout.strip():
+        if stdout.strip():
             lines.append("--- stdout ---")
-            out = result.stdout
+            out = stdout
             if len(out) > 8000:
-                out = out[:8000] + f"\n[... truncado — {len(result.stdout)} chars total]"
+                out = out[:8000] + f"\n[... truncado — {len(stdout)} chars total]"
             lines.append(out.rstrip())
-        if result.stderr.strip():
+        if stderr.strip():
             lines.append("--- stderr ---")
-            err = result.stderr
+            err = stderr
             if len(err) > 4000:
                 err = err[:4000] + f"\n[... truncado]"
             lines.append(err.rstrip())
-        if not result.stdout.strip() and not result.stderr.strip():
+        if not stdout.strip() and not stderr.strip():
             lines.append("(sem output)")
 
         return "\n".join(lines)
@@ -2135,6 +2139,8 @@ class ToolRouter:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",   # evita UnicodeDecodeError em cp1252 no Windows
+                errors="replace",   # substitui bytes inválidos por '?' em vez de explodir
                 timeout=timeout,
                 cwd=str(self.workspace),
             )
@@ -2151,9 +2157,9 @@ class ToolRouter:
         except Exception as exc:
             raise ToolError(f"delegate_task: erro ao chamar sub-agente: {exc}")
 
-        output = result.stdout.strip()
+        output = (result.stdout or "").strip()
         if result.returncode != 0:
-            err = result.stderr.strip()
+            err = (result.stderr or "").strip()
             raise ToolError(
                 f"delegate_task: sub-agente falhou (exit {result.returncode}).\n"
                 f"Erro: {err[:500] if err else 'sem detalhes'}"
@@ -2548,15 +2554,18 @@ class ToolRouter:
                         )
                 try:
                     proc = subprocess.run(
-                        cmd_str, shell=False, args=_shlex.split(cmd_str),
-                        capture_output=True, text=True, timeout=60,
-                        cwd=str(self.workspace),
+                        _shlex.split(cmd_str),
+                        capture_output=True, text=True,
+                        encoding="utf-8", errors="replace",
+                        timeout=60, cwd=str(self.workspace),
                     )
+                    _out = proc.stdout or ""
+                    _err = proc.stderr or ""
                     result = f"exit: {proc.returncode}\n"
-                    if proc.stdout.strip():
-                        result += f"--- stdout ---\n{proc.stdout.strip()}"
-                    if proc.stderr.strip():
-                        result += f"\n--- stderr ---\n{proc.stderr.strip()}"
+                    if _out.strip():
+                        result += f"--- stdout ---\n{_out.strip()}"
+                    if _err.strip():
+                        result += f"\n--- stderr ---\n{_err.strip()}"
                 except subprocess.TimeoutExpired:
                     result = "Timeout: comando excedeu 60s."
                 except Exception as exc:
@@ -3163,6 +3172,8 @@ class ToolRouter:
                     stderr=subprocess.PIPE,
                     stdin=subprocess.PIPE,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     cwd=str(self.workspace),
                 )
             except Exception as exc:
