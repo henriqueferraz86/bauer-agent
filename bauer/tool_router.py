@@ -97,6 +97,7 @@ def _find_bauer_python(workspace: Path) -> str:
 
     def _can_import_bauer(python_path: str) -> bool:
         try:
+            # nosec: args são hardcoded — nenhum input do usuário; shell=False (default)
             r = subprocess.run(
                 [python_path, "-c", "import bauer.cli"],
                 capture_output=True, timeout=5,
@@ -164,6 +165,22 @@ class DryRunResult:
 # Níveis de permissão: do menos ao mais privilegiado
 _PERMISSION_LEVELS = ("read", "write", "execute", "network", "system")
 _RISK_LEVELS = ("low", "medium", "high", "critical")
+
+# Padrões proibidos no código Python submetido a execute_code.
+# Defesa em profundidade: mesmo dentro do subprocesso isolado,
+# bloqueamos os vetores mais óbvios de destruição do sistema.
+_CODE_DENYLIST: list[tuple] = [
+    (re.compile(r"\bos\.system\s*\("),
+     "os.system() — use a tool run_command ou shell_runner"),
+    (re.compile(r"\bsubprocess\b.{0,120}shell\s*=\s*True", re.DOTALL),
+     "subprocess com shell=True — use shell=False com lista de args"),
+    (re.compile(r"\bshutil\.rmtree\s*\(\s*[\"'/]"),
+     "shutil.rmtree em caminho absoluto/raiz"),
+    (re.compile(r"\bos\.(remove|unlink)\s*\(\s*[\"'/]"),
+     "os.remove/unlink em caminho absoluto"),
+    (re.compile(r"\beval\s*\(\s*(?:open|input|__import__)"),
+     "eval(open(...)) / eval(input(...)) — exec de código dinâmico"),
+]
 
 # Mapa de metadados de segurança por tool
 # permission_level: impacto máximo possível da tool
@@ -1947,6 +1964,14 @@ class ToolRouter:
         if not code:
             raise ToolError("execute_code requer 'code'.")
 
+        # Scan de conteúdo — bloqueia padrões destrutivos mesmo no subprocesso
+        for pattern, label in _CODE_DENYLIST:
+            if pattern.search(code):
+                raise ToolError(
+                    f"execute_code: código bloqueado — contém '{label}'. "
+                    "Remova o padrão perigoso ou use a tool apropriada (run_command, delete_file, etc.)."
+                )
+
         timeout = int(args.get("timeout", 30))
         timeout = max(1, min(timeout, 120))
 
@@ -2084,6 +2109,10 @@ class ToolRouter:
         timeout = max(10, min(timeout, 600))
 
         full_task = f"{context}\n\n{task}".strip() if context else task
+        # Sanitização: remove null bytes e limita tamanho para evitar overflow de args
+        full_task = full_task.replace("\x00", "").strip()
+        if len(full_task) > 4096:
+            full_task = full_task[:4096]
 
         # Tenta usar o cliente LLM diretamente se disponível (mais eficiente)
         if self._llm_client is not None:
@@ -2097,6 +2126,8 @@ class ToolRouter:
                 pass
 
         # Fallback: subprocess com bauer CLI
+        # nosec: shell=False (default); full_task é passado como elemento de lista,
+        # não como string de shell — sem risco de injeção.
         python = _find_bauer_python(self.workspace)
         cmd = [python, "-m", "bauer.cli", "agent", "run-one", full_task]
         try:
