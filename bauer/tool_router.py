@@ -60,6 +60,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .shell_runner import ShellError
+from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
 
 
 def _package_available(name: str) -> bool:
@@ -1022,6 +1023,10 @@ class ToolRouter:
             ))
 
         result = self._tools[name]["fn"](args)
+
+        # Sanitiza surrogates antes de qualquer outra operação no resultado
+        # (nomes de arquivo no Windows podem conter U+D800–U+DFFF via os.fsdecode)
+        result = _sanitize_surrogates(result)
 
         # Escanear output de tools por segredos antes de retornar
         try:

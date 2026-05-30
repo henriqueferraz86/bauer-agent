@@ -31,6 +31,7 @@ from .agent import _build_system_prompt, run_one_turn
 from .context_manager import ContextManager
 from .model_router import ModelRouter
 from .ollama_client import OllamaClient
+from .unicode_utils import safe_json_dumps as _safe_json_dumps
 from .tool_router import ToolRouter
 
 MAX_STEPS = 6
@@ -454,7 +455,7 @@ class AgentOrchestrator:
         p = self._progress_path(task)
         p.mkdir(parents=True, exist_ok=True)
         (p / "plan.json").write_text(
-            json.dumps(steps, ensure_ascii=False, indent=2),
+            _safe_json_dumps(steps, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         # Salva task.txt para permitir listagem legível
@@ -473,7 +474,7 @@ class AgentOrchestrator:
         p.mkdir(parents=True, exist_ok=True)
         for r in results:
             (p / f"step_{r.id}.json").write_text(
-                json.dumps(
+                _safe_json_dumps(
                     {
                         "id": r.id,
                         "goal": r.goal,
