@@ -451,6 +451,95 @@ def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | No
 # Evita overflow de contexto quando o modelo lê muitos arquivos grandes.
 _MAX_TOOL_RESULT_IN_CTX = 3000
 
+# ─── Compressão imediata de tool results grandes ───────────────────────────────
+# Resultados maiores que este limite são comprimidos na ingestão (antes de entrar
+# no contexto), não apenas no momento da compressão do histórico.
+# Isso reduz o impacto de tool calls exploratórias (list_dir, execute_code,
+# glob_files) que geram muitos chars mas pouco valor marginal por token.
+_TOOL_RESULT_COMPRESS_THRESHOLD = 2000   # chars — acima disso, comprime imediatamente
+_TOOL_RESULT_COMPRESSED_PREVIEW  = 500   # chars — alvo após compressão
+
+# Percentual de uso do budget a partir do qual avisa o usuário no CLI
+_CTX_WARN_THRESHOLD = 0.85
+
+
+# Tools de listagem/exploração → compressão mais agressiva (itens, não linhas)
+_LISTING_TOOLS = frozenset({
+    "list_dir", "glob_files", "regex_search", "session_search",
+    "list_tasks", "skills_list", "memory",
+})
+
+# Tools de conteúdo → preserva mais linhas no preview
+_CONTENT_TOOLS = frozenset({
+    "read_file", "execute_code", "delegate_task", "http_request",
+})
+
+
+def _compress_tool_result_inline(action: str, result: str) -> str:
+    """Comprime um resultado de tool grande para caber no contexto sem desperdiçar tokens.
+
+    Estratégia por tipo de tool:
+    - Listagem (list_dir, glob_files): mostra contagem + primeiros N itens
+    - Conteúdo (read_file, execute_code): mostra contagem de linhas + primeiras N linhas
+    - Genérico: contagem de chars/linhas + preview do início
+
+    Só deve ser chamada quando len(result) > _TOOL_RESULT_COMPRESS_THRESHOLD.
+    Preserva sempre a primeira linha (quase sempre a mais importante).
+
+    Returns:
+        String comprimida com ≤ _TOOL_RESULT_COMPRESSED_PREVIEW chars.
+    """
+    lines = [l for l in result.splitlines() if l.strip()]
+    n_lines = len(lines)
+    n_chars = len(result)
+
+    if action in _LISTING_TOOLS:
+        # Para listagens: contagem + primeiros 8 itens
+        n_preview = 8
+        preview_items = lines[:n_preview]
+        extra = n_lines - n_preview
+        summary = f"[{n_chars} chars — {n_lines} itens] " + ", ".join(preview_items)
+        if extra > 0:
+            summary += f" ... +{extra} mais"
+    elif action in _CONTENT_TOOLS:
+        # Para conteúdo: contagem de linhas + primeiras 6 linhas
+        n_preview = 6
+        preview_lines = lines[:n_preview]
+        extra = n_lines - n_preview
+        summary = f"[{n_chars} chars — {n_lines} linhas]\n" + "\n".join(preview_lines)
+        if extra > 0:
+            summary += f"\n... +{extra} linhas omitidas"
+    else:
+        # Genérico: primeiros 300 chars + metadados
+        preview = result[:300].rstrip()
+        summary = f"[{n_chars} chars — {n_lines} linhas] {preview}"
+        if n_chars > 300:
+            summary += f"... [{n_chars - 300} chars omitidos]"
+
+    # Garante que não ultrapassa o limite mesmo após formatação
+    if len(summary) > _TOOL_RESULT_COMPRESSED_PREVIEW:
+        summary = summary[:_TOOL_RESULT_COMPRESSED_PREVIEW - 1] + "…"
+    return summary
+
+
+def _ctx_result_for_context(action: str, result: str) -> tuple[str, bool]:
+    """Decide como um resultado de tool deve entrar no contexto.
+
+    Returns:
+        (ctx_result, was_compressed)
+        ctx_result: string a ser adicionada ao contexto
+        was_compressed: True se o resultado foi comprimido
+    """
+    if len(result) > _TOOL_RESULT_COMPRESS_THRESHOLD:
+        return _compress_tool_result_inline(action, result), True
+    if len(result) > _MAX_TOOL_RESULT_IN_CTX:
+        truncated = result[:_MAX_TOOL_RESULT_IN_CTX]
+        return (
+            truncated + f"\n[... +{len(result) - _MAX_TOOL_RESULT_IN_CTX} chars omitidos]",
+            False,
+        )
+    return result, False
+
 
 def _collect_response(
     client: OllamaClient,
@@ -532,11 +621,12 @@ def _run_native_tool_turn(
         except (ToolError, SandboxError) as exc:
             result = f"[Erro: {exc}]"
 
+        ctx_result, _ = _ctx_result_for_context(name, result)
         tool_log.append({"tool": name, "result": result[:300]})
         ctx.messages.append({
             "role": "tool",
             "tool_call_id": tc_id,
-            "content": result,
+            "content": ctx_result,
         })
 
     return None  # continua o loop
@@ -604,12 +694,7 @@ def run_one_turn(
 
                 tool_log.append({"tool": action_name, "result": tool_result[:300]})
 
-                ctx_result = tool_result
-                if len(tool_result) > _MAX_TOOL_RESULT_IN_CTX:
-                    ctx_result = (
-                        tool_result[:_MAX_TOOL_RESULT_IN_CTX]
-                        + f"\n[... +{len(tool_result) - _MAX_TOOL_RESULT_IN_CTX} chars omitidos ...]"
-                    )
+                ctx_result, _ = _ctx_result_for_context(action_name, tool_result)
                 combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
 
             if combined_parts:
@@ -1365,6 +1450,15 @@ def run_agent_session(
         tool_turns = 0
         cli_tool_log: list[dict] = []  # para detecção de loop no CLI path
         while True:
+            # Aviso precoce de contexto cheio — antes de travar silenciosamente
+            usage = ctx.usage_pct
+            if usage >= _CTX_WARN_THRESHOLD:
+                pct = int(usage * 100)
+                console.print(
+                    f"[yellow]⚠ Contexto em {pct}% do budget "
+                    f"({ctx.used_tokens}/{ctx.budget} tokens). "
+                    "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
+                )
             try:
                 response = _collect_response(client, active_model, ctx.get_payload())
             except (OllamaError, OpenAIClientError) as exc:
@@ -1415,17 +1509,16 @@ def run_agent_session(
                     except (ToolError, SandboxError) as exc:
                         tool_result = f"[Erro: {exc}]"
 
-                    # Preview no terminal (300 chars)
+                    # Preview no terminal (300 chars) — sempre mostra o resultado real
                     preview = tool_result[:300] + ("..." if len(tool_result) > 300 else "")
                     console.print(f"[dim]{preview}[/dim]")
 
-                    # Trunca resultado para o contexto — evita overflow em leituras massivas
-                    ctx_result = tool_result
-                    if len(tool_result) > _MAX_TOOL_RESULT_IN_CTX:
-                        ctx_result = (
-                            tool_result[:_MAX_TOOL_RESULT_IN_CTX]
-                            + f"\n[... resultado truncado — "
-                            f"{len(tool_result) - _MAX_TOOL_RESULT_IN_CTX} chars omitidos ...]"
+                    # Comprime resultado para o contexto — reduz impacto de resultados grandes
+                    ctx_result, was_compressed = _ctx_result_for_context(action_name, tool_result)
+                    if was_compressed:
+                        console.print(
+                            f"[dim cyan]  ↓ comprimido para contexto: "
+                            f"{len(tool_result)} → {len(ctx_result)} chars[/dim cyan]"
                         )
 
                     combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
