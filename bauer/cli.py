@@ -1013,7 +1013,8 @@ def _build_router(cfg, workspace: Path) -> ToolRouter:
     """Cria ToolRouter com shell_runner e web_enabled a partir da config."""
     shell_runner = _build_shell_runner(cfg, workspace)
     web_enabled = cfg.tools.web_enabled if cfg is not None else False
-    return ToolRouter(workspace, shell_runner=shell_runner, web_enabled=web_enabled)
+    web_config = cfg.web if cfg is not None else None
+    return ToolRouter(workspace, shell_runner=shell_runner, web_enabled=web_enabled, web_config=web_config)
 
 
 @tools_app.command("list")

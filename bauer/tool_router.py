@@ -143,7 +143,7 @@ class ToolRouter:
         result = router.execute('{"action": "list_dir", "args": {"path": "."}}')
     """
 
-    def __init__(self, workspace: str | Path = "workspace", shell_runner=None, web_enabled: bool = False):
+    def __init__(self, workspace: str | Path = "workspace", shell_runner=None, web_enabled: bool = False, web_config=None):
         self.workspace = Path(workspace).resolve()
         self._tools: dict[str, dict] = {
             "list_dir": {
@@ -276,6 +276,9 @@ class ToolRouter:
             }
 
         if web_enabled:
+            from .web.dispatcher import WebDispatcher
+            self._web = WebDispatcher(web_config)
+
             self._tools["web_search"] = {
                 "fn": self._web_search,
                 "description": "Pesquisa na web e retorna resultados com titulos, links e snippets.",
@@ -664,7 +667,7 @@ class ToolRouter:
             return f"Nenhum resultado para '{pattern}' em '{path}'"
         return "\n".join(results)
 
-    # --- web tools (web_enabled) -------------------------------------------------
+    # --- web tools (web_enabled) — via WebDispatcher -------------------------
 
     def _web_search(self, args: dict) -> str:
         query = args.get("query")
@@ -672,65 +675,27 @@ class ToolRouter:
             raise ToolError("web_search requer 'query'.")
         max_results = min(int(args.get("max_results", 5)), 10)
 
+        from .web.dispatcher import WebError
         try:
-            from ddgs import DDGS
-            results = []
-            with DDGS() as ddgs:
-                for i, r in enumerate(ddgs.text(query, max_results=max_results)):
-                    title = r.get("title", "").strip()
-                    body = r.get("body", "").strip()
-                    href = r.get("href", "").strip()
-                    results.append(f"{i+1}. {title}\n   {href}\n   {body[:300]}")
-            if not results:
-                return "Nenhum resultado encontrado."
-            return "\n\n".join(results)
-        except ImportError:
-            raise ToolError("ddgs nao instalado. Rode: pip install ddgs")
+            return self._web.search_as_text(query, max_results=max_results)
+        except WebError as exc:
+            raise ToolError(str(exc)) from exc
         except Exception as exc:
-            raise ToolError(f"Erro na pesquisa: {exc}")
+            raise ToolError(f"Erro na busca web: {exc}") from exc
 
     def _web_fetch(self, args: dict) -> str:
         url = args.get("url")
         if not url:
             raise ToolError("web_fetch requer 'url'.")
-        if not url.startswith(("http://", "https://")):
-            raise ToolError("URL deve comecar com http:// ou https://")
-        max_chars = int(args.get("max_chars", 5000))
+        max_chars = int(args.get("max_chars", self._web.max_chars))
 
-        import httpx
+        from .web.dispatcher import WebError
         try:
-            resp = httpx.get(url, timeout=15.0, follow_redirects=True)
-            resp.raise_for_status()
-        except httpx.TimeoutException:
-            raise ToolError(f"Timeout ao acessar {url}")
-        except httpx.HTTPStatusError as exc:
-            raise ToolError(f"Erro HTTP {exc.response.status_code} ao acessar {url}")
+            return self._web.extract(url, max_chars=max_chars)
+        except WebError as exc:
+            raise ToolError(str(exc)) from exc
         except Exception as exc:
-            raise ToolError(f"Erro ao acessar {url}: {exc}")
-
-        content_type = resp.headers.get("content-type", "")
-        if "text" not in content_type and "html" not in content_type:
-            return f"[Conteudo binario ignorado — content-type: {content_type}]"
-
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-        except Exception:
-            text = resp.text
-
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        text = "\n".join(lines)
-
-        if not text:
-            return "Conteudo vazio ou nao extraido."
-
-        if len(text) > max_chars:
-            text = text[:max_chars] + f"\n\n[... truncado, limite de {max_chars} caracteres]"
-
-        return text
+            raise ToolError(f"Erro ao buscar URL: {exc}") from exc
 
     # --- tools de arquivo avançadas -------------------------------------------
 

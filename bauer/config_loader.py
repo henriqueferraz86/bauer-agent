@@ -251,6 +251,27 @@ class ToolsSection(BaseModel):
     max_output_kb: int = Field(ge=1, le=1000, default=50)
 
 
+class WebSection(BaseModel):
+    """Configuração de backends web para web_search e web_fetch.
+
+    Backends de busca (search_backend):
+      ddgs     — DuckDuckGo via biblioteca ddgs (padrão, sem config)
+      searxng  — SearXNG self-hosted (requer searxng_url)
+      brave    — Brave Search API (requer brave_api_key ou BRAVE_API_KEY no .env)
+
+    Backends de extração (extract_backend):
+      httpx    — httpx + BeautifulSoup (padrão, leve)
+      crawl4ai — crawl4ai (LLM-friendly Markdown, requer: pip install crawl4ai)
+    """
+    search_backend: str = "ddgs"
+    extract_backend: str = "httpx"
+    searxng_url: str = "http://localhost:8080"
+    brave_api_key: str = ""          # ou BRAVE_API_KEY no .env
+    max_results: int = Field(ge=1, le=20, default=5)
+    max_chars: int = Field(ge=100, le=50_000, default=5000)
+    timeout_seconds: int = Field(ge=1, le=60, default=15)
+
+
 class BauerConfig(BaseModel):
     agent: AgentSection = AgentSection()
     model: ModelSection
@@ -271,6 +292,7 @@ class BauerConfig(BaseModel):
     runtime: RuntimeSection = RuntimeSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()
+    web: WebSection = WebSection()
     serve: ServeSection = ServeSection()
     router: RouterSection = RouterSection()
 
