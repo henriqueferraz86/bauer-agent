@@ -8,11 +8,15 @@ Suporta:
 - Context budget por provider (mapeia janelas reais de contexto)
 - Estimativa de tokens via heurística (chars/4)
 - Compressão semântica via LLM quando disponível, rule-based como fallback
-- Sliding window: mantém N mensagens recentes + resumo do restante
+- Tail protection dinâmica por tokens (não contagem fixa de mensagens)
+- Anti-thrashing: evita compressões inúteis que economizam < 10%
+- Tool result pruning: simplifica resultados duplicados/longos antes de comprimir
 """
 
 from __future__ import annotations
 
+import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -57,7 +61,28 @@ PROVIDER_CONTEXT_WINDOWS: dict[str, int] = {
     "custom": 32768,
 }
 
-KEEP_TAIL_MESSAGES = 6  # mensagens recentes sempre preservadas (3 turnos completos)
+# ─── Tail protection dinâmica por tokens ──────────────────────────────────────
+# Mantém as mensagens mais recentes que cabem neste budget.
+# ~8 K tokens = ~32 KB de texto ≈ 3–5 turnos completos com respostas médias.
+# Escala melhor que contagem fixa: não desperdiça com modelos 128 K nem corta
+# demais em modelos 4 K.
+TAIL_BUDGET_TOKENS = 8192
+
+# Legado — mantido para compatibilidade com testes antigos
+KEEP_TAIL_MESSAGES = 6
+
+# ─── Anti-thrashing ────────────────────────────────────────────────────────────
+# Se uma compressão economizou menos de THRASH_MIN_SAVINGS do contexto,
+# aumentamos o threshold temporariamente para evitar recompressões inúteis.
+THRASH_MIN_SAVINGS = 0.10      # 10 % mínimo de economia para considerar "útil"
+THRASH_BOOST_STEP  = 0.10      # quanto sobe o threshold a cada compressão ruim
+THRASH_BOOST_MAX   = 0.20      # teto do boost (threshold máximo = 0.70 + 0.20 = 0.90)
+THRASH_DECAY_STEP  = 0.05      # quanto cai o boost quando compressão é boa
+
+# ─── Tool result pruning ───────────────────────────────────────────────────────
+# Limite de chars para resultado de tool no bloco de compressão.
+# Resultados mais longos viram 1 linha de resumo.
+PRUNE_RESULT_MAX_CHARS = 400
 
 
 @dataclass
@@ -69,6 +94,11 @@ class ContextManager:
     # Cliente LLM para compressão semântica (opcional; fallback rule-based se None)
     _llm_client: Any = field(default=None, repr=False)
     _llm_model: str = field(default="", repr=False)
+
+    # ── Anti-thrashing state ────────────────────────────────────────────────
+    _threshold_boost: float = field(default=0.0, repr=False)
+    _compress_count: int = field(default=0, repr=False)
+    _last_savings_pct: float = field(default=1.0, repr=False)
 
     def __post_init__(self) -> None:
         # Determina budget real:
@@ -103,6 +133,11 @@ class ContextManager:
         """Janela de contexto real do provider."""
         return PROVIDER_CONTEXT_WINDOWS.get(self.provider, self.applied_context or 32768)
 
+    @property
+    def effective_threshold(self) -> float:
+        """Threshold atual, incluindo boost anti-thrashing."""
+        return min(SUMMARY_THRESHOLD_RATIO + self._threshold_boost, 0.95)
+
     def add_user(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
         self._auto_summarize()
@@ -122,21 +157,41 @@ class ContextManager:
     def clear(self) -> None:
         self.messages.clear()
 
+    def compression_stats(self) -> dict:
+        """Retorna estatísticas de compressão para diagnóstico/logs."""
+        return {
+            "compress_count": self._compress_count,
+            "threshold_boost": round(self._threshold_boost, 3),
+            "effective_threshold": round(self.effective_threshold, 3),
+            "last_savings_pct": round(self._last_savings_pct, 3),
+            "used_tokens": self.used_tokens,
+            "budget": self._budget,
+            "usage_pct": round(self.usage_pct, 3),
+        }
+
     def _auto_summarize(self) -> None:
-        """Comprime mensagens antigas quando histórico ultrapassa 70% do budget.
+        """Comprime mensagens antigas quando histórico ultrapassa o threshold efetivo.
 
-        Se cliente LLM disponível: compressão semântica (pede ao modelo para resumir).
-        Caso contrário: compressão rule-based (extração de tópicos/tools).
-        Mantém KEEP_TAIL_MESSAGES mensagens recentes intactas (sliding window).
+        Melhorias vs. implementação original:
+        1. Tail dinâmico por tokens (TAIL_BUDGET_TOKENS) — não contagem fixa.
+        2. Tool result pruning antes do LLM — remove duplicados e trunca longos.
+        3. Anti-thrashing — se compressão economizou < 10%, sobe o threshold
+           temporariamente para evitar recompressões imediatas inúteis.
         """
-        if self.usage_pct < SUMMARY_THRESHOLD_RATIO:
-            return
-        if len(self.messages) <= KEEP_TAIL_MESSAGES:
+        if self.usage_pct < self.effective_threshold:
             return
 
-        to_compress = self.messages[:-KEEP_TAIL_MESSAGES]
-        tail = self.messages[-KEEP_TAIL_MESSAGES:]
+        # ── 1. Split tail dinâmico por tokens ──────────────────────────────
+        to_compress, tail = _split_tail_by_tokens(self.messages, TAIL_BUDGET_TOKENS)
+        if not to_compress:
+            return  # nada a comprimir além do tail
 
+        tokens_before = self.used_tokens
+
+        # ── 2. Tool result pruning (sem LLM call) ──────────────────────────
+        to_compress = _prune_tool_results(to_compress)
+
+        # ── 3. Compressão semântica ou rule-based ──────────────────────────
         if self._llm_client and self._llm_model:
             summary = _summarize_llm(self._llm_client, self._llm_model, to_compress)
         else:
@@ -145,6 +200,25 @@ class ContextManager:
         self.messages = [
             {"role": "system", "content": f"[Resumo de contexto anterior]\n{summary}"}
         ] + tail
+
+        # ── 4. Anti-thrashing ──────────────────────────────────────────────
+        tokens_after = self.used_tokens
+        self._compress_count += 1
+
+        if tokens_before > 0:
+            savings = (tokens_before - tokens_after) / tokens_before
+            self._last_savings_pct = savings
+
+            if savings < THRASH_MIN_SAVINGS:
+                # Compressão inútil → sobe threshold para evitar repetição imediata
+                self._threshold_boost = min(
+                    self._threshold_boost + THRASH_BOOST_STEP, THRASH_BOOST_MAX
+                )
+            else:
+                # Boa compressão → relaxa boost gradualmente
+                self._threshold_boost = max(
+                    self._threshold_boost - THRASH_DECAY_STEP, 0.0
+                )
 
     def _trim(self) -> None:
         """Remove mensagens antigas do início até caber no budget.
@@ -159,8 +233,111 @@ class ContextManager:
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _estimate_tokens(messages: list[dict]) -> int:
-    total_chars = sum(len(m.get("content", "")) for m in messages)
+    total_chars = sum(len(m.get("content", "") or "") for m in messages)
     return total_chars // CHARS_PER_TOKEN
+
+
+def _split_tail_by_tokens(
+    messages: list[dict], tail_budget: int
+) -> tuple[list[dict], list[dict]]:
+    """Divide messages em (to_compress, tail) preservando mensagens recentes.
+
+    O tail contém as mensagens mais recentes que cabem em tail_budget tokens.
+    Garante que pelo menos 1 mensagem fica no tail (nunca retorna tail vazio
+    se messages não for vazio).
+
+    Returns:
+        (to_compress, tail) — to_compress pode ser [] se tudo cabe no tail.
+    """
+    if not messages:
+        return [], []
+
+    tail: list[dict] = []
+    used = 0
+
+    for msg in reversed(messages):
+        cost = _estimate_tokens([msg])
+        # Sempre aceita pelo menos 1 mensagem no tail
+        if tail and used + cost > tail_budget:
+            break
+        tail.insert(0, msg)
+        used += cost
+
+    to_compress = messages[: len(messages) - len(tail)]
+    return to_compress, tail
+
+
+_TOOL_RESULT_RE = re.compile(r"^\[Resultado de (\w+)\]", re.MULTILINE)
+
+
+def _prune_tool_results(messages: list[dict]) -> list[dict]:
+    """Simplifica resultados de tool antes da compressão LLM (sem chamada extra).
+
+    Aplica duas otimizações:
+    1. Deduplicação: mesmo action + primeiros 80 chars de resultado idênticos
+       → comprime repetições em 1 linha.
+    2. Truncagem: resultados > PRUNE_RESULT_MAX_CHARS → substitui por 1 linha
+       com action + contagem de linhas.
+
+    Só altera mensagens de role 'user' que contêm o padrão
+    '[Resultado de {action}]' — formato injetado pelo agent.py.
+    """
+    pruned: list[dict] = []
+    seen: dict[str, int] = {}  # fingerprint → primeira posição vista
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "") or ""
+
+        if role != "user":
+            pruned.append(msg)
+            continue
+
+        # Detecta blocos de resultados de tool
+        tool_matches = list(_TOOL_RESULT_RE.finditer(content))
+        if not tool_matches:
+            pruned.append(msg)
+            continue
+
+        # Mensagem pode ter múltiplos blocos (combined_parts do agent.py)
+        new_parts: list[str] = []
+        blocks = re.split(r"\n\n(?=\[Resultado de )", content)
+
+        for block in blocks:
+            m = _TOOL_RESULT_RE.match(block)
+            if not m:
+                new_parts.append(block)
+                continue
+
+            action = m.group(1)
+            result_body = block[m.end():].strip()
+            fingerprint = f"{action}:{result_body[:80]}"
+            lines = result_body.splitlines()
+            n_lines = len(lines)
+            n_chars = len(result_body)
+
+            if fingerprint in seen:
+                # Duplicado — resume em 1 linha
+                seen[fingerprint] += 1
+                new_parts.append(
+                    f"[Resultado de {action}] (duplicado #{seen[fingerprint]}, omitido)"
+                )
+            elif n_chars > PRUNE_RESULT_MAX_CHARS:
+                # Muito longo — 1 linha de sumário
+                first_line = lines[0][:120] if lines else result_body[:120]
+                new_parts.append(
+                    f"[Resultado de {action}] {first_line} "
+                    f"[...{n_lines} linhas / {n_chars} chars — truncado na compressão]"
+                )
+                seen[fingerprint] = 1
+            else:
+                new_parts.append(block)
+                seen[fingerprint] = 1
+
+        new_content = "\n\n".join(new_parts)
+        pruned.append({**msg, "content": new_content})
+
+    return pruned
 
 
 def _summarize_llm(client: Any, model: str, messages: list[dict]) -> str:
@@ -194,24 +371,30 @@ def _summarize_messages(messages: list[dict]) -> str:
     assistant_msgs = [m["content"] for m in messages if m.get("role") == "assistant"]
 
     # Conta tools usadas
-    import re
     tools_used: list[str] = []
     for msg in assistant_msgs:
         match = re.search(r'"action"\s*:\s*"(\w+)"', msg)
         if match:
             tools_used.append(match.group(1))
 
+    # Tools nos resultados injetados
+    for msg in user_msgs:
+        for m in _TOOL_RESULT_RE.finditer(msg):
+            tools_used.append(m.group(1))
+
     # Palavras-chave relevantes do usuário (palavras longas, ignorando stopwords)
     stopwords = {"para", "como", "que", "uma", "não", "mais", "com", "por", "está", "isso", "você"}
     word_counter: dict[str, int] = {}
     for msg in user_msgs:
-        for word in re.findall(r"\b[a-zA-ZÀ-ú]{5,}\b", msg.lower()):
+        # Ignora linhas de resultado de tool
+        clean = re.sub(r"\[Resultado de \w+\].*", "", msg, flags=re.DOTALL)
+        for word in re.findall(r"\b[a-zA-ZÀ-ú]{5,}\b", clean.lower()):
             if word not in stopwords:
                 word_counter[word] = word_counter.get(word, 0) + 1
     top_words = sorted(word_counter, key=lambda w: -word_counter[w])[:8]
 
     lines = [
-        f"Turnos comprimidos: {len(user_msgs)} perguntas do usuário.",
+        f"Turnos comprimidos: {len(user_msgs)} mensagens do usuário.",
     ]
     if top_words:
         lines.append(f"Tópicos principais: {', '.join(top_words)}.")
