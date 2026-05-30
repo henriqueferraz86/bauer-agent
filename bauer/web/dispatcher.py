@@ -2,26 +2,43 @@
 
 Arquitetura inspirada no Hermes Agent (NousResearch/hermes-agent):
   - search_backend e extract_backend são independentes
-  - Cada backend é detectado via import dinâmico com fallback claro
+  - "auto" (padrão) detecta o melhor backend disponível sem config manual
+  - Cada backend é ativado por presença de API key ou pacote instalado
   - Sem dependências obrigatórias além de httpx (já na stack)
 
-Backends de busca:
-  ddgs     — DuckDuckGo (padrão, MIT, sem API key)
-  searxng  — SearXNG self-hosted (AGPL-3, sem limite de taxa)
-  brave    — Brave Search API (requer BRAVE_API_KEY)
+Backends de busca (search_backend):
+  auto     — auto-detecção por ordem: brave → searxng → ddgs  (padrão)
+  ddgs     — DuckDuckGo (MIT, sem API key, requer: pip install ddgs)
+  searxng  — SearXNG self-hosted (AGPL-3, requer: docker run searxng/searxng)
+  brave    — Brave Search API (requer BRAVE_API_KEY no .env)
 
-Backends de extração:
-  httpx    — httpx + BeautifulSoup (padrão, leve, zero config)
-  crawl4ai — crawl4ai (MIT, Markdown limpo para LLMs, requer instalação)
+Backends de extração (extract_backend):
+  auto     — auto-detecção: crawl4ai → httpx  (padrão)
+  httpx    — httpx + BeautifulSoup (leve, zero config, sempre disponível)
+  crawl4ai — Markdown limpo para LLMs (MIT, requer: pip install crawl4ai)
+
+Auto-detecção de busca (ordem de prioridade):
+  1. BRAVE_API_KEY presente no .env/env → brave
+  2. SEARXNG_URL no env OU web.searxng_url não é o default → searxng
+  3. ddgs instalado → ddgs
+  4. Nenhum disponível → WebError com instruções claras
+
+Auto-detecção de extração:
+  1. crawl4ai instalado → crawl4ai
+  2. → httpx (sempre disponível)
 """
 
 from __future__ import annotations
 
+import importlib
 import os
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bauer.config_loader import WebSection
+
+_SEARXNG_DEFAULT_URL = "http://localhost:8080"
 
 
 class WebError(Exception):
@@ -46,6 +63,27 @@ class SearchResult:
 
 
 # ---------------------------------------------------------------------------
+# Helpers de detecção
+# ---------------------------------------------------------------------------
+
+def _package_available(name: str) -> bool:
+    """Retorna True se o pacote Python está instalado."""
+    import sys
+    # Módulo já importado — conta como disponível (cobre fake modules em testes)
+    if name in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ValueError, ModuleNotFoundError):
+        return False
+
+
+def _env(key: str, cfg_val: str = "") -> str:
+    """Retorna valor do .env/env ou fallback da config."""
+    return os.environ.get(key, "") or cfg_val
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher principal
 # ---------------------------------------------------------------------------
 
@@ -56,18 +94,24 @@ class WebDispatcher:
         dispatcher = WebDispatcher(cfg.web)
         results = dispatcher.search("query", max_results=5)
         content = dispatcher.extract("https://...", max_chars=5000)
+
+    Com "auto" (padrão), detecta o melhor backend disponível:
+      - Busca:   brave (se BRAVE_API_KEY) → searxng (se URL) → ddgs
+      - Extração: crawl4ai (se instalado) → httpx
     """
 
     def __init__(self, web_config: "WebSection | None" = None):
         self._cfg = web_config
 
-    @property
-    def search_backend(self) -> str:
-        return (self._cfg.search_backend if self._cfg else None) or "ddgs"
+    # --- Propriedades de config -----------------------------------------------
 
     @property
-    def extract_backend(self) -> str:
-        return (self._cfg.extract_backend if self._cfg else None) or "httpx"
+    def _raw_search_backend(self) -> str:
+        return (self._cfg.search_backend if self._cfg else None) or "auto"
+
+    @property
+    def _raw_extract_backend(self) -> str:
+        return (self._cfg.extract_backend if self._cfg else None) or "auto"
 
     @property
     def max_results(self) -> int:
@@ -81,16 +125,127 @@ class WebDispatcher:
     def timeout(self) -> int:
         return self._cfg.timeout_seconds if self._cfg else 15
 
+    @property
+    def _searxng_url(self) -> str:
+        """URL do SearXNG — prioriza SEARXNG_URL do env."""
+        return (
+            _env("SEARXNG_URL")
+            or (self._cfg.searxng_url if self._cfg else "")
+            or _SEARXNG_DEFAULT_URL
+        )
+
+    @property
+    def _brave_key(self) -> str:
+        """API key Brave — prioriza BRAVE_API_KEY do env."""
+        return _env("BRAVE_API_KEY", self._cfg.brave_api_key if self._cfg else "")
+
+    # --- Auto-detecção --------------------------------------------------------
+
+    @property
+    def search_backend(self) -> str:
+        """Backend de busca resolvido (após auto-detecção se necessário)."""
+        raw = self._raw_search_backend.lower()
+        if raw != "auto":
+            return raw
+        return self._detect_search_backend()
+
+    @property
+    def extract_backend(self) -> str:
+        """Backend de extração resolvido (após auto-detecção se necessário)."""
+        raw = self._raw_extract_backend.lower()
+        if raw != "auto":
+            return raw
+        return self._detect_extract_backend()
+
+    def _detect_search_backend(self) -> str:
+        """Detecta o melhor backend de busca disponível.
+
+        Ordem (igual ao Hermes Agent):
+          1. brave    — se BRAVE_API_KEY presente no env
+          2. searxng  — se SEARXNG_URL no env ou searxng_url não é o default
+          3. ddgs     — se pacote instalado
+          4. WebError — nenhum disponível
+        """
+        if self._brave_key:
+            return "brave"
+
+        searxng_configured = (
+            _env("SEARXNG_URL")
+            or (self._cfg and self._cfg.searxng_url and self._cfg.searxng_url != _SEARXNG_DEFAULT_URL)
+        )
+        if searxng_configured:
+            return "searxng"
+
+        if _package_available("ddgs"):
+            return "ddgs"
+
+        raise WebError(
+            "Nenhum backend de busca disponível.\n"
+            "Opções (escolha uma):\n"
+            "  1. pip install ddgs                          # DuckDuckGo, grátis\n"
+            "  2. docker run -p 8080:8080 searxng/searxng  # self-hosted\n"
+            "     + SEARXNG_URL=http://localhost:8080 no .env\n"
+            "  3. BRAVE_API_KEY=sua-chave no .env          # Brave Search API\n"
+            "Ou configure explicitamente: web.search_backend: ddgs"
+        )
+
+    def _detect_extract_backend(self) -> str:
+        """Detecta o melhor backend de extração disponível.
+
+        Ordem:
+          1. crawl4ai — se instalado (Markdown limpo, melhor para LLMs)
+          2. httpx    — sempre disponível (fallback leve)
+        """
+        if _package_available("crawl4ai"):
+            return "crawl4ai"
+        return "httpx"
+
+    def detected_backends(self) -> dict[str, str]:
+        """Retorna backends detectados para exibição em bauer doctor / status."""
+        try:
+            search = self.search_backend
+            search_reason = self._detection_reason_search()
+        except WebError as e:
+            search = "none"
+            search_reason = str(e).splitlines()[0]
+
+        extract = self.extract_backend
+        extract_reason = self._detection_reason_extract()
+
+        return {
+            "search": search,
+            "search_reason": search_reason,
+            "extract": extract,
+            "extract_reason": extract_reason,
+        }
+
+    def _detection_reason_search(self) -> str:
+        if self._raw_search_backend != "auto":
+            return f"configurado manualmente: {self._raw_search_backend}"
+        if self._brave_key:
+            return "BRAVE_API_KEY detectado"
+        searxng_configured = _env("SEARXNG_URL") or (
+            self._cfg and self._cfg.searxng_url != _SEARXNG_DEFAULT_URL
+        )
+        if searxng_configured:
+            return f"SEARXNG_URL detectado: {self._searxng_url}"
+        if _package_available("ddgs"):
+            return "pacote ddgs instalado"
+        return "nenhum backend disponível"
+
+    def _detection_reason_extract(self) -> str:
+        if self._raw_extract_backend != "auto":
+            return f"configurado manualmente: {self._raw_extract_backend}"
+        if _package_available("crawl4ai"):
+            return "pacote crawl4ai instalado"
+        return "httpx (padrão leve)"
+
     # --- Search ---------------------------------------------------------------
 
     def search(self, query: str, max_results: int | None = None) -> list[SearchResult]:
-        """Executa busca usando o backend configurado.
-
-        Retorna lista de SearchResult com title, url, snippet.
-        Levanta WebError em caso de falha ou backend não disponível.
-        """
+        """Executa busca usando o backend detectado/configurado."""
         n = max_results or self.max_results
-        backend = self.search_backend.lower()
+        backend = self.search_backend  # pode levantar WebError se "auto" e sem backend
 
         if backend == "ddgs":
             return self._search_ddgs(query, n)
@@ -101,7 +256,7 @@ class WebDispatcher:
         else:
             raise WebError(
                 f"Backend de busca '{backend}' desconhecido. "
-                "Opções: ddgs, searxng, brave"
+                "Opções: auto, ddgs, searxng, brave"
             )
 
     def search_as_text(self, query: str, max_results: int | None = None) -> str:
@@ -119,14 +274,10 @@ class WebDispatcher:
     # --- Extract --------------------------------------------------------------
 
     def extract(self, url: str, max_chars: int | None = None) -> str:
-        """Extrai conteúdo de URL usando o backend configurado.
-
-        Retorna texto limpo (Markdown ou plain text).
-        Levanta WebError em caso de falha.
-        """
+        """Extrai conteúdo de URL usando o backend detectado/configurado."""
         n = max_chars or self.max_chars
         self._validate_url(url)
-        backend = self.extract_backend.lower()
+        backend = self.extract_backend
 
         if backend == "httpx":
             return self._extract_httpx(url, n)
@@ -135,7 +286,7 @@ class WebDispatcher:
         else:
             raise WebError(
                 f"Backend de extração '{backend}' desconhecido. "
-                "Opções: httpx, crawl4ai"
+                "Opções: auto, httpx, crawl4ai"
             )
 
     # --- Backends de busca ----------------------------------------------------
@@ -148,9 +299,8 @@ class WebDispatcher:
             raise WebError(
                 "Backend 'ddgs' não instalado.\n"
                 "Instale com: pip install ddgs\n"
-                "Ou configure outro backend em config.yaml: web.search_backend: searxng"
+                "Ou configure outro backend: web.search_backend: searxng"
             )
-
         try:
             results = []
             with DDGS() as ddgs:
@@ -168,18 +318,12 @@ class WebDispatcher:
     def _search_searxng(self, query: str, max_results: int) -> list[SearchResult]:
         """SearXNG self-hosted via REST API (AGPL-3, sem limite de taxa)."""
         import httpx
-
-        base_url = (self._cfg.searxng_url if self._cfg else "http://localhost:8080").rstrip("/")
-
+        base_url = self._searxng_url.rstrip("/")
         try:
             resp = httpx.get(
                 f"{base_url}/search",
-                params={
-                    "q": query,
-                    "format": "json",
-                    "engines": "google,bing,duckduckgo",
-                    "safesearch": "1",
-                },
+                params={"q": query, "format": "json",
+                        "engines": "google,bing,duckduckgo", "safesearch": "1"},
                 timeout=self.timeout,
                 headers={"Accept": "application/json"},
             )
@@ -188,7 +332,7 @@ class WebDispatcher:
         except httpx.ConnectError:
             raise WebError(
                 f"Não foi possível conectar ao SearXNG em {base_url}.\n"
-                "Certifique-se de que o SearXNG está rodando:\n"
+                "Certifique-se de que está rodando:\n"
                 "  docker run -p 8080:8080 searxng/searxng\n"
                 "Ou configure outro backend: web.search_backend: ddgs"
             )
@@ -206,13 +350,9 @@ class WebDispatcher:
         return results
 
     def _search_brave(self, query: str, max_results: int) -> list[SearchResult]:
-        """Brave Search API (requer BRAVE_API_KEY ou web.brave_api_key)."""
+        """Brave Search API (requer BRAVE_API_KEY)."""
         import httpx
-
-        api_key = (
-            (self._cfg.brave_api_key if self._cfg else "")
-            or os.environ.get("BRAVE_API_KEY", "")
-        )
+        api_key = self._brave_key
         if not api_key:
             raise WebError(
                 "Backend 'brave' requer BRAVE_API_KEY.\n"
@@ -220,15 +360,11 @@ class WebDispatcher:
                 "Obtenha em: https://api.search.brave.com/\n"
                 "Ou use outro backend: web.search_backend: ddgs"
             )
-
         try:
             resp = httpx.get(
                 "https://api.search.brave.com/res/v1/web/search",
                 params={"q": query, "count": max_results, "safesearch": "moderate"},
-                headers={
-                    "Accept": "application/json",
-                    "X-Subscription-Token": api_key,
-                },
+                headers={"Accept": "application/json", "X-Subscription-Token": api_key},
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -253,12 +389,9 @@ class WebDispatcher:
     def _extract_httpx(self, url: str, max_chars: int) -> str:
         """httpx + BeautifulSoup (padrão, leve, zero config)."""
         import httpx
-
         try:
             resp = httpx.get(
-                url,
-                timeout=self.timeout,
-                follow_redirects=True,
+                url, timeout=self.timeout, follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; BauerAgent/1.0)"},
             )
             resp.raise_for_status()
@@ -287,17 +420,14 @@ class WebDispatcher:
 
         if not text:
             return "Conteúdo vazio ou não extraído."
-
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncado — limite de {max_chars} chars]"
-
         return text
 
     def _extract_crawl4ai(self, url: str, max_chars: int) -> str:
         """crawl4ai — extração LLM-friendly em Markdown (MIT).
 
-        Requer instalação: pip install crawl4ai
-        Pós-instalação:    crawl4ai-setup  (baixa Playwright + Chromium)
+        Requer: pip install crawl4ai && crawl4ai-setup
         """
         try:
             from crawl4ai import AsyncWebCrawler
@@ -310,12 +440,10 @@ class WebDispatcher:
                 "  crawl4ai-setup\n"
                 "Ou use o backend padrão: web.extract_backend: httpx"
             )
-
         async def _crawl() -> str:
             async with AsyncWebCrawler() as crawler:
                 result = await crawler.arun(url=url)
                 return result.markdown or result.extracted_content or ""
-
         try:
             text = asyncio.run(_crawl())
         except Exception as exc:
@@ -323,16 +451,14 @@ class WebDispatcher:
 
         if not text:
             return "Conteúdo vazio ou não extraído pelo crawl4ai."
-
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncado — limite de {max_chars} chars]"
-
         return text
 
     # --- Validação de URL -----------------------------------------------------
 
     def _validate_url(self, url: str) -> None:
-        """Bloqueia URLs para hosts internos/privados (segurança)."""
+        """Bloqueia URLs para hosts internos/privados."""
         import ipaddress
         import urllib.parse as _urlparse
 
@@ -350,4 +476,4 @@ class WebDispatcher:
             if addr.is_private or addr.is_loopback or addr.is_link_local:
                 raise WebError(f"Acesso bloqueado a IP privado: '{hostname}'")
         except ValueError:
-            pass  # não é IP literal — ok
+            pass

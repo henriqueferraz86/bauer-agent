@@ -32,8 +32,9 @@ def _cfg(search_backend="ddgs", extract_backend="httpx", **kwargs):
 
 def test_defaults_sem_config():
     d = WebDispatcher(None)
-    assert d.search_backend == "ddgs"
-    assert d.extract_backend == "httpx"
+    # Sem config, os backends brutos são "auto" (resolvidos em runtime)
+    assert d._raw_search_backend == "auto"
+    assert d._raw_extract_backend == "auto"
     assert d.max_results == 5
     assert d.max_chars == 5000
 
@@ -259,3 +260,134 @@ def test_search_as_text_sem_resultados():
     with patch.object(d, "search", return_value=[]):
         text = d.search_as_text("query inexistente")
     assert "Nenhum resultado" in text
+
+
+# ---------------------------------------------------------------------------
+# Auto-detecção — search_backend
+# ---------------------------------------------------------------------------
+
+def test_auto_detect_brave_se_api_key():
+    d = WebDispatcher(_cfg(search_backend="auto"))
+    with patch.dict("os.environ", {"BRAVE_API_KEY": "test-key"}, clear=False):
+        assert d.search_backend == "brave"
+
+
+def test_auto_detect_searxng_se_env_url():
+    d = WebDispatcher(_cfg(search_backend="auto"))
+    env = {"SEARXNG_URL": "http://my-searxng:8080"}
+    # BRAVE_API_KEY ausente garante que não detecta brave primeiro
+    with patch.dict("os.environ", env, clear=False):
+        # Limpa BRAVE_API_KEY se existir
+        import os
+        old = os.environ.pop("BRAVE_API_KEY", None)
+        try:
+            assert d.search_backend == "searxng"
+        finally:
+            if old is not None:
+                os.environ["BRAVE_API_KEY"] = old
+
+
+def test_auto_detect_searxng_se_cfg_url_nao_default():
+    d = WebDispatcher(_cfg(search_backend="auto", searxng_url="http://meu-servidor:9090"))
+    import os
+    with patch.dict("os.environ", {}, clear=False):
+        old_brave = os.environ.pop("BRAVE_API_KEY", None)
+        old_searxng = os.environ.pop("SEARXNG_URL", None)
+        try:
+            assert d.search_backend == "searxng"
+        finally:
+            if old_brave is not None:
+                os.environ["BRAVE_API_KEY"] = old_brave
+            if old_searxng is not None:
+                os.environ["SEARXNG_URL"] = old_searxng
+
+
+def test_auto_detect_ddgs_se_pacote_disponivel():
+    import sys, types
+    d = WebDispatcher(_cfg(search_backend="auto"))
+    import os
+    old_brave = os.environ.pop("BRAVE_API_KEY", None)
+    old_searxng = os.environ.pop("SEARXNG_URL", None)
+    fake_ddgs = types.ModuleType("ddgs")
+    try:
+        with patch.dict(sys.modules, {"ddgs": fake_ddgs}):
+            assert d.search_backend == "ddgs"
+    finally:
+        if old_brave is not None:
+            os.environ["BRAVE_API_KEY"] = old_brave
+        if old_searxng is not None:
+            os.environ["SEARXNG_URL"] = old_searxng
+
+
+def test_auto_detect_sem_nenhum_backend_levanta():
+    import sys, os
+    d = WebDispatcher(_cfg(search_backend="auto"))
+    old_brave = os.environ.pop("BRAVE_API_KEY", None)
+    old_searxng = os.environ.pop("SEARXNG_URL", None)
+    # Remove ddgs do sys.modules para simular não instalado
+    ddgs_backup = sys.modules.pop("ddgs", None)
+    try:
+        with pytest.raises(WebError, match="Nenhum backend"):
+            _ = d.search_backend
+    finally:
+        if old_brave is not None:
+            os.environ["BRAVE_API_KEY"] = old_brave
+        if old_searxng is not None:
+            os.environ["SEARXNG_URL"] = old_searxng
+        if ddgs_backup is not None:
+            sys.modules["ddgs"] = ddgs_backup
+
+
+# ---------------------------------------------------------------------------
+# Auto-detecção — extract_backend
+# ---------------------------------------------------------------------------
+
+def test_auto_detect_extract_crawl4ai_se_instalado():
+    import sys, types
+    d = WebDispatcher(_cfg(extract_backend="auto"))
+    fake_crawl4ai = types.ModuleType("crawl4ai")
+    with patch.dict(sys.modules, {"crawl4ai": fake_crawl4ai}):
+        assert d.extract_backend == "crawl4ai"
+
+
+def test_auto_detect_extract_httpx_fallback():
+    import sys
+    d = WebDispatcher(_cfg(extract_backend="auto"))
+    # Garante que crawl4ai não está disponível
+    crawl4ai_backup = sys.modules.pop("crawl4ai", None)
+    try:
+        assert d.extract_backend == "httpx"
+    finally:
+        if crawl4ai_backup is not None:
+            sys.modules["crawl4ai"] = crawl4ai_backup
+
+
+# ---------------------------------------------------------------------------
+# detected_backends — diagnóstico
+# ---------------------------------------------------------------------------
+
+def test_detected_backends_com_backend_explicito():
+    d = WebDispatcher(_cfg(search_backend="ddgs", extract_backend="httpx"))
+    info = d.detected_backends()
+    assert info["search"] == "ddgs"
+    assert info["extract"] == "httpx"
+    assert "manual" in info["search_reason"]
+    assert "manual" in info["extract_reason"]
+
+
+def test_detected_backends_sem_nenhum_search_retorna_none():
+    import sys, os
+    d = WebDispatcher(_cfg(search_backend="auto", extract_backend="httpx"))
+    old_brave = os.environ.pop("BRAVE_API_KEY", None)
+    old_searxng = os.environ.pop("SEARXNG_URL", None)
+    ddgs_backup = sys.modules.pop("ddgs", None)
+    try:
+        info = d.detected_backends()
+        assert info["search"] == "none"
+    finally:
+        if old_brave is not None:
+            os.environ["BRAVE_API_KEY"] = old_brave
+        if old_searxng is not None:
+            os.environ["SEARXNG_URL"] = old_searxng
+        if ddgs_backup is not None:
+            sys.modules["ddgs"] = ddgs_backup

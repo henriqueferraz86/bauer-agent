@@ -255,16 +255,18 @@ class WebSection(BaseModel):
     """Configuração de backends web para web_search e web_fetch.
 
     Backends de busca (search_backend):
-      ddgs     — DuckDuckGo via biblioteca ddgs (padrão, sem config)
+      auto     — auto-detecção: brave → searxng → ddgs  (padrão)
+      ddgs     — DuckDuckGo via biblioteca ddgs (sem config)
       searxng  — SearXNG self-hosted (requer searxng_url)
       brave    — Brave Search API (requer brave_api_key ou BRAVE_API_KEY no .env)
 
     Backends de extração (extract_backend):
-      httpx    — httpx + BeautifulSoup (padrão, leve)
+      auto     — auto-detecção: crawl4ai → httpx  (padrão)
+      httpx    — httpx + BeautifulSoup (leve, sempre disponível)
       crawl4ai — crawl4ai (LLM-friendly Markdown, requer: pip install crawl4ai)
     """
-    search_backend: str = "ddgs"
-    extract_backend: str = "httpx"
+    search_backend: str = "auto"
+    extract_backend: str = "auto"
     searxng_url: str = "http://localhost:8080"
     brave_api_key: str = ""          # ou BRAVE_API_KEY no .env
     max_results: int = Field(ge=1, le=20, default=5)

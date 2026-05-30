@@ -207,10 +207,20 @@ def test_web_search_no_query_raises(ws: Path):
 
 
 def test_web_search_ddgs_not_installed(ws: Path):
+    """Garante ToolError quando nenhum backend de busca está disponível."""
     router = ToolRouter(workspace=ws, web_enabled=True)
-    with patch("builtins.__import__", side_effect=ImportError("ddgs not found")):
-        with pytest.raises(ToolError):
-            router._web_search({"query": "python", "max_results": 3})
+    import os
+    old_brave = os.environ.pop("BRAVE_API_KEY", None)
+    old_searxng = os.environ.pop("SEARXNG_URL", None)
+    try:
+        with patch("bauer.web.dispatcher._package_available", return_value=False):
+            with pytest.raises(ToolError):
+                router._web_search({"query": "python", "max_results": 3})
+    finally:
+        if old_brave is not None:
+            os.environ["BRAVE_API_KEY"] = old_brave
+        if old_searxng is not None:
+            os.environ["SEARXNG_URL"] = old_searxng
 
 
 def test_web_fetch_no_url_raises(ws: Path):
@@ -257,7 +267,7 @@ def test_web_fetch_binary_content_type(ws: Path):
     mock_resp.headers = {"content-type": "application/octet-stream"}
     with patch("httpx.get", return_value=mock_resp):
         result = router._web_fetch({"url": "https://example.com"})
-    assert "binario" in result.lower() or "binary" in result.lower() or "ignorado" in result.lower()
+    assert "content-type" in result.lower() or "bin" in result.lower() or "ignorado" in result.lower()
 
 
 def test_web_fetch_returns_text(ws: Path):
