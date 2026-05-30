@@ -276,7 +276,7 @@ class ToolRouter:
         web_config=None,
         llm_client=None,
         dry_run: bool = False,
-        max_tool_calls: int = 200,
+        max_tool_calls: int = 500,
         max_retries: int = 3,
     ):
         self.workspace = Path(workspace).resolve()
