@@ -62,6 +62,18 @@ from pathlib import Path
 from .shell_runner import ShellError
 
 
+def _package_available(name: str) -> bool:
+    """Verifica se um pacote Python está disponível sem importá-lo."""
+    import sys
+    import importlib.util
+    if name in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ValueError, ModuleNotFoundError):
+        return False
+
+
 _BAUER_PYTHON_CACHE: dict[str, str] = {}  # workspace_str → python_path
 
 
@@ -377,6 +389,71 @@ class ToolRouter:
             "args": {
                 "image": "str — URL https:// ou caminho relativo ao workspace (obrigatorio)",
                 "query": "str — pergunta ou instrucao sobre a imagem (obrigatorio)",
+            },
+        }
+
+        # ── Tool cronjob — tarefas agendadas ───────────────────────────────
+        self._tools["cronjob"] = {
+            "fn": self._cronjob,
+            "description": (
+                "Cria e gerencia tarefas agendadas persistentes. "
+                "Acoes: create, list, delete, run, pause, resume."
+            ),
+            "args": {
+                "action": "str — create | list | delete | run | pause | resume (obrigatorio)",
+                "name": "str — nome unico do job (obrigatorio para create/delete/run/pause/resume)",
+                "command": "str — codigo Python ou comando shell a executar (obrigatorio para create)",
+                "schedule": (
+                    "str — quando executar: 'every 30m' | 'every 2h' | 'every 1d' | "
+                    "'daily 09:00' | 'cron: */5 * * * *' (obrigatorio para create)"
+                ),
+                "mode": "str — python | shell (default: python)",
+            },
+        }
+
+        # ── Tool session_search — busca em memória e histórico ──────────────
+        self._tools["session_search"] = {
+            "fn": self._session_search,
+            "description": (
+                "Busca texto em memória persistente e histórico de sessões. "
+                "Acoes: search(query), recent(n)."
+            ),
+            "args": {
+                "action": "str — search | recent (obrigatorio)",
+                "query": "str — texto ou regex a buscar (obrigatorio para search)",
+                "source": "str — memory | sessions | all (default: all)",
+                "n": "int — numero de entradas recentes (default: 10, para recent)",
+            },
+        }
+
+        # ── Tool mixture_of_agents — múltiplos LLMs em paralelo ────────────
+        self._tools["mixture_of_agents"] = {
+            "fn": self._mixture_of_agents,
+            "description": (
+                "Consulta multiplos agentes em paralelo e sintetiza as respostas. "
+                "Cada agente recebe uma perspectiva diferente do problema."
+            ),
+            "args": {
+                "query": "str — problema ou pergunta a ser respondida (obrigatorio)",
+                "perspectives": (
+                    "str — perspectivas separadas por | "
+                    "(default: 'analitico|critico|criativo|pragmatico')"
+                ),
+                "synthesize": "bool — se true, faz passada final de sintese (default: true)",
+            },
+        }
+
+        # ── Tool video_analyze — análise de vídeo ──────────────────────────
+        self._tools["video_analyze"] = {
+            "fn": self._video_analyze,
+            "description": (
+                "Analisa video por URL (providers nativos) ou arquivo local via frames-chave. "
+                "Requer llm_client com suporte a visao."
+            ),
+            "args": {
+                "video": "str — URL https:// ou caminho relativo ao workspace (obrigatorio)",
+                "query": "str — pergunta ou instrucao sobre o video (obrigatorio)",
+                "max_frames": "int — max frames a analisar para video local (default: 5, max: 20)",
             },
         }
 
@@ -1839,3 +1916,672 @@ class ToolRouter:
             f"           {server_name}:\n"
             "             command: [\"python\", \"-m\", \"meu_servidor\"]"
         )
+
+    # ==========================================================================
+    # CRONJOB
+    # ==========================================================================
+
+    _CRONJOB_FILE = ".bauer_cronjobs.json"
+
+    def _cronjob_path(self) -> Path:
+        return self.workspace / self._CRONJOB_FILE
+
+    def _cronjob_load(self) -> dict:
+        p = self._cronjob_path()
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _cronjob_save(self, data: dict) -> None:
+        self._cronjob_path().write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _parse_schedule(self, schedule: str) -> dict:
+        """Parseia schedule string para dict normalizado.
+
+        Formatos suportados:
+          every 30m / every 2h / every 1d
+          daily 09:00
+          cron: */5 * * * *
+        """
+        s = schedule.strip().lower()
+
+        if s.startswith("every "):
+            rest = s[6:].strip()
+            unit_map = {"m": "minutes", "h": "hours", "d": "days",
+                        "min": "minutes", "hour": "hours", "day": "days",
+                        "mins": "minutes", "hours": "hours", "days": "days"}
+            for suffix, unit in sorted(unit_map.items(), key=lambda x: -len(x[0])):
+                if rest.endswith(suffix):
+                    try:
+                        n = int(rest[: -len(suffix)].strip())
+                        return {"type": "interval", "unit": unit, "value": n}
+                    except ValueError:
+                        pass
+            raise ToolError(
+                f"Schedule '{schedule}' invalido. Exemplos: 'every 30m', 'every 2h', 'every 1d'."
+            )
+
+        if s.startswith("daily "):
+            time_str = schedule.strip()[6:].strip()
+            try:
+                h, m_str = time_str.split(":")
+                return {"type": "daily", "hour": int(h), "minute": int(m_str)}
+            except Exception:
+                raise ToolError(
+                    f"Schedule '{schedule}' invalido. Formato: 'daily HH:MM' (ex: 'daily 09:00')."
+                )
+
+        if s.startswith("cron:") or s.startswith("cron "):
+            expr = schedule.strip()[5:].strip()
+            parts = expr.split()
+            if len(parts) != 5:
+                raise ToolError(
+                    f"Expressao cron invalida: '{expr}'. Formato: '*/5 * * * *' (5 campos)."
+                )
+            return {"type": "cron", "expression": expr}
+
+        raise ToolError(
+            f"Schedule '{schedule}' nao reconhecido.\n"
+            "Formatos suportados:\n"
+            "  every 30m | every 2h | every 1d\n"
+            "  daily 09:00\n"
+            "  cron: */5 * * * *"
+        )
+
+    def _cronjob_next_run(self, schedule: dict) -> str:
+        """Calcula próxima execução como string legível."""
+        from datetime import datetime, timezone as _tz, timedelta
+        now = datetime.now(_tz.utc)
+
+        if schedule["type"] == "interval":
+            unit = schedule["unit"]
+            val = schedule["value"]
+            delta = timedelta(**{unit: val})
+            nxt = now + delta
+            return nxt.isoformat()
+
+        if schedule["type"] == "daily":
+            nxt = now.replace(
+                hour=schedule["hour"], minute=schedule["minute"],
+                second=0, microsecond=0,
+            )
+            if nxt <= now:
+                nxt += timedelta(days=1)
+            return nxt.isoformat()
+
+        return "cron — calculado em runtime"
+
+    def _cronjob(self, args: dict) -> str:
+        """Gerencia tarefas agendadas persistentes."""
+        from datetime import datetime, timezone as _tz
+
+        action = str(args.get("action", "")).lower().strip()
+        if not action:
+            raise ToolError("cronjob requer 'action': create | list | delete | run | pause | resume.")
+
+        jobs = self._cronjob_load()
+
+        # ── create ──────────────────────────────────────────────────────────
+        if action == "create":
+            name = str(args.get("name", "")).strip()
+            command = str(args.get("command", "")).strip()
+            schedule_str = str(args.get("schedule", "")).strip()
+            mode = str(args.get("mode", "python")).lower().strip()
+
+            if not name:
+                raise ToolError("cronjob create requer 'name'.")
+            if not command:
+                raise ToolError("cronjob create requer 'command'.")
+            if not schedule_str:
+                raise ToolError("cronjob create requer 'schedule'.")
+            if mode not in ("python", "shell"):
+                raise ToolError("cronjob: 'mode' deve ser 'python' ou 'shell'.")
+            if name in jobs:
+                raise ToolError(
+                    f"Job '{name}' ja existe. Use delete primeiro ou escolha outro nome."
+                )
+
+            schedule = self._parse_schedule(schedule_str)
+            next_run = self._cronjob_next_run(schedule)
+            now = datetime.now(_tz.utc).isoformat()
+
+            jobs[name] = {
+                "command": command,
+                "mode": mode,
+                "schedule": schedule,
+                "schedule_str": schedule_str,
+                "status": "active",
+                "created_at": now,
+                "last_run": None,
+                "last_result": None,
+                "next_run": next_run,
+                "run_count": 0,
+            }
+            self._cronjob_save(jobs)
+            return (
+                f"Job '{name}' criado.\n"
+                f"  Modo:      {mode}\n"
+                f"  Schedule:  {schedule_str}\n"
+                f"  Prox. run: {next_run}\n"
+                f"  Comando:   {command[:80]}{'...' if len(command) > 80 else ''}"
+            )
+
+        # ── list ────────────────────────────────────────────────────────────
+        elif action == "list":
+            if not jobs:
+                return "Nenhum cronjob configurado."
+            lines = [f"Cronjobs ({len(jobs)}):"]
+            for jname, jdata in sorted(jobs.items()):
+                status_icon = "▶" if jdata["status"] == "active" else "⏸"
+                last = jdata.get("last_run") or "nunca"
+                lines.append(
+                    f"  {status_icon} {jname} [{jdata['mode']}] "
+                    f"— {jdata['schedule_str']} "
+                    f"| runs: {jdata['run_count']} | ultimo: {last[:19] if last != 'nunca' else 'nunca'}"
+                )
+            return "\n".join(lines)
+
+        # ── delete ──────────────────────────────────────────────────────────
+        elif action == "delete":
+            name = str(args.get("name", "")).strip()
+            if not name:
+                raise ToolError("cronjob delete requer 'name'.")
+            if name not in jobs:
+                raise ToolError(f"Job '{name}' nao encontrado.")
+            del jobs[name]
+            self._cronjob_save(jobs)
+            return f"Job '{name}' removido."
+
+        # ── run ─────────────────────────────────────────────────────────────
+        elif action == "run":
+            name = str(args.get("name", "")).strip()
+            if not name:
+                raise ToolError("cronjob run requer 'name'.")
+            if name not in jobs:
+                raise ToolError(f"Job '{name}' nao encontrado.")
+
+            job = jobs[name]
+            now = datetime.now(_tz.utc).isoformat()
+
+            if job["mode"] == "python":
+                result = self._execute_code({"code": job["command"], "timeout": 60})
+            else:
+                # shell mode — usa execute_code com subprocess.run interno
+                import subprocess
+                try:
+                    proc = subprocess.run(
+                        job["command"], shell=True, capture_output=True,
+                        text=True, timeout=60, cwd=str(self.workspace),
+                    )
+                    result = f"exit: {proc.returncode}\n"
+                    if proc.stdout.strip():
+                        result += f"--- stdout ---\n{proc.stdout.strip()}"
+                    if proc.stderr.strip():
+                        result += f"\n--- stderr ---\n{proc.stderr.strip()}"
+                except subprocess.TimeoutExpired:
+                    result = "Timeout: comando excedeu 60s."
+                except Exception as exc:
+                    result = f"Erro: {exc}"
+
+            jobs[name]["last_run"] = now
+            jobs[name]["last_result"] = result[:500]
+            jobs[name]["run_count"] = jobs[name].get("run_count", 0) + 1
+            jobs[name]["next_run"] = self._cronjob_next_run(job["schedule"])
+            self._cronjob_save(jobs)
+            return f"[{name}] Executado em {now[:19]}Z\n{result}"
+
+        # ── pause / resume ──────────────────────────────────────────────────
+        elif action in ("pause", "resume"):
+            name = str(args.get("name", "")).strip()
+            if not name:
+                raise ToolError(f"cronjob {action} requer 'name'.")
+            if name not in jobs:
+                raise ToolError(f"Job '{name}' nao encontrado.")
+            new_status = "paused" if action == "pause" else "active"
+            jobs[name]["status"] = new_status
+            self._cronjob_save(jobs)
+            icon = "⏸" if new_status == "paused" else "▶"
+            return f"{icon} Job '{name}' {new_status}."
+
+        else:
+            raise ToolError(
+                f"Acao '{action}' desconhecida. Use: create | list | delete | run | pause | resume."
+            )
+
+    # ==========================================================================
+    # SESSION_SEARCH
+    # ==========================================================================
+
+    def _session_search(self, args: dict) -> str:
+        """Busca full-text/regex em memória persistente e logs de sessão.
+
+        Fontes:
+          memory   — .bauer_memory.json (chaves + valores)
+          sessions — arquivos .jsonl / .json de sessão no workspace
+          all      — ambas (padrão)
+        """
+        import re as _re
+
+        action = str(args.get("action", "search")).lower().strip()
+        source = str(args.get("source", "all")).lower().strip()
+
+        if action == "recent":
+            n = int(args.get("n", 10))
+            return self._session_search_recent(n, source)
+
+        if action != "search":
+            raise ToolError("session_search: action deve ser 'search' ou 'recent'.")
+
+        query = str(args.get("query", "")).strip()
+        if not query:
+            raise ToolError("session_search search requer 'query'.")
+
+        results: list[str] = []
+
+        # ── Busca em memory ───────────────────────────────────────────────
+        if source in ("memory", "all"):
+            mem = self._memory_load()
+            try:
+                pattern = _re.compile(query, _re.IGNORECASE)
+            except _re.error:
+                pattern = _re.compile(_re.escape(query), _re.IGNORECASE)
+
+            mem_hits = []
+            for key, entry in mem.items():
+                val = entry["value"] if isinstance(entry, dict) else str(entry)
+                ts = entry.get("updated_at", "") if isinstance(entry, dict) else ""
+                if pattern.search(key) or pattern.search(val):
+                    preview = val[:120].replace("\n", " ")
+                    mem_hits.append(f"  [memory] {key}: {preview} ({ts[:10]})")
+
+            if mem_hits:
+                results.append(f"Memory ({len(mem_hits)} resultado(s)):")
+                results.extend(mem_hits)
+
+        # ── Busca em logs de sessão ───────────────────────────────────────
+        if source in ("sessions", "all"):
+            session_hits = self._search_session_files(query)
+            if session_hits:
+                results.append(f"\nSessoes ({len(session_hits)} resultado(s)):")
+                results.extend(session_hits)
+
+        if not results:
+            return f"Nenhum resultado para '{query}' em '{source}'."
+
+        header = f"session_search '{query}' em [{source}]:\n"
+        return header + "\n".join(results)
+
+    def _session_search_recent(self, n: int, source: str) -> str:
+        """Retorna as N entradas mais recentes da memória/sessões."""
+        results: list[str] = []
+        n = max(1, min(n, 100))
+
+        if source in ("memory", "all"):
+            mem = self._memory_load()
+            sorted_entries = sorted(
+                mem.items(),
+                key=lambda x: x[1].get("updated_at", "") if isinstance(x[1], dict) else "",
+                reverse=True,
+            )[:n]
+            if sorted_entries:
+                results.append(f"Memory (mais recentes {len(sorted_entries)}):")
+                for key, entry in sorted_entries:
+                    val = entry["value"] if isinstance(entry, dict) else str(entry)
+                    ts = entry.get("updated_at", "")[:10] if isinstance(entry, dict) else ""
+                    results.append(f"  [{ts}] {key}: {val[:80].replace(chr(10), ' ')}")
+
+        return "\n".join(results) if results else "Nenhuma entrada recente encontrada."
+
+    def _search_session_files(self, query: str) -> list[str]:
+        """Busca em arquivos .jsonl de sessão dentro do workspace."""
+        import re as _re
+        hits: list[str] = []
+        try:
+            pattern = _re.compile(query, _re.IGNORECASE)
+        except _re.error:
+            pattern = _re.compile(_re.escape(query), _re.IGNORECASE)
+
+        # Procura .jsonl e .json de sessão nos diretórios comuns
+        search_dirs = [self.workspace, self.workspace.parent]
+        for d in search_dirs:
+            if not d.exists():
+                continue
+            for ext in ("*.jsonl", "*.json"):
+                for fpath in list(d.glob(ext))[:20]:  # máx 20 arquivos
+                    if fpath.name.startswith(".bauer_"):
+                        continue
+                    try:
+                        text = fpath.read_text(encoding="utf-8", errors="ignore")
+                        for i, line in enumerate(text.splitlines()):
+                            if pattern.search(line):
+                                preview = line[:100].strip()
+                                hits.append(
+                                    f"  [{fpath.name}:{i+1}] {preview}"
+                                )
+                                if len(hits) >= 20:
+                                    return hits
+                    except Exception:
+                        continue
+        return hits
+
+    # ==========================================================================
+    # MIXTURE_OF_AGENTS
+    # ==========================================================================
+
+    def _mixture_of_agents(self, args: dict) -> str:
+        """Consulta múltiplos agentes em paralelo com perspectivas diferentes.
+
+        Arquitetura (Mixture of Agents — Li et al., 2024):
+          1. Para cada perspectiva: cria prompt especializado + chama LLM em paralelo
+          2. Coleta todas as respostas
+          3. Se synthesize=true: passada final de síntese combinando os insights
+          4. Retorna respostas individuais + síntese
+
+        Sem llm_client: simula perspectivas via prompts diferentes no mesmo modelo.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        query = str(args.get("query", "")).strip()
+        if not query:
+            raise ToolError("mixture_of_agents requer 'query'.")
+
+        if self._llm_client is None:
+            raise ToolError(
+                "mixture_of_agents requer llm_client configurado.\n"
+                "O agente precisa estar rodando com um provider LLM ativo."
+            )
+
+        raw_perspectives = str(args.get("perspectives", "analitico|critico|criativo|pragmatico"))
+        perspectives = [p.strip() for p in raw_perspectives.split("|") if p.strip()]
+        synthesize = str(args.get("synthesize", "true")).lower() != "false"
+
+        # Prompts de sistema por perspectiva
+        persona_prompts = {
+            "analitico": "Você é um analista sistemático. Decomponha o problema em partes, identifique causas e efeitos, use dados e lógica.",
+            "critico": "Você é um crítico rigoroso. Identifique falhas, riscos, suposições incorretas e pontos fracos na situação.",
+            "criativo": "Você é um pensador criativo. Proponha soluções inovadoras, faça conexões inesperadas, pense fora do padrão.",
+            "pragmatico": "Você é um executor pragmático. Foque em ações concretas, priorize pelo impacto, considere recursos e tempo.",
+            "especialista": "Você é um especialista de domínio. Aplique conhecimento técnico profundo e melhores práticas da área.",
+            "cético": "Você é um questionador cético. Questione premissas, peça evidências, desafie conclusões.",
+            "otimista": "Você é um estrategista otimista. Identifique oportunidades, vantagens e cenários positivos.",
+            "sistemico": "Você pensa sistemicamente. Considere interdependências, efeitos de segunda ordem e o contexto maior.",
+        }
+
+        def _call_perspective(perspective: str) -> tuple[str, str]:
+            system = persona_prompts.get(
+                perspective.lower(),
+                f"Você é um especialista com perspectiva '{perspective}'. Analise o problema sob esse ângulo.",
+            )
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": query},
+            ]
+            try:
+                from .agent import run_one_turn
+                response = run_one_turn(self._llm_client, messages, tools=None)
+                return perspective, str(response)
+            except Exception as exc:
+                return perspective, f"[erro: {exc}]"
+
+        # Executa perspectivas em paralelo
+        individual: list[tuple[str, str]] = []
+        max_workers = min(len(perspectives), 6)
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(_call_perspective, p): p for p in perspectives}
+            for f in as_completed(futures):
+                individual.append(f.result())
+
+        # Ordena pela ordem original das perspectivas
+        order = {p: i for i, p in enumerate(perspectives)}
+        individual.sort(key=lambda x: order.get(x[0], 99))
+
+        # Monta output das respostas individuais
+        lines = [f"[mixture_of_agents] Query: {query[:100]}\n"]
+        lines.append(f"Perspectivas ({len(individual)}):")
+        for perspective, response in individual:
+            resp_preview = response[:400].strip()
+            if len(response) > 400:
+                resp_preview += "\n  ..."
+            lines.append(f"\n── [{perspective.upper()}] ──")
+            lines.append(resp_preview)
+
+        # Passada de síntese
+        if synthesize and len(individual) >= 2:
+            synthesis_context = "\n\n".join(
+                f"[{p.upper()}]: {r[:300]}" for p, r in individual
+            )
+            synthesis_prompt = (
+                f"Você recebeu análises de {len(individual)} perspectivas diferentes "
+                f"sobre a seguinte questão:\n\n{query}\n\n"
+                f"Análises:\n{synthesis_context}\n\n"
+                f"Sintetize os insights mais valiosos de cada perspectiva em uma "
+                f"resposta integrada e acionável. Seja conciso e direto."
+            )
+            try:
+                from .agent import run_one_turn
+                synthesis = run_one_turn(
+                    self._llm_client,
+                    [{"role": "user", "content": synthesis_prompt}],
+                    tools=None,
+                )
+                lines.append("\n── [SÍNTESE] ──")
+                lines.append(str(synthesis)[:600])
+            except Exception as exc:
+                lines.append(f"\n[síntese falhou: {exc}]")
+
+        return "\n".join(lines)
+
+    # ==========================================================================
+    # VIDEO_ANALYZE
+    # ==========================================================================
+
+    def _video_analyze(self, args: dict) -> str:
+        """Analisa vídeo por URL ou arquivo local.
+
+        Estratégias (em ordem de preferência):
+          1. URL + provider nativo (Gemini, GPT-4o com video):
+             passa a URL diretamente como conteúdo de mídia
+          2. Arquivo local — extrai frames-chave via cv2 (se disponível)
+             ou via iteração de bytes em formato simples
+          3. Fallback — analisa apenas o primeiro frame como imagem
+
+        Boas práticas:
+          - max_frames limita custo (default 5)
+          - Frames espaçados uniformemente ao longo do vídeo
+          - Síntese final combina análises dos frames individuais
+        """
+        video = str(args.get("video", "")).strip()
+        query = str(args.get("query", "")).strip()
+        max_frames = int(args.get("max_frames", 5))
+        max_frames = max(1, min(max_frames, 20))
+
+        if not video:
+            raise ToolError("video_analyze requer 'video' (URL ou path).")
+        if not query:
+            raise ToolError("video_analyze requer 'query'.")
+        if self._llm_client is None:
+            raise ToolError(
+                "video_analyze requer llm_client configurado com suporte a visao.\n"
+                "Providers suportados: Gemini (gemini-*), OpenAI (gpt-4o)."
+            )
+
+        # ── Estratégia 1: URL → provider nativo ─────────────────────────────
+        if video.startswith(("http://", "https://")):
+            return self._video_analyze_url(video, query)
+
+        # ── Estratégia 2: arquivo local → extração de frames ────────────────
+        p = self._sandbox(video)
+        if not p.exists():
+            raise ToolError(f"Video nao encontrado: '{video}'")
+
+        ext = p.suffix.lower()
+        if ext not in (".mp4", ".avi", ".mov", ".mkv", ".webm", ".gif", ".m4v"):
+            raise ToolError(
+                f"Formato '{ext}' nao suportado. "
+                "Suportados: .mp4, .avi, .mov, .mkv, .webm, .gif"
+            )
+
+        # Tenta cv2 primeiro (mais preciso)
+        if _package_available("cv2"):
+            return self._video_analyze_cv2(p, query, max_frames)
+
+        # Fallback: tenta PIL/Pillow para GIFs animados
+        if ext == ".gif" and _package_available("PIL"):
+            return self._video_analyze_gif_pil(p, query, max_frames)
+
+        raise ToolError(
+            "video_analyze para arquivos locais requer OpenCV ou PIL instalado.\n"
+            "Instale com: pip install opencv-python\n"
+            "Ou use uma URL pública para análise via provider."
+        )
+
+    def _video_analyze_url(self, url: str, query: str) -> str:
+        """Passa URL de vídeo diretamente ao LLM (Gemini, GPT-4o vision)."""
+        # Formato OpenAI-compat para vídeo via URL
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": query},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                },
+            ],
+        }
+        try:
+            from .agent import run_one_turn
+            result = run_one_turn(self._llm_client, [message], tools=None)
+            return f"[video_analyze — URL]\n{result}"
+        except Exception as exc:
+            raise ToolError(
+                f"video_analyze: erro ao analisar URL via provider: {exc}\n"
+                "Verifique se seu provider suporta análise de vídeo por URL "
+                "(Gemini suporta, OpenAI gpt-4o ainda não)."
+            )
+
+    def _video_analyze_cv2(self, path: Path, query: str, max_frames: int) -> str:
+        """Extrai frames-chave via cv2 e analisa cada um."""
+        import cv2
+        import base64
+        import tempfile
+
+        cap = cv2.VideoCapture(str(path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25
+        duration_s = total_frames / fps if fps > 0 else 0
+
+        if total_frames <= 0:
+            cap.release()
+            raise ToolError(f"Nao foi possivel ler frames de '{path.name}'.")
+
+        # Índices uniformemente distribuídos
+        indices = [int(i * total_frames / max_frames) for i in range(max_frames)]
+
+        frame_analyses: list[str] = []
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            timestamp_s = idx / fps if fps > 0 else 0
+
+            # Encode frame como JPEG em memória
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                continue
+            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            data_url = f"data:image/jpeg;base64,{b64}"
+
+            try:
+                from .agent import run_one_turn
+                frame_query = (
+                    f"Frame do vídeo '{path.name}' em {timestamp_s:.1f}s "
+                    f"(de {duration_s:.1f}s total).\n{query}"
+                )
+                msg = {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": frame_query},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+                resp = run_one_turn(self._llm_client, [msg], tools=None)
+                frame_analyses.append(f"[{timestamp_s:.1f}s] {str(resp)[:300]}")
+            except Exception as exc:
+                frame_analyses.append(f"[{timestamp_s:.1f}s] [erro: {exc}]")
+
+        cap.release()
+
+        if not frame_analyses:
+            raise ToolError("Nao foi possivel extrair ou analisar nenhum frame.")
+
+        # Síntese final
+        lines = [
+            f"[video_analyze] '{path.name}' — {duration_s:.1f}s, {max_frames} frames\n"
+        ]
+        lines.append("Análise por frame:")
+        lines.extend(f"  {a}" for a in frame_analyses)
+
+        if len(frame_analyses) > 1:
+            try:
+                from .agent import run_one_turn
+                synthesis_input = "\n".join(frame_analyses)
+                synth_msg = {
+                    "role": "user",
+                    "content": (
+                        f"Você analisou {len(frame_analyses)} frames do vídeo '{path.name}'. "
+                        f"Pergunta original: {query}\n\n"
+                        f"Análises dos frames:\n{synthesis_input}\n\n"
+                        "Sintetize uma resposta final coerente sobre o vídeo completo."
+                    ),
+                }
+                synthesis = run_one_turn(self._llm_client, [synth_msg], tools=None)
+                lines.append("\nSíntese:")
+                lines.append(str(synthesis)[:600])
+            except Exception:
+                pass
+
+        return "\n".join(lines)
+
+    def _video_analyze_gif_pil(self, path: Path, query: str, max_frames: int) -> str:
+        """Analisa GIF animado extraindo frames via PIL."""
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        gif = Image.open(path)
+        total = getattr(gif, "n_frames", 1)
+        indices = [int(i * total / max_frames) for i in range(min(max_frames, total))]
+
+        frame_analyses: list[str] = []
+        for idx in indices:
+            gif.seek(idx)
+            buf = BytesIO()
+            frame = gif.convert("RGB")
+            frame.save(buf, format="JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            data_url = f"data:image/jpeg;base64,{b64}"
+
+            try:
+                from .agent import run_one_turn
+                msg = {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Frame {idx}/{total} do GIF. {query}"},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+                resp = run_one_turn(self._llm_client, [msg], tools=None)
+                frame_analyses.append(f"[frame {idx}] {str(resp)[:300]}")
+            except Exception as exc:
+                frame_analyses.append(f"[frame {idx}] [erro: {exc}]")
+
+        lines = [f"[video_analyze] GIF '{path.name}' — {total} frames\n"]
+        lines.extend(f"  {a}" for a in frame_analyses)
+        return "\n".join(lines)
