@@ -1009,12 +1009,18 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     )
 
 
-def _build_router(cfg, workspace: Path) -> ToolRouter:
-    """Cria ToolRouter com shell_runner e web_enabled a partir da config."""
+def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
+    """Cria ToolRouter com shell_runner, web e llm_client a partir da config."""
     shell_runner = _build_shell_runner(cfg, workspace)
     web_enabled = cfg.tools.web_enabled if cfg is not None else False
     web_config = cfg.web if cfg is not None else None
-    return ToolRouter(workspace, shell_runner=shell_runner, web_enabled=web_enabled, web_config=web_config)
+    return ToolRouter(
+        workspace,
+        shell_runner=shell_runner,
+        web_enabled=web_enabled,
+        web_config=web_config,
+        llm_client=llm_client,
+    )
 
 
 @tools_app.command("list")
@@ -1767,8 +1773,8 @@ def agent_run(
     # Se a empresa define tools_allowed, intersecta (empresa restringe o agent)
     if _active_company and _active_company.tools_allowed:
         allowed = allowed & set(_active_company.tools_allowed)
-    # Constrói router com workspace CORRETO (empresa ou global)
-    router = _build_router(cfg, workspace)
+    # Constrói router com workspace CORRETO (empresa ou global) e llm_client para vision/delegate
+    router = _build_router(cfg, workspace, llm_client=client)
     # Filtra tools fora do escopo do agent/empresa
     router._tools = {k: v for k, v in router._tools.items() if k in allowed}  # type: ignore[attr-defined]
 

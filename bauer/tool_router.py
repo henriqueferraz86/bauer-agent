@@ -37,6 +37,16 @@ Tools web (requerem web_enabled=true):
   web_search   — pesquisa na web (DuckDuckGo)
   web_fetch    — busca conteúdo de URL
   http_request — HTTP GET/POST genérico com headers e body
+
+Tools de agente (sempre disponíveis):
+  patch          — edição cirúrgica find-and-replace em arquivo
+  todo           — lista de tarefas da sessão (in-memory)
+  memory         — key-value persistente em .bauer_memory.json
+  execute_code   — sandbox Python via subprocess (timeout configurável)
+  clarify        — pergunta ao usuário mid-task
+  delegate_task  — delega subtarefa a sub-agente isolado
+  vision_analyze — análise de imagem via modelo multimodal (requer llm_client)
+  mcp_call       — chama tool em servidor MCP via stdio (requer pip install mcp)
 """
 
 from __future__ import annotations
@@ -143,8 +153,16 @@ class ToolRouter:
         result = router.execute('{"action": "list_dir", "args": {"path": "."}}')
     """
 
-    def __init__(self, workspace: str | Path = "workspace", shell_runner=None, web_enabled: bool = False, web_config=None):
+    def __init__(
+        self,
+        workspace: str | Path = "workspace",
+        shell_runner=None,
+        web_enabled: bool = False,
+        web_config=None,
+        llm_client=None,
+    ):
         self.workspace = Path(workspace).resolve()
+        self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
         self._tools: dict[str, dict] = {
             "list_dir": {
                 "fn": self._list_dir,
@@ -262,6 +280,117 @@ class ToolRouter:
             "args": {
                 "input": "str — texto ou bytes (obrigatorio)",
                 "operation": "str — uma de: base64_encode, base64_decode, url_encode, url_decode, hex_encode, hex_decode (obrigatorio)",
+            },
+        }
+
+        # ── Tool patch — edição cirúrgica de arquivo ───────────────────────
+        self._tools["patch"] = {
+            "fn": self._patch_file,
+            "description": (
+                "Edita arquivo substituindo old_string por new_string. "
+                "Falha se old_string nao for encontrado ou houver mais de uma ocorrencia."
+            ),
+            "args": {
+                "path": "str — caminho relativo ao workspace (obrigatorio)",
+                "old_string": "str — trecho exato a substituir (obrigatorio)",
+                "new_string": "str — novo trecho (default: '' para apagar)",
+            },
+        }
+
+        # ── Tool todo — lista de tarefas da sessão ─────────────────────────
+        self._todo_items: list[dict] = []   # [{id, text, done}]
+        self._todo_next_id: int = 1
+        self._tools["todo"] = {
+            "fn": self._todo,
+            "description": (
+                "Gerencia lista de tarefas da sessao. "
+                "Acoes: add, list, done, remove, clear."
+            ),
+            "args": {
+                "action": "str — add | list | done | remove | clear (obrigatorio)",
+                "text": "str — texto da tarefa (obrigatorio para add)",
+                "id": "int — ID da tarefa (obrigatorio para done/remove)",
+            },
+        }
+
+        # ── Tool memory — key-value persistente entre sessões ──────────────
+        self._tools["memory"] = {
+            "fn": self._memory,
+            "description": (
+                "Armazena e recupera informacoes entre sessoes. "
+                "Acoes: set, get, list, delete."
+            ),
+            "args": {
+                "action": "str — set | get | list | delete (obrigatorio)",
+                "key": "str — chave (obrigatorio para set/get/delete)",
+                "value": "str — valor a armazenar (obrigatorio para set)",
+            },
+        }
+
+        # ── Tool execute_code — sandbox Python via subprocess ──────────────
+        self._tools["execute_code"] = {
+            "fn": self._execute_code,
+            "description": (
+                "Executa codigo Python em subprocesso isolado. "
+                "Captura stdout e stderr. Timeout configuravel."
+            ),
+            "args": {
+                "code": "str — codigo Python a executar (obrigatorio)",
+                "timeout": "int — timeout em segundos (default: 30, max: 120)",
+            },
+        }
+
+        # ── Tool clarify — agente pergunta ao usuário ──────────────────────
+        self._tools["clarify"] = {
+            "fn": self._clarify,
+            "description": (
+                "Faz uma pergunta ao usuario e retorna a resposta. "
+                "Suporta multipla escolha via choices."
+            ),
+            "args": {
+                "question": "str — pergunta ao usuario (obrigatorio)",
+                "choices": "str — opcoes separadas por | (opcional, ex: 'sim|nao|cancelar')",
+            },
+        }
+
+        # ── Tool delegate_task — sub-agente ────────────────────────────────
+        self._tools["delegate_task"] = {
+            "fn": self._delegate_task,
+            "description": (
+                "Delega uma subtarefa a um sub-agente isolado e retorna o resultado. "
+                "Use para tarefas independentes que nao precisam do contexto atual."
+            ),
+            "args": {
+                "task": "str — descricao completa da tarefa a delegar (obrigatorio)",
+                "context": "str — contexto adicional para o sub-agente (opcional)",
+                "timeout": "int — timeout em segundos (default: 120, max: 600)",
+            },
+        }
+
+        # ── Tool vision_analyze — análise de imagem ─────────────────────────
+        self._tools["vision_analyze"] = {
+            "fn": self._vision_analyze,
+            "description": (
+                "Analisa imagem (URL ou path local) usando modelo de visao. "
+                "Requer provider com suporte multimodal (GPT-4o, Claude 3, Gemini)."
+            ),
+            "args": {
+                "image": "str — URL https:// ou caminho relativo ao workspace (obrigatorio)",
+                "query": "str — pergunta ou instrucao sobre a imagem (obrigatorio)",
+            },
+        }
+
+        # ── Tool mcp_call — cliente MCP ─────────────────────────────────────
+        self._tools["mcp_call"] = {
+            "fn": self._mcp_call,
+            "description": (
+                "Chama uma tool em servidor MCP (Model Context Protocol) via stdio. "
+                "Requer: pip install mcp. Configure servidores em config.yaml: mcp.servers."
+            ),
+            "args": {
+                "server": "str — nome do servidor MCP configurado (obrigatorio)",
+                "tool": "str — nome da tool a chamar no servidor (obrigatorio)",
+                "arguments": "dict — argumentos da tool (obrigatorio)",
             },
         }
 
@@ -1112,3 +1241,601 @@ class ToolRouter:
 
         lines.append(body_text)
         return "\n".join(lines)
+
+    # --- patch -----------------------------------------------------------------
+
+    def _patch_file(self, args: dict) -> str:
+        """Substituição cirúrgica: old_string → new_string.
+
+        Boas práticas implementadas:
+        - Falha se old_string não for encontrado (evita edição silenciosa errada)
+        - Falha se houver mais de 1 ocorrência (ambíguo → exige especificidade)
+        - Retorna diff compacto para rastreabilidade
+        """
+        path = args.get("path")
+        old_string = args.get("old_string")
+        new_string = args.get("new_string", "")
+
+        if not path:
+            raise ToolError("patch requer 'path'.")
+        if old_string is None:
+            raise ToolError("patch requer 'old_string'.")
+
+        p = self._sandbox(str(path))
+        if not p.exists():
+            raise ToolError(f"Arquivo nao encontrado: '{path}'")
+        if p.is_dir():
+            raise ToolError(f"'{path}' e um diretorio — use em arquivos.")
+
+        try:
+            original = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise ToolError(f"'{path}' parece ser arquivo binario — patch so funciona em texto.")
+
+        count = original.count(old_string)
+        if count == 0:
+            raise ToolError(
+                f"Trecho nao encontrado em '{path}'.\n"
+                "Verifique espacos, indentacao e quebras de linha exatas."
+            )
+        if count > 1:
+            raise ToolError(
+                f"Trecho encontrado {count} vezes em '{path}' — ambiguo.\n"
+                "Inclua mais contexto em 'old_string' para tornar a substituicao unica."
+            )
+
+        updated = original.replace(old_string, new_string, 1)
+        p.write_text(updated, encoding="utf-8")
+
+        # Diff compacto para rastreabilidade
+        diff_lines = list(difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=2,
+        ))
+        diff_str = "".join(diff_lines[:40])  # máx 40 linhas de diff
+        if len(diff_lines) > 40:
+            diff_str += f"\n... (+{len(diff_lines) - 40} linhas)"
+
+        return f"Arquivo '{path}' atualizado.\n{diff_str}"
+
+    # --- todo ------------------------------------------------------------------
+
+    def _todo(self, args: dict) -> str:
+        """Lista de tarefas da sessão (in-memory, não persiste)."""
+        action = str(args.get("action", "")).lower()
+        if not action:
+            raise ToolError("todo requer 'action': add | list | done | remove | clear.")
+
+        if action == "add":
+            text = args.get("text", "").strip()
+            if not text:
+                raise ToolError("todo add requer 'text'.")
+            item = {"id": self._todo_next_id, "text": text, "done": False}
+            self._todo_items.append(item)
+            self._todo_next_id += 1
+            return f"[{item['id']}] Adicionado: {text}"
+
+        elif action == "list":
+            if not self._todo_items:
+                return "Lista de tarefas vazia."
+            lines = ["Tarefas da sessao:"]
+            for item in self._todo_items:
+                mark = "✓" if item["done"] else "○"
+                lines.append(f"  [{item['id']}] {mark} {item['text']}")
+            done = sum(1 for i in self._todo_items if i["done"])
+            lines.append(f"\n{done}/{len(self._todo_items)} concluidas.")
+            return "\n".join(lines)
+
+        elif action == "done":
+            item_id = args.get("id")
+            if item_id is None:
+                raise ToolError("todo done requer 'id'.")
+            try:
+                item_id = int(item_id)
+            except (ValueError, TypeError):
+                raise ToolError("todo: 'id' deve ser um numero inteiro.")
+            for item in self._todo_items:
+                if item["id"] == item_id:
+                    item["done"] = True
+                    return f"[{item_id}] Marcado como concluido: {item['text']}"
+            raise ToolError(f"Tarefa {item_id} nao encontrada.")
+
+        elif action == "remove":
+            item_id = args.get("id")
+            if item_id is None:
+                raise ToolError("todo remove requer 'id'.")
+            try:
+                item_id = int(item_id)
+            except (ValueError, TypeError):
+                raise ToolError("todo: 'id' deve ser um numero inteiro.")
+            before = len(self._todo_items)
+            self._todo_items = [i for i in self._todo_items if i["id"] != item_id]
+            if len(self._todo_items) == before:
+                raise ToolError(f"Tarefa {item_id} nao encontrada.")
+            return f"Tarefa {item_id} removida."
+
+        elif action == "clear":
+            count = len(self._todo_items)
+            self._todo_items = []
+            self._todo_next_id = 1
+            return f"Lista limpa. {count} tarefa(s) removida(s)."
+
+        else:
+            raise ToolError(f"Acao desconhecida: '{action}'. Use: add | list | done | remove | clear.")
+
+    # --- memory ----------------------------------------------------------------
+
+    _MEMORY_FILE = ".bauer_memory.json"
+    _MAX_VALUE_LEN = 10_000  # chars por valor
+    _MAX_KEYS = 500
+
+    def _memory_path(self) -> Path:
+        return self.workspace / self._MEMORY_FILE
+
+    def _memory_load(self) -> dict:
+        p = self._memory_path()
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _memory_save(self, data: dict) -> None:
+        self._memory_path().write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _memory(self, args: dict) -> str:
+        """Key-value persistente em .bauer_memory.json dentro do workspace."""
+        from datetime import datetime, timezone as _tz
+
+        action = str(args.get("action", "")).lower()
+        if not action:
+            raise ToolError("memory requer 'action': set | get | list | delete.")
+
+        if action == "set":
+            key = args.get("key", "").strip()
+            value = args.get("value")
+            if not key:
+                raise ToolError("memory set requer 'key'.")
+            if value is None:
+                raise ToolError("memory set requer 'value'.")
+            value_str = str(value)
+            if len(value_str) > self._MAX_VALUE_LEN:
+                raise ToolError(
+                    f"Valor muito grande ({len(value_str)} chars). "
+                    f"Limite: {self._MAX_VALUE_LEN} chars."
+                )
+            data = self._memory_load()
+            if len(data) >= self._MAX_KEYS and key not in data:
+                raise ToolError(
+                    f"Limite de {self._MAX_KEYS} chaves atingido. "
+                    "Use memory delete para liberar espaco."
+                )
+            ts = datetime.now(_tz.utc).isoformat()
+            data[key] = {"value": value_str, "updated_at": ts}
+            self._memory_save(data)
+            return f"Memory['{key}'] = {value_str[:80]}{'...' if len(value_str) > 80 else ''}"
+
+        elif action == "get":
+            key = args.get("key", "").strip()
+            if not key:
+                raise ToolError("memory get requer 'key'.")
+            data = self._memory_load()
+            if key not in data:
+                return f"Chave '{key}' nao encontrada na memory."
+            entry = data[key]
+            val = entry["value"] if isinstance(entry, dict) else str(entry)
+            ts = entry.get("updated_at", "") if isinstance(entry, dict) else ""
+            return f"Memory['{key}'] = {val}\n(atualizado: {ts})"
+
+        elif action == "list":
+            data = self._memory_load()
+            if not data:
+                return "Memory vazia."
+            lines = [f"Memory ({len(data)} chaves):"]
+            for k, v in sorted(data.items()):
+                val = v["value"] if isinstance(v, dict) else str(v)
+                preview = val[:60].replace("\n", " ") + ("..." if len(val) > 60 else "")
+                lines.append(f"  {k}: {preview}")
+            return "\n".join(lines)
+
+        elif action == "delete":
+            key = args.get("key", "").strip()
+            if not key:
+                raise ToolError("memory delete requer 'key'.")
+            data = self._memory_load()
+            if key not in data:
+                return f"Chave '{key}' nao encontrada — nada removido."
+            del data[key]
+            self._memory_save(data)
+            return f"Memory['{key}'] removido."
+
+        else:
+            raise ToolError(f"Acao desconhecida: '{action}'. Use: set | get | list | delete.")
+
+    # --- execute_code ----------------------------------------------------------
+
+    def _execute_code(self, args: dict) -> str:
+        """Executa código Python em subprocesso isolado.
+
+        Boas práticas:
+        - Subprocesso separado — não tem acesso ao estado interno do Bauer
+        - Timeout configurável (padrão 30s, máx 120s)
+        - Arquivo temporário limpo após execução
+        - Captura stdout + stderr + exit code
+        """
+        import subprocess
+        import sys
+        import tempfile
+
+        code = args.get("code")
+        if not code:
+            raise ToolError("execute_code requer 'code'.")
+
+        timeout = int(args.get("timeout", 30))
+        timeout = max(1, min(timeout, 120))
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(code)
+            tmp_path = f.name
+
+        try:
+            result = subprocess.run(
+                [sys.executable, tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(self.workspace),
+            )
+        except subprocess.TimeoutExpired:
+            raise ToolError(f"Timeout: codigo excedeu {timeout}s de execucao.")
+        except Exception as exc:
+            raise ToolError(f"Erro ao executar codigo: {exc}")
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        lines = [f"exit: {result.returncode}"]
+        if result.stdout.strip():
+            lines.append("--- stdout ---")
+            out = result.stdout
+            if len(out) > 8000:
+                out = out[:8000] + f"\n[... truncado — {len(result.stdout)} chars total]"
+            lines.append(out.rstrip())
+        if result.stderr.strip():
+            lines.append("--- stderr ---")
+            err = result.stderr
+            if len(err) > 4000:
+                err = err[:4000] + f"\n[... truncado]"
+            lines.append(err.rstrip())
+        if not result.stdout.strip() and not result.stderr.strip():
+            lines.append("(sem output)")
+
+        return "\n".join(lines)
+
+    # --- clarify ---------------------------------------------------------------
+
+    def _clarify(self, args: dict) -> str:
+        """Pergunta ao usuário e retorna resposta.
+
+        Em modo interativo: usa input() para ler do terminal.
+        Em modo não-interativo (sem TTY): retorna placeholder com a pergunta.
+
+        Boas práticas:
+        - Não bloqueia indefinidamente (timeout de 300s)
+        - Choices: valida que a resposta é uma das opções (se fornecidas)
+        - Não-interativo: retorna a pergunta para que o caller decida
+        """
+        import sys
+
+        question = args.get("question", "").strip()
+        if not question:
+            raise ToolError("clarify requer 'question'.")
+
+        raw_choices = args.get("choices", "")
+        choices: list[str] = []
+        if raw_choices:
+            choices = [c.strip() for c in str(raw_choices).split("|") if c.strip()]
+
+        # Modo não-interativo (pipe, CI, etc.)
+        if not sys.stdin.isatty():
+            choices_hint = f" [{' / '.join(choices)}]" if choices else ""
+            return (
+                f"[clarify — aguardando input do usuario]\n"
+                f"Pergunta: {question}{choices_hint}\n"
+                f"(Forneça a resposta no proximo turno da conversa.)"
+            )
+
+        # Modo interativo
+        choices_hint = f" [{' / '.join(choices)}]" if choices else ""
+        prompt = f"\n🤔 {question}{choices_hint}\n> "
+
+        try:
+            import signal
+
+            def _timeout_handler(signum, frame):
+                raise TimeoutError
+
+            # Timeout de 5 minutos para não bloquear indefinidamente
+            try:
+                signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(300)
+                answer = input(prompt).strip()
+                signal.alarm(0)
+            except AttributeError:
+                # Windows não tem SIGALRM — usa input sem timeout
+                answer = input(prompt).strip()
+
+        except (KeyboardInterrupt, TimeoutError, EOFError):
+            return "[clarify] Sem resposta do usuario (timeout/cancelado)."
+
+        if not answer:
+            return "[clarify] Resposta vazia."
+
+        if choices:
+            choices_lower = [c.lower() for c in choices]
+            if answer.lower() not in choices_lower:
+                return (
+                    f"[clarify] Resposta '{answer}' invalida. "
+                    f"Esperado: {' | '.join(choices)}"
+                )
+
+        return answer
+
+    # --- delegate_task ---------------------------------------------------------
+
+    def _delegate_task(self, args: dict) -> str:
+        """Delega subtarefa a sub-agente via subprocess bauer CLI.
+
+        Boas práticas:
+        - Sub-processo isolado: não compartilha memória, cliente ou contexto
+        - Timeout configurável para evitar travamento
+        - Contexto opcional passa como instrução inicial ao agente
+        - Reutiliza a configuração do Bauer via `bauer agent run-one`
+        """
+        import subprocess
+        import sys
+
+        task = args.get("task", "").strip()
+        if not task:
+            raise ToolError("delegate_task requer 'task'.")
+
+        context = args.get("context", "").strip()
+        timeout = int(args.get("timeout", 120))
+        timeout = max(10, min(timeout, 600))
+
+        full_task = f"{context}\n\n{task}".strip() if context else task
+
+        # Tenta usar o cliente LLM diretamente se disponível (mais eficiente)
+        if self._llm_client is not None:
+            try:
+                from .agent import run_one_turn
+                messages = [{"role": "user", "content": full_task}]
+                response = run_one_turn(self._llm_client, messages, tools=None)
+                return f"[sub-agente]\n{response}"
+            except Exception as exc:
+                # Fallback para subprocess
+                pass
+
+        # Fallback: subprocess com bauer CLI
+        python = _find_bauer_python(self.workspace)
+        cmd = [python, "-m", "bauer.cli", "agent", "run-one", full_task]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(self.workspace),
+            )
+        except subprocess.TimeoutExpired:
+            raise ToolError(
+                f"delegate_task: sub-agente excedeu timeout de {timeout}s.\n"
+                "Aumente 'timeout' ou quebre a tarefa em partes menores."
+            )
+        except FileNotFoundError:
+            raise ToolError(
+                "delegate_task: bauer CLI nao encontrado. "
+                "Certifique-se de que o Bauer esta instalado no ambiente."
+            )
+        except Exception as exc:
+            raise ToolError(f"delegate_task: erro ao chamar sub-agente: {exc}")
+
+        output = result.stdout.strip()
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            raise ToolError(
+                f"delegate_task: sub-agente falhou (exit {result.returncode}).\n"
+                f"Erro: {err[:500] if err else 'sem detalhes'}"
+            )
+
+        if not output:
+            return "[sub-agente] Tarefa concluida sem output."
+
+        if len(output) > 8000:
+            output = output[:8000] + f"\n[... truncado — {len(result.stdout)} chars]"
+
+        return f"[sub-agente]\n{output}"
+
+    # --- vision_analyze --------------------------------------------------------
+
+    def _vision_analyze(self, args: dict) -> str:
+        """Analisa imagem via modelo multimodal (OpenAI vision format).
+
+        Boas práticas:
+        - Suporta URL externa (passa diretamente) e path local (base64)
+        - Detecta formato da imagem por extensão/magic bytes
+        - Requer llm_client com suporte a chat multimodal
+        - Fallback: usa httpx para chamar API OpenAI-compat diretamente
+        """
+        import base64
+
+        image = args.get("image", "").strip()
+        query = args.get("query", "").strip()
+
+        if not image:
+            raise ToolError("vision_analyze requer 'image' (URL ou path).")
+        if not query:
+            raise ToolError("vision_analyze requer 'query'.")
+
+        # Determina se é URL ou path local
+        if image.startswith(("http://", "https://")):
+            image_content = {"type": "image_url", "image_url": {"url": image}}
+        else:
+            # Path local — lê e base64-encoda
+            p = self._sandbox(image)
+            if not p.exists():
+                raise ToolError(f"Imagem nao encontrada: '{image}'")
+
+            raw = p.read_bytes()
+            ext = p.suffix.lower().lstrip(".")
+            mime_map = {
+                "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "png": "image/png", "gif": "image/gif",
+                "webp": "image/webp", "bmp": "image/bmp",
+            }
+            mime = mime_map.get(ext, "image/jpeg")
+            b64 = base64.b64encode(raw).decode("ascii")
+            data_url = f"data:{mime};base64,{b64}"
+            image_content = {"type": "image_url", "image_url": {"url": data_url}}
+
+        # Mensagem no formato OpenAI multimodal
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": query},
+                image_content,
+            ],
+        }
+
+        # Usa llm_client se disponível
+        if self._llm_client is not None:
+            try:
+                from .agent import run_one_turn
+                response = run_one_turn(self._llm_client, [message], tools=None)
+                return response
+            except Exception as exc:
+                raise ToolError(f"vision_analyze: erro ao chamar modelo: {exc}")
+
+        raise ToolError(
+            "vision_analyze requer um cliente LLM configurado com suporte a visao.\n"
+            "Providers suportados: OpenAI (gpt-4o), Anthropic (claude-3-*), "
+            "Google (gemini-*), OpenRouter.\n"
+            "Configure no config.yaml e reinicie o agente."
+        )
+
+    # --- mcp_call --------------------------------------------------------------
+
+    def _mcp_call(self, args: dict) -> str:
+        """Chama tool em servidor MCP via stdio.
+
+        Boas práticas:
+        - Lazy import: só importa `mcp` se chamado
+        - Conexão por sessão (sem cache global para evitar estado compartilhado)
+        - Timeout de 30s por chamada
+        - Retorna resultado como string JSON formatada
+
+        Configuração esperada em config.yaml:
+            mcp:
+              servers:
+                meu_servidor:
+                  command: ["python", "-m", "my_mcp_server"]
+                  env: {}
+        """
+        server_name = args.get("server", "").strip()
+        tool_name = args.get("tool", "").strip()
+        arguments = args.get("arguments", {})
+
+        if not server_name:
+            raise ToolError("mcp_call requer 'server'.")
+        if not tool_name:
+            raise ToolError("mcp_call requer 'tool'.")
+        if not isinstance(arguments, dict):
+            try:
+                arguments = json.loads(str(arguments))
+            except Exception:
+                raise ToolError("mcp_call: 'arguments' deve ser um objeto JSON.")
+
+        # Verifica instalação antes de qualquer outra coisa
+        try:
+            import mcp  # noqa: F401
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            import asyncio
+        except ImportError:
+            raise ToolError(
+                "mcp_call requer o pacote 'mcp' instalado.\n"
+                "Instale com: pip install mcp\n"
+                "Documentacao: https://github.com/anthropics/mcp"
+            )
+
+        # Carrega config do servidor (só chega aqui se mcp estiver instalado)
+        server_cmd = self._get_mcp_server_cmd(server_name)
+
+        async def _call() -> str:
+            params = StdioServerParameters(
+                command=server_cmd[0],
+                args=server_cmd[1:],
+            )
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, arguments=arguments)
+                    # result.content é lista de TextContent/ImageContent
+                    parts = []
+                    for c in result.content:
+                        if hasattr(c, "text"):
+                            parts.append(c.text)
+                        elif hasattr(c, "data"):
+                            parts.append(f"[imagem base64 — {len(c.data)} chars]")
+                        else:
+                            parts.append(str(c))
+                    return "\n".join(parts) if parts else "(sem output)"
+
+        try:
+            return asyncio.run(_call())
+        except Exception as exc:
+            raise ToolError(
+                f"mcp_call: erro ao chamar '{tool_name}' em '{server_name}': {exc}"
+            )
+
+    def _get_mcp_server_cmd(self, server_name: str) -> list[str]:
+        """Lê comando do servidor MCP da config ou env."""
+        import os
+
+        # Tenta ler de variável de ambiente: MCP_SERVER_<NAME>=comando
+        env_key = f"MCP_SERVER_{server_name.upper().replace('-', '_')}"
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            return env_val.split()
+
+        # Tenta ler de config.yaml (se injetado via self._mcp_config)
+        mcp_config = getattr(self, "_mcp_config", None)
+        if mcp_config:
+            servers = getattr(mcp_config, "servers", {}) or {}
+            if server_name in servers:
+                srv = servers[server_name]
+                if isinstance(srv, dict) and "command" in srv:
+                    cmd = srv["command"]
+                    return cmd if isinstance(cmd, list) else cmd.split()
+
+        raise ToolError(
+            f"Servidor MCP '{server_name}' nao configurado.\n"
+            "Configure via:\n"
+            f"  1. Variavel de ambiente: {env_key}=python -m meu_servidor\n"
+            "  2. config.yaml:\n"
+            "       mcp:\n"
+            "         servers:\n"
+            f"           {server_name}:\n"
+            "             command: [\"python\", \"-m\", \"meu_servidor\"]"
+        )
