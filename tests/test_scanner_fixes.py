@@ -253,7 +253,7 @@ class TestLimitsToolCalls:
 
     def test_default_max_tool_calls_generoso(self, ws):
         router = ToolRouter(workspace=ws)
-        assert router._max_tool_calls == 200
+        assert router._max_tool_calls == 500  # aumentado para suportar tarefas de ~1h
 
     def test_contador_incrementa_a_cada_execute(self, ws):
         router = ToolRouter(workspace=ws, max_tool_calls=100)

@@ -184,6 +184,77 @@ except ImportError:
 
 MAX_TOOL_TURNS = 150
 
+# ─── Loop detection ────────────────────────────────────────────────────────────
+# Protege contra modelos que ficam chamando a mesma tool repetidamente.
+# Usa fingerprint = tool_name + primeiros 100 chars do resultado para detectar
+# chamadas idênticas consecutivas, independente dos args (que não ficam no log).
+_LOOP_REPEAT_WARN  = 3   # N° de repetições consecutivas → soft warning no contexto
+_LOOP_REPEAT_HARD  = 5   # N° de repetições consecutivas → hard stop imediato
+_LOOP_OSCIL_WINDOW = 6   # Janela de calls para detectar padrão A→B→A→B
+
+
+def _loop_fp(entry: dict) -> str:
+    """Fingerprint de uma entrada do tool_log: nome + primeiros 100 chars do resultado."""
+    return f"{entry['tool']}:{entry['result'][:100]}"
+
+
+def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
+    """Analisa tool_log em busca de loops e oscilações.
+
+    Returns:
+        (warning_msg, is_hard_stop)
+        warning_msg: None se sem loop; string de alerta se loop detectado.
+        is_hard_stop: True → interromper o loop imediatamente.
+    """
+    if not tool_log:
+        return None, False
+
+    # ── 1. Repetição consecutiva (mesma fingerprint N vezes seguidas) ──────────
+    last_fp = _loop_fp(tool_log[-1])
+    consecutive = 0
+    for entry in reversed(tool_log):
+        if _loop_fp(entry) == last_fp:
+            consecutive += 1
+        else:
+            break
+
+    last_tool = tool_log[-1]["tool"]
+
+    if consecutive >= _LOOP_REPEAT_HARD:
+        msg = (
+            f"[AVISO DO SISTEMA — LOOP DETECTADO] Você chamou '{last_tool}' "
+            f"{consecutive} vezes consecutivas com resultado idêntico. "
+            "PARE IMEDIATAMENTE. Não chame mais nenhuma tool agora. "
+            "Analise o que já foi obtido e responda diretamente ao usuário "
+            "com o resultado atual ou indique o que está impedindo o progresso."
+        )
+        return msg, True  # hard stop
+
+    if consecutive >= _LOOP_REPEAT_WARN:
+        msg = (
+            f"[AVISO DO SISTEMA] Você chamou '{last_tool}' {consecutive} vezes "
+            "consecutivas com o mesmo resultado. O resultado não vai mudar. "
+            "Considere uma abordagem diferente ou conclua com os dados já obtidos."
+        )
+        return msg, False  # soft warning
+
+    # ── 2. Oscilação A→B→A→B (últimas N calls alternam entre 2 tools) ─────────
+    if len(tool_log) >= _LOOP_OSCIL_WINDOW:
+        recent_names = [e["tool"] for e in tool_log[-_LOOP_OSCIL_WINDOW:]]
+        evens = set(recent_names[::2])
+        odds  = set(recent_names[1::2])
+        if len(evens) == 1 and len(odds) == 1 and evens != odds:
+            tool_a, tool_b = next(iter(evens)), next(iter(odds))
+            msg = (
+                f"[AVISO DO SISTEMA — OSCILAÇÃO DETECTADA] Você está alternando "
+                f"entre '{tool_a}' e '{tool_b}' repetidamente ({_LOOP_OSCIL_WINDOW} calls). "
+                "Isso indica um ciclo sem progresso. Mude de estratégia, "
+                "combine os resultados já obtidos ou conclua a tarefa."
+            )
+            return msg, False  # soft warning (pode ser legítimo em alguns casos)
+
+    return None, False
+
 
 _SPEC_FORMAT_HINT = """
 # SPEC-DRIVEN DEVELOPMENT
@@ -498,6 +569,12 @@ def run_one_turn(
             result = _run_native_tool_turn(ctx, router, client, model_name, tool_log)
             if result is not None:
                 return result, tool_log
+            # Detecção de loop após cada rodada de tool calls (native path)
+            loop_warn, hard_stop = _detect_loop(tool_log)
+            if loop_warn:
+                ctx.add_user(loop_warn)
+                if hard_stop:
+                    return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
         # Fallthrough: atingiu limite de turns sem resposta final
         return "[Limite de iterações atingido]", tool_log
 
@@ -537,6 +614,12 @@ def run_one_turn(
 
             if combined_parts:
                 ctx.add_user("\n\n".join(combined_parts))
+            # Detecção de loop após cada batch de tool calls (Tool Bridge path)
+            loop_warn, hard_stop = _detect_loop(tool_log)
+            if loop_warn:
+                ctx.add_user(loop_warn)
+                if hard_stop:
+                    return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
         else:
             return response, tool_log
 
@@ -1280,6 +1363,7 @@ def run_agent_session(
 
         # --- loop de tool turns (um turno do usuário pode ter N tool calls) ---
         tool_turns = 0
+        cli_tool_log: list[dict] = []  # para detecção de loop no CLI path
         while True:
             try:
                 response = _collect_response(client, active_model, ctx.get_payload())
@@ -1345,11 +1429,21 @@ def run_agent_session(
                         )
 
                     combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
+                    cli_tool_log.append({"tool": action_name, "result": tool_result[:300]})
                     tool_turns += 1
 
                 if combined_parts:
                     console.print()
                     ctx.add_user("\n\n".join(combined_parts))
+
+                # Detecção de loop após cada batch de tool calls (CLI path)
+                loop_warn, hard_stop = _detect_loop(cli_tool_log)
+                if loop_warn:
+                    console.print(f"[bold yellow]⚠ {loop_warn}[/bold yellow]")
+                    ctx.add_user(loop_warn)
+                    if hard_stop:
+                        console.print("[red]Loop detectado — interrompendo turno automaticamente.[/red]")
+                        break
                 continue
 
             if tool_turns >= MAX_TOOL_TURNS:
