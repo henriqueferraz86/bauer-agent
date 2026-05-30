@@ -151,6 +151,91 @@ class SandboxError(ToolError):
     """Tentativa de acesso fora do workspace."""
 
 
+class DryRunResult:
+    """Retornado quando dry_run=True: descreve o que teria acontecido sem executar."""
+    def __init__(self, tool: str, summary: str):
+        self.tool = tool
+        self.summary = summary
+
+    def __str__(self) -> str:
+        return f"[dry_run] {self.tool}: {self.summary}"
+
+
+# Níveis de permissão: do menos ao mais privilegiado
+_PERMISSION_LEVELS = ("read", "write", "execute", "network", "system")
+_RISK_LEVELS = ("low", "medium", "high", "critical")
+
+# Mapa de metadados de segurança por tool
+# permission_level: impacto máximo possível da tool
+# risk_level: probabilidade × severidade de dano
+# requires_approval: se True, deve exigir confirmação humana em produção
+_TOOL_SECURITY: dict[str, dict] = {
+    # Leitura — sem side effects
+    "list_dir":       {"permission": "read",    "risk": "low",    "approval": False},
+    "read_file":      {"permission": "read",    "risk": "low",    "approval": False},
+    "search_text":    {"permission": "read",    "risk": "low",    "approval": False},
+    "glob_files":     {"permission": "read",    "risk": "low",    "approval": False},
+    "regex_search":   {"permission": "read",    "risk": "low",    "approval": False},
+    "diff_files":     {"permission": "read",    "risk": "low",    "approval": False},
+    "calculate":      {"permission": "read",    "risk": "low",    "approval": False},
+    "datetime_now":   {"permission": "read",    "risk": "low",    "approval": False},
+    "json_query":     {"permission": "read",    "risk": "low",    "approval": False},
+    "encode_decode":  {"permission": "read",    "risk": "low",    "approval": False},
+    "todo":           {"permission": "read",    "risk": "low",    "approval": False},
+    "skills_list":    {"permission": "read",    "risk": "low",    "approval": False},
+    "skill_view":     {"permission": "read",    "risk": "low",    "approval": False},
+    "memory":         {"permission": "read",    "risk": "low",    "approval": False},
+    "session_search": {"permission": "read",    "risk": "low",    "approval": False},
+    "kanban_list":    {"permission": "read",    "risk": "low",    "approval": False},
+    "kanban_show":    {"permission": "read",    "risk": "low",    "approval": False},
+    "process":        {"permission": "read",    "risk": "low",    "approval": False},
+    # Escrita local — workspace-scoped
+    "write_file":     {"permission": "write",   "risk": "medium", "approval": False},
+    "append_file":    {"permission": "write",   "risk": "medium", "approval": False},
+    "patch":          {"permission": "write",   "risk": "medium", "approval": False},
+    "create_dir":     {"permission": "write",   "risk": "low",    "approval": False},
+    "move_file":      {"permission": "write",   "risk": "medium", "approval": False},
+    "delete_file":    {"permission": "write",   "risk": "high",   "approval": True},
+    "skill_manage":   {"permission": "write",   "risk": "low",    "approval": False},
+    "kanban_create":  {"permission": "write",   "risk": "low",    "approval": False},
+    "kanban_complete":{"permission": "write",   "risk": "low",    "approval": False},
+    "kanban_block":   {"permission": "write",   "risk": "low",    "approval": False},
+    "kanban_unblock": {"permission": "write",   "risk": "low",    "approval": False},
+    "kanban_heartbeat":{"permission":"write",   "risk": "low",    "approval": False},
+    "kanban_comment": {"permission": "write",   "risk": "low",    "approval": False},
+    "kanban_link":    {"permission": "write",   "risk": "low",    "approval": False},
+    "cronjob":        {"permission": "write",   "risk": "medium", "approval": False},
+    # Execução de código — isolada mas com efeitos
+    "execute_code":   {"permission": "execute", "risk": "medium", "approval": False},
+    "run_command":    {"permission": "execute", "risk": "high",   "approval": True},
+    "clarify":        {"permission": "execute", "risk": "low",    "approval": False},
+    "delegate_task":  {"permission": "execute", "risk": "medium", "approval": False},
+    "mixture_of_agents":{"permission":"execute","risk": "medium", "approval": False},
+    "image_generate": {"permission": "execute", "risk": "low",    "approval": False},
+    "text_to_speech": {"permission": "execute", "risk": "low",    "approval": False},
+    "vision_analyze": {"permission": "execute", "risk": "low",    "approval": False},
+    "video_analyze":  {"permission": "execute", "risk": "low",    "approval": False},
+    # Rede
+    "web_search":     {"permission": "network", "risk": "low",    "approval": False},
+    "web_fetch":      {"permission": "network", "risk": "low",    "approval": False},
+    "http_request":   {"permission": "network", "risk": "medium", "approval": False},
+    "browser_navigate":{"permission":"network", "risk": "medium", "approval": False},
+    "browser_snapshot":{"permission":"network", "risk": "low",    "approval": False},
+    "browser_click":  {"permission": "network", "risk": "medium", "approval": False},
+    "browser_type":   {"permission": "network", "risk": "medium", "approval": False},
+    "browser_scroll": {"permission": "network", "risk": "low",    "approval": False},
+    "browser_back":   {"permission": "network", "risk": "low",    "approval": False},
+    "browser_press":  {"permission": "network", "risk": "medium", "approval": False},
+    "browser_console":{"permission": "network", "risk": "low",    "approval": False},
+    "browser_get_images":{"permission":"network","risk": "low",   "approval": False},
+    "browser_vision": {"permission": "network", "risk": "low",    "approval": False},
+    "browser_dialog": {"permission": "network", "risk": "medium", "approval": False},
+    "browser_cdp":    {"permission": "network", "risk": "high",   "approval": True},
+    "mcp_call":       {"permission": "network", "risk": "medium", "approval": False},
+    # Sistema
+    "video_generate": {"permission": "network", "risk": "low",    "approval": False},
+}
+
 # Limite de leitura de arquivo para evitar output enorme.
 _MAX_READ_BYTES = 100_000
 # Limite de resultados de busca.
@@ -172,9 +257,16 @@ class ToolRouter:
         web_enabled: bool = False,
         web_config=None,
         llm_client=None,
+        dry_run: bool = False,
+        max_tool_calls: int = 200,
+        max_retries: int = 3,
     ):
         self.workspace = Path(workspace).resolve()
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
+        self._dry_run = dry_run          # SAFETY-002: simula execução sem side effects
+        self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
+        self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
+        self._tool_call_count = 0              # contador redefenido por sessão
         self._tools: dict[str, dict] = {
             "list_dir": {
                 "fn": self._list_dir,
@@ -779,7 +871,23 @@ class ToolRouter:
         if name not in self._tools:
             raise ToolError(f"Tool desconhecida: '{name}'")
         info = self._tools[name]
-        return {"name": name, "description": info["description"], "args": info["args"]}
+        sec = _TOOL_SECURITY.get(name, {"permission": "read", "risk": "low", "approval": False})
+        return {
+            "name": name,
+            "description": info["description"],
+            "args": info["args"],
+            "permission_level": sec["permission"],
+            "risk_level": sec["risk"],
+            "requires_approval": sec["approval"],
+        }
+
+    def tool_security(self, name: str) -> dict:
+        """Retorna metadados de segurança de uma tool."""
+        return _TOOL_SECURITY.get(name, {"permission": "read", "risk": "low", "approval": False})
+
+    def reset_call_count(self) -> None:
+        """Reseta o contador de chamadas (use no inicio de cada sessão de agent)."""
+        self._tool_call_count = 0
 
     def get_tool_schemas(self) -> list[dict]:
         """Retorna schemas de tools no formato OpenAI function calling.
@@ -868,6 +976,33 @@ class ToolRouter:
         args = action.get("args", {})
         if not isinstance(args, dict):
             raise ToolError("Campo 'args' deve ser um objeto JSON.")
+
+        # LIMITS-001: enforça max_tool_calls por sessão
+        self._tool_call_count += 1
+        if self._tool_call_count > self._max_tool_calls:
+            raise ToolError(
+                f"Limite de {self._max_tool_calls} chamadas de tool por sessão atingido. "
+                "Use reset_call_count() para iniciar nova sessão ou aumente max_tool_calls."
+            )
+
+        # SAFETY-002: modo dry_run — não executa side effects
+        _DRY_RUN_SIDE_EFFECTS = frozenset({
+            "write_file", "append_file", "patch", "delete_file", "move_file", "create_dir",
+            "run_command", "execute_code", "web_fetch", "http_request",
+            "browser_navigate", "browser_click", "browser_type", "browser_press",
+            "browser_dialog", "browser_cdp",
+            "image_generate", "text_to_speech", "delegate_task",
+            "cronjob",  # apenas action=run
+        })
+        if self._dry_run and name in _DRY_RUN_SIDE_EFFECTS:
+            sec = _TOOL_SECURITY.get(name, {})
+            return str(DryRunResult(
+                tool=name,
+                summary=(
+                    f"[{sec.get('permission','?')} / risco:{sec.get('risk','?')}] "
+                    f"Teria executado com args: {json.dumps(args, ensure_ascii=False)[:200]}"
+                ),
+            ))
 
         result = self._tools[name]["fn"](args)
 
@@ -2369,12 +2504,22 @@ class ToolRouter:
             if job["mode"] == "python":
                 result = self._execute_code({"code": job["command"], "timeout": 60})
             else:
-                # shell mode — usa execute_code com subprocess.run interno
+                # shell mode — aplica denylist antes de executar
                 import subprocess
+                import shlex as _shlex
+                from .shell_runner import _DENYLIST as _SR_DENYLIST
+                cmd_str = job["command"]
+                for pattern in _SR_DENYLIST:
+                    if pattern.search(cmd_str):
+                        raise ToolError(
+                            f"cronjob run: comando bloqueado por denylist — padrão '{pattern.pattern}'. "
+                            f"Edite o job para remover o comando perigoso."
+                        )
                 try:
                     proc = subprocess.run(
-                        job["command"], shell=True, capture_output=True,
-                        text=True, timeout=60, cwd=str(self.workspace),
+                        cmd_str, shell=False, args=_shlex.split(cmd_str),
+                        capture_output=True, text=True, timeout=60,
+                        cwd=str(self.workspace),
                     )
                     result = f"exit: {proc.returncode}\n"
                     if proc.stdout.strip():
