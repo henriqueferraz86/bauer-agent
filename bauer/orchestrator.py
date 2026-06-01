@@ -193,14 +193,35 @@ class AgentOrchestrator:
         return "".join(parts)
 
     def _call_ollama(self, model: str, messages: list[dict], stream_prefix: str = "") -> str:
-        parts = []
-        for chunk in self._planner_client.chat_stream(model, messages):
-            parts.append(chunk)
+        """Chama o planner_client com fallback automatico para self.client.
+
+        Quando Ollama nao esta disponivel, _planner_client e o proprio self.client
+        (cloud provider). Se o stream falhar (ex: provider sem aquele modelo),
+        tenta com o modelo padrao do client principal antes de propagar o erro.
+        """
+        try:
+            parts = []
+            for chunk in self._planner_client.chat_stream(model, messages):
+                parts.append(chunk)
+                if self.console and stream_prefix:
+                    self.console.print(chunk, end="", highlight=False)
             if self.console and stream_prefix:
-                self.console.print(chunk, end="", highlight=False)
-        if self.console and stream_prefix:
-            self.console.print()
-        return "".join(parts)
+                self.console.print()
+            return "".join(parts)
+        except Exception as exc:
+            # Fallback gracioso: se o planner falhou e nao e o mesmo do client principal,
+            # tenta de novo com o client principal + seu modelo default.
+            if self._planner_client is not self.client:
+                fallback_model = getattr(self.client, "default_model", None) or model
+                parts = []
+                for chunk in self.client.chat_stream(fallback_model, messages):
+                    parts.append(chunk)
+                    if self.console and stream_prefix:
+                        self.console.print(chunk, end="", highlight=False)
+                if self.console and stream_prefix:
+                    self.console.print()
+                return "".join(parts)
+            raise
 
     def _extract_json(self, text: str) -> dict | None:
         try:

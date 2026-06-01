@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from bauer.tool_router import ToolError, ToolRouter
+from bauer.workspace_manager import WorkspaceManager
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -411,8 +412,16 @@ class TestKanbanCreate:
         result = router._kanban_create({"title": "Implementar feature X"})
         assert "T0001" in result
         assert "Implementar feature X" in result
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         assert "T0001" in board["tasks"]
+        tasks = WorkspaceManager(ws).list_tasks()
+        assert tasks[0].title == "Implementar feature X"
+
+    def test_lista_tarefa_criada_pelo_workspace_manager(self, router, ws):
+        WorkspaceManager(ws).add_task("Criada pelo humano")
+        result = router._kanban_list({})
+        assert "T0001" in result
+        assert "Criada pelo humano" in result
 
     def test_cria_multiplas_tarefas(self, router):
         for i in range(5):
@@ -430,7 +439,7 @@ class TestKanbanCreate:
     def test_cria_filho_registra_no_pai(self, router, ws):
         router._kanban_create({"title": "Pai"})
         router._kanban_create({"title": "Filho", "parent_id": "T0001"})
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         assert "T0002" in board["tasks"]["T0001"]["children"]
 
     def test_campos_opcionais(self, router, ws):
@@ -440,7 +449,7 @@ class TestKanbanCreate:
             "assignee": "agent-1",
             "priority": "high",
         })
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         t = board["tasks"]["T0001"]
         assert t["assignee"] == "agent-1"
         assert t["priority"] == "high"
@@ -508,24 +517,24 @@ class TestKanbanWorkflow:
         router._kanban_create({"title": "Tarefa"})
         result = router._kanban_complete({"task_id": "T0001", "result": "Sucesso!"})
         assert "done" in result or "T0001" in result
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         assert board["tasks"]["T0001"]["status"] == "done"
 
     def test_block_e_unblock(self, router, ws):
         router._kanban_create({"title": "Task"})
         router._kanban_block({"task_id": "T0001", "reason": "Aguardando aprovação"})
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         assert board["tasks"]["T0001"]["status"] == "blocked"
 
         router._kanban_unblock({"task_id": "T0001", "note": "Aprovado!"})
-        board2 = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board2 = router._load_kanban()
         assert board2["tasks"]["T0001"]["status"] == "todo"
 
     def test_heartbeat_muda_para_in_progress(self, router, ws):
         router._kanban_create({"title": "Task longa"})
         result = router._kanban_heartbeat({"task_id": "T0001", "progress": "50% concluído"})
         assert "50%" in result
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         assert board["tasks"]["T0001"]["status"] == "in_progress"
 
     def test_comment_adiciona_sem_mudar_status(self, router, ws):
@@ -533,7 +542,7 @@ class TestKanbanWorkflow:
         router._kanban_comment({
             "task_id": "T0001", "comment": "Nota importante", "author": "supervisor"
         })
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         comments = board["tasks"]["T0001"]["comments"]
         assert any("Nota importante" in c["text"] for c in comments)
         assert board["tasks"]["T0001"]["status"] == "todo"
@@ -543,7 +552,7 @@ class TestKanbanWorkflow:
         router._kanban_create({"title": "Filho"})
         result = router._kanban_link({"parent_id": "T0001", "child_id": "T0002"})
         assert "T0002" in result
-        board = json.loads((ws / ".bauer_kanban.json").read_text(encoding="utf-8"))
+        board = router._load_kanban()
         assert "T0002" in board["tasks"]["T0001"]["children"]
         assert board["tasks"]["T0002"]["parent_id"] == "T0001"
 

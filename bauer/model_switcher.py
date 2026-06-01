@@ -40,11 +40,25 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 OPENAI_MODELS: list[tuple[str, str]] = [
-    ("gpt-4o-mini",     "GPT-4o mini — rápido e barato (recomendado)"),
-    ("gpt-4o",          "GPT-4o — mais capaz"),
-    ("gpt-4.1",         "GPT-4.1 — mais recente"),
-    ("gpt-4-turbo",     "GPT-4 Turbo"),
-    ("gpt-3.5-turbo",   "GPT-3.5 Turbo — muito barato"),
+    # Família 5 (top tier — lançada 2025-2026)
+    ("gpt-5",           "GPT-5 — flagship (mais capaz)"),
+    ("gpt-5-mini",      "GPT-5 mini — rápido e barato"),
+    # Família 4.5 / 4.1
+    ("gpt-4.5",         "GPT-4.5 (Orion) — fev/2025"),
+    ("gpt-4.1",         "GPT-4.1 — abr/2025"),
+    ("gpt-4.1-mini",    "GPT-4.1 mini — rápido"),
+    # Família 4o
+    ("gpt-4o",          "GPT-4o — multimodal"),
+    ("gpt-4o-mini",     "GPT-4o mini — econômico"),
+    ("gpt-4-turbo",     "GPT-4 Turbo — legado"),
+    # Família o-series (raciocínio)
+    ("o4-mini",         "o4-mini — raciocínio econômico"),
+    ("o3",              "o3 — raciocínio profundo"),
+    ("o3-mini",         "o3-mini — raciocínio rápido"),
+    ("o1",              "o1 — raciocínio (dez/2024)"),
+    # Custom — usuario digita nome livre
+    ("__custom__",      ">> outro modelo (digitar nome)"),
+    # gpt-3.5-turbo removido: descontinuado em jan/2025
 ]
 
 GROQ_MODELS: list[tuple[str, str]] = [
@@ -116,20 +130,21 @@ GITHUB_MODELS: list[tuple[str, str]] = [
 
 PROVIDERS: list[tuple[str, str, str]] = [
     # (id, nome, descrição)
-    ("ollama",      "Ollama",          "Modelos locais gratuitos (requer Ollama rodando)"),
-    ("opencode",    "OpenCode Zen",    "Modelos gratuitos via opencode.ai — sem API key"),
-    ("openrouter",  "OpenRouter",      "200+ modelos: GPT, Claude, Gemini — 1 chave"),
-    ("openai",      "OpenAI",          "ChatGPT diretamente (sk-...)"),
-    ("anthropic",   "Anthropic",       "Claude Haiku, Sonnet, Opus"),
-    ("gemini",      "Google Gemini",   "Gemini Flash, Pro (GEMINI_API_KEY)"),
-    ("groq",        "Groq",            "Llama ultra-rápido, gratuito com limites"),
-    ("mistral",     "Mistral AI",      "Mistral Small/Medium/Large, Codestral"),
-    ("xai",         "xAI Grok",        "Grok 3 — modelos da xAI/Elon Musk"),
-    ("together",    "Together AI",     "Llama, Mistral, Qwen — hospedagem aberta"),
-    ("deepseek",    "DeepSeek",        "DeepSeek V3 e R1 — China, preço baixo"),
-    ("github",      "GitHub Models",   "GPT-4o, Llama via GitHub (requer GITHUB_TOKEN)"),
-    ("copilot",     "GitHub Copilot",  "Copilot API — requer 'bauer auth login -p copilot'"),
-    ("custom",      "Custom",          "Qualquer endpoint OpenAI-compatible (LM Studio, vLLM…)"),
+    ("ollama",      "Ollama",           "Modelos locais gratuitos (requer Ollama rodando)"),
+    ("opencode",    "OpenCode Zen",     "Modelos gratuitos via opencode.ai — sem API key"),
+    ("openrouter",  "OpenRouter",       "200+ modelos: GPT, Claude, Gemini — 1 chave"),
+    ("openai",      "ChatGPT OAuth",    "Login com conta ChatGPT — sem API key (via browser)"),
+    ("openai-api",  "OpenAI API Key",   "ChatGPT com API key (sk-...) — platform.openai.com"),
+    ("anthropic",   "Anthropic",        "Claude Haiku, Sonnet, Opus"),
+    ("gemini",      "Google Gemini",    "Gemini Flash, Pro (GEMINI_API_KEY)"),
+    ("groq",        "Groq",             "Llama ultra-rápido, gratuito com limites"),
+    ("mistral",     "Mistral AI",       "Mistral Small/Medium/Large, Codestral"),
+    ("xai",         "xAI Grok",         "Grok 3 — modelos da xAI/Elon Musk"),
+    ("together",    "Together AI",      "Llama, Mistral, Qwen — hospedagem aberta"),
+    ("deepseek",    "DeepSeek",         "DeepSeek V3 e R1 — China, preço baixo"),
+    ("github",      "GitHub Models",    "GPT-4o, Llama via GitHub (requer GITHUB_TOKEN)"),
+    ("copilot",     "GitHub Copilot",   "Copilot API — requer 'bauer auth login -p copilot'"),
+    ("custom",      "Custom",           "Qualquer endpoint OpenAI-compatible (LM Studio, vLLM…)"),
 ]
 
 
@@ -189,34 +204,56 @@ def _patch_config(config_path: Path, provider: str, model_name: str, extra: dict
 
 
 def _pick_from_list(items: list[tuple[str, str]], title: str) -> str | None:
-    """Exibe tabela numerada e retorna o id escolhido."""
+    """Exibe tabela numerada e retorna o id escolhido.
+
+    - Numero da tabela -> id correspondente
+    - Texto livre -> aceita como modelo customizado
+    - Sentinel '__custom__' -> abre prompt secundario pedindo o nome
+    - Enter vazio -> cancela
+    """
     table = Table(title=title, show_lines=False)
     table.add_column("#", style="dim", width=3)
     table.add_column("modelo / provider", style="cyan")
     table.add_column("descrição")
 
     for i, (id_, desc) in enumerate(items, 1):
-        table.add_row(str(i), id_, desc)
+        # Estiliza a linha de custom diferente
+        display_id = id_ if id_ != "__custom__" else "[yellow]custom[/yellow]"
+        table.add_row(str(i), display_id, desc)
 
     console.print(table)
+    console.print("[dim]Dica: digite o numero, ou o nome do modelo direto (ex: 'gpt-5.5').[/dim]")
 
     raw = Prompt.ask(
-        "[bold]Escolha pelo número[/bold] (ou Enter para cancelar)",
+        "[bold]Escolha[/bold] (Enter para cancelar)",
         default="",
     ).strip()
 
     if not raw:
         return None
+
+    chosen: str | None = None
     try:
         idx = int(raw) - 1
         if 0 <= idx < len(items):
-            return items[idx][0]
+            chosen = items[idx][0]
     except ValueError:
-        # Digitou o nome direto
-        for id_, _ in items:
-            if raw == id_:
-                return raw
-    return raw  # aceita qualquer string (modelo customizado)
+        # Digitou o nome direto (texto livre — aceita como customizado)
+        chosen = raw
+
+    # Sentinel "__custom__" -> abre prompt secundario pedindo nome do modelo
+    if chosen == "__custom__":
+        custom_name = Prompt.ask(
+            "[bold]Nome exato do modelo[/bold] (ex: gpt-5.5, o4-mini-high, gpt-5-pro)",
+            default="",
+        ).strip()
+        if not custom_name:
+            console.print("[dim]Cancelado.[/dim]")
+            return None
+        console.print(f"[dim]Usando modelo customizado: [cyan]{custom_name}[/cyan][/dim]")
+        return custom_name
+
+    return chosen
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +322,31 @@ def run_model_switcher(config_path: Path) -> None:
         internal_provider = "openrouter"
 
     elif provider_id == "openai":
-        model_name = _pick_from_list(OPENAI_MODELS, "Modelos OpenAI")
+        # OAuth ChatGPT — dispara o login via browser agora mesmo
+        console.print(
+            "\n[cyan]ChatGPT OAuth[/cyan] — abrirá o browser para você logar com sua conta ChatGPT.\n"
+            "[dim]Nenhuma API key necessária.[/dim]\n"
+        )
+        try:
+            from .auth import AuthManager
+            auth = AuthManager()
+            token = auth.login_oauth("openai")   # vai direto ao browser, sem checar Codex
+            auth.close()
+            console.print(f"[green]✓ Autenticado como ChatGPT OAuth[/green]\n")
+        except Exception as _auth_err:
+            console.print(f"[red]Erro na autenticação OAuth:[/red] {_auth_err}")
+            console.print("[dim]Tente manualmente: bauer auth login -p openai[/dim]")
+            return
+
+        model_name = _pick_from_list(OPENAI_MODELS, "Modelos ChatGPT")
+        if not model_name:
+            console.print("[dim]Cancelado.[/dim]")
+            return
+        config_extra = {"openai": {"host": "https://api.openai.com"}}
+
+    elif provider_id == "openai-api":
+        # API Key OpenAI — sk-...
+        model_name = _pick_from_list(OPENAI_MODELS, "Modelos OpenAI (API Key)")
         if not model_name:
             console.print("[dim]Cancelado.[/dim]")
             return
@@ -293,6 +354,7 @@ def run_model_switcher(config_path: Path) -> None:
         env_vars, config_extra = _ask_api_key(env_path, env_key, env_label, link)
         config_extra = config_extra or {}
         config_extra.setdefault("openai", {})["host"] = "https://api.openai.com"
+        internal_provider = "openai"  # ambos mapeiam para o mesmo provider interno
 
     elif provider_id == "anthropic":
         model_name = _pick_from_list(ANTHROPIC_MODELS, "Modelos Anthropic (Claude)")
@@ -464,6 +526,30 @@ def _pick_ollama_model(ollama_host: str) -> str | None:
         return Prompt.ask("[bold]Nome do modelo[/bold]", default="qwen2.5:14b").strip() or None
 
 
+_EXPECTED_KEY_PREFIXES = {
+    "OPENAI_API_KEY":     ("sk-",     "OpenAI"),
+    "ANTHROPIC_API_KEY":  ("sk-ant-", "Anthropic"),
+    "GROQ_API_KEY":       ("gsk_",    "Groq"),
+    "MISTRAL_API_KEY":    (None,      "Mistral"),       # sem prefixo fixo
+    "XAI_API_KEY":        ("xai-",    "xAI"),
+    "TOGETHER_API_KEY":   (None,      "Together"),
+    "DEEPSEEK_API_KEY":   ("sk-",     "DeepSeek"),
+    "GEMINI_API_KEY":     (None,      "Gemini"),
+    "OPENROUTER_API_KEY": ("sk-or-",  "OpenRouter"),
+}
+
+_KNOWN_PREFIXES = [("sk-ant-", "Anthropic"), ("sk-or-", "OpenRouter"),
+                    ("gsk_", "Groq"), ("xai-", "xAI"), ("sk-", "OpenAI/DeepSeek")]
+
+
+def _detect_key_provider(key: str) -> str:
+    """Retorna nome do provider que parece dono da chave, ou ''."""
+    for prefix, name in _KNOWN_PREFIXES:
+        if key.startswith(prefix):
+            return name
+    return ""
+
+
 def _ask_api_key(
     env_path: Path,
     env_key: str,
@@ -472,23 +558,110 @@ def _ask_api_key(
 ) -> tuple[dict[str, str], dict | None]:
     """Verifica se a chave já existe; se não, pede ao usuário.
 
+    - Se existir, mostra os primeiros chars + nome do provider detectado
+    - Se o prefixo nao bate com o esperado, AVISA e oferece substituir
+    - Sempre permite ao usuario digitar uma nova chave (Enter para manter)
+
     Retorna (env_vars_para_salvar, None).
     """
     existing = _read_env(env_path).get(env_key, "")
+    expected_prefix, expected_name = _EXPECTED_KEY_PREFIXES.get(env_key, (None, env_label))
+
     if existing:
-        console.print(f"[dim]{env_label} já configurado em .env ✓[/dim]")
-        return {}, None
+        detected = _detect_key_provider(existing)
+        prefix_show = existing[:6] + "..." + existing[-4:] if len(existing) > 12 else existing[:6] + "..."
 
-    console.print(f"\n[yellow]Você precisa de uma API key: {link}[/yellow]")
+        # Verifica se a chave parece do provider esperado
+        mismatch = False
+        if expected_prefix and not existing.startswith(expected_prefix):
+            mismatch = True
+
+        if mismatch:
+            console.print(
+                f"\n[red]⚠ AVISO:[/red] {env_label} no .env nao parece ser do {expected_name}.\n"
+                f"  Chave atual: [yellow]{prefix_show}[/yellow]"
+                + (f" (parece ser do [cyan]{detected}[/cyan])" if detected else "")
+                + f"\n  Esperado:    prefixo [green]{expected_prefix}[/green] ({expected_name})\n"
+                f"  Link p/ obter chave correta: {link}\n"
+            )
+        else:
+            console.print(
+                f"[dim]{env_label} ja configurado: {prefix_show}"
+                + (f" ({detected})" if detected else "")
+                + "[/dim]"
+            )
+
+        # Pergunta se quer trocar (com default sensato baseado no mismatch)
+        try:
+            from rich.prompt import Confirm as _Confirm
+            replace = _Confirm.ask(
+                "Substituir por uma nova chave?",
+                default=mismatch,  # default=True se chave parece errada
+            )
+        except Exception:
+            replace = mismatch
+
+        if not replace:
+            return {}, None
+        # cai pra leitura abaixo
+
+    console.print(f"\n[yellow]Cole sua API key do {expected_name}: {link}[/yellow]")
+    console.print(
+        "[dim]Cada caractere vai aparecer como '*'. "
+        "Cole com Ctrl+V (ou Shift+Insert) e aperte Enter.[/dim]"
+    )
+
+    # Tres camadas de fallback (do melhor pro pior):
+    # 1. prompt_toolkit.prompt(is_password=True) — mostra '*' por caractere (alvo)
+    # 2. Rich Prompt(password=True) — esconde tudo, mas funciona em pipes/CI
+    # 3. getpass — fallback extremo
+    key = ""
     try:
-        import getpass as _getpass
-        key = _getpass.getpass(f"{env_label} (Enter para pular): ").strip()
+        from prompt_toolkit import prompt as _pt_prompt
+        key = _pt_prompt(f"{env_label} (Enter para pular): ", is_password=True).strip()
     except Exception:
-        # Fallback se getpass não funcionar no terminal (ex: pipe/CI)
-        key = Prompt.ask(f"[bold]{env_label}[/bold] (Enter para pular)", default="").strip()
+        try:
+            key = Prompt.ask(
+                f"[bold]{env_label}[/bold] (Enter para pular)",
+                password=True,
+                default="",
+                show_default=False,
+            ).strip()
+        except Exception:
+            import getpass as _getpass
+            key = _getpass.getpass(f"{env_label} (sem echo, Enter para pular): ").strip()
 
-    if key:
-        return {env_key: key}, None
-    else:
+    if not key:
         console.print(f"[dim]Sem chave. Adicione {env_key}=sua-chave no .env depois.[/dim]")
         return {}, None
+
+    # Detecta chave colada duas vezes (paste duplo em getpass sem feedback)
+    # Estrategia: se o prefixo esperado aparece 2x e a primeira metade == segunda metade
+    if expected_prefix and key.count(expected_prefix) >= 2:
+        second_pos = key.index(expected_prefix, 1)
+        half1 = key[:second_pos]
+        half2 = key[second_pos:]
+        if half1 == half2:
+            console.print(
+                f"[yellow]⚠ Chave parece colada duas vezes "
+                f"(detectei '{expected_prefix}' aparecendo {key.count(expected_prefix)}x).[/yellow]\n"
+                f"[green]Cortei automaticamente para a primeira ocorrencia ({len(half1)} chars).[/green]"
+            )
+            key = half1
+
+    # Valida prefixo da nova chave; permite forcar mesmo assim
+    if expected_prefix and not key.startswith(expected_prefix):
+        detected_new = _detect_key_provider(key)
+        console.print(
+            f"[yellow]⚠ Esta chave nao tem prefixo {expected_prefix} esperado para {expected_name}.[/yellow]"
+            + (f" Parece ser do {detected_new}." if detected_new else "")
+        )
+        try:
+            from rich.prompt import Confirm as _Confirm
+            if not _Confirm.ask("Salvar mesmo assim?", default=False):
+                console.print("[dim]Chave nao salva.[/dim]")
+                return {}, None
+        except Exception:
+            pass
+
+    return {env_key: key}, None

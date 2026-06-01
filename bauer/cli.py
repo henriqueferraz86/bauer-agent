@@ -53,6 +53,7 @@ memory_app = typer.Typer(help="Operacoes com memoria Markdown")
 tools_app = typer.Typer(help="Tool Bridge — ferramentas do agente")
 project_app = typer.Typer(help="Gerenciamento de projeto (PROJECT.md)")
 task_app = typer.Typer(help="Gerenciamento de tarefas (TASKS.md)")
+dispatch_app = typer.Typer(help="Dispatcher hibrido durable para tasks READY")
 learning_app = typer.Typer(help="Adaptive Learning Engine — recomendacoes e reset")
 auth_app = typer.Typer(help="Autenticacao com providers cloud (OAuth/API Key)")
 orchestrate_app = typer.Typer(help="Orquestrador de agents — tarefas complexas em varios passos")
@@ -70,6 +71,7 @@ app.add_typer(memory_app, name="memory")
 app.add_typer(tools_app, name="tools")
 app.add_typer(project_app, name="project")
 app.add_typer(task_app, name="task")
+app.add_typer(dispatch_app, name="dispatch")
 app.add_typer(learning_app, name="learning")
 app.add_typer(auth_app, name="auth")
 app.add_typer(orchestrate_app, name="orchestrate")
@@ -284,8 +286,12 @@ def status(
     # --- Sessões ativas ----------------------------------------------------------
     session_count = 0
     try:
-        from .session_store import SessionStore
-        ss = SessionStore()
+        try:
+            from .sqlite_session_store import SqliteSessionStore
+            ss = SqliteSessionStore()
+        except Exception:
+            from .session_store import SessionStore
+            ss = SessionStore()
         session_count = len(ss.list_sessions())
     except Exception:
         pass
@@ -755,6 +761,47 @@ def memory_search(
     console.print(table)
 
 
+@memory_app.command("cleanup")
+def memory_cleanup(
+    days: int = typer.Option(90, "--days", "-d", help="Remover entradas mais antigas que N dias"),
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Simula sem modificar arquivos"),
+):
+    """Remove entradas de memória mais antigas que N dias (padrão: 90).
+
+    Exemplos:
+      bauer memory cleanup              # remove entradas >90 dias
+      bauer memory cleanup --days 30    # remove entradas >30 dias
+      bauer memory cleanup --dry-run    # conta sem apagar
+    """
+    from rich.table import Table as RichTable
+
+    mm = MemoryManager(memory_dir)
+    removed = mm.cleanup_old_entries(max_age_days=days, dry_run=dry_run)
+
+    total = sum(removed.values())
+    if total == 0:
+        console.print(f"[green]Nenhuma entrada com mais de {days} dias encontrada.[/green]")
+        return
+
+    table = RichTable(
+        title=f"{'[dim]Simulação[/dim] — ' if dry_run else ''}Entradas removidas (>{days} dias)",
+        show_lines=False,
+        box=None,
+    )
+    table.add_column("Arquivo", style="cyan")
+    table.add_column("Removidas", style="yellow", justify="right")
+    for fname, n in removed.items():
+        if n > 0:
+            table.add_row(fname, str(n))
+
+    console.print(table)
+    action = "seriam removidas" if dry_run else "removidas"
+    console.print(f"[bold]{total}[/bold] entradas {action} no total.")
+    if dry_run:
+        console.print("[dim]Rode sem --dry-run para aplicar.[/dim]")
+
+
 # --- tools ------------------------------------------------------------------
 
 _WORKSPACE_DIR = Path("workspace")
@@ -811,7 +858,14 @@ def _build_client(cfg):
                 extra_headers: dict[str, str] = {}
                 # Providers sem prefixo /v1/ no endpoint de chat
                 _NO_V1 = {"copilot", "github", "gemini"}
-                chat_path = "/chat/completions" if provider in _NO_V1 else "/v1/chat/completions"
+                if provider in _NO_V1:
+                    chat_path = "/chat/completions"
+                elif api_base.rstrip("/").endswith("/v1"):
+                    # api_base já inclui /v1 (ex: OAuth token salva "https://api.openai.com/v1")
+                    # não duplicar: /v1/v1/chat/completions → 404
+                    chat_path = "/chat/completions"
+                else:
+                    chat_path = "/v1/chat/completions"
                 if provider == "copilot":
                     extra_headers = {
                         "Copilot-Integration-Id": "vscode-chat",
@@ -1423,8 +1477,12 @@ def agent(
             )
 
     # ── Sessao persistente ───────────────────────────────────────────────────
-    from .session_store import SessionStore
-    store = SessionStore(sessions_dir)
+    try:
+        from .sqlite_session_store import SqliteSessionStore
+        store = SqliteSessionStore(sessions_dir)
+    except Exception:
+        from .session_store import SessionStore
+        store = SessionStore(sessions_dir)
     sid: str | None = None
 
     if resume:
@@ -1487,6 +1545,21 @@ def agent(
             "Exemplo: [bold]bauer agent --port 7770 --gateway-port 18789[/bold]"
         )
 
+    # Constrói clientes de fallback se configurados em model.fallback_providers
+    _fallback_clients: list = []
+    for _fb_provider in getattr(cfg.model, "fallback_providers", []):
+        try:
+            _fb_raw = cfg.model_dump()
+            _fb_raw["model"]["provider"] = _fb_provider
+            from .config_loader import BauerConfig as _BauerCfg
+            _fb_cfg = _BauerCfg(**_fb_raw)
+            from .env_loader import apply_env_to_config as _aenv
+            _aenv(_fb_cfg)
+            _fb_client = _build_client(_fb_cfg)
+            _fallback_clients.append((_fb_client, _fb_cfg.model.name))
+        except Exception:
+            pass  # fallback mal configurado — ignora silenciosamente
+
     def _rebuild_client_chat():
         """Reconstrói client + model_name a partir do config.yaml atual."""
         from .env_loader import load_dotenv as _lenv
@@ -1501,6 +1574,7 @@ def agent(
             model_router, orchestrator,
             session_store=store, session_id=sid,
             rebuild_client_fn=_rebuild_client_chat,
+            fallback_clients=_fallback_clients or None,
         )
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):
@@ -1799,8 +1873,12 @@ def agent_run(
     # Sessao persistente — nomeada pelo agent para auto-resume automático.
     # Cada agent tem seu próprio histórico: "agent-<nome>.jsonl"
     # /clear dentro da sessão apaga o histórico e começa do zero.
-    from .session_store import SessionStore
-    store = SessionStore(sessions_dir)
+    try:
+        from .sqlite_session_store import SqliteSessionStore
+        store = SqliteSessionStore(sessions_dir)
+    except Exception:
+        from .session_store import SessionStore
+        store = SessionStore(sessions_dir)
     sid = f"agent-{ag.name}"
     _prev_msgs = store.load(sid)
     if _prev_msgs:
@@ -2074,17 +2152,28 @@ def orchestrate_run(
     # Cliente principal (pode ser Ollama, OpenAI, etc.)
     client = _build_client(cfg)
 
-    # Cliente Ollama separado para roteamento/planejamento (sempre local)
+    # Cliente Ollama separado para roteamento/planejamento (sempre local quando disponivel)
+    # Se Ollama nao estiver rodando E o provider principal nao for Ollama,
+    # usamos o proprio client principal como planejador (fallback gracioso).
     from bauer.ollama_client import OllamaClient as _OllamaClient
     ollama_client = _OllamaClient(cfg.ollama.host, cfg.ollama.timeout_seconds, cfg.ollama.api_key)
-    alive, _ = ollama_client.is_alive()
-    if not alive:
+    alive, _alive_msg = ollama_client.is_alive()
+    _ollama_available = alive
+
+    if not _ollama_available:
+        if cfg.model.provider == "ollama":
+            # Provider e Ollama mas servidor down → erro fatal
+            console.print(
+                f"[red]Ollama em {cfg.ollama.host} nao esta respondendo: {_alive_msg}[/red]\n"
+                f"Verifique se o servidor Ollama esta rodando."
+            )
+            raise typer.Exit(code=1)
+        # Fallback: usa o client principal (cloud) tambem para planejamento/roteamento
         console.print(
-            f"[red]O orquestrador precisa do Ollama em {cfg.ollama.host} "
-            f"para os modelos de roteamento (qwen3:0.6b, smollm3, phi4-mini).[/red]\n"
-            f"Verifique se o Ollama esta rodando."
+            f"[dim]Ollama indisponivel em {cfg.ollama.host} — "
+            f"usando [cyan]{cfg.model.provider}[/cyan] para planejar e sintetizar.[/dim]"
         )
-        raise typer.Exit(code=1)
+        ollama_client = client  # sinaliza para o resto do fluxo usar o client principal
 
     if not workspace.exists():
         workspace.mkdir(parents=True, exist_ok=True)
@@ -2113,9 +2202,19 @@ def orchestrate_run(
 
     # Paralelo apenas no perfil high (GPU/alta RAM)
     _parallel = cfg.runtime.profile == "high"
+
+    # Quando Ollama nao esta disponivel, usamos o modelo do client principal
+    # para planejamento e sintese tambem — modelos Ollama (qwen3, phi4-mini) nao existem.
+    if _ollama_available:
+        _planner = planner or cfg.router.router_model
+        _synthesizer = synthesizer or cfg.router.reasoning_model
+    else:
+        _planner = planner or cfg.model.name
+        _synthesizer = synthesizer or cfg.model.name
+
     orch_cfg = OrchestratorConfig(
-        planner_model=planner or cfg.router.router_model,
-        synthesizer_model=synthesizer or cfg.router.reasoning_model,
+        planner_model=_planner,
+        synthesizer_model=_synthesizer,
         max_steps=MAX_STEPS,
         parallel_steps=_parallel,
         agents_file=str(agents_file),
@@ -2729,9 +2828,11 @@ def task_list(
 
     _STATUS_COLOR = {
         "TODO": "white",
+        "READY": "cyan",
         "IN_PROGRESS": "yellow",
         "DONE": "green",
         "BLOCKED": "red",
+        "FAILED": "magenta",
     }
     for t in tasks:
         color = _STATUS_COLOR.get(t.status, "white")
@@ -2777,12 +2878,42 @@ def task_block(
     _task_update(workspace, task_id, "BLOCKED")
 
 
+@task_app.command("ready")
+def task_ready(
+    task_id: str = typer.Argument(..., help="ID da tarefa (ex: 001)"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    assignee: str = typer.Option("", "--assignee", "-a", help="Responsavel/agente opcional"),
+    max_retries: int = typer.Option(2, "--max-retries", help="Tentativas antes de FAILED"),
+    max_runtime_seconds: int = typer.Option(0, "--max-runtime-seconds", help="Timeout do worker (0 = sem limite)"),
+):
+    """Marca tarefa como READY e opt-in para o dispatcher hibrido."""
+    from .task_dispatcher import TaskDispatcher
+
+    dispatcher = TaskDispatcher(workspace, max_retries=max_retries)
+    task = dispatcher.mark_ready(
+        task_id,
+        assignee=assignee,
+        max_retries=max_retries,
+        max_runtime_seconds=max_runtime_seconds or None,
+    )
+    console.print(f"[green]{task.id}[/green] -> [READY] {task.title}")
+
+
+@task_app.command("fail")
+def task_fail(
+    task_id: str = typer.Argument(..., help="ID da tarefa (ex: 001)"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    """Marca tarefa como FAILED."""
+    _task_update(workspace, task_id, "FAILED")
+
+
 @task_app.command("board")
 def task_board(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
     compact: bool = typer.Option(False, "--compact", "-c", help="Mostra apenas ID e titulo (sem descricao)"),
 ):
-    """Exibe o Kanban board no terminal — colunas TODO / IN PROGRESS / DONE / BLOCKED."""
+    """Exibe o Kanban board no terminal com todos os status de TASKS.md."""
     import sys as _sys
     from rich.columns import Columns
     from rich.markup import escape as _esc
@@ -2799,9 +2930,11 @@ def task_board(
     if _utf8:
         _ICONS = {
             "TODO":        "📋",
+            "READY":       "▶",
             "IN_PROGRESS": "🔄",
             "DONE":        "✅",
             "BLOCKED":     "🚫",
+            "FAILED":      "✖",
         }
         _BAR_FULL  = "█"
         _BAR_EMPTY = "░"
@@ -2809,9 +2942,11 @@ def task_board(
     else:
         _ICONS = {
             "TODO":        "[ ]",
+            "READY":       "[>]",
             "IN_PROGRESS": "[~]",
             "DONE":        "[x]",
             "BLOCKED":     "[!]",
+            "FAILED":      "[x!]",
         }
         _BAR_FULL  = "#"
         _BAR_EMPTY = "."
@@ -2827,16 +2962,20 @@ def task_board(
     # Configuracao de cada coluna: (status, label, cor)
     COLUMNS = [
         ("TODO",        "TODO",        "bright_white"),
+        ("READY",       "READY",       "cyan"),
         ("IN_PROGRESS", "IN PROGRESS", "yellow"),
-        ("DONE",        "DONE",        "green"),
         ("BLOCKED",     "BLOCKED",     "red"),
+        ("FAILED",      "FAILED",      "magenta"),
+        ("DONE",        "DONE",        "green"),
     ]
 
     _CARD_COLOR = {
         "TODO":        "white",
+        "READY":       "cyan",
         "IN_PROGRESS": "yellow",
         "DONE":        "green",
         "BLOCKED":     "red",
+        "FAILED":      "magenta",
     }
 
     # Agrupa tarefas por status
@@ -2849,7 +2988,7 @@ def task_board(
     panels = []
     for status, label, border_color in COLUMNS:
         col_tasks = by_status[status]
-        icon = _ICONS[status]
+        icon = _ICONS.get(status, status)
 
         # Monta o conteudo do painel
         lines = Text()
@@ -2888,6 +3027,136 @@ def task_board(
         f"[dim]  Progresso: {bar} {pct}%  "
         f"({done_count}/{total} concluidas)[/dim]\n"
     )
+
+
+# --- dispatch ---------------------------------------------------------------
+
+
+@dispatch_app.command("once")
+def dispatch_once_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    max_spawn: int = typer.Option(1, "--max-spawn", help="Maximo de novas tasks neste tick"),
+    max_in_progress: int = typer.Option(1, "--max-in-progress", help="Limite global de tasks em execucao"),
+    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds", help="TTL do claim"),
+    stale_seconds: int = typer.Option(1800, "--stale-seconds", help="Sem heartbeat por este tempo vira stale"),
+    max_retries: int = typer.Option(2, "--max-retries", help="Tentativas antes de FAILED"),
+    foreground: bool = typer.Option(False, "--foreground", help="Executa worker neste processo e aguarda fim"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria claimed sem alterar"),
+):
+    """Executa um tick do dispatcher hibrido."""
+    from .task_dispatcher import TaskDispatcher
+
+    dispatcher = TaskDispatcher(
+        workspace,
+        claim_ttl_seconds=claim_ttl_seconds,
+        stale_seconds=stale_seconds,
+        max_retries=max_retries,
+    )
+    result = dispatcher.dispatch_once(
+        dry_run=dry_run,
+        max_spawn=max_spawn,
+        max_in_progress=max_in_progress,
+        spawn_background=not foreground,
+        config=config,
+        models=models,
+    )
+    console.print(
+        "[bold]dispatch once[/bold] "
+        f"reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
+        f"spawned={len(result.spawned)} completed={len(result.completed)} "
+        f"failed={len(result.failed)} dry={len(result.dry_run)}"
+    )
+    for label, items in (
+        ("reclaimed", result.reclaimed),
+        ("claimed", result.claimed),
+        ("spawned", result.spawned),
+        ("completed", result.completed),
+        ("failed", result.failed),
+        ("dry", result.dry_run),
+        ("skipped", result.skipped),
+    ):
+        if items:
+            console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
+
+
+@dispatch_app.command("daemon")
+def dispatch_daemon_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    interval: int = typer.Option(30, "--interval", help="Segundos entre ticks"),
+    max_spawn: int = typer.Option(1, "--max-spawn"),
+    max_in_progress: int = typer.Option(1, "--max-in-progress"),
+    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds"),
+    stale_seconds: int = typer.Option(1800, "--stale-seconds"),
+    max_retries: int = typer.Option(2, "--max-retries"),
+):
+    """Loop duravel do dispatcher. Ctrl+C para parar."""
+    import time as _time
+    from .task_dispatcher import TaskDispatcher
+
+    dispatcher = TaskDispatcher(
+        workspace,
+        claim_ttl_seconds=claim_ttl_seconds,
+        stale_seconds=stale_seconds,
+        max_retries=max_retries,
+    )
+    console.print(f"[green]Dispatcher iniciado[/green] workspace={workspace} interval={interval}s")
+    try:
+        while True:
+            result = dispatcher.dispatch_once(
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                spawn_background=True,
+                config=config,
+                models=models,
+            )
+            if result.reclaimed or result.claimed or result.spawned or result.failed:
+                console.print(
+                    f"[dim]tick[/dim] reclaimed={len(result.reclaimed)} "
+                    f"claimed={len(result.claimed)} spawned={len(result.spawned)} "
+                    f"failed={len(result.failed)}"
+                )
+            _time.sleep(max(1, interval))
+    except KeyboardInterrupt:
+        console.print("\n[dim]Dispatcher encerrado.[/dim]")
+
+
+@dispatch_app.command("worker")
+def dispatch_worker_cmd(
+    task_id: str = typer.Argument(..., help="ID da task"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    claim_id: str = typer.Option("", "--claim-id", help="Claim esperado"),
+    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds"),
+    stale_seconds: int = typer.Option(1800, "--stale-seconds"),
+):
+    """Worker interno do dispatcher. Normalmente chamado por dispatch once/daemon."""
+    from .task_dispatcher import TaskDispatcher, TaskDispatcherError
+
+    dispatcher = TaskDispatcher(
+        workspace,
+        claim_ttl_seconds=claim_ttl_seconds,
+        stale_seconds=stale_seconds,
+    )
+    try:
+        result = dispatcher.run_claimed_worker(
+            task_id,
+            claim_id=claim_id,
+            config=config,
+            models=models,
+        )
+    except TaskDispatcherError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    if result.success:
+        console.print(f"[green]Task {task_id} concluida.[/green]")
+    else:
+        console.print(f"[red]Task {task_id} falhou:[/red] {result.error}")
+        raise typer.Exit(code=1)
 
 
 # --- serve ------------------------------------------------------------------
@@ -3259,7 +3528,7 @@ def auth_login(
 ):
     """Autentica com um provider cloud.
 
-    Sem --provider: exibe menu interativo com todos os 13 providers.
+    Sem --provider: exibe menu interativo com todos os 14 providers.
 
     Exemplos:
       bauer auth login                   # menu interativo

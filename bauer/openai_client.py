@@ -234,13 +234,46 @@ class OpenAIClient:
             status = _error_status
             body = _error_body
             if status == 429:
-                _hint = (
-                    "Limite de requisicoes excedido.\n"
-                    "O plano gratuito deste provider tem limites baixos.\n"
-                    "  - Aguarde alguns segundos e tente novamente\n"
-                    "  - Ou troque de provider: bauer model\n"
-                    "  - Ou use Ollama local (sem limites)"
-                )
+                # Tenta parsear o body para distinguir quota vs rate-limit
+                _error_type = ""
+                _error_msg = body
+                try:
+                    _err_json = json.loads(body)
+                    _error_type = (
+                        _err_json.get("error", {}).get("type", "")
+                        or _err_json.get("error", {}).get("code", "")
+                    )
+                    _error_msg = _err_json.get("error", {}).get("message", body)
+                except Exception:
+                    pass
+
+                if "insufficient_quota" in _error_type or "insufficient_quota" in body:
+                    _hint = (
+                        "Sem creditos na conta OpenAI API.\n"
+                        f"  Mensagem: {_error_msg}\n\n"
+                        "  IMPORTANTE: ChatGPT Plus (assinatura web) != creditos de API.\n"
+                        "  Sao produtos separados na OpenAI.\n\n"
+                        "  Para resolver — escolha uma opcao:\n"
+                        "  A) Adicionar billing em platform.openai.com/settings/billing\n"
+                        "     e usar bauer model → OpenAI API Key (sk-...)\n"
+                        "  B) Usar Groq gratis: bauer model → Groq → Llama 3.3 70B\n"
+                        "  C) Usar Ollama local: bauer model → Ollama"
+                    )
+                elif "rate_limit" in _error_type or "rate_limit" in body:
+                    _hint = (
+                        "Rate limit atingido (muitas requisicoes por minuto).\n"
+                        f"  Mensagem: {_error_msg}\n"
+                        "  - Aguarde alguns segundos e tente novamente\n"
+                        "  - Ou troque de provider: bauer model"
+                    )
+                else:
+                    # Erro 429 desconhecido — mostra body completo para diagnóstico
+                    _hint = (
+                        f"HTTP 429 do provider.\n"
+                        f"  Resposta: {_error_msg or body}\n"
+                        "  - Verifique sua conta e billing em platform.openai.com\n"
+                        "  - Ou troque de provider: bauer model"
+                    )
             elif status == 401:
                 _hint = (
                     "Falha de autenticacao.\n"
@@ -270,3 +303,32 @@ class OpenAIClient:
             else:
                 _hint = f"HTTP {status}. {body}".strip()
             raise OpenAIClientError(f"[Provedor] {_hint}") from _error_exc
+
+    def chat_with_retry(
+        self,
+        model: str,
+        messages: list[dict],
+        *,
+        max_retries: int = 2,
+        on_retry=None,
+    ) -> list[str]:
+        """Coleta todos os chunks do chat_stream com retry automático.
+
+        Útil quando o caller quer o texto completo e pode aceitar um pequeno delay
+        em caso de rate limit ou erro transitório do provider.
+
+        Returns:
+            Lista de chunks (strings) — junte com "".join() para o texto completo.
+        """
+        from .retry_utils import retry_with_backoff
+
+        def _collect() -> list[str]:
+            return list(self.chat_stream(model, messages))
+
+        return retry_with_backoff(
+            _collect,
+            max_retries=max_retries,
+            base_delay=5.0,
+            max_delay=60.0,
+            on_retry=on_retry,
+        )

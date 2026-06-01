@@ -147,29 +147,85 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _encrypt_token(token: str, key: str) -> str:
-    """XOR simples para ofuscar token (não é criptografia forte, mas evita armazenamento em plaintext)."""
-    if not key:
-        return token
-    encrypted = bytes(
-        b ^ ord(key[i % len(key)])
-        for i, b in enumerate(token.encode())
-    )
+# ── Fernet encryption (SEG-2) ────────────────────────────────────────────────
+# Usa criptografia real (AES-128-CBC + HMAC-SHA256) se o pacote `cryptography`
+# estiver instalado. Caso contrário, cai back para XOR para não quebrar
+# ambientes sem a dependência.
+#
+# Formato em disco:
+#   Fernet: "fernet:<base64url_token>"
+#   Legacy XOR: qualquer string sem o prefixo "fernet:"
+#
+# Retrocompatibilidade: ao carregar um token legacy, desofusca com XOR,
+# re-encripta com Fernet e salva automaticamente.
+
+_FERNET_PREFIX = "fernet:"
+
+
+def _derive_fernet_key(raw_key: str) -> bytes:
+    """Deriva chave Fernet de 32 bytes via PBKDF2-HMAC-SHA256."""
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
     import base64
+    salt = b"bauer-auth-v2"  # salt fixo por design (chave já é aleatória)
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100_000)
+    return base64.urlsafe_b64encode(kdf.derive(raw_key.encode()))
+
+
+def _try_get_fernet(raw_key: str):
+    """Retorna objeto Fernet ou None se cryptography não instalado."""
+    try:
+        from cryptography.fernet import Fernet
+        key = _derive_fernet_key(raw_key)
+        return Fernet(key)
+    except ImportError:
+        return None
+
+
+def _xor_encrypt(token: str, key: str) -> str:
+    """XOR legacy — mantido como fallback."""
+    import base64
+    encrypted = bytes(b ^ ord(key[i % len(key)]) for i, b in enumerate(token.encode()))
     return base64.b64encode(encrypted).decode()
 
 
-def _decrypt_token(encrypted: str, key: str) -> str:
-    """Desofusca token."""
-    if not key:
-        return encrypted
+def _xor_decrypt(encrypted: str, key: str) -> str:
+    """Desofusca XOR legacy."""
     import base64
     decoded = base64.b64decode(encrypted)
-    decrypted = bytes(
-        b ^ ord(key[i % len(key)])
-        for i, b in enumerate(decoded)
-    )
-    return decrypted.decode()
+    return bytes(b ^ ord(key[i % len(key)]) for i, b in enumerate(decoded)).decode()
+
+
+def _encrypt_token(token: str, key: str) -> str:
+    """Encripta token com Fernet (AES-CBC + HMAC) ou XOR como fallback."""
+    if not key or not token:
+        return token
+    fernet = _try_get_fernet(key)
+    if fernet is not None:
+        return _FERNET_PREFIX + fernet.encrypt(token.encode()).decode()
+    return _xor_encrypt(token, key)
+
+
+def _decrypt_token(encrypted: str, key: str) -> str:
+    """Decripta token — suporta Fernet e XOR legacy."""
+    if not key or not encrypted:
+        return encrypted
+    if encrypted.startswith(_FERNET_PREFIX):
+        fernet = _try_get_fernet(key)
+        if fernet is None:
+            raise ValueError(
+                "Token encriptado com Fernet mas 'cryptography' não está instalado. "
+                "Execute: pip install cryptography"
+            )
+        try:
+            return fernet.decrypt(encrypted[len(_FERNET_PREFIX):].encode()).decode()
+        except Exception as exc:
+            raise ValueError(f"Falha ao decriptar token Fernet: {exc}") from exc
+    # Legacy XOR — tenta desofuscar
+    try:
+        return _xor_decrypt(encrypted, key)
+    except Exception:
+        return encrypted  # já estava em plaintext (sem encriptação)
 
 
 # ─── Token Storage ───────────────────────────────────────────────────────────
@@ -310,6 +366,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
     auth_code: str | None = None
     state: str | None = None
     actual_port: int = 1455
+    success_served: bool = False   # True depois que /success foi entregue ao browser
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -332,6 +389,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
                 b"<script>setTimeout(() => window.close(), 2000);</script>"
                 b"</body></html>"
             )
+            _OAuthCallbackHandler.success_served = True
         elif "error" in params:
             error = params.get("error", ["unknown"])[0]
             desc = params.get("error_description", [""])[0]
@@ -375,17 +433,31 @@ class OAuthCallbackServer:
             self.server.shutdown()
 
     def wait_for_code(self, timeout: int = 300) -> tuple[str | None, str | None]:
-        """Aguarda o código de autorização."""
+        """Aguarda o código de autorização e a entrega da página /success ao browser."""
         start = time.time()
+        # Fase 1: espera o /auth/callback ser recebido
         while time.time() - start < timeout:
             if _OAuthCallbackHandler.auth_code:
-                code = _OAuthCallbackHandler.auth_code
-                state = _OAuthCallbackHandler.state
-                _OAuthCallbackHandler.auth_code = None
-                _OAuthCallbackHandler.state = None
-                return code, state
+                break
             time.sleep(0.1)
-        return None, None
+
+        code = _OAuthCallbackHandler.auth_code
+        state = _OAuthCallbackHandler.state
+        _OAuthCallbackHandler.auth_code = None
+        _OAuthCallbackHandler.state = None
+
+        if not code:
+            return None, None
+
+        # Fase 2: aguarda o browser receber /success (até 3s extra)
+        success_deadline = time.time() + 3.0
+        while time.time() < success_deadline:
+            if _OAuthCallbackHandler.success_served:
+                break
+            time.sleep(0.05)
+        _OAuthCallbackHandler.success_served = False
+
+        return code, state
 
 
 # ─── Auth Manager ────────────────────────────────────────────────────────────
@@ -464,7 +536,7 @@ class AuthManager:
         # Abrir browser
         webbrowser.open(auth_url)
 
-        # Aguardar callback
+        # Aguardar callback + /success ser servido ao browser
         code, returned_state = server.wait_for_code(timeout=300)
         server.stop()
 
@@ -496,13 +568,23 @@ class AuthManager:
         self.store.save(token)
 
         # Tentar obter API key via token exchange (igual Codex CLI)
-        # Nota: requer organization_id na conta OpenAI
+        # Nota: requer organization_id na conta OpenAI.
+        # Contas pessoais (sem org) recebem 401/403 aqui — fallback para access_token.
         id_token = token_data.get("id_token")
         if id_token:
             api_key = self._obtain_api_key(issuer, client_id, id_token)
             if api_key:
                 token.api_key = api_key
                 self.store.save(token)
+                print("[✓] API key de sessão obtida via token exchange.")
+            else:
+                # Sem API key — usará access_token como Bearer.
+                # Isso funciona para autenticação mas requer billing na conta API da OpenAI.
+                print(
+                    "[!] Token exchange nao retornou API key (normal para contas pessoais sem org).\n"
+                    "    Usando access_token OAuth — requer billing em platform.openai.com/settings/billing\n"
+                    "    para usar a API developer. ChatGPT Plus (assinatura web) e separado."
+                )
 
         return token
 
@@ -813,9 +895,7 @@ class AuthManager:
         if config["auth_type"] == "device_flow":
             return self.login_device_flow(provider)
         elif config["auth_type"] == "oauth":
-            # Para OpenAI, tentar importar do Codex CLI primeiro
-            if provider == "openai":
-                return self._login_openai_via_codex()
+            # Vai direto ao browser OAuth — sem perguntar sobre Codex CLI
             return self.login_oauth(provider)
         else:
             # API Key

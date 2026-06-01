@@ -102,6 +102,94 @@ def test_system_prompt_mentions_portugues(router: ToolRouter):
 # --- run_agent_session (integração) -----------------------------------------
 
 
+# --- comandos slash de workspace --------------------------------------------
+
+
+def test_task_command_uses_active_workspace(tmp_path: Path):
+    from bauer.agent import _handle_task_cmd
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    global_ws = tmp_path / "workspace"
+    console = Console(record=True, width=120)
+
+    _handle_task_cmd("/task add Custom workspace task", console, active_ws)
+
+    assert (active_ws / "TASKS.md").exists()
+    assert "Custom workspace task" in (active_ws / "TASKS.md").read_text(encoding="utf-8")
+    assert not (global_ws / "TASKS.md").exists()
+
+
+def test_project_command_uses_active_workspace(tmp_path: Path):
+    from bauer.agent import _handle_project_cmd
+    from bauer.workspace_manager import WorkspaceManager
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    WorkspaceManager(active_ws).init_project("Active Project", "From active workspace")
+    console = Console(record=True, width=120)
+
+    _handle_project_cmd(console, active_ws)
+
+    output = console.export_text()
+    assert "Active Project" in output
+    assert "From active workspace" in output
+
+
+def test_run_agent_session_task_command_uses_router_workspace(tmp_path: Path):
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    router = ToolRouter(workspace=active_ws)
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/task add Via chat", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    assert (active_ws / "TASKS.md").exists()
+    assert "Via chat" in (active_ws / "TASKS.md").read_text(encoding="utf-8")
+    client.chat_stream.assert_not_called()
+
+
+def test_dispatch_command_dry_run_uses_active_workspace(tmp_path: Path):
+    from bauer.agent import _handle_dispatch_cmd
+    from bauer.workspace_manager import WorkspaceManager
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    global_ws = tmp_path / "workspace"
+    wm = WorkspaceManager(active_ws)
+    wm.init_project("Active Project")
+    wm.add_task("Queued task", status="READY", metadata={"dispatch": "true"})
+    console = Console(record=True, width=120)
+
+    _handle_dispatch_cmd("/dispatch once --dry-run", console, active_ws)
+
+    output = console.export_text()
+    assert "dry: T0001" in output
+    assert wm.get_task("001").status == "READY"
+    assert not (global_ws / "TASKS.md").exists()
+
+
+def test_run_agent_session_dispatch_status_uses_router_workspace(tmp_path: Path):
+    from bauer.agent import run_agent_session
+    from bauer.workspace_manager import WorkspaceManager
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    WorkspaceManager(active_ws).init_project("Active Project")
+    router = ToolRouter(workspace=active_ws)
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/dispatch status", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()
+
+
 def _make_client(*responses: str) -> MagicMock:
     """Cria mock de OllamaClient que retorna respostas em sequência."""
     client = MagicMock()

@@ -37,14 +37,14 @@ def router(ws: Path) -> ToolRouter:
 
 def test_sandbox_blocks_dotdot(router: ToolRouter):
     """../ fora do workspace deve levantar SandboxError."""
-    with pytest.raises(SandboxError, match="fora do workspace"):
+    with pytest.raises(SandboxError, match="Acesso negado"):
         router._sandbox("../etc/passwd")
 
 
 def test_sandbox_blocks_absolute_outside(router: ToolRouter, tmp_path: Path):
     """Path absoluto fora do workspace deve ser bloqueado."""
     outside = str(tmp_path)  # pai do workspace — fora do sandbox
-    with pytest.raises(SandboxError, match="fora do workspace"):
+    with pytest.raises(SandboxError, match="Acesso negado"):
         router._sandbox(outside)
 
 

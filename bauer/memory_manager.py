@@ -295,6 +295,70 @@ class MemoryManager:
         results.sort(key=lambda x: -x[0])
         return [r[1] for r in results[:top_k]]
 
+    # --- TTL cleanup ------------------------------------------------------------
+
+    def cleanup_old_entries(
+        self,
+        max_age_days: int = 90,
+        files: list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        """Remove entradas de memória mais antigas que `max_age_days` dias.
+
+        Cada entrada começa com a linha "## [YYYY-MM-DD HH:MM UTC] título".
+        Entradas sem timestamp são preservadas (ex: cabeçalho do arquivo).
+
+        Args:
+            max_age_days: Entradas com mais de N dias são removidas.
+            files: Lista de arquivos a limpar (padrão: todos de MEMORY_FILES).
+            dry_run: Se True, conta entradas sem modificar os arquivos.
+
+        Returns:
+            Dict {nome_arquivo: n_entradas_removidas}.
+        """
+        import re
+        from datetime import timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        _TS_RE = re.compile(r"^## \[(\d{4}-\d{2}-\d{2})")
+
+        target_files = files or list(MEMORY_FILES.values())
+        removed: dict[str, int] = {}
+
+        for fname in target_files:
+            p = self.memory_dir / fname
+            if not p.exists():
+                continue
+            content = p.read_text(encoding="utf-8")
+            # Divide em blocos — cabeçalho do arquivo + seções de entrada
+            raw_blocks = re.split(r"(?=^## )", content, flags=re.MULTILINE)
+            kept: list[str] = []
+            n_removed = 0
+
+            for block in raw_blocks:
+                m = _TS_RE.match(block.lstrip())
+                if m is None:
+                    # Cabeçalho do arquivo ou bloco sem timestamp → preserva sempre
+                    kept.append(block)
+                    continue
+                try:
+                    entry_date = datetime.strptime(m.group(1), "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    kept.append(block)
+                    continue
+                if entry_date < cutoff:
+                    n_removed += 1
+                else:
+                    kept.append(block)
+
+            removed[fname] = n_removed
+            if n_removed > 0 and not dry_run:
+                p.write_text("".join(kept), encoding="utf-8")
+
+        return removed
+
     # --- internos ---------------------------------------------------------------
 
     def _resolve(self, filename: str) -> Path:

@@ -179,7 +179,10 @@ class ShellRunner:
 
     def _parse_command(self, command: str) -> list[str]:
         try:
-            args = shlex.split(command, posix=(sys.platform != "win32"))
+            # posix=True sempre: strip correto de aspas em caminhos Windows como
+            # "C:/path/python.exe" — com posix=False o shlex mantém as aspas no
+            # token e subprocess.run falha com FileNotFoundError.
+            args = shlex.split(command, posix=True)
         except ValueError as exc:
             raise ShellError(f"Comando invalido (parsing falhou): {exc}") from exc
         if not args:

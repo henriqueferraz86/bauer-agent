@@ -46,8 +46,10 @@ _HTML = r"""<!DOCTYPE html>
     --text:      #e2e8f0;
     --dim:       #64748b;
     --todo:      #3b82f6;
+    --ready:     #06b6d4;
     --progress:  #f59e0b;
     --blocked:   #ef4444;
+    --failed:    #d946ef;
     --done:      #22c55e;
     --radius:    10px;
     --drag-over: rgba(59,130,246,0.15);
@@ -91,7 +93,7 @@ _HTML = r"""<!DOCTYPE html>
   /* ── board ── */
   .board {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
     align-items: start;
   }
@@ -122,12 +124,16 @@ _HTML = r"""<!DOCTYPE html>
     border-bottom: 2px solid var(--border);
   }
   .col-header.todo     { border-color: var(--todo); }
+  .col-header.ready    { border-color: var(--ready); }
   .col-header.progress { border-color: var(--progress); }
   .col-header.blocked  { border-color: var(--blocked); }
+  .col-header.failed   { border-color: var(--failed); }
   .col-header.done     { border-color: var(--done); }
   .col-header .label.todo     { color: var(--todo); }
+  .col-header .label.ready    { color: var(--ready); }
   .col-header .label.progress { color: var(--progress); }
   .col-header .label.blocked  { color: var(--blocked); }
+  .col-header .label.failed   { color: var(--failed); }
   .col-header .label.done     { color: var(--done); }
   .col-header-right { display:flex; align-items:center; gap:8px; }
   .badge {
@@ -279,8 +285,10 @@ _HTML = r"""<!DOCTYPE html>
     border-radius: 6px; padding: 2px 8px; margin-bottom: 14px;
   }
   #modal-status.TODO       { background:rgba(59,130,246,.15); color:var(--todo); }
+  #modal-status.READY      { background:rgba(6,182,212,.15);  color:var(--ready); }
   #modal-status.IN_PROGRESS{ background:rgba(245,158,11,.15); color:var(--progress); }
   #modal-status.BLOCKED    { background:rgba(239,68,68,.15);  color:var(--blocked); }
+  #modal-status.FAILED     { background:rgba(217,70,239,.15); color:var(--failed); }
   #modal-status.DONE       { background:rgba(34,197,94,.15);  color:var(--done); }
   #modal-title { font-size: 1.05rem; font-weight: 700; line-height: 1.5; margin-bottom: 16px; }
   #modal-divider { border: none; border-top: 1px solid var(--border); margin-bottom: 14px; }
@@ -296,8 +304,10 @@ _HTML = r"""<!DOCTYPE html>
   }
   .status-btn:hover { opacity: 0.8; }
   .status-btn.TODO       { background:rgba(59,130,246,.2);  color:var(--todo); }
+  .status-btn.READY      { background:rgba(6,182,212,.2);   color:var(--ready); }
   .status-btn.IN_PROGRESS{ background:rgba(245,158,11,.2);  color:var(--progress); }
   .status-btn.BLOCKED    { background:rgba(239,68,68,.2);   color:var(--blocked); }
+  .status-btn.FAILED     { background:rgba(217,70,239,.2);  color:var(--failed); }
   .status-btn.DONE       { background:rgba(34,197,94,.2);   color:var(--done); }
   .status-btn.active     { outline: 2px solid currentColor; }
   #modal-hint { margin-top: 14px; font-size: 0.7rem; color: var(--dim); text-align: right; }
@@ -377,6 +387,16 @@ _HTML = r"""<!DOCTYPE html>
     </div>
     <div class="cards" id="cards-TODO"><div class="drop-hint">Soltar aqui</div></div>
   </div>
+  <div class="column" id="col-READY" ondragover="onDragOver(event,'READY')" ondrop="onDrop(event,'READY')" ondragleave="onDragLeave(event)">
+    <div class="col-header ready">
+      <span class="label ready">READY</span>
+      <div class="col-header-right">
+        <span class="badge" id="cnt-READY">0</span>
+        <button class="btn-add" onclick="openNewTask('READY')" title="Nova tarefa">+ novo</button>
+      </div>
+    </div>
+    <div class="cards" id="cards-READY"><div class="drop-hint">Soltar aqui</div></div>
+  </div>
   <div class="column" id="col-IN_PROGRESS" ondragover="onDragOver(event,'IN_PROGRESS')" ondrop="onDrop(event,'IN_PROGRESS')" ondragleave="onDragLeave(event)">
     <div class="col-header progress">
       <span class="label progress">EM PROGRESSO</span>
@@ -396,6 +416,16 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="cards" id="cards-BLOCKED"><div class="drop-hint">Soltar aqui</div></div>
+  </div>
+  <div class="column" id="col-FAILED" ondragover="onDragOver(event,'FAILED')" ondrop="onDrop(event,'FAILED')" ondragleave="onDragLeave(event)">
+    <div class="col-header failed">
+      <span class="label failed">FALHOU</span>
+      <div class="col-header-right">
+        <span class="badge" id="cnt-FAILED">0</span>
+        <button class="btn-add" onclick="openNewTask('FAILED')" title="Nova tarefa">+ novo</button>
+      </div>
+    </div>
+    <div class="cards" id="cards-FAILED"><div class="drop-hint">Soltar aqui</div></div>
   </div>
   <div class="column" id="col-DONE" ondragover="onDragOver(event,'DONE')" ondrop="onDrop(event,'DONE')" ondragleave="onDragLeave(event)">
     <div class="col-header done">
@@ -442,8 +472,10 @@ _HTML = r"""<!DOCTYPE html>
         <label class="form-label">Status inicial</label>
         <select class="form-select" id="nt-status">
           <option value="TODO">TODO</option>
+          <option value="READY">READY</option>
           <option value="IN_PROGRESS">EM PROGRESSO</option>
           <option value="BLOCKED">BLOQUEADO</option>
+          <option value="FAILED">FALHOU</option>
           <option value="DONE">CONCLUÍDO</option>
         </select>
       </div>
@@ -468,8 +500,8 @@ let dragTaskId = null;
 let currentDetailId = null;
 let refreshPaused = false;
 
-const STATUSES = ["TODO","IN_PROGRESS","BLOCKED","DONE"];
-const STATUS_LABELS = {TODO:"TODO",IN_PROGRESS:"EM PROGRESSO",BLOCKED:"BLOQUEADO",DONE:"CONCLUÍDO"};
+const STATUSES = ["TODO","READY","IN_PROGRESS","BLOCKED","FAILED","DONE"];
+const STATUS_LABELS = {TODO:"TODO",READY:"READY",IN_PROGRESS:"EM PROGRESSO",BLOCKED:"BLOQUEADO",FAILED:"FALHOU",DONE:"CONCLUIDO"};
 
 function esc(s) {
   return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -677,7 +709,7 @@ function renderColumn(status, tasks) {
 function expand(status) { collapseState[status] = false; render(); }
 
 function render() {
-  const grouped = { TODO:[], IN_PROGRESS:[], BLOCKED:[], DONE:[] };
+  const grouped = { TODO:[], READY:[], IN_PROGRESS:[], BLOCKED:[], FAILED:[], DONE:[] };
   for (const t of allTasks)
     if (grouped[t.status] !== undefined) grouped[t.status].push(t);
   for (const [s, tasks] of Object.entries(grouped)) renderColumn(s, tasks);
@@ -775,14 +807,29 @@ class _KanbanHandler(BaseHTTPRequestHandler):
             if body is None:
                 return
             new_status = body.get("status", "").strip().upper()
-            valid = {"TODO", "IN_PROGRESS", "DONE", "BLOCKED"}
+            valid = {"TODO", "READY", "IN_PROGRESS", "DONE", "BLOCKED", "FAILED"}
             if new_status not in valid:
                 self._json(400, {"error": f"Status inválido: '{new_status}'. Válidos: {sorted(valid)}"})
                 return
             try:
                 with _write_lock:
                     wm = WorkspaceManager(self.workspace)
-                    task = wm.update_task_status(task_id, new_status)
+                    if new_status == "READY":
+                        from .task_dispatcher import TaskDispatcher
+                        task = TaskDispatcher(self.workspace).mark_ready(task_id)
+                    else:
+                        task = wm.update_task_status(task_id, new_status)
+                        wm.update_task_metadata(
+                            task.id,
+                            metadata={
+                                "claim_id": None,
+                                "claim_expires": None,
+                                "claimed_by": None,
+                                "worker_pid": None,
+                                "heartbeat_at": None,
+                            },
+                        )
+                        task = wm.get_task(task.id)
                 self._json(200, {
                     "id": task.id, "status": task.status,
                     "title": task.title,
@@ -802,8 +849,11 @@ class _KanbanHandler(BaseHTTPRequestHandler):
                 return
             description = (body.get("description") or "").strip()
             spec_id = (body.get("spec_id") or "").strip()
+            priority = (body.get("priority") or "medium").strip().lower()
+            assignee = (body.get("assignee") or "").strip()
+            parent_id = (body.get("parent_id") or "").strip()
             status = (body.get("status") or "TODO").strip().upper()
-            valid = {"TODO", "IN_PROGRESS", "DONE", "BLOCKED"}
+            valid = {"TODO", "READY", "IN_PROGRESS", "DONE", "BLOCKED", "FAILED"}
             if status not in valid:
                 status = "TODO"
             try:
@@ -811,10 +861,17 @@ class _KanbanHandler(BaseHTTPRequestHandler):
                     wm = WorkspaceManager(self.workspace)
                     if not wm.tasks_file.exists():
                         wm.init_project("Projeto")
-                    task = wm.add_task(title, description=description, spec_id=spec_id)
-                    # Se o status não for TODO, atualiza imediatamente
-                    if status != "TODO":
-                        task = wm.update_task_status(task.id, status)
+                    metadata = {"dispatch": "true"} if status == "READY" else None
+                    task = wm.add_task(
+                        title,
+                        description=description,
+                        spec_id=spec_id,
+                        status=status,
+                        priority=priority,
+                        assignee=assignee,
+                        parent_id=parent_id,
+                        metadata=metadata,
+                    )
                 self._json(201, {
                     "id": task.id, "status": task.status,
                     "title": task.title,
@@ -860,6 +917,10 @@ class _KanbanHandler(BaseHTTPRequestHandler):
                         "title": t.title,
                         "description": t.description[:200] if t.description else "",
                         "spec_id": t.spec_id,
+                        "priority": t.priority,
+                        "assignee": t.assignee,
+                        "parent_id": t.parent_id,
+                        "comments": t.comments,
                     }
                     for t in tasks
                 ]

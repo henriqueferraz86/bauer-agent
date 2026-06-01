@@ -197,6 +197,10 @@ class ModelSection(BaseModel):
     requested_context: int = Field(ge=512, le=1_000_000)
     minimum_context: int = Field(ge=512, le=1_000_000, default=8192)
     auto_downgrade_context: bool = True
+    fallback_providers: list[str] = Field(
+        default_factory=list,
+        description="Providers alternativos quando o principal falha (ex: ['openrouter', 'groq']).",
+    )
 
     @field_validator("minimum_context")
     @classmethod
@@ -251,6 +255,42 @@ class ToolsSection(BaseModel):
     max_output_kb: int = Field(ge=1, le=1000, default=50)
 
 
+class McpServerEntry(BaseModel):
+    """Configuração de um servidor MCP individual.
+
+    Exemplo em config.yaml:
+        mcp:
+          servers:
+            filesystem:
+              command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+              timeout: 30
+            meu_server:
+              command: ["python", "-m", "meu_mcp_server"]
+              env:
+                MY_VAR: valor
+              cwd: /tmp/projeto
+    """
+    command: list[str] | str = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout: float = Field(ge=1.0, le=300.0, default=30.0)
+    cwd: str | None = None
+
+    @field_validator("command")
+    @classmethod
+    def _normalize_command(cls, v: list[str] | str) -> list[str]:
+        if isinstance(v, str):
+            return v.split()
+        return v
+
+
+class McpSection(BaseModel):
+    """Configuração de servidores MCP (Model Context Protocol) stdio.
+
+    Servidores são iniciados sob demanda quando a tool mcp_call é usada.
+    """
+    servers: dict[str, McpServerEntry] = Field(default_factory=dict)
+
+
 class WebSection(BaseModel):
     """Configuração de backends web para web_search e web_fetch.
 
@@ -295,6 +335,7 @@ class BauerConfig(BaseModel):
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()
     web: WebSection = WebSection()
+    mcp: McpSection = McpSection()
     serve: ServeSection = ServeSection()
     router: RouterSection = RouterSection()
 

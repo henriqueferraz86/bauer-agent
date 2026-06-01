@@ -7,16 +7,16 @@ logging:
 model:
   auto_downgrade_context: true
   minimum_context: 8192
-  name: deepseek-v4-flash-free
-  provider: opencode
+  name: gpt-5
+  provider: openai
   requested_context: 128000
 ollama:
   api_key: ''
   host: http://localhost:11434
   timeout_seconds: 120
 openai:
-  api_key: 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
-  host: https://api.groq.com/openai
+  api_key: ''
+  host: https://api.openai.com
   timeout_seconds: 60
 openrouter:
   api_key: ''

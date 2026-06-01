@@ -1,0 +1,10 @@
+{
+  "model": "qwen2.5-coder:3b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Responda apenas com: OK"
+    }
+  ],
+  "stream": false
+}

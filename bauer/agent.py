@@ -40,6 +40,7 @@ _MODEL_CMDS = {"/model", "/modelo"}
 _SESSIONS_CMDS = {"/sessions", "/sessoes"}
 _SPEC_CMDS = {"/spec", "/specs"}
 _KANBAN_CMDS = {"/kanban", "/board", "/tasks", "/task"}   # bare /task → board
+_DISPATCH_CMDS = {"/dispatch"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 
@@ -57,9 +58,15 @@ _SLASH_BASE = [
     "/task",
     "/task add",
     "/task list",
+    "/task ready",
     "/task start",
     "/task done",
     "/task block",
+    "/task fail",
+    "/dispatch",
+    "/dispatch once",
+    "/dispatch once --dry-run",
+    "/dispatch status",
     "/memory",
     "/memory search",
     "/memory list",
@@ -87,9 +94,14 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/task":           "Kanban board (sem args) ou sub-comandos",
     "/task add":       "adiciona tarefa: /task add <título>",
     "/task list":      "lista tarefas com status",
+    "/task ready":     "coloca na fila do dispatcher: /task ready <id>",
     "/task start":     "inicia tarefa: /task start <id>",
     "/task done":      "conclui tarefa: /task done <id>",
     "/task block":     "bloqueia tarefa: /task block <id>",
+    "/task fail":      "marca tarefa como FAILED: /task fail <id>",
+    "/dispatch":       "executa um tick do dispatcher hibrido",
+    "/dispatch once":  "despacha tasks READY uma vez",
+    "/dispatch status": "mostra fila/claims do dispatcher",
     "/memory":         "lista arquivos de memória",
     "/memory search":  "busca na memória: /memory search <query>",
     "/memory list":    "lista arquivos de memória",
@@ -350,6 +362,16 @@ def _build_system_prompt(router: ToolRouter) -> str:
         "  b) A acao e DESTRUTIVA e irreversivel (ex: deletar dados de producao).\n"
         "  c) O usuario pediu explicitamente para voce confirmar antes.\n"
         "Em todos os outros casos: AGE. Nao pergunta.\n\n"
+        "# CONSTRAINTS DO AMBIENTE (LEIA — evita erros recorrentes)\n"
+        "- Voce roda em **Windows** com Python no venv. Subprocess usa `shell=False`.\n"
+        "- TODAS as tools de arquivo (read_file, write_file, list_dir, etc) trabalham\n"
+        "  em paths RELATIVOS ao workspace. Nunca passe paths absolutos do tipo\n"
+        "  `C:/...` ou `/Users/...`. Use `.`, `subdir/arquivo.py`, etc.\n"
+        "- `..` e permitido se o path resolvido ficar dentro do workspace. `../fora` e BLOQUEADO.\n"
+        "- Em run_command NAO use: `dir` (use tool list_dir), `cat`/`head`/`tail` (use read_file).\n"
+        "- `pip install`, `npm install`, `git push`, `rm` precisam `confirm: true` no args.\n"
+        "- Antes de `python script.py`, LEIA o script para descobrir se exige argumentos.\n"
+        "  Muitos scripts saem com 'Uso: python X.py <arg>' — read_file primeiro evita isso.\n\n"
         "# FERRAMENTAS DISPONIVEIS\n"
         f"Voce pode usar estas ferramentas: {tool_names}\n"
         f"{tools_section}\n\n"
@@ -359,15 +381,27 @@ def _build_system_prompt(router: ToolRouter) -> str:
         '{"action": "NOME_DA_TOOL", "args": {"parametro": "valor"}}\n\n'
         "# QUANDO NAO USAR FERRAMENTA (maioria dos casos)\n"
         "Para saudacoes, perguntas, explicacoes, codigo, matematica, conversas — responda em TEXTO PURO.\n\n"
+        "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
+        "Se o usuario digitar uma linha de comando shell (ex: 'bauer orchestrate run',\n"
+        "'pytest tests/', 'git status', 'python script.py'), VOCE PODE E DEVE executar\n"
+        "via a tool `run_command`. NUNCA responda 'nao tenho acesso ao terminal' — voce TEM.\n"
+        "Use run_command com o comando EXATO que o usuario pediu (passe arg `command`).\n"
+        "Exemplo: usuario diz 'bauer orchestrate run' -> {\"action\":\"run_command\",\"args\":{\"command\":\"bauer orchestrate run\"}}\n"
+        "Se o comando exigir argumentos extras, execute primeiro com --help para descobrir,\n"
+        "depois rode com os argumentos certos.\n\n"
         "EXEMPLOS CORRETOS:\n"
         "  Pergunta: 'oi'                  -> resposta: 'Ola! Como posso ajudar?'\n"
         "  Pergunta: 'que horas sao?'       -> resposta: 'Sao X horas.'\n"
         "  Pergunta: 'explique docker'      -> resposta em texto explicando docker\n"
         "  Pergunta: 'liste os arquivos'    -> {\"action\": \"list_dir\", \"args\": {\"path\": \".\"}}\n"
-        "  Pergunta: 'leia o config.yaml'   -> {\"action\": \"read_file\", \"args\": {\"path\": \"config.yaml\"}}\n\n"
+        "  Pergunta: 'leia o config.yaml'   -> {\"action\": \"read_file\", \"args\": {\"path\": \"config.yaml\"}}\n"
+        "  Pergunta: 'rode os testes'       -> {\"action\": \"run_command\", \"args\": {\"command\": \"pytest tests/ -v\"}}\n"
+        "  Pergunta: 'git status'           -> {\"action\": \"run_command\", \"args\": {\"command\": \"git status\"}}\n"
+        "  Pergunta: 'bauer doctor'         -> {\"action\": \"run_command\", \"args\": {\"command\": \"bauer doctor\"}}\n\n"
         "ERRADO (nunca faca isso):\n"
         "  Pergunta: 'oi' -> {\"action\": \"resposta\", ...}  <- ERRADO, use texto puro\n"
-        "  Qualquer resposta: 'O que prefere?' / 'Se quiser posso...' / 'Deseja que eu...' <- ERRADO\n\n"
+        "  Qualquer resposta: 'O que prefere?' / 'Se quiser posso...' / 'Deseja que eu...' <- ERRADO\n"
+        "  Qualquer resposta: 'nao tenho acesso ao terminal' / 'sou apenas seu assistente' <- ERRADO, voce TEM run_command\n\n"
         "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
         "Responda sempre em portugues."
         + _specs_section()
@@ -666,11 +700,45 @@ def _collect_response(
     model_name: str,
     payload: list[dict],
 ) -> str:
-    """Coleta a resposta completa do modelo (sem streaming ao usuário)."""
-    parts: list[str] = []
-    for chunk in client.chat_stream(model_name, payload):
-        parts.append(chunk)
+    """Coleta a resposta completa do modelo (sem streaming ao usuário).
+
+    Usa chat_with_retry (com exponential backoff) quando disponível — OpenAIClient.
+    Fallback para chat_stream direto (OllamaClient e qualquer client sem retry).
+    """
+    # Plugin hooks — pre_llm_call
+    try:
+        from .plugin_hooks import hooks as _phooks
+        _phooks.ensure_plugins_loaded()
+        _phooks.emit("pre_llm_call", model=model_name, messages=payload)
+    except Exception:
+        pass
+
+    # Usa retry automático apenas no OpenAIClient (que tem implementação real).
+    # Checar apenas hasattr() seria insuficiente pois MagicMock retorna True para tudo.
+    from .openai_client import OpenAIClient as _OpenAIClientClass
+    if isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
+        parts = client.chat_with_retry(model_name, payload)
+    else:
+        parts = list(client.chat_stream(model_name, payload))
     response = "".join(parts)
+
+    # Sanitiza lone surrogates (U+D800–U+DFFF) que provocam UnicodeEncodeError
+    # ao salvar a sessão (SQLite, logging, JSON dump). Origem comum: streaming
+    # SSE quebrando um caractere multi-byte UTF-8 entre chunks. Round-trip
+    # encode/decode com errors='replace' substitui surrogates por U+FFFD.
+    try:
+        from .unicode_utils import sanitize_surrogates as _sanitize
+        response = _sanitize(response)
+    except Exception:
+        # Fallback inline se import falhar — encode-decode direto
+        response = response.encode("utf-8", errors="replace").decode("utf-8")
+
+    # Plugin hooks — post_llm_call
+    try:
+        from .plugin_hooks import hooks as _phooks
+        _phooks.emit("post_llm_call", model=model_name, messages=payload, response=response)
+    except Exception:
+        pass
 
     # Escanear resposta do modelo por segredos antes de processar/logar
     try:
@@ -687,6 +755,54 @@ def _collect_response(
         pass
 
     return response
+
+
+def _collect_with_fallback(
+    client: OllamaClient,
+    model_name: str,
+    payload: list[dict],
+    fallback_clients: "list | None",
+    console: Console,
+) -> "tuple[str, Any, str]":
+    """Tenta coletar resposta; em falha retryável tenta providers de fallback.
+
+    Returns:
+        (response, active_client, active_model_name)
+
+    Raises:
+        OllamaError | OpenAIClientError: quando todos os providers falham.
+    """
+    try:
+        return _collect_response(client, model_name, payload), client, model_name
+    except (OllamaError, OpenAIClientError) as primary_exc:
+        if not fallback_clients:
+            raise
+
+        # Classifica o erro — só faz fallback para erros "de provider", não de auth
+        _should_fallback = True
+        try:
+            from .error_classifier import classify_api_error
+            classified = classify_api_error(primary_exc)
+            _should_fallback = classified.should_fallback
+        except Exception:
+            pass  # sem classifier: assume que deve tentar fallback
+
+        if not _should_fallback:
+            raise
+
+        for fb_client, fb_model in fallback_clients:
+            _fb_label = getattr(fb_client, "default_model", fb_model)
+            console.print(
+                f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_label}[/bold][/yellow]"
+            )
+            try:
+                resp = _collect_response(fb_client, fb_model, payload)
+                return resp, fb_client, fb_model
+            except Exception as fb_exc:
+                console.print(f"[dim]  Fallback {_fb_label} também falhou: {fb_exc}[/dim]")
+                continue
+
+        raise  # todos os fallbacks esgotados
 
 
 def _run_native_tool_turn(
@@ -789,12 +905,48 @@ def run_one_turn(
         return "[Limite de iterações atingido]", tool_log
 
     # Tool Bridge (fallback para Ollama e modelos sem native tool calling)
+    _empty_retried = False
     for _ in range(MAX_TOOL_TURNS + 1):
         response = _collect_response(client, model_name, ctx.get_payload())
 
-        # Resposta vazia: contexto sobrecarregado ou timeout do modelo
+        # Resposta vazia: pode ser rate-limit silencioso (free tier), filtro
+        # de conteudo ou contexto sobrecarregado. Faz 1 retry com backoff
+        # antes de desistir — resolve a maioria dos casos transientes.
         if not response.strip():
-            return "[Modelo retornou resposta vazia — contexto pode estar sobrecarregado]", tool_log
+            if not _empty_retried:
+                _empty_retried = True
+                import time as _time
+                _time.sleep(2.0)  # pequeno backoff antes do retry
+                response = _collect_response(client, model_name, ctx.get_payload())
+
+            if not response.strip():
+                # Diagnostico acionavel — calcula tamanho aproximado do contexto
+                payload = ctx.get_payload()
+                approx_chars = sum(
+                    len(m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content", "")))
+                    for m in payload
+                )
+                approx_tokens = approx_chars // 4
+                ctx_used_pct = ""
+                try:
+                    budget = getattr(ctx, "applied_context", 0) or 0
+                    if budget:
+                        ctx_used_pct = f" (~{approx_tokens * 100 // budget}% do budget)"
+                except Exception:
+                    pass
+                return (
+                    f"[Modelo retornou resposta vazia mesmo apos retry]\n"
+                    f"  Modelo: {model_name}\n"
+                    f"  Contexto: {len(payload)} mensagens, ~{approx_tokens:,} tokens{ctx_used_pct}\n"
+                    f"  Provaveis causas:\n"
+                    f"    1. Rate-limit silencioso do provider (comum em free tier)\n"
+                    f"    2. Filtro de conteudo bloqueando a resposta\n"
+                    f"    3. Modelo sobrecarregado no servidor\n"
+                    f"  Solucoes:\n"
+                    f"    /clear      — limpa o historico e tenta de novo\n"
+                    f"    /model      — troca de provider/modelo\n"
+                    f"    Aguarde 30s — pode ser rate-limit transiente"
+                ), tool_log
 
         ctx.add_assistant(response)
 
@@ -910,8 +1062,8 @@ def _run_orchestrator_inline(
 # ─── /kanban handler ─────────────────────────────────────────────────────────
 
 
-def _handle_kanban_cmd(console) -> None:  # type: ignore[type-arg]
-    """Exibe o Kanban board (workspace/TASKS.md) dentro da sessao do agente."""
+def _handle_kanban_cmd(console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
+    """Exibe o Kanban board (TASKS.md) do workspace ativo dentro da sessao."""
     import sys as _sys
     from rich.columns import Columns
     from rich.panel import Panel as _Panel
@@ -923,7 +1075,7 @@ def _handle_kanban_cmd(console) -> None:  # type: ignore[type-arg]
         console.print("[dim]WorkspaceManager nao disponivel.[/dim]")
         return
 
-    wm = WorkspaceManager("workspace")
+    wm = WorkspaceManager(workspace)
     tasks = wm.list_tasks()
 
     if not tasks:
@@ -936,18 +1088,22 @@ def _handle_kanban_cmd(console) -> None:  # type: ignore[type-arg]
     )
     _ICONS = {
         "TODO":        "📋" if _utf8 else "[ ]",
+        "READY":       "▶" if _utf8 else "[>]",
         "IN_PROGRESS": "🔄" if _utf8 else "[~]",
         "DONE":        "✅" if _utf8 else "[x]",
         "BLOCKED":     "🚫" if _utf8 else "[!]",
+        "FAILED":      "✖" if _utf8 else "[x!]",
     }
     _BAR_FULL  = "█" if _utf8 else "#"
     _BAR_EMPTY = "░" if _utf8 else "."
 
     COLUMNS = [
         ("TODO",        "TODO",        "bright_white"),
+        ("READY",       "READY",       "cyan"),
         ("IN_PROGRESS", "IN PROGRESS", "yellow"),
-        ("DONE",        "DONE",        "green"),
         ("BLOCKED",     "BLOCKED",     "red"),
+        ("FAILED",      "FAILED",      "magenta"),
+        ("DONE",        "DONE",        "green"),
     ]
     by_status: dict[str, list] = {s: [] for s, *_ in COLUMNS}
     for t in tasks:
@@ -1138,16 +1294,18 @@ def _handle_agent_cmd(user_input: str, console) -> None:  # type: ignore[type-ar
 # ─── /task handler ───────────────────────────────────────────────────────────
 
 
-def _handle_task_cmd(user_input: str, console) -> None:  # type: ignore[type-arg]
+def _handle_task_cmd(user_input: str, console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
     """Processa comandos /task digitados dentro da sessao do agente.
 
     Subcomandos:
       /task               → exibe Kanban board (delega a _handle_kanban_cmd)
       /task list          → lista tarefas com status
       /task add <titulo>  → adiciona nova tarefa
+      /task ready <id>    → muda status para READY e habilita dispatcher
       /task start <id>    → muda status para IN_PROGRESS
       /task done <id>     → muda status para DONE
       /task block <id>    → muda status para BLOCKED
+      /task fail <id>     → muda status para FAILED
     """
     from rich.table import Table
 
@@ -1162,10 +1320,10 @@ def _handle_task_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
 
     # bare /task → board
     if not sub:
-        _handle_kanban_cmd(console)
+        _handle_kanban_cmd(console, workspace)
         return
 
-    wm = WorkspaceManager("workspace")
+    wm = WorkspaceManager(workspace)
 
     if sub in ("list", "ls"):
         tasks = wm.list_tasks()
@@ -1173,8 +1331,9 @@ def _handle_task_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
             console.print("[dim]Nenhuma tarefa. Use [bold]/task add <titulo>[/bold] para criar.[/dim]")
             return
         _STATUS_COLORS = {
-            "TODO": "bright_white", "IN_PROGRESS": "yellow",
-            "DONE": "green",        "BLOCKED": "red",
+            "TODO": "bright_white", "READY": "cyan",
+            "IN_PROGRESS": "yellow", "DONE": "green",
+            "BLOCKED": "red", "FAILED": "magenta",
         }
         table = Table(show_lines=False, box=None)
         table.add_column("ID",     style="dim",    width=4, no_wrap=True)
@@ -1195,8 +1354,24 @@ def _handle_task_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
         console.print(f"[green]Tarefa adicionada:[/green] [[dim]{task.id}[/dim]] {task.title}")
         return
 
-    # start / done / block → precisam de <id>
-    _STATUS_MAP = {"start": "IN_PROGRESS", "done": "DONE", "block": "BLOCKED"}
+    if sub == "ready":
+        task_id = parts[2].strip() if len(parts) > 2 else ""
+        if not task_id:
+            console.print("[yellow]Uso: [bold]/task ready <id>[/bold][/yellow]")
+            return
+        try:
+            from .task_dispatcher import TaskDispatcher
+            task = TaskDispatcher(workspace).mark_ready(task_id)
+            console.print(
+                f"[green]Tarefa pronta para dispatcher:[/green] "
+                f"[[dim]{task.id}[/dim]] {task.title} → [READY]"
+            )
+        except Exception as exc:
+            console.print(f"[red]Erro:[/red] {exc}")
+        return
+
+    # start / done / block / fail → precisam de <id>
+    _STATUS_MAP = {"start": "IN_PROGRESS", "done": "DONE", "block": "BLOCKED", "fail": "FAILED"}
     if sub in _STATUS_MAP:
         task_id = parts[2].strip() if len(parts) > 2 else ""
         if not task_id:
@@ -1205,7 +1380,7 @@ def _handle_task_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
         new_status = _STATUS_MAP[sub]
         try:
             task = wm.update_task_status(task_id, new_status)
-            _VERBS = {"IN_PROGRESS": "iniciada", "DONE": "concluida", "BLOCKED": "bloqueada"}
+            _VERBS = {"IN_PROGRESS": "iniciada", "DONE": "concluida", "BLOCKED": "bloqueada", "FAILED": "falhou"}
             console.print(
                 f"[green]Tarefa {_VERBS[new_status]}:[/green] "
                 f"[[dim]{task.id}[/dim]] {task.title} → [{new_status}]"
@@ -1215,7 +1390,144 @@ def _handle_task_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
         return
 
     console.print(f"[yellow]Subcomando desconhecido: [bold]/task {sub}[/bold][/yellow]")
-    console.print("[dim]Disponiveis: add | list | start | done | block[/dim]")
+    console.print("[dim]Disponiveis: add | list | ready | start | done | block | fail[/dim]")
+
+
+def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
+    """Processa comandos /dispatch dentro da sessao do agente."""
+    import shlex
+    from collections import Counter
+
+    from rich.table import Table
+
+    try:
+        parts = shlex.split(user_input)
+    except ValueError as exc:
+        console.print(f"[red]Erro ao ler comando:[/red] {exc}")
+        return
+
+    sub = parts[1].lower() if len(parts) > 1 else "once"
+    args = parts[2:]
+
+    def _int_option(names: tuple[str, ...], default: int) -> int:
+        for idx, token in enumerate(args):
+            for name in names:
+                if token == name and idx + 1 < len(args):
+                    try:
+                        return max(1, int(args[idx + 1]))
+                    except ValueError:
+                        return default
+                prefix = name + "="
+                if token.startswith(prefix):
+                    try:
+                        return max(1, int(token[len(prefix):]))
+                    except ValueError:
+                        return default
+        return default
+
+    if sub in ("help", "-h", "--help"):
+        console.print(
+            "[bold]Uso:[/bold]\n"
+            "  /dispatch                 # um tick em background\n"
+            "  /dispatch once --dry-run  # mostra o que seria claimed\n"
+            "  /dispatch once --foreground\n"
+            "  /dispatch status\n"
+            "\n[dim]READY e fila. IN_PROGRESS e worker claimed. DONE/FAILED sao finais.[/dim]"
+        )
+        return
+
+    try:
+        from .task_dispatcher import TaskDispatcher
+        from .workspace_manager import WorkspaceManager
+    except ImportError as exc:
+        console.print(f"[red]Dispatcher nao disponivel:[/red] {exc}")
+        return
+
+    if sub in ("status", "queue", "fila"):
+        wm = WorkspaceManager(workspace)
+        tasks = wm.list_tasks()
+        counts = Counter(t.status for t in tasks)
+        table = Table(title=f"Dispatcher - {workspace}", show_lines=False)
+        table.add_column("Status", style="cyan")
+        table.add_column("Qtd", justify="right")
+        for status in ("READY", "IN_PROGRESS", "FAILED", "DONE", "BLOCKED", "TODO"):
+            table.add_row(status, str(counts.get(status, 0)))
+        console.print(table)
+
+        running = [t for t in tasks if t.status == "IN_PROGRESS" and t.metadata.get("dispatch") == "true"]
+        if running:
+            run_table = Table(title="Claims ativos", show_lines=False)
+            run_table.add_column("ID", style="dim", no_wrap=True)
+            run_table.add_column("Tentativas", justify="right")
+            run_table.add_column("Worker")
+            run_table.add_column("Heartbeat", style="dim")
+            run_table.add_column("Titulo")
+            for task in running:
+                run_table.add_row(
+                    task.id,
+                    task.metadata.get("attempts", "0"),
+                    task.metadata.get("worker_pid") or task.metadata.get("claimed_by", ""),
+                    task.metadata.get("heartbeat_at", ""),
+                    task.title,
+                )
+            console.print(run_table)
+        else:
+            console.print("[dim]Nenhum claim ativo do dispatcher.[/dim]")
+        return
+
+    if sub in ("daemon", "loop"):
+        console.print(
+            "[yellow]/dispatch daemon nao roda dentro do chat para nao bloquear a sessao.[/yellow]\n"
+            "[dim]Use no terminal: [bold]bauer dispatch daemon --workspace <workspace>[/bold][/dim]"
+        )
+        return
+
+    if sub not in ("once", "run", "tick"):
+        console.print(f"[yellow]Subcomando desconhecido: [bold]/dispatch {sub}[/bold][/yellow]")
+        console.print("[dim]Disponiveis: once | status | help[/dim]")
+        return
+
+    dry_run = any(a in ("--dry-run", "--dry") for a in args)
+    foreground = any(a in ("--foreground", "-f") for a in args)
+    max_spawn = _int_option(("--max-spawn", "--max"), 1)
+    max_in_progress = _int_option(("--max-in-progress", "--limit"), 1)
+
+    dispatcher = TaskDispatcher(workspace)
+    try:
+        result = dispatcher.dispatch_once(
+            dry_run=dry_run,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
+            spawn_background=not foreground,
+        )
+    except Exception as exc:
+        console.print(f"[red]Erro no dispatcher:[/red] {exc}")
+        return
+
+    console.print(
+        "[bold cyan]dispatch once[/bold cyan] "
+        f"reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
+        f"spawned={len(result.spawned)} completed={len(result.completed)} "
+        f"failed={len(result.failed)} dry={len(result.dry_run)}"
+    )
+    any_activity = False
+    for label, items in (
+        ("reclaimed", result.reclaimed),
+        ("claimed", result.claimed),
+        ("spawned", result.spawned),
+        ("completed", result.completed),
+        ("failed", result.failed),
+        ("dry", result.dry_run),
+        ("skipped", result.skipped),
+    ):
+        if items:
+            any_activity = True
+            console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
+
+    if result.spawned and not foreground:
+        console.print("[dim]Workers em background. Acompanhe com [bold]/task[/bold] ou [bold]/dispatch status[/bold].[/dim]")
+    if not any_activity:
+        console.print("[dim]Nenhuma task READY elegivel. Use [bold]/task ready <id>[/bold] para entrar na fila.[/dim]")
 
 
 # ─── /memory handler ─────────────────────────────────────────────────────────
@@ -1309,19 +1621,19 @@ def _handle_memory_cmd(user_input: str, console) -> None:  # type: ignore[type-a
 # ─── /project handler ────────────────────────────────────────────────────────
 
 
-def _handle_project_cmd(console) -> None:  # type: ignore[type-arg]
+def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
     """Exibe PROJECT.md e um resumo das tarefas do workspace."""
     from pathlib import Path as _Path
     from rich.panel import Panel as _Panel
     from rich.rule import Rule as _Rule
 
-    project_file = _Path("workspace") / "PROJECT.md"
+    project_file = _Path(workspace) / "PROJECT.md"
     tasks_summary_parts: list[str] = []
 
     # Tenta carregar resumo de tarefas
     try:
         from .workspace_manager import WorkspaceManager
-        wm = WorkspaceManager("workspace")
+        wm = WorkspaceManager(workspace)
         tasks = wm.list_tasks()
         if tasks:
             from collections import Counter
@@ -1333,8 +1645,10 @@ def _handle_project_cmd(console) -> None:  # type: ignore[type-arg]
                 f"[dim]Tarefas: {total} total | "
                 f"[green]{counts.get('DONE', 0)} DONE[/green] | "
                 f"[yellow]{counts.get('IN_PROGRESS', 0)} IN_PROGRESS[/yellow] | "
+                f"[cyan]{counts.get('READY', 0)} READY[/cyan] | "
                 f"[white]{counts.get('TODO', 0)} TODO[/white] | "
                 f"[red]{counts.get('BLOCKED', 0)} BLOCKED[/red] | "
+                f"[magenta]{counts.get('FAILED', 0)} FAILED[/magenta] | "
                 f"{pct}% concluido[/dim]"
             )
     except Exception:
@@ -1369,6 +1683,7 @@ def run_agent_session(
     session_store: "SessionStore | None" = None,
     session_id: str | None = None,
     rebuild_client_fn: "Any | None" = None,
+    fallback_clients: "list | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -1384,6 +1699,8 @@ def run_agent_session(
         session_id: ID da sessao ativa — carrega historico se existir (opcional).
         rebuild_client_fn: Callable() -> (client, model_name) — reconstrói o cliente
             lendo config.yaml atualizado. Permite live model switch via /model.
+        fallback_clients: Lista de (client, model_name) para tentar quando o provider
+            principal falha com erro retryável (PROVIDER_DOWN / QUOTA_EXCEEDED).
     """
     system_prompt = _build_system_prompt(router)
     # Determina provider a partir do tipo do client para context budget correto
@@ -1416,6 +1733,14 @@ def run_agent_session(
         f"[dim]Contexto: {applied_context} tokens | Tokens usados: 0[/dim]\n"
     )
 
+    # Plugin hooks — session_start
+    try:
+        from .plugin_hooks import hooks as _phooks
+        _phooks.ensure_plugins_loaded()
+        _phooks.emit("session_start", session_id=session_id or "local", model=model_name)
+    except Exception:
+        pass
+
     # Cria sessão prompt_toolkit (autocomplete de /) apenas em terminal interativo real.
     # Tenta criar; se o terminal não suportar (ex: pipe, CI), cai para console.input().
     _is_interactive = sys.stdin.isatty() and sys.stdout.isatty()
@@ -1443,6 +1768,11 @@ def run_agent_session(
                 user_input = console.input("[bold cyan]voce>[/bold cyan] ").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Sessao encerrada.[/dim]")
+            try:
+                from .plugin_hooks import hooks as _phooks
+                _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
+            except Exception:
+                pass
             return
 
         if not user_input:
@@ -1453,6 +1783,11 @@ def run_agent_session(
             if session_store is not None and session_id:
                 session_store.save(session_id, ctx.messages)
                 console.print(f"[dim]Sessao salva: {session_id}[/dim]")
+            try:
+                from .plugin_hooks import hooks as _phooks
+                _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
+            except Exception:
+                pass
             return
         if user_input.lower() in _CLEAR_CMDS:
             ctx.clear()
@@ -1510,20 +1845,25 @@ def run_agent_session(
         if user_input.lower().startswith(tuple(_SPEC_CMDS)):
             _handle_spec_cmd(user_input, console)
             continue
+        active_workspace = getattr(router, "workspace", "workspace")
+
         if user_input.lower() in _KANBAN_CMDS:
-            _handle_kanban_cmd(console)
+            _handle_kanban_cmd(console, active_workspace)
             continue
         if user_input.lower() == "/agents" or user_input.lower().startswith("/agent "):
             _handle_agent_cmd(user_input, console)
             continue
         if user_input.lower().startswith("/task "):
-            _handle_task_cmd(user_input, console)
+            _handle_task_cmd(user_input, console, active_workspace)
+            continue
+        if user_input.lower() in _DISPATCH_CMDS or user_input.lower().startswith("/dispatch "):
+            _handle_dispatch_cmd(user_input, console, active_workspace)
             continue
         if user_input.lower().startswith("/memory"):
             _handle_memory_cmd(user_input, console)
             continue
         if user_input.lower() in _PROJECT_CMDS:
-            _handle_project_cmd(console)
+            _handle_project_cmd(console, active_workspace)
             continue
 
         suggested = skills.observe(user_input)
@@ -1580,7 +1920,9 @@ def run_agent_session(
                     "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
                 )
             try:
-                response = _collect_response(client, active_model, ctx.get_payload())
+                response, client, active_model = _collect_with_fallback(
+                    client, active_model, ctx.get_payload(), fallback_clients, console
+                )
             except (OllamaError, OpenAIClientError) as exc:
                 _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
                 console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
@@ -1613,21 +1955,43 @@ def run_agent_session(
             if actions is not None and tool_turns < MAX_TOOL_TURNS:
                 combined_parts: list[str] = []
 
-                for action_dict in actions:
-                    if tool_turns >= MAX_TOOL_TURNS:
-                        console.print(
-                            f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls atingido "
-                            "neste turno.[/yellow]"
-                        )
-                        break
+                # Só processa o que cabe dentro do limite de tool turns
+                pending_actions = [a for a in actions if tool_turns < MAX_TOOL_TURNS]
+                if len(actions) > len(pending_actions):
+                    console.print(
+                        f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls atingido "
+                        "neste turno.[/yellow]"
+                    )
 
-                    action_name = action_dict.get("action", "?")
+                # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
+                if len(pending_actions) > 1:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from concurrent.futures import as_completed as _as_completed
 
-                    try:
-                        tool_result = router.execute(action_dict)
-                    except (ToolError, SandboxError) as exc:
-                        tool_result = f"[Erro: {exc}]"
+                    def _exec_action(action_dict: dict) -> tuple[str, str]:
+                        _name = action_dict.get("action", "?")
+                        try:
+                            _result = router.execute(action_dict)
+                        except (ToolError, SandboxError) as _exc:
+                            _result = f"[Erro: {_exc}]"
+                        return _name, _result
 
+                    ordered_results: list[tuple[str, str]] = [("", "")] * len(pending_actions)
+                    with ThreadPoolExecutor(max_workers=min(len(pending_actions), 8)) as _ex:
+                        _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(pending_actions)}
+                        for _fut in _as_completed(_fmap):
+                            ordered_results[_fmap[_fut]] = _fut.result()
+                else:
+                    ordered_results = []
+                    for a in pending_actions:
+                        _name = a.get("action", "?")
+                        try:
+                            _result = router.execute(a)
+                        except (ToolError, SandboxError) as exc:
+                            _result = f"[Erro: {exc}]"
+                        ordered_results.append((_name, _result))
+
+                for action_name, tool_result in ordered_results:
                     # Display inteligente — filtra ruído, mostra apenas o relevante
                     display_line = _format_tool_display(action_name, tool_result)
                     console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")

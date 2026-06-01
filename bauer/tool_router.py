@@ -61,6 +61,7 @@ from pathlib import Path
 
 from .shell_runner import ShellError
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
+from .workspace_manager import WorkspaceError, WorkspaceManager
 
 
 def _package_available(name: str) -> bool:
@@ -76,6 +77,37 @@ def _package_available(name: str) -> bool:
 
 
 _BAUER_PYTHON_CACHE: dict[str, str] = {}  # workspace_str → python_path
+_BAUER_CONFIG_CACHE: dict[str, str] = {}  # workspace_str → config_yaml_path
+
+
+def _find_bauer_config(workspace: Path) -> str | None:
+    """Acha o config.yaml subindo a arvore a partir do workspace.
+
+    Como o run_command executa subprocessos com cwd=workspace (sandbox),
+    `bauer X` chamadas dentro do sandbox precisam apontar para o config.yaml
+    da raiz do projeto — senao falha com 'Arquivo de config nao encontrado'.
+
+    Returns absolute path quando achar, None caso contrario.
+    """
+    key = str(workspace)
+    if key in _BAUER_CONFIG_CACHE:
+        cached = _BAUER_CONFIG_CACHE[key]
+        return cached or None
+
+    search = Path(workspace).resolve()
+    for _ in range(5):  # sobe ate 5 niveis
+        candidate = search / "config.yaml"
+        if candidate.exists():
+            result = str(candidate).replace("\\", "/")
+            _BAUER_CONFIG_CACHE[key] = result
+            return result
+        parent = search.parent
+        if parent == search:
+            break
+        search = parent
+
+    _BAUER_CONFIG_CACHE[key] = ""
+    return None
 
 
 def _find_bauer_python(workspace: Path) -> str:
@@ -278,6 +310,8 @@ class ToolRouter:
         dry_run: bool = False,
         max_tool_calls: int = 500,
         max_retries: int = 3,
+        audit_enabled: bool = True,
+        session_id: str = "",
     ):
         self.workspace = Path(workspace).resolve()
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
@@ -285,6 +319,13 @@ class ToolRouter:
         self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
         self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
         self._tool_call_count = 0              # contador redefenido por sessão
+        # SEG-3: audit logger
+        if audit_enabled:
+            from .audit_logger import AuditLogger
+            logs_dir = Path(workspace).resolve().parent / "logs"
+            self._audit: "AuditLogger | None" = AuditLogger(logs_dir, session_id)
+        else:
+            self._audit = None
         self._tools: dict[str, dict] = {
             "list_dir": {
                 "fn": self._list_dir,
@@ -659,6 +700,7 @@ class ToolRouter:
                 "description": "str — detalhes da tarefa (opcional)",
                 "assignee": "str — agente/usuario responsavel (opcional)",
                 "priority": "str — low | medium | high | critical (default: medium)",
+                "status": "str — todo | ready | in_progress | blocked | failed | done (default: todo)",
                 "parent_id": "str — ID da tarefa pai para sub-tarefas (opcional)",
             },
         }
@@ -666,7 +708,7 @@ class ToolRouter:
             "fn": self._kanban_list,
             "description": "Lista tarefas do board com filtros por status, assignee ou prioridade.",
             "args": {
-                "status": "str — todo | in_progress | blocked | done | all (default: all)",
+                "status": "str — todo | ready | in_progress | blocked | failed | done | all (default: all)",
                 "assignee": "str — filtrar por responsavel (opcional)",
                 "priority": "str — low | medium | high | critical (opcional)",
             },
@@ -883,9 +925,33 @@ class ToolRouter:
     # --- API pública -----------------------------------------------------------
 
     def available_tools(self) -> list[str]:
-        return list(self._tools.keys())
+        """Retorna união de tools built-in e tools registradas externamente (ToolRegistry)."""
+        built_in = set(self._tools.keys())
+        try:
+            from .tool_registry import ToolRegistry as _ToolRegistry
+            external = set(_ToolRegistry.get().list_names())
+        except ImportError:
+            external = set()
+        return sorted(built_in | external)
 
     def tool_info(self, name: str) -> dict:
+        # Verifica registry externo primeiro
+        try:
+            from .tool_registry import ToolRegistry as _ToolRegistry
+            ext_def = _ToolRegistry.get().get_tool(name)
+            if ext_def is not None:
+                return {
+                    "name": name,
+                    "description": ext_def.description,
+                    "args": ext_def.args,
+                    "permission_level": ext_def.permission,
+                    "risk_level": ext_def.risk,
+                    "requires_approval": ext_def.requires_approval,
+                    "source": "external",
+                }
+        except ImportError:
+            pass
+
         if name not in self._tools:
             raise ToolError(f"Tool desconhecida: '{name}'")
         info = self._tools[name]
@@ -897,6 +963,7 @@ class ToolRouter:
             "permission_level": sec["permission"],
             "risk_level": sec["risk"],
             "requires_approval": sec["approval"],
+            "source": "builtin",
         }
 
     def tool_security(self, name: str) -> dict:
@@ -984,8 +1051,18 @@ class ToolRouter:
                 f"Exemplo: {{\"action\": \"list_dir\", \"args\": {{\"path\": \".\"}}}}"
             )
 
-        if name not in self._tools:
-            available = ", ".join(self._tools.keys())
+        # Resolve função — registry externo tem prioridade sobre built-ins
+        _ext_fn = None
+        try:
+            from .tool_registry import ToolRegistry as _ToolRegistry
+            _ext_def = _ToolRegistry.get().get_tool(name)
+            if _ext_def is not None:
+                _ext_fn = _ext_def.fn
+        except ImportError:
+            pass
+
+        if _ext_fn is None and name not in self._tools:
+            available = ", ".join(self.available_tools())
             raise ToolError(
                 f"Tool desconhecida: '{name}'.\n"
                 f"Disponiveis: {available}"
@@ -1022,7 +1099,45 @@ class ToolRouter:
                 ),
             ))
 
-        result = self._tools[name]["fn"](args)
+        # Plugin hooks — pre_tool_call
+        try:
+            from .plugin_hooks import hooks as _hooks
+            _hooks.ensure_plugins_loaded()
+            _hooks.emit("pre_tool_call", action=name, args=args)
+        except Exception:
+            pass  # hooks nunca bloqueiam execução
+
+        # SEG-3: audit com medição de tempo
+        from .audit_logger import audit_tool_call as _audit_ctx
+        import time as _time
+        _t0 = _time.monotonic()
+        _audit_error: Exception | None = None
+
+        try:
+            # Tool externa (ToolRegistry) tem prioridade sobre built-in
+            if _ext_fn is not None:
+                result = _ext_fn(args)
+            else:
+                result = self._tools[name]["fn"](args)
+        except Exception as _exc:
+            _audit_error = _exc
+            _duration_ms = (_time.monotonic() - _t0) * 1000
+            if self._audit is not None:
+                self._audit.log_tool_call(
+                    name, args,
+                    status="error",
+                    duration_ms=_duration_ms,
+                    error_msg=str(_exc)[:300],
+                )
+            # Plugin hooks — post_tool_call (erro)
+            try:
+                from .plugin_hooks import hooks as _hooks
+                _hooks.emit("post_tool_call", action=name, args=args, result=None, error=_exc)
+            except Exception:
+                pass
+            raise
+
+        _duration_ms = (_time.monotonic() - _t0) * 1000
 
         # Sanitiza surrogates antes de qualquer outra operação no resultado
         # (nomes de arquivo no Windows podem conter U+D800–U+DFFF via os.fsdecode)
@@ -1044,23 +1159,65 @@ class ToolRouter:
         except Exception:
             pass  # scanner nunca bloqueia execução
 
+        # SEG-3: audit de sucesso
+        if self._audit is not None:
+            self._audit.log_tool_call(
+                name, args,
+                status="ok",
+                duration_ms=_duration_ms,
+                result_preview=result[:200] if isinstance(result, str) else None,
+            )
+
+        # Plugin hooks — post_tool_call (sucesso)
+        try:
+            from .plugin_hooks import hooks as _hooks
+            _hooks.emit("post_tool_call", action=name, args=args, result=result, error=None)
+        except Exception:
+            pass  # hooks nunca bloqueiam execução
+
         return result
 
     # --- sandbox ---------------------------------------------------------------
 
+    @staticmethod
+    def _check_within_workspace(resolved: Path, workspace_resolved: Path) -> None:
+        """Verifica se resolved está dentro de workspace_resolved.
+        Usa relative_to() (mais robusto que startswith em strings).
+        """
+        try:
+            resolved.relative_to(workspace_resolved)
+        except ValueError:
+            raise SandboxError(
+                f"Acesso negado: path resolve para fora do workspace.\n"
+                f"  Workspace (raiz permitida): {workspace_resolved}\n"
+                f"  Tentativa (fora do sandbox): {resolved}\n"
+                f"Use apenas paths relativos DENTRO do workspace.\n"
+                f"  Para listar o conteudo: list_dir com path='.'\n"
+                f"  Para subdir: 'subdir' ou 'subdir/arquivo.py'\n"
+                f"  '..' funciona se nao sair do workspace (ex: 'a/../b' → 'b')."
+            )
+
     def _sandbox(self, path: str) -> Path:
         """Resolve path dentro do workspace. Bloqueia qualquer saída do sandbox.
 
-        Premortem item 4: path traversal (../) deve ser bloqueado aqui.
+        Proteção em duas camadas (inspirado em Hermes path_security.py):
+          1. Normalização de paths absolutos gerados por modelos
+          2. Verificação pós-resolve via relative_to() — bloqueio definitivo
+             (cobre '..', symlinks, paths absolutos, e qualquer tentativa de fuga)
 
         Também normaliza paths absolutos que modelos frequentemente geram:
           /workspace/foo.txt  → foo.txt   (strip do prefixo workspace)
           /foo.txt            → foo.txt   (strip de / inicial — atalho de 1 componente)
 
-        Paths absolutos fora do workspace (múltiplos componentes) são bloqueados.
+        Note: `..` é PERMITIDO desde que o path resolvido fique dentro do workspace.
+        Ex: 'subdir/../outro' → 'outro' (válido).
+        Ex: '../fora_do_workspace' → BLOQUEADO pela Camada 2.
         """
+
+        # --- Camada 2: normalização de paths absolutos --------------------------
         ws_name = self.workspace.name
         p_raw = Path(path)
+        ws_resolved = self.workspace.resolve()
 
         if p_raw.is_absolute():
             non_root_parts = p_raw.parts[1:]  # remove '/' ou 'C:\' inicial
@@ -1073,23 +1230,11 @@ class ToolRouter:
                 path = non_root_parts[0] if non_root_parts else "."
             else:
                 # Caminho absoluto com múltiplos componentes fora do workspace
-                # → resolver diretamente e verificar se está dentro do workspace
                 try:
                     resolved = p_raw.resolve()
                 except Exception as exc:
                     raise SandboxError(f"Path invalido: '{path}': {exc}") from exc
-
-                workspace_str = str(self.workspace)
-                resolved_str = str(resolved)
-                sep = "/" if "/" in workspace_str else "\\"
-
-                if resolved_str != workspace_str and not resolved_str.startswith(workspace_str + sep):
-                    raise SandboxError(
-                        f"Acesso negado: '{path}' resolve para fora do workspace.\n"
-                        f"  Workspace: {self.workspace}\n"
-                        f"  Tentativa: {resolved}\n"
-                        f"Use apenas caminhos relativos dentro do workspace."
-                    )
+                self._check_within_workspace(resolved, ws_resolved)
                 return resolved
         else:
             # Caminho relativo: normaliza /workspace/ ou \workspace\ que o modelo adiciona
@@ -1098,23 +1243,13 @@ class ToolRouter:
                 normalized = normalized[len(ws_name):].lstrip("/\\")
             path = normalized or "."
 
+        # --- Camada 3: resolve + relative_to() ----------------------------------
         try:
             resolved = (self.workspace / path).resolve()
         except Exception as exc:
             raise SandboxError(f"Path invalido: '{path}': {exc}") from exc
 
-        # A verificação é feita comparando strings para garantir que o path
-        # resolvido começa com o workspace — cobre symlinks e ../ .
-        workspace_str = str(self.workspace)
-        resolved_str = str(resolved)
-
-        if resolved_str != workspace_str and not resolved_str.startswith(workspace_str + ("/" if "/" in workspace_str else "\\")):
-            raise SandboxError(
-                f"Acesso negado: '{path}' resolve para fora do workspace.\n"
-                f"  Workspace: {self.workspace}\n"
-                f"  Tentativa: {resolved}\n"
-                f"Use apenas caminhos relativos dentro do workspace."
-            )
+        self._check_within_workspace(resolved, ws_resolved)
         return resolved
 
     # --- parser ----------------------------------------------------------------
@@ -1154,13 +1289,37 @@ class ToolRouter:
             if not isinstance(confirm, bool):
                 raise ToolError("run_command: 'confirm' deve ser true ou false.")
 
-            # Transparência: `bauer <subcommand>` → `<python> -m bauer.cli <subcommand>`
-            # Resolve o problema do AppLocker bloqueando bauer.exe no venv.
+            # Transparência: `bauer <sub>` ou `python -m bauer <sub>`
+            #   → `<venv_python> -m bauer.cli <sub> --config <root>/config.yaml`
+            # Resolve tres problemas:
+            #   1. AppLocker bloqueando bauer.exe no venv
+            #   2. `python` do sistema sem venv ativo → ModuleNotFoundError: typer
+            #   3. cwd=workspace (sandbox) sem config.yaml → "Erro de config: arquivo nao encontrado"
             cmd_str = str(cmd).strip()
+            _is_bauer_cmd = False
+            _rest = ""
             if cmd_str == "bauer" or cmd_str.startswith("bauer "):
-                rest = cmd_str[len("bauer"):].strip()
+                _rest = cmd_str[len("bauer"):].strip()
+                _is_bauer_cmd = True
+            else:
+                import re as _re_pre
+                _py_bauer = _re_pre.match(
+                    r"^(python3?|py)\s+-m\s+bauer(?:\.cli)?(.*)", cmd_str, _re_pre.IGNORECASE
+                )
+                if _py_bauer:
+                    _rest = _py_bauer.group(2).strip()
+                    _is_bauer_cmd = True
+
+            if _is_bauer_cmd:
                 python = _find_bauer_python(shell_runner.workspace)
-                cmd_str = f'"{python}" -m bauer.cli {rest}' if rest else f'"{python}" -m bauer.cli'
+                # Injeta --config <root>/config.yaml se nao explicitamente passado.
+                # IMPORTANTE: typer nao tem --config global; cada subcomando declara
+                # o seu. Por isso anexamos AO FINAL (depois de subcomandos), e so se
+                # _rest tiver pelo menos um token (sem subcomando, --config eh inutil).
+                cfg_path = _find_bauer_config(shell_runner.workspace)
+                if cfg_path and _rest and "--config" not in _rest:
+                    _rest = f"{_rest} --config \"{cfg_path}\""
+                cmd_str = f'"{python}" -m bauer.cli {_rest}' if _rest else f'"{python}" -m bauer.cli'
 
             # `cd` é builtin do shell — não existe como processo externo.
             # Retorna orientação em vez de erro opaco da allowlist.
@@ -1184,6 +1343,26 @@ class ToolRouter:
                 _which_match = _re.match(r"^which\s+(.+)$", cmd_str.strip())
                 if _which_match:
                     cmd_str = f"where {_which_match.group(1)}"
+
+                # `dir` no Windows e builtin do CMD — nao existe como executavel
+                # com shell=False. Sugere usar tool list_dir (sem subprocess).
+                if _re.match(r"^dir(\s|$)", cmd_str.strip()):
+                    return (
+                        "[run_command] 'dir' e builtin do CMD do Windows e nao funciona "
+                        "como subprocesso com shell=False.\n"
+                        "Use a tool 'list_dir' (path='.') em vez de run_command."
+                    )
+
+                # `cat`, `head`, `tail` no Windows podem nao estar disponiveis
+                # (so existem com Git bash / WSL). Sugere usar tool read_file.
+                _cat_head_tail = _re.match(r"^(cat|head|tail)\s+(.+)$", cmd_str.strip())
+                if _cat_head_tail:
+                    cmd_name = _cat_head_tail.group(1)
+                    target = _cat_head_tail.group(2).split()[0]
+                    return (
+                        f"[run_command] '{cmd_name}' pode nao estar disponivel no Windows.\n"
+                        f"Para ler arquivos, prefira a tool 'read_file' com path='{target}'."
+                    )
 
             try:
                 result = shell_runner.run(cmd_str, confirm=confirm)
@@ -2271,20 +2450,19 @@ class ToolRouter:
     # --- mcp_call --------------------------------------------------------------
 
     def _mcp_call(self, args: dict) -> str:
-        """Chama tool em servidor MCP via stdio.
+        """Chama tool em servidor MCP via stdio (JSON-RPC 2.0 puro — sem pacote 'mcp').
 
-        Boas práticas:
-        - Lazy import: só importa `mcp` se chamado
-        - Conexão por sessão (sem cache global para evitar estado compartilhado)
-        - Timeout de 30s por chamada
-        - Retorna resultado como string JSON formatada
+        Usa McpClient nativo do Bauer. Não requer pip install mcp.
 
-        Configuração esperada em config.yaml:
+        Configuração em config.yaml:
             mcp:
               servers:
                 meu_servidor:
-                  command: ["python", "-m", "my_mcp_server"]
-                  env: {}
+                  command: ["python", "-m", "meu_mcp_server"]
+                  timeout: 30
+
+        Ou via variável de ambiente:
+            MCP_SERVER_MEU_SERVIDOR="python -m meu_mcp_server"
         """
         server_name = args.get("server", "").strip()
         tool_name = args.get("tool", "").strip()
@@ -2300,68 +2478,71 @@ class ToolRouter:
             except Exception:
                 raise ToolError("mcp_call: 'arguments' deve ser um objeto JSON.")
 
-        # Verifica instalação antes de qualquer outra coisa
+        # Resolve configuração do servidor
+        server_cmd, server_env, server_timeout = self._resolve_mcp_server(server_name)
+
+        from .mcp_client import McpClient, McpServerConfig, McpError, McpToolError, McpTimeoutError
+        cfg = McpServerConfig(
+            name=server_name,
+            command=server_cmd,
+            env=server_env,
+            timeout=server_timeout,
+        )
         try:
-            import mcp  # noqa: F401
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-            import asyncio
-        except ImportError:
+            with McpClient(cfg) as client:
+                return client.call_tool(tool_name, arguments)
+        except McpToolError as exc:
+            raise ToolError(str(exc)) from exc
+        except McpTimeoutError as exc:
+            raise ToolError(str(exc)) from exc
+        except McpError as exc:
             raise ToolError(
-                "mcp_call requer o pacote 'mcp' instalado.\n"
-                "Instale com: pip install mcp\n"
-                "Documentacao: https://github.com/anthropics/mcp"
-            )
-
-        # Carrega config do servidor (só chega aqui se mcp estiver instalado)
-        server_cmd = self._get_mcp_server_cmd(server_name)
-
-        async def _call() -> str:
-            params = StdioServerParameters(
-                command=server_cmd[0],
-                args=server_cmd[1:],
-            )
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool_name, arguments=arguments)
-                    # result.content é lista de TextContent/ImageContent
-                    parts = []
-                    for c in result.content:
-                        if hasattr(c, "text"):
-                            parts.append(c.text)
-                        elif hasattr(c, "data"):
-                            parts.append(f"[imagem base64 — {len(c.data)} chars]")
-                        else:
-                            parts.append(str(c))
-                    return "\n".join(parts) if parts else "(sem output)"
-
-        try:
-            return asyncio.run(_call())
+                f"mcp_call: erro de conexao com '{server_name}': {exc}"
+            ) from exc
         except Exception as exc:
             raise ToolError(
-                f"mcp_call: erro ao chamar '{tool_name}' em '{server_name}': {exc}"
-            )
+                f"mcp_call: erro inesperado chamando '{tool_name}' em '{server_name}': {exc}"
+            ) from exc
 
-    def _get_mcp_server_cmd(self, server_name: str) -> list[str]:
-        """Lê comando do servidor MCP da config ou env."""
+    def _resolve_mcp_server(
+        self, server_name: str
+    ) -> tuple[list[str], dict[str, str], float]:
+        """Resolve comando, env e timeout de um servidor MCP.
+
+        Ordem de busca:
+        1. Variável de ambiente: MCP_SERVER_<NAME>="python -m meu_servidor"
+        2. config.yaml → mcp.servers.<name>
+        3. Atributo legado self._mcp_config (compat)
+
+        Returns:
+            (command, env, timeout)
+        """
         import os
 
-        # Tenta ler de variável de ambiente: MCP_SERVER_<NAME>=comando
         env_key = f"MCP_SERVER_{server_name.upper().replace('-', '_')}"
         env_val = os.environ.get(env_key, "")
         if env_val:
-            return env_val.split()
+            return env_val.split(), {}, 30.0
 
-        # Tenta ler de config.yaml (se injetado via self._mcp_config)
+        # Tenta McpSection do config_loader (injetado via self._mcp_config)
         mcp_config = getattr(self, "_mcp_config", None)
-        if mcp_config:
-            servers = getattr(mcp_config, "servers", {}) or {}
+        if mcp_config is not None:
+            servers = getattr(mcp_config, "servers", None) or {}
             if server_name in servers:
                 srv = servers[server_name]
-                if isinstance(srv, dict) and "command" in srv:
+                if hasattr(srv, "command"):
+                    # McpServerEntry (Pydantic)
+                    cmd = srv.command if isinstance(srv.command, list) else srv.command.split()
+                    env = dict(getattr(srv, "env", {}) or {})
+                    timeout = float(getattr(srv, "timeout", 30))
+                    return cmd, env, timeout
+                elif isinstance(srv, dict) and "command" in srv:
                     cmd = srv["command"]
-                    return cmd if isinstance(cmd, list) else cmd.split()
+                    if isinstance(cmd, str):
+                        cmd = cmd.split()
+                    env = dict(srv.get("env", {}) or {})
+                    timeout = float(srv.get("timeout", 30))
+                    return cmd, env, timeout
 
         raise ToolError(
             f"Servidor MCP '{server_name}' nao configurado.\n"
@@ -2371,7 +2552,8 @@ class ToolRouter:
             "       mcp:\n"
             "         servers:\n"
             f"           {server_name}:\n"
-            "             command: [\"python\", \"-m\", \"meu_servidor\"]"
+            "             command: [\"python\", \"-m\", \"meu_servidor\"]\n"
+            "             timeout: 30"
         )
 
     # ==========================================================================
@@ -2708,8 +2890,33 @@ class ToolRouter:
 
         return "\n".join(results) if results else "Nenhuma entrada recente encontrada."
 
-    def _search_session_files(self, query: str) -> list[str]:
-        """Busca em arquivos .jsonl de sessão dentro do workspace."""
+    def _search_session_files(self, query: str, top_k: int = 20) -> list[str]:
+        """Busca em sessões salvas — usa FTS5 (SqliteSessionStore) ou fallback JSONL.
+
+        Tenta SqliteSessionStore primeiro (FTS5 semântico).
+        Se o banco não existir, cai para busca linear em .jsonl.
+        """
+        # ── Caminho 1: SqliteSessionStore (FTS5) ──────────────────────────
+        sessions_db_candidates = [
+            self.workspace.parent / "memory" / "sessions" / "sessions.db",
+            self.workspace / "memory" / "sessions" / "sessions.db",
+        ]
+        for db_path in sessions_db_candidates:
+            if db_path.exists():
+                try:
+                    from .sqlite_session_store import SqliteSessionStore as _SqliteStore
+                    store = _SqliteStore(db_path.parent)
+                    results = store.search_sessions(query, top_k=top_k)
+                    if results:
+                        return [
+                            f"  [session:{r['session_id']}] [{r['role']}] {r['snippet']}"
+                            for r in results
+                        ]
+                    return []  # banco existe mas sem resultados
+                except Exception:
+                    pass  # fallback para JSONL
+
+        # ── Caminho 2: fallback linear em .jsonl ──────────────────────────
         import re as _re
         hits: list[str] = []
         try:
@@ -2717,13 +2924,12 @@ class ToolRouter:
         except _re.error:
             pattern = _re.compile(_re.escape(query), _re.IGNORECASE)
 
-        # Procura .jsonl e .json de sessão nos diretórios comuns
         search_dirs = [self.workspace, self.workspace.parent]
         for d in search_dirs:
             if not d.exists():
                 continue
             for ext in ("*.jsonl", "*.json"):
-                for fpath in list(d.glob(ext))[:20]:  # máx 20 arquivos
+                for fpath in list(d.glob(ext))[:20]:
                     if fpath.name.startswith(".bauer_"):
                         continue
                     try:
@@ -2731,10 +2937,8 @@ class ToolRouter:
                         for i, line in enumerate(text.splitlines()):
                             if pattern.search(line):
                                 preview = line[:100].strip()
-                                hits.append(
-                                    f"  [{fpath.name}:{i+1}] {preview}"
-                                )
-                                if len(hits) >= 20:
+                                hits.append(f"  [{fpath.name}:{i+1}] {preview}")
+                                if len(hits) >= top_k:
                                     return hits
                     except Exception:
                         continue
@@ -3063,7 +3267,24 @@ class ToolRouter:
     # ── Constantes ────────────────────────────────────────────────────────────
 
     _SKILLS_FILE = ".bauer_skills.json"
-    _KANBAN_FILE = ".bauer_kanban.json"
+    _KANBAN_FILE = ".bauer_kanban.json"  # legacy file; TASKS.md is now authoritative.
+    _KANBAN_TO_WORKSPACE_STATUS = {
+        "todo": "TODO",
+        "ready": "READY",
+        "in_progress": "IN_PROGRESS",
+        "blocked": "BLOCKED",
+        "failed": "FAILED",
+        "done": "DONE",
+    }
+    _WORKSPACE_TO_KANBAN_STATUS = {
+        "TODO": "todo",
+        "READY": "ready",
+        "IN_PROGRESS": "in_progress",
+        "BLOCKED": "blocked",
+        "FAILED": "failed",
+        "DONE": "done",
+    }
+    _KANBAN_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
     # =========================================================================
     # Skills system
@@ -3435,17 +3656,81 @@ class ToolRouter:
     # =========================================================================
 
     def _load_kanban(self) -> dict:
-        p = self.workspace / self._KANBAN_FILE
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                return {"tasks": {}, "next_id": 1}
-        return {"tasks": {}, "next_id": 1}
+        wm = WorkspaceManager(self.workspace)
+        tasks = wm.list_tasks()
+        next_id = 1
+        numeric_ids = [int(t.id) for t in tasks if t.id.isdigit()]
+        if numeric_ids:
+            next_id = max(numeric_ids) + 1
+
+        board_tasks: dict[str, dict] = {}
+        for task in tasks:
+            public_id = self._kanban_public_id(task.id)
+            board_tasks[public_id] = self._workspace_task_to_kanban(task, tasks)
+        return {"tasks": board_tasks, "next_id": next_id}
 
     def _save_kanban(self, board: dict) -> None:
-        p = self.workspace / self._KANBAN_FILE
-        p.write_text(json.dumps(board, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise ToolError("kanban: TASKS.md e a fonte unica; use as tools kanban_* para alterar tarefas.")
+
+    def _kanban_public_id(self, task_id: str) -> str:
+        raw = str(task_id).strip()
+        if raw.upper().startswith("T"):
+            raw = raw[1:]
+        if raw.isdigit():
+            return f"T{int(raw):04d}"
+        return raw
+
+    def _kanban_workspace_id(self, task_id: str) -> str:
+        raw = str(task_id).strip()
+        if raw.upper().startswith("T") and raw[1:].isdigit():
+            raw = raw[1:]
+        if raw.isdigit():
+            return str(int(raw)).zfill(3)
+        return raw.zfill(3)
+
+    def _kanban_workspace_status(self, status: str) -> str:
+        status_key = str(status).strip().lower()
+        if status_key.upper() in self._WORKSPACE_TO_KANBAN_STATUS:
+            return status_key.upper()
+        if status_key not in self._KANBAN_TO_WORKSPACE_STATUS:
+            raise ToolError("kanban: status deve ser todo | ready | in_progress | blocked | failed | done.")
+        return self._KANBAN_TO_WORKSPACE_STATUS[status_key]
+
+    def _kanban_status(self, workspace_status: str) -> str:
+        return self._WORKSPACE_TO_KANBAN_STATUS.get(workspace_status.upper(), workspace_status.lower())
+
+    def _workspace_task_to_kanban(self, task, all_tasks: list | None = None) -> dict:  # type: ignore[no-untyped-def]
+        all_tasks = all_tasks or []
+        public_id = self._kanban_public_id(task.id)
+        children = [
+            self._kanban_public_id(child.id)
+            for child in all_tasks
+            if child.parent_id and child.parent_id == task.id
+        ]
+        parent_id = self._kanban_public_id(task.parent_id) if task.parent_id else ""
+        return {
+            "id": public_id,
+            "workspace_id": task.id,
+            "title": task.title,
+            "description": task.description,
+            "status": self._kanban_status(task.status),
+            "priority": task.priority or "medium",
+            "assignee": task.assignee,
+            "parent_id": parent_id,
+            "children": children,
+            "comments": list(task.comments),
+            "created_at": task.created_at,
+            "updated_at": task.created_at,
+        }
+
+    def _kanban_get_task(self, task_id: str) -> dict:
+        workspace_id = self._kanban_workspace_id(task_id)
+        wm = WorkspaceManager(self.workspace)
+        try:
+            task = wm.get_task(workspace_id)
+        except WorkspaceError as exc:
+            raise ToolError(f"kanban: tarefa '{task_id}' não encontrada.") from exc
+        return self._workspace_task_to_kanban(task, wm.list_tasks())
 
     def _kanban_create(self, args: dict) -> str:
         title = str(args.get("title", "")).strip()
@@ -3456,29 +3741,26 @@ class ToolRouter:
         if priority not in valid_priorities:
             raise ToolError(f"kanban_create: priority deve ser {valid_priorities}.")
 
-        import time as _time
-        board = self._load_kanban()
-        task_id = f"T{board['next_id']:04d}"
-        board["next_id"] += 1
-        board["tasks"][task_id] = {
-            "id": task_id,
-            "title": title,
-            "description": str(args.get("description", "")),
-            "status": "todo",
-            "priority": priority,
-            "assignee": str(args.get("assignee", "")),
-            "parent_id": str(args.get("parent_id", "")),
-            "children": [],
-            "comments": [],
-            "created_at": _time.time(),
-            "updated_at": _time.time(),
-        }
-        # Registra filho no pai
+        wm = WorkspaceManager(self.workspace)
         parent_id = str(args.get("parent_id", "")).strip()
-        if parent_id and parent_id in board["tasks"]:
-            board["tasks"][parent_id]["children"].append(task_id)
+        parent_workspace_id = self._kanban_workspace_id(parent_id) if parent_id else ""
+        status_arg = str(args.get("status", "todo")).strip().lower()
+        workspace_status = self._kanban_workspace_status(status_arg)
+        metadata = {"dispatch": "true"} if workspace_status == "READY" else None
+        try:
+            task = wm.add_task(
+                title,
+                description=str(args.get("description", "")),
+                status=workspace_status,
+                priority=priority,
+                assignee=str(args.get("assignee", "")),
+                parent_id=parent_workspace_id,
+                metadata=metadata,
+            )
+        except WorkspaceError as exc:
+            raise ToolError(f"kanban_create: {exc}") from exc
 
-        self._save_kanban(board)
+        task_id = self._kanban_public_id(task.id)
         return f"[kanban] Tarefa criada: {task_id} — '{title}' [{priority}]"
 
     def _kanban_list(self, args: dict) -> str:
@@ -3498,8 +3780,7 @@ class ToolRouter:
         if not tasks:
             return "[kanban] Nenhuma tarefa encontrada com esses filtros."
 
-        _priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        tasks.sort(key=lambda t: _priority_order.get(t["priority"], 9))
+        tasks.sort(key=lambda t: (self._KANBAN_PRIORITY_ORDER.get(t["priority"], 9), t["id"]))
 
         _status_icons = {"todo": "⬜", "in_progress": "🔵", "blocked": "🔴", "done": "✅"}
         lines = [f"[kanban] {len(tasks)} tarefa(s):"]
@@ -3511,7 +3792,9 @@ class ToolRouter:
             )
         return "\n".join(lines)
 
-    def _kanban_show(self, args: dict) -> str:
+    # Legacy JSON-board implementation kept only as historical fallback code.
+    # The registered kanban_* methods below are the TASKS.md-backed source of truth.
+    def _legacy_kanban_show(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
         if not task_id:
             raise ToolError("kanban_show: 'task_id' é obrigatório.")
@@ -3538,7 +3821,7 @@ class ToolRouter:
                 lines.append(f"    [{ts}] {c.get('author','?')}: {c['text']}")
         return "\n".join(lines)
 
-    def _kanban_update_status(self, task_id: str, new_status: str, note: str = "") -> dict:
+    def _legacy_kanban_update_status(self, task_id: str, new_status: str, note: str = "") -> dict:
         board = self._load_kanban()
         if task_id not in board["tasks"]:
             raise ToolError(f"kanban: tarefa '{task_id}' não encontrada.")
@@ -3551,7 +3834,7 @@ class ToolRouter:
         self._save_kanban(board)
         return t
 
-    def _kanban_complete(self, args: dict) -> str:
+    def _legacy_kanban_complete(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
         if not task_id:
             raise ToolError("kanban_complete: 'task_id' é obrigatório.")
@@ -3559,7 +3842,7 @@ class ToolRouter:
         t = self._kanban_update_status(task_id, "done", f"Concluído: {result}" if result else "")
         return f"[kanban] {task_id} '{t['title']}' marcado como done."
 
-    def _kanban_block(self, args: dict) -> str:
+    def _legacy_kanban_block(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
         reason = str(args.get("reason", "")).strip()
         if not task_id:
@@ -3569,7 +3852,7 @@ class ToolRouter:
         t = self._kanban_update_status(task_id, "blocked", f"Bloqueado: {reason}")
         return f"[kanban] {task_id} '{t['title']}' bloqueado — {reason}"
 
-    def _kanban_unblock(self, args: dict) -> str:
+    def _legacy_kanban_unblock(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
         if not task_id:
             raise ToolError("kanban_unblock: 'task_id' é obrigatório.")
@@ -3577,7 +3860,7 @@ class ToolRouter:
         t = self._kanban_update_status(task_id, "todo", note)
         return f"[kanban] {task_id} '{t['title']}' desbloqueado."
 
-    def _kanban_heartbeat(self, args: dict) -> str:
+    def _legacy_kanban_heartbeat(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
         progress = str(args.get("progress", "")).strip()
         if not task_id:
@@ -3595,7 +3878,7 @@ class ToolRouter:
         self._save_kanban(board)
         return f"[kanban] ❤️ {task_id} — {progress}"
 
-    def _kanban_comment(self, args: dict) -> str:
+    def _legacy_kanban_comment(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
         comment = str(args.get("comment", "")).strip()
         if not task_id:
@@ -3614,7 +3897,7 @@ class ToolRouter:
         self._save_kanban(board)
         return f"[kanban] Comentário adicionado em {task_id}."
 
-    def _kanban_link(self, args: dict) -> str:
+    def _legacy_kanban_link(self, args: dict) -> str:
         parent_id = str(args.get("parent_id", "")).strip()
         child_id = str(args.get("child_id", "")).strip()
         if not parent_id or not child_id:
@@ -3634,6 +3917,115 @@ class ToolRouter:
         child["updated_at"] = _time.time()
         self._save_kanban(board)
         return f"[kanban] {child_id} vinculado como filho de {parent_id}."
+
+    # --- TASKS.md-backed Kanban mutations ------------------------------------
+
+    def _kanban_show(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_show: 'task_id' e obrigatorio.")
+        t = self._kanban_get_task(task_id)
+        lines = [
+            f"[kanban] {t['id']} - {t['title']}",
+            f"  Status: {t['status']} | Prioridade: {t['priority']}",
+            f"  Assignee: {t.get('assignee') or '-'}",
+            f"  Pai: {t.get('parent_id') or '-'} | Filhos: {', '.join(t.get('children', [])) or '-'}",
+            f"  Criado: {t.get('created_at') or '-'}",
+        ]
+        if t.get("description"):
+            lines += ["", "  Descricao:", f"    {t['description']}"]
+        if t.get("comments"):
+            lines.append("")
+            lines.append("  Comentarios:")
+            for c in t["comments"]:
+                stamp = str(c.get("at", ""))[-14:-9] if c.get("at") else "--:--"
+                lines.append(f"    [{stamp}] {c.get('author','?')}: {c['text']}")
+        return "\n".join(lines)
+
+    def _kanban_update_status(self, task_id: str, new_status: str, note: str = "") -> dict:
+        workspace_id = self._kanban_workspace_id(task_id)
+        workspace_status = self._kanban_workspace_status(new_status)
+        wm = WorkspaceManager(self.workspace)
+        try:
+            task = wm.update_task_status(workspace_id, workspace_status)
+            if note:
+                task = wm.add_task_comment(workspace_id, note, author="system")
+        except WorkspaceError as exc:
+            raise ToolError(f"kanban: {exc}") from exc
+        return self._workspace_task_to_kanban(task, wm.list_tasks())
+
+    def _kanban_complete(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_complete: 'task_id' e obrigatorio.")
+        result = str(args.get("result", ""))
+        t = self._kanban_update_status(task_id, "done", f"Concluido: {result}" if result else "")
+        return f"[kanban] {t['id']} '{t['title']}' marcado como done."
+
+    def _kanban_block(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        reason = str(args.get("reason", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_block: 'task_id' e obrigatorio.")
+        if not reason:
+            raise ToolError("kanban_block: 'reason' e obrigatorio.")
+        t = self._kanban_update_status(task_id, "blocked", f"Bloqueado: {reason}")
+        return f"[kanban] {t['id']} '{t['title']}' bloqueado - {reason}"
+
+    def _kanban_unblock(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_unblock: 'task_id' e obrigatorio.")
+        note = str(args.get("note", "Bloqueio removido."))
+        t = self._kanban_update_status(task_id, "todo", note)
+        return f"[kanban] {t['id']} '{t['title']}' desbloqueado."
+
+    def _kanban_heartbeat(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        progress = str(args.get("progress", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_heartbeat: 'task_id' e obrigatorio.")
+        if not progress:
+            raise ToolError("kanban_heartbeat: 'progress' e obrigatorio.")
+        t = self._kanban_update_status(task_id, "in_progress", progress)
+        return f"[kanban] heartbeat {t['id']} - {progress}"
+
+    def _kanban_comment(self, args: dict) -> str:
+        task_id = str(args.get("task_id", "")).strip()
+        comment = str(args.get("comment", "")).strip()
+        if not task_id:
+            raise ToolError("kanban_comment: 'task_id' e obrigatorio.")
+        if not comment:
+            raise ToolError("kanban_comment: 'comment' e obrigatorio.")
+        author = str(args.get("author", "agent"))
+        wm = WorkspaceManager(self.workspace)
+        workspace_id = self._kanban_workspace_id(task_id)
+        try:
+            task = wm.add_task_comment(workspace_id, comment, author=author)
+        except WorkspaceError as exc:
+            raise ToolError(f"kanban_comment: {exc}") from exc
+        return f"[kanban] Comentario adicionado em {self._kanban_public_id(task.id)}."
+
+    def _kanban_link(self, args: dict) -> str:
+        parent_id = str(args.get("parent_id", "")).strip()
+        child_id = str(args.get("child_id", "")).strip()
+        if not parent_id or not child_id:
+            raise ToolError("kanban_link: 'parent_id' e 'child_id' sao obrigatorios.")
+        if self._kanban_workspace_id(parent_id) == self._kanban_workspace_id(child_id):
+            raise ToolError("kanban_link: parent_id e child_id nao podem ser iguais.")
+
+        wm = WorkspaceManager(self.workspace)
+        parent_workspace_id = self._kanban_workspace_id(parent_id)
+        child_workspace_id = self._kanban_workspace_id(child_id)
+        try:
+            wm.get_task(parent_workspace_id)
+            child = wm.update_task_metadata(child_workspace_id, parent_id=parent_workspace_id)
+        except WorkspaceError as exc:
+            raise ToolError(f"kanban_link: {exc}") from exc
+        return (
+            f"[kanban] {self._kanban_public_id(child.id)} vinculado como filho de "
+            f"{self._kanban_public_id(parent_workspace_id)}."
+        )
 
     # =========================================================================
     # Browser automation (Playwright)
