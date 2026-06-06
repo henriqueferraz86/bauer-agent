@@ -291,6 +291,45 @@ class McpSection(BaseModel):
     servers: dict[str, McpServerEntry] = Field(default_factory=dict)
 
 
+class AuxiliarySlot(BaseModel):
+    """One auxiliary-client slot — points to a (provider, model) pair.
+
+    Both fields default to empty, meaning "use the main model.name from
+    config.yaml". Set them per-slot to route specific tasks (decomposition,
+    triage, compression) to a cheaper / faster model than the main agent.
+
+    Example in config.yaml::
+
+        auxiliary:
+          kanban_decomposer:
+            provider: groq
+            model: llama-3.3-70b-versatile
+          triage_specifier:
+            provider: openai
+            model: gpt-4o-mini
+          compression_model: {}   # falls back to main model
+    """
+    provider: str = ""   # Empty → fall back to main model.provider
+    model: str = ""      # Empty → fall back to main model.name
+
+
+class AuxiliarySection(BaseModel):
+    """Auxiliary LLM slots — cheap/fast models for routine subtasks.
+
+    Each slot is consumed by a specific Bauer subsystem:
+      - `kanban_decomposer` — kanban_decompose.decompose_task() (Wave 3)
+      - `triage_specifier`  — kanban_specify.specify_task() (Wave 3)
+      - `compression_model` — context compression (future)
+
+    All slots default to empty → the main `model.name` is used. This keeps
+    the system working out of the box; users opt-in to per-slot routing as
+    they tune for cost.
+    """
+    kanban_decomposer: AuxiliarySlot = AuxiliarySlot()
+    triage_specifier:  AuxiliarySlot = AuxiliarySlot()
+    compression_model: AuxiliarySlot = AuxiliarySlot()
+
+
 class WebSection(BaseModel):
     """Configuração de backends web para web_search e web_fetch.
 
@@ -338,6 +377,7 @@ class BauerConfig(BaseModel):
     mcp: McpSection = McpSection()
     serve: ServeSection = ServeSection()
     router: RouterSection = RouterSection()
+    auxiliary: AuxiliarySection = AuxiliarySection()
 
 
 def load_config(path: str | Path = "config.yaml") -> BauerConfig:
