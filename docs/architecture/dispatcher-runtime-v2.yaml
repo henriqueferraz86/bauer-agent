@@ -1,0 +1,39 @@
+id: dispatcher-runtime-v2
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  The dispatcher is the durable control plane for READY -> IN_PROGRESS ->
+  terminal task flow. The synchronous DAG remains the worker engine, but queue,
+  claim, run, watchdog, and cancellation semantics are centralized here.
+
+runtime_objects:
+  queue:
+    source: WorkspaceManager TASKS.md projection
+    persistent_history: KanbanStore task_events
+  claim:
+    fields: [claim_id, claim_expires, claimed_by, worker_pid, heartbeat_at]
+    lease: claim_ttl_seconds
+  run:
+    source: KanbanStore task_runs
+    fields: [run_id, task_id, status, attempt, runner, worker_pid, log_path]
+  worker:
+    context: BAUER_TOOL_CONTEXT=worker
+    identity: [BAUER_KANBAN_TASK, BAUER_KANBAN_CLAIM_ID, BAUER_KANBAN_RUN_ID]
+  watchdog:
+    responsibilities:
+      - reclaim stale leases
+      - detect crashed worker PIDs
+      - spawn bounded new work
+      - record daemon lifecycle events
+
+events:
+  daemon: [dispatcher.daemon_started, dispatcher.daemon_stopped, dispatcher.daemon_tick]
+  worker: [worker.started, worker.stopped, worker.timeout, worker.cancel_requested]
+  claim: [dispatcher.claimed, dispatcher.reclaimed, worker.crashed]
+
+acceptance:
+  - daemon startup and shutdown are visible in task_events.
+  - watchdog ticks perform crash scan, stale reclaim, and bounded dispatch in one API.
+  - cancelling an active task can optionally request worker process termination.
+  - recent runs and active claims are available from the shared ops status API.

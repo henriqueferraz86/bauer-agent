@@ -41,6 +41,7 @@ _SESSIONS_CMDS = {"/sessions", "/sessoes"}
 _SPEC_CMDS = {"/spec", "/specs"}
 _KANBAN_CMDS = {"/kanban", "/board", "/tasks", "/task"}   # bare /task → board
 _DISPATCH_CMDS = {"/dispatch"}
+_OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 
@@ -67,6 +68,8 @@ _SLASH_BASE = [
     "/dispatch once",
     "/dispatch once --dry-run",
     "/dispatch status",
+    "/ops",
+    "/ops status",
     "/memory",
     "/memory search",
     "/memory list",
@@ -102,6 +105,8 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/dispatch":       "executa um tick do dispatcher hibrido",
     "/dispatch once":  "despacha tasks READY uma vez",
     "/dispatch status": "mostra fila/claims do dispatcher",
+    "/ops":            "status operacional: lanes, claims, runs e eventos",
+    "/ops status":     "status operacional detalhado",
     "/memory":         "lista arquivos de memória",
     "/memory search":  "busca na memória: /memory search <query>",
     "/memory list":    "lista arquivos de memória",
@@ -704,6 +709,15 @@ def _collect_response(
 
     Usa chat_with_retry (com exponential backoff) quando disponível — OpenAIClient.
     Fallback para chat_stream direto (OllamaClient e qualquer client sem retry).
+
+    Wave 1 integrations (provider-aware, opt-in):
+      - Anthropic prompt caching: applies `cache_control` to system + last 3
+        non-system messages so the next turn enjoys cache hits (~75% input cost
+        reduction). `apply_anthropic_cache_control()` deep-copies — the input
+        `payload` (and the persisted history) is never mutated.
+      - Usage capture: after each LLM call, the client's `last_usage` attribute
+        holds the raw provider usage dict. Normalised + accumulated outside
+        this function via `bauer.account_usage.normalize_usage()`.
     """
     # Plugin hooks — pre_llm_call
     try:
@@ -713,13 +727,31 @@ def _collect_response(
     except Exception:
         pass
 
+    # Anthropic prompt caching — provider-aware no-op for everything else.
+    # Caching only kicks in when the system prompt is byte-stable across turns;
+    # the deep-copy here ensures we never persist cache_control markers into
+    # the conversation history (which would invalidate cache hits).
+    api_payload = payload
+    try:
+        from .prompt_caching import (
+            apply_anthropic_cache_control,
+            should_apply_cache_control,
+        )
+        if should_apply_cache_control(client):
+            api_payload = apply_anthropic_cache_control(payload)
+    except Exception:
+        # If caching scaffolding fails for any reason, fall back to the raw
+        # payload — better to ship the request than to crash on a cost
+        # optimisation.
+        api_payload = payload
+
     # Usa retry automático apenas no OpenAIClient (que tem implementação real).
     # Checar apenas hasattr() seria insuficiente pois MagicMock retorna True para tudo.
     from .openai_client import OpenAIClient as _OpenAIClientClass
     if isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
-        parts = client.chat_with_retry(model_name, payload)
+        parts = client.chat_with_retry(model_name, api_payload)
     else:
-        parts = list(client.chat_stream(model_name, payload))
+        parts = list(client.chat_stream(model_name, api_payload))
     response = "".join(parts)
 
     # Sanitiza lone surrogates (U+D800–U+DFFF) que provocam UnicodeEncodeError
@@ -1432,6 +1464,9 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
             "  /dispatch once --dry-run  # mostra o que seria claimed\n"
             "  /dispatch once --foreground\n"
             "  /dispatch status\n"
+            "  /dispatch reclaim\n"
+            "  /dispatch cancel <id>\n"
+            "  /dispatch retry <id>\n"
             "\n[dim]READY e fila. IN_PROGRESS e worker claimed. DONE/FAILED sao finais.[/dim]"
         )
         return
@@ -1444,7 +1479,10 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
         return
 
     if sub in ("status", "queue", "fila"):
+        from .kanban_store import KanbanStore
+
         wm = WorkspaceManager(workspace)
+        store = KanbanStore(workspace)
         tasks = wm.list_tasks()
         counts = Counter(t.status for t in tasks)
         table = Table(title=f"Dispatcher - {workspace}", show_lines=False)
@@ -1473,6 +1511,29 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
             console.print(run_table)
         else:
             console.print("[dim]Nenhum claim ativo do dispatcher.[/dim]")
+
+        runs = store.list_runs(statuses=["claimed", "running", "retrying"], limit=10)
+        if runs:
+            runs_table = Table(title="Runs ativos/recentes", show_lines=False)
+            runs_table.add_column("Run", style="dim")
+            runs_table.add_column("Task")
+            runs_table.add_column("Status")
+            runs_table.add_column("Tent.", justify="right")
+            runs_table.add_column("Heartbeat", style="dim")
+            for run in runs:
+                runs_table.add_row(run.run_id, run.task_id, run.status, str(run.attempt), run.heartbeat_at)
+            console.print(runs_table)
+
+        events = store.list_events(limit=5)
+        if events:
+            events_table = Table(title="Ultimos eventos", show_lines=False)
+            events_table.add_column("Task")
+            events_table.add_column("Evento")
+            events_table.add_column("Ator")
+            events_table.add_column("Mensagem")
+            for event in events:
+                events_table.add_row(event.task_id, event.event_type, event.actor, event.message[:80])
+            console.print(events_table)
         return
 
     if sub in ("daemon", "loop"):
@@ -1482,9 +1543,39 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
         )
         return
 
+    if sub in ("reclaim", "recover"):
+        dispatcher = TaskDispatcher(workspace)
+        crashed = dispatcher.detect_crashed_workers()
+        reclaimed = dispatcher.reclaim_stale()
+        console.print(
+            "[bold cyan]dispatch reclaim[/bold cyan] "
+            f"crashed={len(crashed)} reclaimed={len(reclaimed)}"
+        )
+        if crashed:
+            console.print(f"[dim]crashed:[/dim] {', '.join(crashed)}")
+        if reclaimed:
+            console.print(f"[dim]reclaimed:[/dim] {', '.join(reclaimed)}")
+        return
+
+    if sub in ("cancel", "retry"):
+        if not args:
+            console.print(f"[yellow]Uso: /dispatch {sub} <task_id>[/yellow]")
+            return
+        dispatcher = TaskDispatcher(workspace)
+        try:
+            if sub == "cancel":
+                task = dispatcher.cancel_task(args[0], reason="cancelado via chat")
+                console.print(f"[yellow]{task.id}[/yellow] -> [BLOCKED] {task.title}")
+            else:
+                task = dispatcher.retry_failed(args[0], reason="retry via chat")
+                console.print(f"[cyan]{task.id}[/cyan] -> [READY] {task.title}")
+        except Exception as exc:
+            console.print(f"[red]Erro no dispatcher:[/red] {exc}")
+        return
+
     if sub not in ("once", "run", "tick"):
         console.print(f"[yellow]Subcomando desconhecido: [bold]/dispatch {sub}[/bold][/yellow]")
-        console.print("[dim]Disponiveis: once | status | help[/dim]")
+        console.print("[dim]Disponiveis: once | status | reclaim | cancel | retry | help[/dim]")
         return
 
     dry_run = any(a in ("--dry-run", "--dry") for a in args)
@@ -1506,12 +1597,13 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
 
     console.print(
         "[bold cyan]dispatch once[/bold cyan] "
-        f"reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
+        f"crashed={len(result.crashed)} reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
         f"spawned={len(result.spawned)} completed={len(result.completed)} "
         f"failed={len(result.failed)} dry={len(result.dry_run)}"
     )
     any_activity = False
     for label, items in (
+        ("crashed", result.crashed),
         ("reclaimed", result.reclaimed),
         ("claimed", result.claimed),
         ("spawned", result.spawned),
@@ -1528,6 +1620,83 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
         console.print("[dim]Workers em background. Acompanhe com [bold]/task[/bold] ou [bold]/dispatch status[/bold].[/dim]")
     if not any_activity:
         console.print("[dim]Nenhuma task READY elegivel. Use [bold]/task ready <id>[/bold] para entrar na fila.[/dim]")
+
+
+def _handle_ops_cmd(user_input: str, console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
+    """Processa /ops dentro da sessao do agente."""
+    from rich.table import Table
+
+    from .ops_status import build_ops_status
+
+    parts = user_input.strip().split()
+    sub = parts[1].lower() if len(parts) > 1 else "status"
+    if sub not in ("status", "queue", "fila", "lanes"):
+        console.print("[yellow]Uso: /ops status[/yellow]")
+        return
+
+    status = build_ops_status(workspace, limit=8)
+    counts = status["status_counts"]
+    summary = Table(title=f"Ops - {workspace}", show_lines=False)
+    summary.add_column("Status", style="cyan")
+    summary.add_column("Qtd", justify="right")
+    for name in ("READY", "IN_PROGRESS", "FAILED", "BLOCKED", "TODO", "DONE"):
+        summary.add_row(name, str(counts.get(name, 0)))
+    console.print(summary)
+
+    lanes = status.get("lanes", [])
+    if lanes:
+        lane_table = Table(title="Lanes", show_lines=False)
+        lane_table.add_column("Lane", style="cyan")
+        lane_table.add_column("Agent")
+        lane_table.add_column("Cap.", justify="right")
+        lane_table.add_column("Ready", justify="right")
+        lane_table.add_column("Run", justify="right")
+        lane_table.add_column("Fail", justify="right")
+        for lane in lanes:
+            lane_table.add_row(
+                str(lane.get("lane", "")),
+                str(lane.get("agent", "")),
+                str(lane.get("max_concurrent", "")),
+                str(lane.get("ready", 0)),
+                str(lane.get("running", 0)),
+                str(lane.get("failed", 0)),
+            )
+        console.print(lane_table)
+
+    claims = status.get("active_claims", [])
+    if claims:
+        claim_table = Table(title="Claims ativos", show_lines=False)
+        claim_table.add_column("Task", style="cyan")
+        claim_table.add_column("Lane")
+        claim_table.add_column("PID")
+        claim_table.add_column("Alive")
+        claim_table.add_column("Lease")
+        for claim in claims:
+            lease = claim.get("claim_seconds_left")
+            claim_table.add_row(
+                str(claim.get("public_id", "")),
+                str(claim.get("lane", "")),
+                str(claim.get("worker_pid") or ""),
+                str(claim.get("worker_alive")),
+                "" if lease is None else f"{lease}s",
+            )
+        console.print(claim_table)
+    else:
+        console.print("[dim]Nenhum claim ativo.[/dim]")
+
+    events = status.get("recent_events", [])[:5]
+    if events:
+        events_table = Table(title="Eventos recentes", show_lines=False)
+        events_table.add_column("Task")
+        events_table.add_column("Evento")
+        events_table.add_column("Mensagem")
+        for event in events:
+            events_table.add_row(
+                str(event.get("task_id", "")),
+                str(event.get("event_type", "")),
+                str(event.get("message", ""))[:80],
+            )
+        console.print(events_table)
 
 
 # ─── /memory handler ─────────────────────────────────────────────────────────
@@ -1858,6 +2027,9 @@ def run_agent_session(
             continue
         if user_input.lower() in _DISPATCH_CMDS or user_input.lower().startswith("/dispatch "):
             _handle_dispatch_cmd(user_input, console, active_workspace)
+            continue
+        if user_input.lower() in _OPS_CMDS or user_input.lower().startswith("/ops "):
+            _handle_ops_cmd(user_input, console, active_workspace)
             continue
         if user_input.lower().startswith("/memory"):
             _handle_memory_cmd(user_input, console)

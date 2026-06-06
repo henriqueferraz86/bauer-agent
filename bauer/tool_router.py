@@ -54,12 +54,14 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .shell_runner import ShellError
+from .tool_policy import load_tool_policy
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
 from .workspace_manager import WorkspaceError, WorkspaceManager
 
@@ -286,10 +288,67 @@ _TOOL_SECURITY: dict[str, dict] = {
     "video_generate": {"permission": "network", "risk": "low",    "approval": False},
 }
 
+_TOOL_CONTEXTS = ("supervisor", "orchestrator", "chat", "worker")
+_TOOL_CONTEXT_ALIASES = {
+    "": "supervisor",
+    "default": "supervisor",
+    "operator": "supervisor",
+    "agent": "orchestrator",
+    "dag": "orchestrator",
+    "durable-worker": "worker",
+}
+_CHAT_CONTEXT_DENYLIST = frozenset({
+    "kanban_heartbeat",
+    "kanban_complete",
+    "kanban_block",
+})
+_WORKER_CONTEXT_ALLOWLIST = frozenset({
+    # Read/inspect the workspace and current state.
+    "list_dir",
+    "read_file",
+    "search_text",
+    "glob_files",
+    "regex_search",
+    "diff_files",
+    "calculate",
+    "datetime_now",
+    "json_query",
+    "encode_decode",
+    "todo",
+    "skills_list",
+    "skill_view",
+    "memory",
+    "session_search",
+    "kanban_list",
+    "kanban_show",
+    "process",
+    # Mutate only the local workspace needed to complete the claimed task.
+    "write_file",
+    "append_file",
+    "patch",
+    "create_dir",
+    "move_file",
+    "delete_file",
+    "execute_code",
+    "run_command",
+    "clarify",
+    # Report lifecycle for the single claimed task.
+    "kanban_heartbeat",
+    "kanban_comment",
+    "kanban_complete",
+    "kanban_block",
+})
+
 # Limite de leitura de arquivo para evitar output enorme.
 _MAX_READ_BYTES = 100_000
 # Limite de resultados de busca.
 _MAX_SEARCH_RESULTS = 50
+
+
+def _normalize_tool_context(value: str | None) -> str:
+    raw = (value if value is not None else os.environ.get("BAUER_TOOL_CONTEXT", "supervisor"))
+    context = _TOOL_CONTEXT_ALIASES.get(str(raw).strip().lower(), str(raw).strip().lower())
+    return context if context in _TOOL_CONTEXTS else "supervisor"
 
 
 class ToolRouter:
@@ -312,6 +371,8 @@ class ToolRouter:
         max_retries: int = 3,
         audit_enabled: bool = True,
         session_id: str = "",
+        tool_context: str | None = None,
+        tool_policy_path: str | Path | None = None,
     ):
         self.workspace = Path(workspace).resolve()
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
@@ -319,6 +380,8 @@ class ToolRouter:
         self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
         self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
         self._tool_call_count = 0              # contador redefenido por sessão
+        self.tool_context = _normalize_tool_context(tool_context)
+        self._tool_policy = load_tool_policy(self.workspace, explicit_path=tool_policy_path)
         # SEG-3: audit logger
         if audit_enabled:
             from .audit_logger import AuditLogger
@@ -924,6 +987,48 @@ class ToolRouter:
 
     # --- API pública -----------------------------------------------------------
 
+    def _is_tool_allowed_in_context(self, name: str, context: str | None = None) -> bool:
+        context = _normalize_tool_context(context or self.tool_context)
+        return self._tool_policy.allows(context, name)
+
+    def _allowed_contexts_for_tool(self, name: str) -> list[str]:
+        return self._tool_policy.allowed_contexts(name)
+
+    def _record_tool_denied(self, name: str, args: dict) -> None:
+        task_id = (
+            os.environ.get("BAUER_KANBAN_TASK")
+            or str(args.get("task_id") or args.get("id") or "000")
+        )
+        run_id = os.environ.get("BAUER_KANBAN_RUN_ID", "")
+        claim_id = os.environ.get("BAUER_KANBAN_CLAIM_ID", "")
+        try:
+            from .kanban_store import KanbanStore
+
+            store = KanbanStore(self.workspace)
+            if run_id:
+                store.update_run(
+                    run_id,
+                    metadata={
+                        "last_denied_tool": name,
+                        "last_denied_context": self.tool_context,
+                    },
+                )
+            store.append_event(
+                task_id,
+                "tool.denied",
+                actor=f"tool_router:{self.tool_context}",
+                run_id=run_id,
+                message=f"Tool '{name}' denied in context '{self.tool_context}'.",
+                metadata={
+                    "tool": name,
+                    "context": self.tool_context,
+                    "claim_id": claim_id,
+                    "arg_keys": sorted(str(key) for key in args.keys()),
+                },
+            )
+        except Exception:
+            pass
+
     def available_tools(self) -> list[str]:
         """Retorna união de tools built-in e tools registradas externamente (ToolRegistry)."""
         built_in = set(self._tools.keys())
@@ -932,7 +1037,7 @@ class ToolRouter:
             external = set(_ToolRegistry.get().list_names())
         except ImportError:
             external = set()
-        return sorted(built_in | external)
+        return sorted(name for name in (built_in | external) if self._is_tool_allowed_in_context(name))
 
     def tool_info(self, name: str) -> dict:
         # Verifica registry externo primeiro
@@ -948,6 +1053,9 @@ class ToolRouter:
                     "risk_level": ext_def.risk,
                     "requires_approval": ext_def.requires_approval,
                     "source": "external",
+                    "allowed_contexts": self._allowed_contexts_for_tool(name),
+                    "context_allowed": self._is_tool_allowed_in_context(name),
+                    "policy_source": self._tool_policy.source,
                 }
         except ImportError:
             pass
@@ -964,6 +1072,9 @@ class ToolRouter:
             "risk_level": sec["risk"],
             "requires_approval": sec["approval"],
             "source": "builtin",
+            "allowed_contexts": self._allowed_contexts_for_tool(name),
+            "context_allowed": self._is_tool_allowed_in_context(name),
+            "policy_source": self._tool_policy.source,
         }
 
     def tool_security(self, name: str) -> dict:
@@ -988,6 +1099,8 @@ class ToolRouter:
         """
         schemas: list[dict] = []
         for name, info in self._tools.items():
+            if not self._is_tool_allowed_in_context(name):
+                continue
             args_info = info.get("args", {})
             # Constrói properties do schema JSON
             properties: dict[str, dict] = {}
@@ -1071,6 +1184,12 @@ class ToolRouter:
         args = action.get("args", {})
         if not isinstance(args, dict):
             raise ToolError("Campo 'args' deve ser um objeto JSON.")
+
+        if not self._is_tool_allowed_in_context(name):
+            self._record_tool_denied(name, args)
+            raise ToolError(
+                f"tool denied: '{name}' nao permitido no contexto '{self.tool_context}'."
+            )
 
         # LIMITS-001: enforça max_tool_calls por sessão
         self._tool_call_count += 1
@@ -2479,6 +2598,15 @@ class ToolRouter:
                 raise ToolError("mcp_call: 'arguments' deve ser um objeto JSON.")
 
         # Resolve configuração do servidor
+        if "_get_mcp_server_cmd" in self.__dict__:
+            import asyncio
+            server_cmd = self._get_mcp_server_cmd(server_name)
+            legacy_call = self._mcp_call_legacy_async(server_cmd, tool_name, arguments)
+            try:
+                return asyncio.run(legacy_call)
+            finally:
+                legacy_call.close()
+
         server_cmd, server_env, server_timeout = self._resolve_mcp_server(server_name)
 
         from .mcp_client import McpClient, McpServerConfig, McpError, McpToolError, McpTimeoutError
@@ -2503,6 +2631,22 @@ class ToolRouter:
             raise ToolError(
                 f"mcp_call: erro inesperado chamando '{tool_name}' em '{server_name}': {exc}"
             ) from exc
+
+    def _get_mcp_server_cmd(self, server_name: str) -> list[str]:
+        """Compatibilidade com a API MCP anterior que retornava apenas o comando."""
+        server_cmd, _, _ = self._resolve_mcp_server(server_name)
+        return server_cmd
+
+    async def _mcp_call_legacy_async(
+        self,
+        server_cmd: list[str],
+        tool_name: str,
+        arguments: dict,
+    ) -> str:
+        """Ponte para testes/extensoes que ainda sobrescrevem o cliente MCP legado."""
+        raise ToolError(
+            "mcp_call legado nao esta disponivel; use a configuracao MCP nativa do Bauer."
+        )
 
     def _resolve_mcp_server(
         self, server_name: str
@@ -3732,6 +3876,118 @@ class ToolRouter:
             raise ToolError(f"kanban: tarefa '{task_id}' não encontrada.") from exc
         return self._workspace_task_to_kanban(task, wm.list_tasks())
 
+    def _kanban_enforce_worker_scope(self, task_id: str, action: str) -> dict:
+        workspace_id = self._kanban_workspace_id(task_id)
+        pinned_raw = os.environ.get("BAUER_KANBAN_TASK", "").strip()
+        run_id = os.environ.get("BAUER_KANBAN_RUN_ID", "").strip()
+        claim_id = os.environ.get("BAUER_KANBAN_CLAIM_ID", "").strip()
+        if not pinned_raw:
+            return {"worker": False, "task_id": workspace_id, "run_id": run_id, "claim_id": claim_id}
+
+        pinned_id = self._kanban_workspace_id(pinned_raw)
+        if workspace_id != pinned_id:
+            self._kanban_record_protocol_violation(
+                pinned_id,
+                action,
+                f"Worker pinned to {self._kanban_public_id(pinned_id)} tried {action} on {self._kanban_public_id(workspace_id)}.",
+                run_id=run_id,
+            )
+            raise ToolError(
+                "kanban: worker protocol violation - esta sessao so pode alterar "
+                f"{self._kanban_public_id(pinned_id)}."
+            )
+
+        wm = WorkspaceManager(self.workspace)
+        try:
+            task = wm.get_task(workspace_id)
+        except WorkspaceError as exc:
+            raise ToolError(f"kanban: tarefa '{task_id}' nao encontrada.") from exc
+
+        task_claim = task.metadata.get("claim_id", "")
+        if claim_id and task_claim and task_claim != claim_id:
+            self._kanban_record_protocol_violation(
+                workspace_id,
+                action,
+                "Worker claim_id does not match task claim_id.",
+                run_id=run_id or task.metadata.get("run_id", ""),
+            )
+            raise ToolError("kanban: worker protocol violation - claim_id nao confere.")
+
+        return {
+            "worker": True,
+            "task_id": workspace_id,
+            "run_id": run_id or task.metadata.get("run_id", ""),
+            "claim_id": claim_id,
+        }
+
+    def _kanban_record_protocol_violation(self, task_id: str, action: str, message: str, *, run_id: str = "") -> None:
+        try:
+            from .kanban_store import KanbanStore
+
+            store = KanbanStore(self.workspace)
+            store.append_event(
+                task_id,
+                "worker.protocol_violation",
+                actor="worker",
+                run_id=run_id,
+                message=message,
+                metadata={"action": action},
+            )
+            if run_id:
+                store.update_run(run_id, error=message, metadata={"protocol_violation": action})
+        except Exception:
+            return
+
+    def _kanban_record_worker_event(
+        self,
+        task_id: str,
+        ctx: dict,
+        event_type: str,
+        message: str,
+        *,
+        run_status: str | None = None,
+        summary: str | None = None,
+        error: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        try:
+            from .kanban_store import KanbanStore
+
+            store = KanbanStore(self.workspace)
+            run_id = str(ctx.get("run_id", ""))
+            actor = "worker" if ctx.get("worker") else "tool"
+            if run_id and run_status:
+                store.update_run(
+                    run_id,
+                    status=run_status,
+                    summary=summary,
+                    error=error,
+                    metadata=metadata or {},
+                )
+            store.append_event(
+                task_id,
+                event_type,
+                actor=actor,
+                run_id=run_id,
+                message=message,
+                metadata=metadata or {},
+            )
+        except Exception:
+            return
+
+    def _kanban_clear_claim_metadata(self, workspace_id: str):
+        wm = WorkspaceManager(self.workspace)
+        return wm.update_task_metadata(
+            workspace_id,
+            metadata={
+                "claim_id": None,
+                "claim_expires": None,
+                "claimed_by": None,
+                "worker_pid": None,
+                "heartbeat_at": None,
+            },
+        )
+
     def _kanban_create(self, args: dict) -> str:
         title = str(args.get("title", "")).strip()
         if not title:
@@ -3958,8 +4214,20 @@ class ToolRouter:
         task_id = str(args.get("task_id", "")).strip()
         if not task_id:
             raise ToolError("kanban_complete: 'task_id' e obrigatorio.")
+        ctx = self._kanban_enforce_worker_scope(task_id, "kanban_complete")
         result = str(args.get("result", ""))
         t = self._kanban_update_status(task_id, "done", f"Concluido: {result}" if result else "")
+        task = self._kanban_clear_claim_metadata(self._kanban_workspace_id(task_id))
+        t = self._workspace_task_to_kanban(task, WorkspaceManager(self.workspace).list_tasks())
+        self._kanban_record_worker_event(
+            self._kanban_workspace_id(task_id),
+            ctx,
+            "worker.completed_by_tool",
+            result or "Task completed via kanban_complete.",
+            run_status="succeeded",
+            summary=result,
+            metadata={"tool": "kanban_complete"},
+        )
         return f"[kanban] {t['id']} '{t['title']}' marcado como done."
 
     def _kanban_block(self, args: dict) -> str:
@@ -3969,7 +4237,19 @@ class ToolRouter:
             raise ToolError("kanban_block: 'task_id' e obrigatorio.")
         if not reason:
             raise ToolError("kanban_block: 'reason' e obrigatorio.")
+        ctx = self._kanban_enforce_worker_scope(task_id, "kanban_block")
         t = self._kanban_update_status(task_id, "blocked", f"Bloqueado: {reason}")
+        task = self._kanban_clear_claim_metadata(self._kanban_workspace_id(task_id))
+        t = self._workspace_task_to_kanban(task, WorkspaceManager(self.workspace).list_tasks())
+        self._kanban_record_worker_event(
+            self._kanban_workspace_id(task_id),
+            ctx,
+            "worker.blocked_by_tool",
+            reason,
+            run_status="blocked",
+            error=reason,
+            metadata={"tool": "kanban_block"},
+        )
         return f"[kanban] {t['id']} '{t['title']}' bloqueado - {reason}"
 
     def _kanban_unblock(self, args: dict) -> str:
@@ -3987,7 +4267,16 @@ class ToolRouter:
             raise ToolError("kanban_heartbeat: 'task_id' e obrigatorio.")
         if not progress:
             raise ToolError("kanban_heartbeat: 'progress' e obrigatorio.")
+        ctx = self._kanban_enforce_worker_scope(task_id, "kanban_heartbeat")
         t = self._kanban_update_status(task_id, "in_progress", progress)
+        self._kanban_record_worker_event(
+            self._kanban_workspace_id(task_id),
+            ctx,
+            "worker.heartbeat",
+            progress,
+            run_status="running",
+            metadata={"tool": "kanban_heartbeat", "progress": progress},
+        )
         return f"[kanban] heartbeat {t['id']} - {progress}"
 
     def _kanban_comment(self, args: dict) -> str:
@@ -3997,6 +4286,7 @@ class ToolRouter:
             raise ToolError("kanban_comment: 'task_id' e obrigatorio.")
         if not comment:
             raise ToolError("kanban_comment: 'comment' e obrigatorio.")
+        ctx = self._kanban_enforce_worker_scope(task_id, "kanban_comment")
         author = str(args.get("author", "agent"))
         wm = WorkspaceManager(self.workspace)
         workspace_id = self._kanban_workspace_id(task_id)
@@ -4004,6 +4294,14 @@ class ToolRouter:
             task = wm.add_task_comment(workspace_id, comment, author=author)
         except WorkspaceError as exc:
             raise ToolError(f"kanban_comment: {exc}") from exc
+        self._kanban_record_worker_event(
+            workspace_id,
+            ctx,
+            "worker.commented",
+            comment,
+            run_status="running" if ctx.get("run_id") else None,
+            metadata={"tool": "kanban_comment", "author": author},
+        )
         return f"[kanban] Comentario adicionado em {self._kanban_public_id(task.id)}."
 
     def _kanban_link(self, args: dict) -> str:

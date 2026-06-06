@@ -7,7 +7,7 @@ logging:
 model:
   auto_downgrade_context: true
   minimum_context: 8192
-  name: gpt-5
+  name: gpt-5-mini
   provider: openai
   requested_context: 128000
 ollama:

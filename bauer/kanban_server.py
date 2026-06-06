@@ -19,11 +19,13 @@ Uso:
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .workspace_manager import WorkspaceManager
 
@@ -89,6 +91,40 @@ _HTML = r"""<!DOCTYPE html>
     animation: pulse 2s infinite;
   }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* operational panel */
+  .ops-panel {
+    margin: 0 0 16px;
+    background: linear-gradient(135deg, rgba(59,130,246,.08), rgba(6,182,212,.05));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+  }
+  .ops-top {
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    margin-bottom: 12px;
+  }
+  .ops-title { font-weight:800; letter-spacing:.4px; }
+  .ops-subtitle { color:var(--dim); font-size:.75rem; margin-top:3px; }
+  .ops-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .ops-btn {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-size: .75rem; font-weight: 700;
+    cursor: pointer;
+  }
+  .ops-btn:hover { border-color: var(--ready); color: var(--ready); }
+  .ops-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  @media (max-width: 760px) { .ops-grid { grid-template-columns: 1fr; } }
+  .ops-box { background: rgba(0,0,0,.16); border:1px solid var(--border); border-radius:10px; padding:10px; min-height:86px; }
+  .ops-box h2 { font-size:.75rem; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:0 0 8px; }
+  .ops-item { border-top:1px solid rgba(255,255,255,.06); padding:7px 0; font-size:.76rem; }
+  .ops-item:first-of-type { border-top:none; }
+  .ops-meta { color:var(--dim); font-family:monospace; font-size:.68rem; margin-top:3px; }
+  .ops-empty { color:var(--dim); font-size:.78rem; padding:8px 0; }
+  .run-status { font-weight:800; color:var(--ready); }
+  .run-status.failed, .run-status.stale, .run-status.cancelled { color:var(--failed); }
+  .run-status.succeeded { color:var(--done); }
+  .run-status.running, .run-status.claimed { color:var(--progress); }
 
   /* ── board ── */
   .board {
@@ -214,6 +250,16 @@ _HTML = r"""<!DOCTYPE html>
     border-radius: 4px;
     padding: 1px 5px;
   }
+  .dispatch-badge {
+    display:inline-block;
+    margin-top:6px;
+    margin-left:4px;
+    font-size:.65rem;
+    background:rgba(6,182,212,.14);
+    color:var(--ready);
+    border-radius:4px;
+    padding:1px 5px;
+  }
   .compact .card-desc { display: none; }
   .show-more {
     text-align: center;
@@ -311,6 +357,11 @@ _HTML = r"""<!DOCTYPE html>
   .status-btn.DONE       { background:rgba(34,197,94,.2);   color:var(--done); }
   .status-btn.active     { outline: 2px solid currentColor; }
   #modal-hint { margin-top: 14px; font-size: 0.7rem; color: var(--dim); text-align: right; }
+  .modal-ops { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
+  .modal-section { margin-top:18px; background:rgba(0,0,0,.14); border:1px solid var(--border); border-radius:10px; padding:10px; }
+  .modal-section-title { font-size:.72rem; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin-bottom:8px; }
+  .timeline-item { border-top:1px solid rgba(255,255,255,.06); padding:7px 0; font-size:.76rem; }
+  .timeline-item:first-child { border-top:none; }
 
   /* New task modal */
   #new-task-overlay .modal { max-width: 460px; }
@@ -374,6 +425,46 @@ _HTML = r"""<!DOCTYPE html>
     <span id="ts">atualizando...</span>
   </div>
 </header>
+
+<!-- operational panel -->
+<section class="ops-panel">
+  <div class="ops-top">
+    <div>
+      <div class="ops-title">Operacao do dispatcher</div>
+      <div class="ops-subtitle">Runs, eventos e recuperacao sem abrir arquivos manualmente.</div>
+    </div>
+    <div class="ops-actions">
+      <button class="ops-btn" onclick="dispatchAction('once')">dispatch once</button>
+      <button class="ops-btn" onclick="dispatchAction('reclaim')">reclaim/crash scan</button>
+    </div>
+  </div>
+  <div class="ops-grid">
+    <div class="ops-box">
+      <h2>Lanes</h2>
+      <div id="ops-lanes"><div class="ops-empty">carregando...</div></div>
+    </div>
+    <div class="ops-box">
+      <h2>Claims ativos</h2>
+      <div id="ops-claims"><div class="ops-empty">carregando...</div></div>
+    </div>
+    <div class="ops-box">
+      <h2>Runs recentes</h2>
+      <div id="ops-runs"><div class="ops-empty">carregando...</div></div>
+    </div>
+    <div class="ops-box">
+      <h2>Orquestracoes</h2>
+      <div id="ops-orchestrations"><div class="ops-empty">carregando...</div></div>
+    </div>
+    <div class="ops-box">
+      <h2>Automacoes</h2>
+      <div id="ops-automations"><div class="ops-empty">carregando...</div></div>
+    </div>
+    <div class="ops-box">
+      <h2>Eventos recentes</h2>
+      <div id="ops-events"><div class="ops-empty">carregando...</div></div>
+    </div>
+  </div>
+</section>
 
 <!-- board -->
 <div class="board" id="board">
@@ -450,6 +541,15 @@ _HTML = r"""<!DOCTYPE html>
     <div id="modal-desc"></div>
     <div id="modal-spec"></div>
     <div class="status-btns" id="modal-status-btns"></div>
+    <div class="modal-ops" id="modal-ops"></div>
+    <div class="modal-section">
+      <div class="modal-section-title">Runs desta task</div>
+      <div id="modal-runs"><div class="ops-empty">Abra uma task para carregar.</div></div>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Timeline</div>
+      <div id="modal-events"><div class="ops-empty">Abra uma task para carregar.</div></div>
+    </div>
     <div id="modal-hint">Arraste o card para mover • Esc para fechar</div>
   </div>
 </div>
@@ -496,6 +596,9 @@ const COMPACT_THRESHOLD = 8;
 const REFRESH_MS = 3000;
 const collapseState = {};
 let allTasks = [];
+let allRuns = [];
+let allEvents = [];
+let allOps = null;
 let dragTaskId = null;
 let currentDetailId = null;
 let refreshPaused = false;
@@ -505,6 +608,18 @@ const STATUS_LABELS = {TODO:"TODO",READY:"READY",IN_PROGRESS:"EM PROGRESSO",BLOC
 
 function esc(s) {
   return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function fmtTime(value) {
+  if (!value) return "-";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleTimeString("pt-BR");
+}
+
+function taskLabel(taskId) {
+  const raw = String(taskId || "").replace(/^T/i, "");
+  const n = parseInt(raw, 10);
+  return Number.isNaN(n) ? esc(taskId) : "T" + String(n).padStart(4, "0");
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────
@@ -538,6 +653,29 @@ async function moveTask(taskId, newStatus) {
 }
 
 // ── Create task ────────────────────────────────────────────────────────────
+async function dispatchAction(action, taskId="", reason="") {
+  try {
+    const body = {action};
+    if (taskId) body.task_id = taskId;
+    if (reason) body.reason = reason;
+    const r = await fetch("/api/dispatch/action", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) { toast("Erro: " + (d.error||"falha"), "error"); return false; }
+    toast("Acao executada: " + action);
+    await fetchAndRender(true);
+    await fetchOps();
+    if (currentDetailId) await loadTaskOps(currentDetailId);
+    return true;
+  } catch(e) {
+    toast("Erro de conexao", "error");
+    return false;
+  }
+}
+
 async function submitNewTask() {
   const title = document.getElementById("nt-title").value.trim();
   if (!title) { document.getElementById("nt-title").focus(); return; }
@@ -602,6 +740,8 @@ function openDetail(taskId) {
     `<button class="status-btn ${s}${s===t.status?' active':''}" onclick="changeStatus('${taskId}','${s}')">${STATUS_LABELS[s]}</button>`
   ).join("");
 
+  renderModalActions(t);
+  loadTaskOps(taskId);
   document.getElementById("modal-overlay").classList.add("open");
 }
 
@@ -618,6 +758,8 @@ async function changeStatus(taskId, newStatus) {
     btns.querySelectorAll(".status-btn").forEach(b => {
       b.classList.toggle("active", b.classList.contains(newStatus));
     });
+    if (t) renderModalActions(t);
+    await loadTaskOps(taskId);
   }
 }
 
@@ -629,6 +771,94 @@ function closeDetail(e) {
 }
 
 // ── Drag and Drop ──────────────────────────────────────────────────────────
+function renderRunItem(run) {
+  return `<div class="ops-item">
+    <div><span class="run-status ${esc(run.status)}">${esc(run.status)}</span> ${taskLabel(run.task_id)} tentativa ${esc(String(run.attempt||0))}</div>
+    <div class="ops-meta">${esc(run.run_id)} | hb ${esc(fmtTime(run.heartbeat_at))}${run.worker_pid ? " | pid " + esc(String(run.worker_pid)) : ""}</div>
+    ${run.error ? `<div class="ops-meta">erro: ${esc(run.error).slice(0,120)}</div>` : ""}
+  </div>`;
+}
+
+function renderEventItem(event) {
+  return `<div class="ops-item timeline-item">
+    <div>${taskLabel(event.task_id)} <strong>${esc(event.event_type)}</strong></div>
+    <div class="ops-meta">${esc(event.actor)} | ${esc(fmtTime(event.at))}${event.run_id ? " | " + esc(event.run_id) : ""}</div>
+    ${event.message ? `<div>${esc(event.message).slice(0,160)}</div>` : ""}
+  </div>`;
+}
+
+function renderLaneItem(lane) {
+  return `<div class="ops-item">
+    <div><strong>${esc(lane.lane)}</strong>${lane.agent ? " | " + esc(lane.agent) : ""}</div>
+    <div class="ops-meta">cap ${esc(String(lane.max_concurrent))} | ready ${esc(String(lane.ready||0))} | run ${esc(String(lane.running||0))} | fail ${esc(String(lane.failed||0))}</div>
+  </div>`;
+}
+
+function renderClaimItem(claim) {
+  const lease = claim.claim_seconds_left === null || claim.claim_seconds_left === undefined ? "-" : String(claim.claim_seconds_left) + "s";
+  return `<div class="ops-item">
+    <div><strong>${esc(claim.public_id)}</strong> ${esc(claim.title || "")}</div>
+    <div class="ops-meta">${esc(claim.lane || "")} | pid ${esc(String(claim.worker_pid || "-"))} | alive ${esc(String(claim.worker_alive))} | lease ${esc(lease)}</div>
+  </div>`;
+}
+
+function renderOrchestrationItem(run) {
+  const nodes = run.nodes || [];
+  const nodeHtml = nodes.length
+    ? `<div class="ops-meta">${nodes.slice(0, 6).map(n => {
+        const task = n.task_id ? " task " + taskLabel(n.task_id) : "";
+        const dispatch = n.dispatch_run_id ? " run " + esc(n.dispatch_run_id).slice(0, 18) : "";
+        return "#" + esc(String(n.step_id)) + " " + esc(n.status || "") + task + dispatch;
+      }).join("<br>")}</div>`
+    : "";
+  return `<div class="ops-item">
+    <div><span class="run-status ${esc(run.status)}">${esc(run.status)}</span> ${esc(run.run_id || "")}</div>
+    <div class="ops-meta">${esc(run.mode || "")} | steps ${(run.plan || []).length} | ${esc(fmtTime(run.updated_at))}</div>
+    <div>${esc(run.objective || "").slice(0, 140)}</div>
+    ${nodeHtml}
+  </div>`;
+}
+
+function renderAutomationItem(job) {
+  return `<div class="ops-item">
+    <div><span class="run-status ${esc(job.status || "")}">${esc(job.status || "")}</span> ${esc(job.name || "")}</div>
+    <div class="ops-meta">${esc(job.schedule_str || "")} | next ${esc(fmtTime(job.next_run_at))} | runs ${esc(String(job.run_count || 0))}</div>
+    <div>${esc(job.prompt || "").slice(0, 120)}</div>
+  </div>`;
+}
+
+function renderModalActions(task) {
+  const el = document.getElementById("modal-ops");
+  const actions = [];
+  if (task.status === "FAILED" || task.status === "BLOCKED") {
+    actions.push(`<button class="ops-btn" onclick="dispatchAction('retry','${esc(task.id)}','retry from dashboard')">retry ready</button>`);
+  }
+  if (task.status === "READY" || task.status === "IN_PROGRESS") {
+    actions.push(`<button class="ops-btn" onclick="dispatchAction('cancel','${esc(task.id)}','cancelled from dashboard')">cancel/block</button>`);
+  }
+  el.innerHTML = actions.join("") || `<span class="ops-empty">Sem acoes operacionais para este status.</span>`;
+}
+
+async function loadTaskOps(taskId) {
+  try {
+    const [runsResp, eventsResp] = await Promise.all([
+      fetch(`/api/runs?task_id=${encodeURIComponent(taskId)}&limit=5`),
+      fetch(`/api/events?task_id=${encodeURIComponent(taskId)}&limit=8`)
+    ]);
+    const runsData = await runsResp.json();
+    const eventsData = await eventsResp.json();
+    const runs = runsData.runs || [];
+    const events = eventsData.events || [];
+    document.getElementById("modal-runs").innerHTML =
+      runs.length ? runs.map(renderRunItem).join("") : `<div class="ops-empty">Nenhum run registrado.</div>`;
+    document.getElementById("modal-events").innerHTML =
+      events.length ? events.map(renderEventItem).join("") : `<div class="ops-empty">Nenhum evento registrado.</div>`;
+  } catch(e) {
+    document.getElementById("modal-runs").innerHTML = `<div class="ops-empty">Erro ao carregar runs.</div>`;
+    document.getElementById("modal-events").innerHTML = `<div class="ops-empty">Erro ao carregar eventos.</div>`;
+  }
+}
+
 function onDragStart(e, taskId) {
   dragTaskId = taskId;
   e.dataTransfer.effectAllowed = "move";
@@ -670,6 +900,9 @@ function renderCard(t, compact) {
     ? `<div class="card-desc">${esc(t.description)}</div>` : "";
   const spec = (!compact && t.spec_id)
     ? `<span class="spec-badge">spec: ${esc(t.spec_id)}</span>` : "";
+  const meta = t.metadata || {};
+  const dispatch = (!compact && meta.dispatch === "true")
+    ? `<span class="dispatch-badge">${meta.run_id ? "run " + esc(String(meta.attempts||"1")) : "dispatch"}</span>` : "";
   return `
     <div class="card${compact?" compact":""}" data-id="${esc(t.id)}"
          draggable="true"
@@ -677,7 +910,7 @@ function renderCard(t, compact) {
          ondragend="onDragEnd(event)">
       <div class="card-id">#${esc(t.id)}</div>
       <div class="card-title" onclick="openDetail('${esc(t.id)}')">${esc(t.title)}</div>
-      ${desc}${spec}
+      ${desc}${spec}${dispatch}
     </div>`;
 }
 
@@ -716,13 +949,80 @@ function render() {
 }
 
 // ── Polling ────────────────────────────────────────────────────────────────
-async function fetchAndRender() {
-  if (refreshPaused) return;
+function renderOps() {
+  const lanesEl = document.getElementById("ops-lanes");
+  const claimsEl = document.getElementById("ops-claims");
+  const runsEl = document.getElementById("ops-runs");
+  const orchestrationsEl = document.getElementById("ops-orchestrations");
+  const automationsEl = document.getElementById("ops-automations");
+  const eventsEl = document.getElementById("ops-events");
+  const lanes = allOps ? (allOps.lanes || []) : [];
+  const claims = allOps ? (allOps.active_claims || []) : [];
+  const orchestrations = allOps ? (allOps.recent_orchestrations || []) : [];
+  const automations = allOps ? (allOps.automation_jobs || []) : [];
+  if (lanesEl) {
+    lanesEl.innerHTML = lanes.length
+      ? lanes.slice(0, 8).map(renderLaneItem).join("")
+      : `<div class="ops-empty">Nenhuma lane com tasks.</div>`;
+  }
+  if (claimsEl) {
+    claimsEl.innerHTML = claims.length
+      ? claims.slice(0, 8).map(renderClaimItem).join("")
+      : `<div class="ops-empty">Nenhum claim ativo.</div>`;
+  }
+  if (runsEl) {
+    runsEl.innerHTML = allRuns.length
+      ? allRuns.slice(0, 8).map(renderRunItem).join("")
+      : `<div class="ops-empty">Nenhum run registrado.</div>`;
+  }
+  if (orchestrationsEl) {
+    orchestrationsEl.innerHTML = orchestrations.length
+      ? orchestrations.slice(0, 8).map(renderOrchestrationItem).join("")
+      : `<div class="ops-empty">Nenhuma orquestracao duravel.</div>`;
+  }
+  if (automationsEl) {
+    automationsEl.innerHTML = automations.length
+      ? automations.slice(0, 8).map(renderAutomationItem).join("")
+      : `<div class="ops-empty">Nenhuma automacao cron.</div>`;
+  }
+  if (eventsEl) {
+    eventsEl.innerHTML = allEvents.length
+      ? allEvents.slice(0, 10).map(renderEventItem).join("")
+      : `<div class="ops-empty">Nenhum evento registrado.</div>`;
+  }
+}
+
+async function fetchOps() {
+  try {
+    const opsResp = await fetch("/api/ops?limit=10");
+    allOps = await opsResp.json();
+    allRuns = allOps.recent_runs || [];
+    allEvents = allOps.recent_events || [];
+    renderOps();
+  } catch(e) {
+    const lanesEl = document.getElementById("ops-lanes");
+    const claimsEl = document.getElementById("ops-claims");
+    const runsEl = document.getElementById("ops-runs");
+    const orchestrationsEl = document.getElementById("ops-orchestrations");
+    const automationsEl = document.getElementById("ops-automations");
+    const eventsEl = document.getElementById("ops-events");
+    if (lanesEl) lanesEl.innerHTML = `<div class="ops-empty">Erro ao carregar lanes.</div>`;
+    if (claimsEl) claimsEl.innerHTML = `<div class="ops-empty">Erro ao carregar claims.</div>`;
+    if (runsEl) runsEl.innerHTML = `<div class="ops-empty">Erro ao carregar runs.</div>`;
+    if (orchestrationsEl) orchestrationsEl.innerHTML = `<div class="ops-empty">Erro ao carregar orquestracoes.</div>`;
+    if (automationsEl) automationsEl.innerHTML = `<div class="ops-empty">Erro ao carregar automacoes.</div>`;
+    if (eventsEl) eventsEl.innerHTML = `<div class="ops-empty">Erro ao carregar eventos.</div>`;
+  }
+}
+
+async function fetchAndRender(force=false) {
+  if (refreshPaused && !force) { await fetchOps(); return; }
   try {
     const r    = await fetch("/api/tasks");
     const data = await r.json();
     allTasks   = data.tasks || [];
     render();
+    await fetchOps();
     document.getElementById("ts").textContent =
       "ao vivo \xb7 " + new Date().toLocaleTimeString("pt-BR");
     document.getElementById("dot").style.background = "var(--done)";
@@ -781,11 +1081,22 @@ class _KanbanHandler(BaseHTTPRequestHandler):
     # ── GET ────────────────────────────────────────────────────────────────
 
     def do_GET(self):
-        if self.path in ("/", "/kanban"):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        if path in ("/", "/kanban"):
             self._serve_html()
-        elif self.path == "/api/tasks":
+        elif path == "/api/tasks":
             self._serve_tasks()
-        elif self.path == "/api/info":
+        elif path == "/api/events":
+            self._serve_events(query)
+        elif path == "/api/runs":
+            self._serve_runs(query)
+        elif path == "/api/ops":
+            self._serve_ops(query)
+        elif path == "/api/orchestrations":
+            self._serve_orchestrations(query)
+        elif path == "/api/info":
             self._serve_info()
         else:
             self._send(404, "text/plain", b"Not found")
@@ -796,7 +1107,11 @@ class _KanbanHandler(BaseHTTPRequestHandler):
         """POST /api/tasks/:id/status  → move tarefa
            POST /api/tasks             → cria tarefa
         """
-        path = self.path.rstrip("/")
+        path = urlparse(self.path).path.rstrip("/")
+
+        if path == "/api/dispatch/action":
+            self._dispatch_action()
+            return
 
         # POST /api/tasks/{id}/status
         import re as _re
@@ -921,6 +1236,7 @@ class _KanbanHandler(BaseHTTPRequestHandler):
                         "assignee": t.assignee,
                         "parent_id": t.parent_id,
                         "comments": t.comments,
+                        "metadata": t.metadata,
                     }
                     for t in tasks
                 ]
@@ -930,6 +1246,105 @@ class _KanbanHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             body = json.dumps({"error": str(exc)}).encode()
             self._send(500, "application/json", body)
+
+    def _dispatch_action(self):
+        body = self._read_body()
+        if body is None:
+            return
+        action = str(body.get("action", "")).strip().lower()
+        try:
+            from .task_dispatcher import TaskDispatcher
+
+            dispatcher = TaskDispatcher(self.workspace)
+            if action in {"once", "dispatch_once"}:
+                result = dispatcher.dispatch_once(
+                    max_spawn=int(body.get("max_spawn") or 1),
+                    max_in_progress=int(body.get("max_in_progress") or 1),
+                    spawn_background=not bool(body.get("foreground")),
+                    dry_run=bool(body.get("dry_run")),
+                )
+                self._json(200, {"ok": True, "action": action, "result": asdict(result)})
+                return
+            if action in {"reclaim", "recover"}:
+                crashed = dispatcher.detect_crashed_workers()
+                reclaimed = dispatcher.reclaim_stale()
+                self._json(200, {"ok": True, "action": action, "crashed": crashed, "reclaimed": reclaimed})
+                return
+            if action == "cancel":
+                task_id = str(body.get("task_id", "")).strip()
+                if not task_id:
+                    self._json(400, {"error": "task_id e obrigatorio para cancel."})
+                    return
+                task = dispatcher.cancel_task(task_id, reason=str(body.get("reason") or "cancelled from dashboard"))
+                self._json(200, {"ok": True, "action": action, "task": {"id": task.id, "status": task.status}})
+                return
+            if action == "retry":
+                task_id = str(body.get("task_id", "")).strip()
+                if not task_id:
+                    self._json(400, {"error": "task_id e obrigatorio para retry."})
+                    return
+                task = dispatcher.retry_failed(task_id, reason=str(body.get("reason") or "retry from dashboard"))
+                self._json(200, {"ok": True, "action": action, "task": {"id": task.id, "status": task.status}})
+                return
+            self._json(400, {"error": f"Acao desconhecida: {action}"})
+        except Exception as exc:
+            self._json(500, {"error": str(exc)})
+
+    def _serve_events(self, query: dict):
+        try:
+            from .kanban_store import KanbanStore
+
+            task_id = (query.get("task_id") or [""])[0]
+            limit = int((query.get("limit") or ["50"])[0])
+            events = KanbanStore(self.workspace).list_events(task_id=task_id, limit=limit)
+            body = json.dumps({"events": [asdict(event) for event in events]}, ensure_ascii=False).encode()
+            self._send(200, "application/json; charset=utf-8", body)
+        except Exception as exc:
+            body = json.dumps({"error": str(exc)}).encode()
+            self._send(500, "application/json", body)
+
+    def _serve_runs(self, query: dict):
+        try:
+            from .kanban_store import KanbanStore
+
+            task_id = (query.get("task_id") or [""])[0]
+            limit = int((query.get("limit") or ["50"])[0])
+            runs = KanbanStore(self.workspace).list_runs(task_id=task_id, limit=limit)
+            body = json.dumps({"runs": [asdict(run) for run in runs]}, ensure_ascii=False).encode()
+            self._send(200, "application/json; charset=utf-8", body)
+        except Exception as exc:
+            body = json.dumps({"error": str(exc)}).encode()
+            self._send(500, "application/json", body)
+
+    def _serve_ops(self, query: dict):
+        try:
+            from .ops_status import build_ops_status
+
+            limit = int((query.get("limit") or ["10"])[0])
+            body = json.dumps(build_ops_status(self.workspace, limit=limit), ensure_ascii=False).encode()
+            self._send(200, "application/json; charset=utf-8", body)
+        except Exception as exc:
+            body = json.dumps({"error": str(exc)}).encode()
+            self._send(500, "application/json", body)
+
+    def _serve_orchestrations(self, query: dict):
+        try:
+            from .orchestration_store import OrchestrationStore
+
+            store = OrchestrationStore(self.workspace)
+            run_id = (query.get("run_id") or [""])[0]
+            limit = int((query.get("limit") or ["20"])[0])
+            runs = [store.get_run(run_id)] if run_id else store.list_runs(limit=limit)
+            payload = []
+            for run in runs:
+                if run is None:
+                    continue
+                data = asdict(run)
+                data["nodes"] = [asdict(node) for node in store.list_nodes(run.run_id)]
+                payload.append(data)
+            self._json(200, {"orchestrations": payload})
+        except Exception as exc:
+            self._json(500, {"error": str(exc)})
 
     def _json(self, code: int, payload: dict):
         body = json.dumps(payload, ensure_ascii=False).encode()

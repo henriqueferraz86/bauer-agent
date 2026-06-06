@@ -36,6 +36,17 @@ _META_KEYS = {
     "max_runtime_seconds",
     "last_error",
     "log",
+    "lane",
+    "capability",
+    "agent",
+    "orchestration_run",
+    "orchestration_step",
+    "orchestration_backend",
+    "orchestration_dispatch_run",
+    "automation_job",
+    "automation_run",
+    "automation_schedule",
+    "automation_name",
 }
 
 
@@ -167,7 +178,7 @@ class WorkspaceManager:
         with self.tasks_file.open("a", encoding="utf-8") as f:
             f.write(block)
 
-        return Task(
+        task = Task(
             id=task_id,
             status=status,
             title=title,
@@ -179,6 +190,20 @@ class WorkspaceManager:
             created_at=ts,
             metadata=extra_metadata,
         )
+        self._append_event_safe(
+            task.id,
+            "task.created",
+            actor="workspace",
+            status_to=task.status,
+            message=task.title,
+            metadata={
+                "priority": task.priority,
+                "assignee": task.assignee,
+                "parent_id": task.parent_id,
+                "spec_id": task.spec_id,
+            },
+        )
+        return task
 
     def list_tasks(self) -> list[Task]:
         """Lê e retorna todas as tarefas do TASKS.md."""
@@ -302,12 +327,23 @@ class WorkspaceManager:
             raise WorkspaceError(f"Tarefa '{task_id}' nao encontrada em TASKS.md.")
 
         old_heading = m.group(1)
+        old_status_match = re.search(r"\[([A-Z_]+)\]", old_heading)
+        old_status = old_status_match.group(1) if old_status_match else ""
         new_heading = re.sub(r"\[[A-Z_]+\]", f"[{new_status}]", old_heading)
         new_text = text[: m.start(1)] + new_heading + text[m.start(1) + len(old_heading) :]
         self.tasks_file.write_text(new_text, encoding="utf-8")
 
         for t in self.list_tasks():
             if t.id == task_id:
+                if old_status != new_status:
+                    self._append_event_safe(
+                        t.id,
+                        "task.status_changed",
+                        actor="workspace",
+                        status_from=old_status,
+                        status_to=new_status,
+                        message=f"{old_status} -> {new_status}".strip(" ->"),
+                    )
                 return t
         raise WorkspaceError(f"Erro interno: tarefa '{task_id}' nao encontrada apos update.")
 
@@ -339,7 +375,15 @@ class WorkspaceManager:
         def _apply(block: str) -> str:
             return _upsert_metadata(block, updates)
 
-        return self._modify_task_block(task_id, _apply)
+        task = self._modify_task_block(task_id, _apply)
+        self._append_event_safe(
+            task.id,
+            "task.metadata_updated",
+            actor="workspace",
+            message="Metadata updated",
+            metadata={"keys": sorted(updates)},
+        )
+        return task
 
     def add_task_comment(self, task_id: str, text: str, author: str = "agent") -> Task:
         """Adiciona um comentario auditavel dentro do bloco da tarefa."""
@@ -359,7 +403,14 @@ class WorkspaceManager:
             lines.insert(insert_at, line)
             return "\n".join(lines) + ("\n" if block.endswith("\n") else "")
 
-        return self._modify_task_block(task_id, _apply)
+        task = self._modify_task_block(task_id, _apply)
+        self._append_event_safe(
+            task.id,
+            "task.commented",
+            actor=author,
+            message=comment,
+        )
+        return task
 
     def get_task(self, task_id: str) -> Task:
         """Retorna uma tarefa por ID, aceitando '001' ou alias 'T0001'."""
@@ -386,6 +437,36 @@ class WorkspaceManager:
         new_block = apply(text[start:end])
         self.tasks_file.write_text(text[:start] + new_block + text[end:], encoding="utf-8")
         return self.get_task(task_id)
+
+    def _append_event_safe(
+        self,
+        task_id: str,
+        event_type: str,
+        *,
+        actor: str = "workspace",
+        status_from: str = "",
+        status_to: str = "",
+        run_id: str = "",
+        message: str = "",
+        metadata: dict | None = None,
+    ) -> None:
+        """Record operational history without making TASKS.md depend on SQLite."""
+        try:
+            from .kanban_store import KanbanStore
+
+            KanbanStore(self.workspace).append_event(
+                task_id,
+                event_type,
+                actor=actor,
+                status_from=status_from,
+                status_to=status_to,
+                run_id=run_id,
+                message=message,
+                metadata=metadata or {},
+            )
+        except Exception:
+            # TASKS.md remains the source projection even if the sidecar is unavailable.
+            return
 
 
 def _today() -> str:

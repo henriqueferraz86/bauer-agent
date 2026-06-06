@@ -15,8 +15,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
+from .agent_lanes import AgentLaneSelection, resolve_agent_lane
+from .kanban_store import KanbanStore
 from .workspace_manager import Task, WorkspaceError, WorkspaceManager
 
 
@@ -33,6 +35,7 @@ class WorkerResult:
 @dataclass
 class DispatchResult:
     reclaimed: list[str] = field(default_factory=list)
+    crashed: list[str] = field(default_factory=list)
     claimed: list[str] = field(default_factory=list)
     spawned: list[str] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
@@ -116,6 +119,7 @@ class TaskDispatcher:
         self.dispatch_dir = self.workspace / ".bauer_dispatch"
         self.runs_dir = self.dispatch_dir / "runs"
         self.lock_path = self.workspace / "TASKS.md.lock"
+        self.store = KanbanStore(self.workspace)
 
     def mark_ready(
         self,
@@ -148,6 +152,18 @@ class TaskDispatcher:
                 metadata["max_runtime_seconds"] = max(1, int(max_runtime_seconds))
             task = self.wm.update_task_metadata(task.id, assignee=assignee or None, metadata=metadata)
             self.wm.add_task_comment(task.id, "Task marcada como READY para dispatcher.", "dispatcher")
+            self.store.append_event(
+                task.id,
+                "dispatcher.ready",
+                actor="dispatcher",
+                status_to="READY",
+                message="Task marked READY for durable dispatch.",
+                metadata={
+                    "assignee": assignee,
+                    "max_retries": max_retries if max_retries is not None else self.max_retries,
+                    "max_runtime_seconds": max_runtime_seconds,
+                },
+            )
             return self.wm.get_task(task.id)
 
     def heartbeat(self, task_id: str, *, claim_id: str = "", note: str = "") -> bool:
@@ -164,6 +180,17 @@ class TaskDispatcher:
                     "claim_expires": expires,
                     "heartbeat_at": _now_iso(),
                 },
+            )
+            run_id = task.metadata.get("run_id", "")
+            if run_id:
+                self.store.update_run(run_id, status="running", metadata={"heartbeat_note": note})
+            self.store.append_event(
+                task.id,
+                "dispatcher.heartbeat",
+                actor="dispatcher",
+                run_id=run_id,
+                message=note or "heartbeat",
+                metadata={"claim_expires": expires},
             )
             if note:
                 self.wm.add_task_comment(task.id, f"Heartbeat: {note}", "dispatcher")
@@ -186,6 +213,154 @@ class TaskDispatcher:
                 reclaimed.append(_public_id(task.id))
         return reclaimed
 
+    def detect_crashed_workers(self) -> list[str]:
+        """Return IN_PROGRESS dispatch tasks to READY when their worker PID is gone."""
+        crashed: list[str] = []
+        with self._lock():
+            for task in self.wm.list_tasks():
+                if task.status != "IN_PROGRESS" or task.metadata.get("dispatch") != "true":
+                    continue
+                pid = _to_int(task.metadata.get("worker_pid"))
+                if not pid or _pid_alive(pid):
+                    continue
+                self._release_to_ready(
+                    task,
+                    reason=f"worker crashed pid={pid}",
+                    event_type="worker.crashed",
+                )
+                crashed.append(_public_id(task.id))
+        return crashed
+
+    def cancel_task(
+        self,
+        task_id: str,
+        *,
+        reason: str = "cancelled by operator",
+        terminate_worker: bool = False,
+    ) -> Task:
+        """Cancel active dispatch work by blocking the task and closing its run."""
+        with self._lock():
+            before = self.wm.get_task(task_id)
+            run_id = before.metadata.get("run_id", "")
+            worker_pid = _to_int(before.metadata.get("worker_pid"))
+            termination: dict[str, str | int | bool] = {
+                "terminate_worker": bool(terminate_worker),
+                "worker_pid": worker_pid,
+            }
+            if terminate_worker and worker_pid:
+                termination.update(_terminate_pid(worker_pid))
+            self.store.append_event(
+                before.id,
+                "worker.cancel_requested",
+                actor="dispatcher",
+                status_from=before.status,
+                run_id=run_id,
+                message=reason,
+                metadata=termination,
+            )
+            task = self.wm.update_task_status(before.id, "BLOCKED")
+            task = self.wm.update_task_metadata(task.id, metadata=_clear_claim_metadata(last_error=False))
+            self.wm.add_task_comment(task.id, f"Cancelado: {reason[:1000]}", "dispatcher")
+            self.store.update_run(run_id, status="cancelled", error=reason)
+            self.store.append_event(
+                task.id,
+                "dispatcher.cancelled",
+                actor="dispatcher",
+                status_from=before.status,
+                status_to="BLOCKED",
+                run_id=run_id,
+                message=reason,
+                metadata=termination,
+            )
+            return self.wm.get_task(task.id)
+
+    def retry_failed(self, task_id: str, *, reason: str = "manual retry") -> Task:
+        """Return a FAILED/BLOCKED task to READY without resetting its attempt history."""
+        with self._lock():
+            before = self.wm.get_task(task_id)
+            if before.status not in {"FAILED", "BLOCKED"}:
+                raise TaskDispatcherError("Apenas tasks FAILED ou BLOCKED podem voltar para READY.")
+            task = self.wm.update_task_status(before.id, "READY")
+            task = self.wm.update_task_metadata(
+                task.id,
+                metadata={
+                    "dispatch": "true",
+                    "claim_id": None,
+                    "claim_expires": None,
+                    "claimed_by": None,
+                    "worker_pid": None,
+                    "heartbeat_at": None,
+                    "run_id": None,
+                    "log": None,
+                    "last_error": None,
+                },
+            )
+            self.wm.add_task_comment(task.id, f"Retry manual: {reason[:1000]}", "dispatcher")
+            self.store.append_event(
+                task.id,
+                "dispatcher.retry_requested",
+                actor="dispatcher",
+                status_from=before.status,
+                status_to="READY",
+                message=reason,
+            )
+            return self.wm.get_task(task.id)
+
+    def record_daemon_started(self, *, interval: int, max_spawn: int, max_in_progress: int | None) -> None:
+        self.store.append_event(
+            "000",
+            "dispatcher.daemon_started",
+            actor=self.runner_name,
+            message="Dispatcher daemon started.",
+            metadata={
+                "interval": max(1, int(interval)),
+                "max_spawn": max(0, int(max_spawn)),
+                "max_in_progress": max_in_progress,
+            },
+        )
+
+    def record_daemon_stopped(self, *, reason: str = "stopped") -> None:
+        self.store.append_event(
+            "000",
+            "dispatcher.daemon_stopped",
+            actor=self.runner_name,
+            message=reason,
+        )
+
+    def watchdog_tick(
+        self,
+        *,
+        max_spawn: int = 1,
+        max_in_progress: int | None = None,
+        config: str | Path = "config.yaml",
+        models: str | Path = "models.yaml",
+        dry_run: bool = False,
+    ) -> DispatchResult:
+        result = self.dispatch_once(
+            dry_run=dry_run,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
+            spawn_background=True,
+            config=config,
+            models=models,
+        )
+        self.store.append_event(
+            "000",
+            "dispatcher.daemon_tick",
+            actor=self.runner_name,
+            message="watchdog tick",
+            metadata={
+                "crashed": result.crashed,
+                "reclaimed": result.reclaimed,
+                "claimed": result.claimed,
+                "spawned": result.spawned,
+                "failed": result.failed,
+                "skipped": result.skipped,
+                "dry_run": result.dry_run,
+            },
+        )
+        return result
+
     def dispatch_once(
         self,
         *,
@@ -196,9 +371,12 @@ class TaskDispatcher:
         spawn_background: bool = False,
         config: str | Path = "config.yaml",
         models: str | Path = "models.yaml",
+        only_task_ids: Iterable[str] | None = None,
     ) -> DispatchResult:
         result = DispatchResult()
+        result.crashed.extend(self.detect_crashed_workers())
         result.reclaimed.extend(self.reclaim_stale())
+        scoped_task_ids = _normalize_task_ids(only_task_ids)
 
         claimed: list[Task] = []
         with self._lock():
@@ -212,8 +390,11 @@ class TaskDispatcher:
             spawn_budget = max(0, int(max_spawn))
             if max_in_progress is not None:
                 spawn_budget = min(spawn_budget, max_in_progress - len(running))
+            lane_counts = _lane_counts(running)
 
             ready_tasks = [t for t in self.wm.list_tasks() if t.status == "READY"]
+            if scoped_task_ids:
+                ready_tasks = [t for t in ready_tasks if t.id in scoped_task_ids]
             ready_tasks.sort(key=lambda t: (_priority_order(t.priority), t.id))
 
             for task in ready_tasks:
@@ -224,12 +405,20 @@ class TaskDispatcher:
                 if blocked_parent:
                     result.skipped.append(f"{_public_id(task.id)}: parent {blocked_parent} not done")
                     continue
+                lane_selection = resolve_agent_lane(task, workspace=self.workspace)
+                if _lane_at_capacity(lane_selection, lane_counts):
+                    result.skipped.append(
+                        f"{_public_id(task.id)}: lane {lane_selection.lane} capacity "
+                        f"{lane_counts.get(lane_selection.lane, 0)}/{lane_selection.max_concurrent}"
+                    )
+                    continue
                 if dry_run:
                     result.dry_run.append(_public_id(task.id))
                     continue
-                claimed_task = self._claim_locked(task)
+                claimed_task = self._claim_locked(task, lane_selection=lane_selection)
                 claimed.append(claimed_task)
                 result.claimed.append(_public_id(claimed_task.id))
+                lane_counts[lane_selection.lane] = lane_counts.get(lane_selection.lane, 0) + 1
 
         for task in claimed:
             if spawn_background and worker_fn is None:
@@ -237,6 +426,15 @@ class TaskDispatcher:
                     pid = self._spawn_worker_process(task, config=config, models=models)
                     with self._lock():
                         self.wm.update_task_metadata(task.id, metadata={"worker_pid": pid})
+                    self.store.update_run(task.metadata.get("run_id", ""), status="running", worker_pid=pid)
+                    self.store.append_event(
+                        task.id,
+                        "dispatcher.spawned",
+                        actor="dispatcher",
+                        run_id=task.metadata.get("run_id", ""),
+                        message=f"Worker spawned pid={pid}",
+                        metadata={"worker_pid": pid},
+                    )
                     result.spawned.append(_public_id(task.id))
                 except Exception as exc:
                     failed_task = self._fail_task(task.id, str(exc))
@@ -273,11 +471,12 @@ class TaskDispatcher:
             self._fail_task(task.id, result.error or result.summary)
         return result
 
-    def _claim_locked(self, task: Task) -> Task:
+    def _claim_locked(self, task: Task, *, lane_selection: AgentLaneSelection | None = None) -> Task:
         attempts = _to_int(task.metadata.get("attempts")) + 1
         run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
         claim_id = f"{self.runner_name}:{uuid.uuid4().hex[:8]}"
         log_path = self.runs_dir / f"{task.id}-{run_id}.log"
+        lane_selection = lane_selection or resolve_agent_lane(task, workspace=self.workspace)
         claimed = self.wm.update_task_status(task.id, "IN_PROGRESS")
         claimed = self.wm.update_task_metadata(
             task.id,
@@ -293,22 +492,69 @@ class TaskDispatcher:
                 "last_error": None,
                 "worker_pid": None,
                 "log": str(log_path.relative_to(self.workspace)).replace("\\", "/"),
+                "lane": lane_selection.lane,
+                "agent": lane_selection.agent or None,
+                "capability": lane_selection.capability or None,
             },
         )
         self.wm.add_task_comment(claimed.id, f"Claimed run_id={run_id}", "dispatcher")
+        log_rel = str(log_path.relative_to(self.workspace)).replace("\\", "/")
+        lane_metadata = {
+            "priority": claimed.priority,
+            "assignee": claimed.assignee,
+            "lane": lane_selection.lane,
+            "agent": lane_selection.agent,
+            "capability": lane_selection.capability,
+            "max_concurrent": lane_selection.max_concurrent,
+            "priority_weight": lane_selection.priority_weight,
+            "configured_lane": lane_selection.configured,
+        }
+        self.store.start_run(
+            run_id=run_id,
+            task_id=claimed.id,
+            claim_id=claim_id,
+            runner=self.runner_name,
+            attempt=attempts,
+            log_path=log_rel,
+            status="claimed",
+            metadata=lane_metadata,
+        )
+        self.store.append_event(
+            claimed.id,
+            "dispatcher.claimed",
+            actor="dispatcher",
+            status_from=task.status,
+            status_to="IN_PROGRESS",
+            run_id=run_id,
+            message=f"Claimed by {self.runner_name}",
+            metadata={"claim_id": claim_id, "attempt": attempts, "log": log_rel, **lane_metadata},
+        )
         return self.wm.get_task(claimed.id)
 
     def _complete_task(self, task_id: str, summary: str) -> Task:
         with self._lock():
+            before = self.wm.get_task(task_id)
+            run_id = before.metadata.get("run_id", "")
             task = self.wm.update_task_status(task_id, "DONE")
             task = self.wm.update_task_metadata(task.id, metadata=_clear_claim_metadata(last_error=False))
             if summary:
                 self.wm.add_task_comment(task.id, f"Resultado: {summary[:1000]}", "dispatcher")
+            self.store.update_run(run_id, status="succeeded", summary=summary)
+            self.store.append_event(
+                task.id,
+                "dispatcher.completed",
+                actor="dispatcher",
+                status_from=before.status,
+                status_to="DONE",
+                run_id=run_id,
+                message=summary[:1000] if summary else "Task completed.",
+            )
             return self.wm.get_task(task.id)
 
     def _fail_task(self, task_id: str, error: str) -> Task:
         with self._lock():
             task = self.wm.get_task(task_id)
+            run_id = task.metadata.get("run_id", "")
             attempts = _to_int(task.metadata.get("attempts"))
             max_retries = _to_int(task.metadata.get("max_retries")) or self.max_retries
             final_status = "FAILED" if attempts >= max_retries else "READY"
@@ -318,12 +564,35 @@ class TaskDispatcher:
             task = self.wm.update_task_metadata(task.id, metadata=metadata)
             verb = "FAILED" if final_status == "FAILED" else "READY para retry"
             self.wm.add_task_comment(task.id, f"Falha ({verb}): {error[:1000]}", "dispatcher")
+            run_status = "failed" if final_status == "FAILED" else "retrying"
+            self.store.update_run(run_id, status=run_status, error=error)
+            self.store.append_event(
+                task.id,
+                "dispatcher.failed" if final_status == "FAILED" else "dispatcher.retrying",
+                actor="dispatcher",
+                status_from="IN_PROGRESS",
+                status_to=final_status,
+                run_id=run_id,
+                message=error[:1000],
+                metadata={"attempts": attempts, "max_retries": max_retries},
+            )
             return self.wm.get_task(task.id)
 
-    def _release_to_ready(self, task: Task, *, reason: str) -> Task:
+    def _release_to_ready(self, task: Task, *, reason: str, event_type: str = "dispatcher.reclaimed") -> Task:
+        run_id = task.metadata.get("run_id", "")
         released = self.wm.update_task_status(task.id, "READY")
         released = self.wm.update_task_metadata(released.id, metadata=_clear_claim_metadata(last_error=False))
         self.wm.add_task_comment(released.id, f"Reclaimed: {reason}", "dispatcher")
+        self.store.update_run(run_id, status="stale", error=reason)
+        self.store.append_event(
+            released.id,
+            event_type,
+            actor="dispatcher",
+            status_from="IN_PROGRESS",
+            status_to="READY",
+            run_id=run_id,
+            message=reason,
+        )
         return self.wm.get_task(released.id)
 
     def _run_worker(
@@ -335,17 +604,41 @@ class TaskDispatcher:
         models: str | Path,
     ) -> WorkerResult:
         self.heartbeat(task.id, claim_id=task.metadata.get("claim_id", ""), note="worker started")
-        if worker_fn is not None:
-            try:
+        run_id = task.metadata.get("run_id", "")
+        self.store.update_run(run_id, status="running")
+        self.store.append_event(
+            task.id,
+            "worker.started",
+            actor=self.runner_name,
+            run_id=run_id,
+            message="Worker execution started.",
+            metadata={"claim_id": task.metadata.get("claim_id", "")},
+        )
+        result = WorkerResult(False, error="worker did not run")
+        try:
+            if worker_fn is not None:
                 raw = worker_fn(task)
                 if isinstance(raw, WorkerResult):
-                    return raw
-                if raw is False:
-                    return WorkerResult(False, error="worker_fn returned False")
-                return WorkerResult(True, summary="" if raw is None else str(raw))
-            except Exception as exc:
-                return WorkerResult(False, error=str(exc))
-        return self._run_orchestrator_subprocess(task, config=config, models=models)
+                    result = raw
+                elif raw is False:
+                    result = WorkerResult(False, error="worker_fn returned False")
+                else:
+                    result = WorkerResult(True, summary="" if raw is None else str(raw))
+            else:
+                result = self._run_orchestrator_subprocess(task, config=config, models=models)
+            return result
+        except Exception as exc:
+            result = WorkerResult(False, error=str(exc))
+            return result
+        finally:
+            self.store.append_event(
+                task.id,
+                "worker.stopped",
+                actor=self.runner_name,
+                run_id=run_id,
+                message=result.summary[:1000] if result.success else result.error[:1000],
+                metadata={"success": result.success},
+            )
 
     def _run_orchestrator_subprocess(
         self,
@@ -354,22 +647,8 @@ class TaskDispatcher:
         config: str | Path,
         models: str | Path,
     ) -> WorkerResult:
-        prompt = _task_prompt(task)
         project_root = Path(__file__).resolve().parent.parent
-        cmd = [
-            sys.executable,
-            "-m",
-            "bauer.cli",
-            "orchestrate",
-            "run",
-            prompt,
-            "--workspace",
-            str(self.workspace),
-            "--config",
-            str(Path(config).resolve()),
-            "--models",
-            str(Path(models).resolve()),
-        ]
+        cmd = _worker_command(task, self.workspace, config=config, models=models)
         timeout = _to_int(task.metadata.get("max_runtime_seconds")) or None
         log_path = self._task_log_path(task)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -383,9 +662,18 @@ class TaskDispatcher:
                 errors="replace",
                 timeout=timeout,
                 cwd=str(project_root),
+                env=_worker_env(task, self.workspace),
             )
         except subprocess.TimeoutExpired as exc:
             _write_log(log_path, cmd, exc.stdout or "", exc.stderr or "", returncode=-1)
+            self.store.append_event(
+                task.id,
+                "worker.timeout",
+                actor=self.runner_name,
+                run_id=task.metadata.get("run_id", ""),
+                message=f"timeout apos {timeout}s",
+                metadata={"timeout": timeout},
+            )
             return WorkerResult(False, error=f"timeout apos {timeout}s")
         _write_log(log_path, cmd, proc.stdout, proc.stderr, proc.returncode)
         if proc.returncode == 0:
@@ -431,6 +719,7 @@ class TaskDispatcher:
             stdin=subprocess.DEVNULL,
             cwd=str(project_root),
             text=True,
+            env=_worker_env(task, self.workspace),
         )
         handle.close()
         return int(proc.pid)
@@ -472,11 +761,36 @@ def _priority_order(priority: str) -> int:
     return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(priority, 9)
 
 
+def _lane_counts(tasks: list[Task]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for task in tasks:
+        lane = task.metadata.get("lane") or task.assignee or "default"
+        counts[lane] = counts.get(lane, 0) + 1
+    return counts
+
+
+def _lane_at_capacity(selection: AgentLaneSelection, counts: dict[str, int]) -> bool:
+    return bool(selection.configured and counts.get(selection.lane, 0) >= selection.max_concurrent)
+
+
 def _public_id(task_id: str) -> str:
     raw = str(task_id).strip()
     if raw.upper().startswith("T"):
         raw = raw[1:]
     return f"T{int(raw):04d}" if raw.isdigit() else raw
+
+
+def _normalize_task_ids(values: Iterable[str] | None) -> set[str]:
+    ids: set[str] = set()
+    for value in values or []:
+        raw = str(value).strip()
+        if raw.upper().startswith("T") and raw[1:].isdigit():
+            raw = raw[1:]
+        if raw.isdigit():
+            raw = str(int(raw)).zfill(3)
+        if raw:
+            ids.add(raw)
+    return ids
 
 
 def _to_int(value: object) -> int:
@@ -503,6 +817,40 @@ def _parse_iso_epoch(value: str) -> int:
         return 0
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        import psutil  # type: ignore
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        return True
+
+
+def _terminate_pid(pid: int, *, timeout_s: float = 5.0) -> dict[str, str | int | bool]:
+    if pid <= 0:
+        return {"termination_requested": False, "termination_status": "invalid_pid"}
+    try:
+        import psutil  # type: ignore
+
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout_s)
+            return {"termination_requested": True, "termination_status": "terminated"}
+        except psutil.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=timeout_s)
+            return {"termination_requested": True, "termination_status": "killed"}
+    except Exception as exc:
+        return {
+            "termination_requested": True,
+            "termination_status": "error",
+            "termination_error": str(exc)[:300],
+        }
+
+
 def _task_prompt(task: Task) -> str:
     parts = [
         f"Executar task Kanban {task.id}: {task.title}",
@@ -512,6 +860,64 @@ def _task_prompt(task: Task) -> str:
         "Ao concluir, produza um resumo objetivo do que foi feito.",
     ]
     return "\n".join(p for p in parts if p is not None).strip()
+
+
+def _worker_command(
+    task: Task,
+    workspace: Path,
+    *,
+    config: str | Path,
+    models: str | Path,
+) -> list[str]:
+    orchestration_run = task.metadata.get("orchestration_run", "")
+    orchestration_step = task.metadata.get("orchestration_step", "")
+    base = [
+        sys.executable,
+        "-m",
+        "bauer.cli",
+        "orchestrate",
+    ]
+    common = [
+        "--workspace",
+        str(workspace),
+        "--config",
+        str(Path(config).resolve()),
+        "--models",
+        str(Path(models).resolve()),
+    ]
+    if orchestration_run and orchestration_step:
+        return [
+            *base,
+            "node-worker",
+            orchestration_run,
+            str(orchestration_step),
+            "--task-id",
+            task.id,
+            "--claim-id",
+            task.metadata.get("claim_id", ""),
+            *common,
+        ]
+    return [
+        *base,
+        "run",
+        _task_prompt(task),
+        *common,
+    ]
+
+
+def _worker_env(task: Task, workspace: Path) -> dict[str, str]:
+    from .secret_policy import safe_worker_env
+
+    return safe_worker_env(
+        {
+            "BAUER_KANBAN_TASK": task.id,
+            "BAUER_KANBAN_PUBLIC_TASK": _public_id(task.id),
+            "BAUER_KANBAN_CLAIM_ID": task.metadata.get("claim_id", ""),
+            "BAUER_KANBAN_RUN_ID": task.metadata.get("run_id", ""),
+            "BAUER_KANBAN_WORKSPACE": str(workspace),
+            "BAUER_TOOL_CONTEXT": "worker",
+        }
+    )
 
 
 def _write_log(log_path: Path, cmd: list[str], stdout: str, stderr: str, returncode: int) -> None:

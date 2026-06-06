@@ -45,6 +45,11 @@ class OpenAIClient:
             self._headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             self._headers.update(extra_headers)
+        # Last `response.usage` payload from the most recent chat call.
+        # Populated by chat_stream (via stream_options.include_usage) and
+        # chat_with_tools. Empty dict if provider didn't surface usage.
+        # Use bauer.account_usage.normalize_usage() to canonicalise.
+        self.last_usage: dict = {}
 
     def _chat_url(self) -> str:
         """URL de chat/completions.
@@ -161,12 +166,23 @@ class OpenAIClient:
 
         try:
             data = resp.json()
+            # Capture usage for downstream cost accounting. Non-streaming
+            # responses always carry it in the top-level `usage` field.
+            self.last_usage = dict(data.get("usage") or {})
             return data["choices"][0]["message"]
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
             raise OpenAIClientError(f"Resposta inesperada do provider: {exc}") from exc
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
-        """Streaming via /v1/chat/completions com SSE."""
+        """Streaming via /v1/chat/completions com SSE.
+
+        Captures `usage` from the final SSE chunk (when the provider supports
+        `stream_options.include_usage=true`) into `self.last_usage`. Providers
+        that don't honour the flag (e.g. some older OpenAI-compat backends)
+        leave `last_usage = {}` — caller should fall back to an estimate.
+        """
+        # Reset usage before each call — readers compare to {} to detect "no data".
+        self.last_usage = {}
         _error_body: str = ""
         _error_status: int = 0
         _error_exc: httpx.HTTPStatusError | None = None
@@ -174,7 +190,15 @@ class OpenAIClient:
             with httpx.stream(
                 "POST",
                 self._chat_url(),
-                json={"model": model, "messages": messages, "stream": True},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    # Request that OpenAI/compat providers include `usage` in the
+                    # final SSE event (one chunk before [DONE], with empty choices).
+                    # Backends that don't recognise this key ignore it silently.
+                    "stream_options": {"include_usage": True},
+                },
                 headers=self._headers,
                 timeout=httpx.Timeout(
                     connect=float(self.timeout),
@@ -212,8 +236,15 @@ class OpenAIClient:
                             data = json.loads(payload)
                         except json.JSONDecodeError:
                             continue
+                        # OpenAI's final usage event arrives BEFORE [DONE], shaped
+                        # like {"choices": [], "usage": {...}}. Capture it here
+                        # so callers can read self.last_usage post-iteration.
+                        usage_payload = data.get("usage")
+                        if isinstance(usage_payload, dict):
+                            self.last_usage = dict(usage_payload)
                         choices = data.get("choices") or []
                         if not choices:
+                            # Final usage-only event (no choices) — keep iterating.
                             continue
                         delta = choices[0].get("delta", {})
                         chunk = delta.get("content", "")

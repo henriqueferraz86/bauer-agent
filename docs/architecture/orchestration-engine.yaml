@@ -1,0 +1,71 @@
+id: orchestration-engine
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  Orchestration becomes a durable execution engine over the existing DAG
+  planner/executor. The legacy synchronous flow remains available, while
+  durable mode persists runs, nodes, outputs, errors, and resume state.
+
+modes:
+  sync:
+    behavior: Legacy in-memory/file-progress AgentOrchestrator flow.
+  hybrid:
+    behavior: Durable run/node state using the current synchronous DAG executor.
+  durable:
+    behavior: DAG dependencies remain in the orchestration engine, while each runnable node
+      is materialized as a Kanban task and executed through TaskDispatcher claims/runs.
+
+node_runtime:
+  auto:
+    behavior: inline for hybrid, dispatcher for durable.
+  inline:
+    behavior: Execute nodes directly through AgentOrchestrator.execute_parallel_steps.
+  dispatcher:
+    behavior: Create/reuse one Kanban task per DAG node, mark it READY, claim it through
+      TaskDispatcher, execute the step inside the worker contract, and persist the
+      resulting dispatch_run_id back onto the orchestration node.
+  dispatcher_background:
+    behavior: Submit only dependency-ready nodes to Kanban READY. External dispatch
+      workers execute node-worker subprocesses and each completed node advances the
+      DAG by queuing the next dependency-ready nodes.
+
+store:
+  path: <workspace>/.bauer_orchestrator/orchestrations.sqlite3
+  tables:
+    orchestration_runs:
+      key: run_id
+      fields: [objective, mode, status, plan_json, summary, error, started_at, updated_at, finished_at]
+    orchestration_nodes:
+      key: [run_id, step_id]
+      fields: [goal, status, depends_on_json, tools, agent, task_id, dispatch_run_id, model_used, response, tool_log_json, error]
+
+status_model:
+  run: [planned, running, succeeded, failed, paused, cancelled]
+  node: [planned, queued, running, succeeded, failed, skipped]
+
+runtime_contract:
+  - orchestrate run --mode sync keeps legacy behavior.
+  - orchestrate run --mode hybrid|durable creates an orchestration_run and planned nodes.
+  - every node transition is persisted before and after execution.
+  - orchestrate resume <run_id> continues only nodes not already succeeded.
+  - interrupted runs remain resumable from the last succeeded node.
+  - durable mode creates auditable Kanban tasks for DAG nodes and filters dispatcher claims
+    to those tasks, so unrelated READY work is never stolen by an orchestration run.
+  - dispatcher-backed nodes use max_retries=1 at the task layer because AgentOrchestrator
+    already owns per-step retry semantics.
+  - orchestrate run --mode durable --background submits the first runnable wave and exits
+    with the orchestration_run still running.
+  - dispatch workers execute orchestration node tasks through orchestrate node-worker.
+  - node-worker persists node output, advances the DAG, and synthesizes the final run
+    when all nodes have succeeded.
+
+acceptance:
+  - a durable run can be resumed without re-executing succeeded nodes.
+  - node outputs and errors are queryable after execution.
+  - CLI can list durable orchestration runs.
+  - dispatcher-backed durable mode writes task_id and dispatch_run_id for each executed node.
+  - dispatch_once can be scoped to explicit task IDs for orchestration safety.
+  - a background durable run can queue the next node only after dependencies succeed.
+  - dispatcher subprocess routing calls node-worker for orchestration node tasks and keeps
+    legacy orchestrate run for ordinary Kanban tasks.

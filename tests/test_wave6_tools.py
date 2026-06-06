@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
+from bauer.kanban_store import KanbanStore
+from bauer.task_dispatcher import TaskDispatcher
 from bauer.tool_router import ToolError, ToolRouter
 from bauer.workspace_manager import WorkspaceManager
 
@@ -575,6 +577,114 @@ class TestKanbanWorkflow:
         router._kanban_create({"title": "x"})
         with pytest.raises(ToolError, match="comment"):
             router._kanban_comment({"task_id": "T0001"})
+
+    def test_worker_protocol_complete_updates_run(self, router, ws, monkeypatch):
+        wm = WorkspaceManager(ws)
+        task = wm.add_task("Worker owned")
+        dispatcher = TaskDispatcher(ws)
+        dispatcher.mark_ready(task.id)
+        with dispatcher._lock():
+            claimed = dispatcher._claim_locked(wm.get_task(task.id))
+
+        monkeypatch.setenv("BAUER_KANBAN_TASK", claimed.id)
+        monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", claimed.metadata["claim_id"])
+        monkeypatch.setenv("BAUER_KANBAN_RUN_ID", claimed.metadata["run_id"])
+
+        router._kanban_heartbeat({"task_id": "T0001", "progress": "working"})
+        result = router._kanban_complete({"task_id": "T0001", "result": "finished by tool"})
+
+        final = wm.get_task(task.id)
+        run = KanbanStore(ws).get_run(claimed.metadata["run_id"])
+        events = KanbanStore(ws).list_events(task_id=task.id, limit=20)
+        assert "marcado como done" in result
+        assert final.status == "DONE"
+        assert "claim_id" not in final.metadata
+        assert run is not None
+        assert run.status == "succeeded"
+        assert "worker.completed_by_tool" in {event.event_type for event in events}
+
+    def test_worker_protocol_blocks_foreign_task(self, router, ws, monkeypatch):
+        wm = WorkspaceManager(ws)
+        first = wm.add_task("Pinned")
+        second = wm.add_task("Foreign")
+        dispatcher = TaskDispatcher(ws)
+        dispatcher.mark_ready(first.id)
+        with dispatcher._lock():
+            claimed = dispatcher._claim_locked(wm.get_task(first.id))
+
+        monkeypatch.setenv("BAUER_KANBAN_TASK", claimed.id)
+        monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", claimed.metadata["claim_id"])
+        monkeypatch.setenv("BAUER_KANBAN_RUN_ID", claimed.metadata["run_id"])
+
+        with pytest.raises(ToolError, match="protocol violation"):
+            router._kanban_complete({"task_id": second.id, "result": "nope"})
+
+        events = KanbanStore(ws).list_events(task_id=first.id, limit=10)
+        assert "worker.protocol_violation" in {event.event_type for event in events}
+
+    def test_worker_context_filters_available_tools(self, ws):
+        router = ToolRouter(workspace=ws, tool_context="worker")
+        tools = router.available_tools()
+        schemas = router.get_tool_schemas()
+        schema_names = {schema["function"]["name"] for schema in schemas}
+
+        assert "kanban_heartbeat" in tools
+        assert "kanban_complete" in tools
+        assert "write_file" in tools
+        assert "kanban_create" not in tools
+        assert "delegate_task" not in tools
+        assert "browser_cdp" not in tools
+        assert "kanban_create" not in schema_names
+
+    def test_denied_worker_tool_records_event(self, ws, monkeypatch):
+        wm = WorkspaceManager(ws)
+        task = wm.add_task("Worker scoped")
+        dispatcher = TaskDispatcher(ws)
+        dispatcher.mark_ready(task.id)
+        with dispatcher._lock():
+            claimed = dispatcher._claim_locked(wm.get_task(task.id))
+
+        monkeypatch.setenv("BAUER_KANBAN_TASK", claimed.id)
+        monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", claimed.metadata["claim_id"])
+        monkeypatch.setenv("BAUER_KANBAN_RUN_ID", claimed.metadata["run_id"])
+
+        router = ToolRouter(workspace=ws, tool_context="worker")
+        with pytest.raises(ToolError, match="tool denied"):
+            router.execute({"action": "kanban_create", "args": {"title": "not allowed"}})
+
+        store = KanbanStore(ws)
+        events = store.list_events(task_id=task.id, limit=20)
+        run = store.get_run(claimed.metadata["run_id"])
+        assert "tool.denied" in {event.event_type for event in events}
+        assert run is not None
+        assert run.metadata["last_denied_tool"] == "kanban_create"
+
+    def test_workspace_tool_policy_can_override_contexts(self, ws):
+        policy_dir = ws / ".bauer"
+        policy_dir.mkdir()
+        (policy_dir / "tool_policy.yaml").write_text(
+            """
+contexts:
+  supervisor:
+    mode: allow_all
+    deny: [write_file]
+  worker:
+    mode: allowlist
+    allow: [kanban_heartbeat]
+""".strip(),
+            encoding="utf-8",
+        )
+
+        supervisor = ToolRouter(workspace=ws, tool_context="supervisor")
+        worker = ToolRouter(workspace=ws, tool_context="worker")
+
+        assert "write_file" not in supervisor.available_tools()
+        assert supervisor.tool_info("write_file")["policy_source"].endswith("tool_policy.yaml")
+        worker_tools = worker.available_tools()
+        assert "kanban_heartbeat" in worker_tools
+        assert "read_file" not in worker_tools
+        with pytest.raises(ToolError, match="tool denied"):
+            supervisor.execute({"action": "write_file", "args": {"path": "x.txt", "content": "x"}})
 
 
 # =============================================================================

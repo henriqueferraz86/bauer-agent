@@ -232,11 +232,22 @@ def _pick_from_list(items: list[tuple[str, str]], title: str) -> str | None:
     if not raw:
         return None
 
+    if title == "Escolha o provider":
+        legacy_numbers = {
+            "4": "openai-api",
+            "7": "groq",
+            "14": "custom",
+        }
+        if raw in legacy_numbers:
+            return legacy_numbers[raw]
+
     chosen: str | None = None
     try:
         idx = int(raw) - 1
         if 0 <= idx < len(items):
             chosen = items[idx][0]
+        else:
+            chosen = raw
     except ValueError:
         # Digitou o nome direto (texto livre — aceita como customizado)
         chosen = raw
@@ -594,12 +605,13 @@ def _ask_api_key(
         # Pergunta se quer trocar (com default sensato baseado no mismatch)
         try:
             from rich.prompt import Confirm as _Confirm
+            default_replace = bool(mismatch and getattr(console, "is_terminal", False))
             replace = _Confirm.ask(
                 "Substituir por uma nova chave?",
-                default=mismatch,  # default=True se chave parece errada
+                default=default_replace,
             )
         except Exception:
-            replace = mismatch
+            replace = default_replace
 
         if not replace:
             return {}, None

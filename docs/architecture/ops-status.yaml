@@ -1,0 +1,25 @@
+id: ops-status
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  CLI, chat, dashboard, and tests use one operational status projection for
+  queues, lanes, active claims, recent runs, and recent events.
+
+projection:
+  source_of_truth:
+    tasks: WorkspaceManager
+    events: KanbanStore.task_events
+    runs: KanbanStore.task_runs
+    lanes: agent_lanes.resolve_agent_lane
+  outputs:
+    - status_counts
+    - lanes
+    - active_claims
+    - recent_runs
+    - recent_events
+
+acceptance:
+  - bauer ops status and dashboard /api/ops report the same lane counts.
+  - active claims expose expiry, heartbeat age, run_id, lane, and worker PID.
+  - queue depth by lane is visible without reading TASKS.md manually.

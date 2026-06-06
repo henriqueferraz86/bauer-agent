@@ -1,0 +1,47 @@
+id: automation-scheduler
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  Durable cron/automation scheduling for Bauer. The scheduler does not execute
+  prompts directly; it enqueues due jobs as Kanban READY tasks so TaskDispatcher
+  and orchestration workers remain the single execution backend.
+
+store:
+  path: <workspace>/.bauer_automation/automations.sqlite3
+  tables:
+    automation_jobs:
+      key: job_id
+      unique: [name]
+      fields: [name, prompt, schedule_str, schedule_json, status, next_run_at, last_run_at, run_count, fail_count, metadata_json]
+    automation_runs:
+      key: run_id
+      fields: [job_id, task_id, status, due_at, queued_at, finished_at, error, metadata_json]
+
+schedule_model:
+  supported:
+    - every Nm
+    - every Nh
+    - every Nd
+    - daily HH:MM
+    - at ISO_TIMESTAMP
+    - cron: MIN HOUR * * *
+  cron_subset: >
+    Supports minute/hour fields as '*', '*/N', or fixed integers. Day/month/dow
+    fields must be '*'. This intentionally keeps v1 deterministic and auditable.
+
+runtime_contract:
+  - bauer cron create NAME PROMPT --schedule S stores a durable active job.
+  - bauer cron tick claims due jobs under a file lock and creates one Kanban task per run.
+  - queued tasks include automation_job, automation_run, and automation_schedule metadata.
+  - queued tasks are marked READY through TaskDispatcher, so workers, retries, lanes,
+    events, and dashboard state use the same source as manual work.
+  - one-shot jobs are marked completed after their first queue.
+  - interval/daily/cron jobs compute next_run_at after each queue.
+  - bauer cron daemon loops tick periodically and can be supervised externally.
+
+acceptance:
+  - due jobs enqueue READY tasks without direct model/tool execution.
+  - manual run can enqueue a job regardless of next_run_at.
+  - paused jobs are skipped by tick.
+  - ops status exposes active automation jobs and recent automation runs.

@@ -63,6 +63,15 @@ class AnthropicClient:
             "x-api-key": api_key,
             "anthropic-version": api_version,
         }
+        # Last `usage` payload aggregated from SSE message_start + message_delta.
+        # Keys (Anthropic-native): input_tokens, output_tokens,
+        # cache_creation_input_tokens, cache_read_input_tokens.
+        # bauer.account_usage.normalize_usage() handles the shape difference.
+        self.last_usage: dict = {}
+        # Marker so bauer.prompt_caching.should_apply_cache_control() returns True
+        # for this client even when callers compare against an external interface
+        # rather than the concrete class.
+        self.supports_prompt_caching: bool = True
 
     # ── Interface pública (compatível com OllamaClient) ──────────────────────
 
@@ -107,7 +116,15 @@ class AnthropicClient:
         return ModelfileParams(num_ctx=None, raw={"id": name})
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
-        """Streaming via /v1/messages com SSE Anthropic."""
+        """Streaming via /v1/messages com SSE Anthropic.
+
+        Captures usage from `message_start` (input tokens + cache fields) and
+        `message_delta` (output tokens) into `self.last_usage`. Empty dict if
+        the stream errored before the start event arrived.
+        """
+        # Reset usage so a fresh stream doesn't return stale numbers if the
+        # previous call errored mid-stream.
+        self.last_usage = {}
         # Anthropic não suporta role "system" dentro de messages[]
         # — deve ir no campo "system" do request body.
         system_content = ""
@@ -159,6 +176,17 @@ class AnthropicClient:
                             text = delta.get("text", "")
                             if text:
                                 yield text
+                    elif event_type == "message_start":
+                        # First event carries input_tokens + cache stats.
+                        msg = data.get("message") or {}
+                        usage = msg.get("usage")
+                        if isinstance(usage, dict):
+                            self.last_usage.update(usage)
+                    elif event_type == "message_delta":
+                        # Final delta carries the cumulative output_tokens count.
+                        delta_usage = data.get("usage")
+                        if isinstance(delta_usage, dict):
+                            self.last_usage.update(delta_usage)
                     elif event_type == "message_stop":
                         break
                     elif event_type == "error":

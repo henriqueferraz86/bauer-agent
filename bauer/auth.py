@@ -895,7 +895,8 @@ class AuthManager:
         if config["auth_type"] == "device_flow":
             return self.login_device_flow(provider)
         elif config["auth_type"] == "oauth":
-            # Vai direto ao browser OAuth — sem perguntar sobre Codex CLI
+            if provider == "openai":
+                return self._login_openai_via_codex()
             return self.login_oauth(provider)
         else:
             # API Key

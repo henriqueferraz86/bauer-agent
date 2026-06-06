@@ -614,6 +614,10 @@ class AgentDef:
     description: str
     system: str
     tools: list[str] = field(default_factory=lambda: list(DEFAULT_TOOLS))
+    capabilities: list[str] = field(default_factory=list)
+    lane: str = ""
+    max_concurrent: int = 1
+    priority_weight: int = 1
     model: str = ""          # vazio = usa config.yaml
     provider: str = ""       # vazio = usa config.yaml
     created_at: str = field(
@@ -628,6 +632,14 @@ class AgentDef:
             "tools": self.tools,
             "created_at": self.created_at,
         }
+        if self.capabilities:
+            d["capabilities"] = self.capabilities
+        if self.lane:
+            d["lane"] = self.lane
+        if self.max_concurrent != 1:
+            d["max_concurrent"] = self.max_concurrent
+        if self.priority_weight != 1:
+            d["priority_weight"] = self.priority_weight
         if self.model:
             d["model"] = self.model
         if self.provider:
@@ -638,11 +650,28 @@ class AgentDef:
     def from_dict(cls, d: dict[str, Any]) -> "AgentDef":
         # Aceita system_prompt como alias de system (formato legado/workspace)
         system = d.get("system") or d.get("system_prompt", "")
+        capabilities = d.get("capabilities", [])
+        if isinstance(capabilities, str):
+            capabilities = [capabilities]
+        elif not isinstance(capabilities, (list, tuple, set)):
+            capabilities = []
+        try:
+            max_concurrent = max(1, int(d.get("max_concurrent", 1) or 1))
+        except (TypeError, ValueError):
+            max_concurrent = 1
+        try:
+            priority_weight = max(1, int(d.get("priority_weight", 1) or 1))
+        except (TypeError, ValueError):
+            priority_weight = 1
         return cls(
             name=d["name"],
             description=d.get("description", ""),
             system=system,
             tools=d.get("tools", list(DEFAULT_TOOLS)),
+            capabilities=[str(item).strip() for item in capabilities if str(item).strip()],
+            lane=str(d.get("lane", "")).strip(),
+            max_concurrent=max_concurrent,
+            priority_weight=priority_weight,
             model=d.get("model", ""),
             provider=d.get("provider", ""),
             created_at=d.get("created_at", ""),
@@ -670,7 +699,12 @@ class AgentRegistry:
 
     def list_agents(self) -> list[AgentDef]:
         raw = self._load_raw()
-        return [AgentDef.from_dict(d) for d in raw.get("agents", [])]
+        agents: list[AgentDef] = []
+        for item in raw.get("agents", []):
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            agents.append(AgentDef.from_dict(item))
+        return agents
 
     def get(self, name: str) -> AgentDef | None:
         for ag in self.list_agents():

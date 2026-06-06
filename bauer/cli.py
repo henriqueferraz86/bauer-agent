@@ -54,6 +54,10 @@ tools_app = typer.Typer(help="Tool Bridge — ferramentas do agente")
 project_app = typer.Typer(help="Gerenciamento de projeto (PROJECT.md)")
 task_app = typer.Typer(help="Gerenciamento de tarefas (TASKS.md)")
 dispatch_app = typer.Typer(help="Dispatcher hibrido durable para tasks READY")
+ops_app = typer.Typer(help="Operacao do runtime: filas, lanes, claims e runs")
+runtime_app = typer.Typer(help="Supervisor always-on: dispatcher, cron, outbox e kanban")
+cron_app = typer.Typer(help="Automacoes duraveis: agenda prompts como tasks READY")
+research_app = typer.Typer(help="Pesquisa e trajectories para avaliacao/treino")
 learning_app = typer.Typer(help="Adaptive Learning Engine — recomendacoes e reset")
 auth_app = typer.Typer(help="Autenticacao com providers cloud (OAuth/API Key)")
 orchestrate_app = typer.Typer(help="Orquestrador de agents — tarefas complexas em varios passos")
@@ -72,6 +76,10 @@ app.add_typer(tools_app, name="tools")
 app.add_typer(project_app, name="project")
 app.add_typer(task_app, name="task")
 app.add_typer(dispatch_app, name="dispatch")
+app.add_typer(ops_app, name="ops")
+app.add_typer(runtime_app, name="runtime")
+app.add_typer(cron_app, name="cron")
+app.add_typer(research_app, name="research")
 app.add_typer(learning_app, name="learning")
 app.add_typer(auth_app, name="auth")
 app.add_typer(orchestrate_app, name="orchestrate")
@@ -733,12 +741,25 @@ def memory_search(
     query: str = typer.Argument(..., help="Texto a buscar na memoria"),
     top_k: int = typer.Option(5, "--top", "-n", help="Numero de resultados"),
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
+    fts: bool = typer.Option(False, "--fts", help="Usa indice SQLite FTS persistente"),
 ):
     """Busca semantica (TF-IDF) nos arquivos de memoria."""
     from rich.table import Table as RichTable
 
-    mm = MemoryManager(memory_dir)
-    results = mm.search(query, top_k=top_k)
+    if fts:
+        from .memory_index import MemoryIndex
+
+        index = MemoryIndex(memory_dir)
+        if not index.db_path.exists():
+            index.rebuild()
+        hits = index.search(query, limit=top_k)
+        results = [
+            {"file": hit.file, "title": hit.title, "score": hit.score, "snippet": hit.snippet}
+            for hit in hits
+        ]
+    else:
+        mm = MemoryManager(memory_dir)
+        results = mm.search(query, top_k=top_k)
 
     if not results:
         console.print(f"[yellow]Nenhum resultado para '{query}' em {memory_dir}/[/yellow]")
@@ -759,6 +780,65 @@ def memory_search(
         )
 
     console.print(table)
+
+
+@memory_app.command("index")
+def memory_index_cmd(
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
+):
+    """Reconstrói o indice SQLite FTS dos arquivos Markdown de memoria."""
+    from .memory_index import MemoryIndex
+
+    count = MemoryIndex(memory_dir).rebuild()
+    console.print(f"[green]Indice de memoria atualizado:[/green] {count} bloco(s)")
+
+
+@memory_app.command("skills-pending")
+def memory_skills_pending_cmd(
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
+):
+    """Lista sugestões de skills pendentes de aprovação manual."""
+    from .skill_registry import SkillRegistry
+
+    suggestions = SkillRegistry(memory_dir).pending_suggestions()
+    if not suggestions:
+        console.print("[dim]Nenhuma sugestao de skill pendente.[/dim]")
+        return
+    table = Table(title="Skills pendentes", show_lines=False)
+    table.add_column("Skill", style="cyan")
+    table.add_column("Ocorrencias", justify="right")
+    table.add_column("Status")
+    for suggestion in suggestions:
+        table.add_row(
+            suggestion.get("name", ""),
+            suggestion.get("ocorrencias", ""),
+            suggestion.get("status", ""),
+        )
+    console.print(table)
+
+
+@memory_app.command("skill-approve")
+def memory_skill_approve_cmd(
+    name: str = typer.Argument(..., help="Nome da skill sugerida"),
+    workspace: Path = typer.Option(Path("workspace"), "--workspace"),
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
+    description: str = typer.Option("", "--description"),
+    content: str = typer.Option("", "--content"),
+):
+    """Promove uma sugestão pendente para workspace/.bauer_skills.json."""
+    from .skill_registry import SkillRegistry
+
+    try:
+        path = SkillRegistry(memory_dir).approve_suggestion(
+            name,
+            workspace=workspace,
+            description=description,
+            content=content,
+        )
+    except Exception as exc:
+        console.print(f"[red]Erro aprovando skill:[/red] {exc}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Skill aprovada em[/green] {path}")
 
 
 @memory_app.command("cleanup")
@@ -1105,6 +1185,34 @@ def tools_list(
         table.add_row(name, info["description"])
     console.print(table)
     console.print(f"\n[dim]Workspace: {workspace.resolve()} | Shell: {shell_status} | Web: {web_status}[/dim]")
+
+
+@tools_app.command("plugins")
+def tools_plugins(
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+):
+    """Lista plugins de hooks descobertos sem importá-los."""
+    from .plugin_registry import PluginRegistry
+
+    plugins = PluginRegistry(workspace).list_plugins()
+    if not plugins:
+        console.print("[dim]Nenhum plugin encontrado em workspace/.bauer/plugins ou ~/.bauer/plugins.[/dim]")
+        return
+    table = Table(title="Plugins Bauer", show_lines=False)
+    table.add_column("Plugin", style="cyan")
+    table.add_column("Enabled")
+    table.add_column("Hooks")
+    table.add_column("Descricao")
+    table.add_column("Erro")
+    for plugin in plugins:
+        table.add_row(
+            plugin.name,
+            str(plugin.enabled),
+            ", ".join(plugin.hooks) or "-",
+            plugin.description,
+            plugin.error,
+        )
+    console.print(table)
 
 
 @tools_app.command("run")
@@ -2027,6 +2135,66 @@ def agent_delete(
 # --- orchestrate ------------------------------------------------------------
 
 
+def _build_orchestrator_runtime(
+    *,
+    config: Path,
+    models: Path,
+    workspace: Path,
+    state_file: Path,
+    agents_file: Path,
+    planner: str = "",
+    synthesizer: str = "",
+) -> AgentOrchestrator:
+    cfg, reg = _load_or_die(config, models)
+    _get_or_run_state(cfg, reg, state_file)
+    client = _build_client(cfg)
+
+    ollama_client = OllamaClient(cfg.ollama.host, cfg.ollama.timeout_seconds, cfg.ollama.api_key)
+    alive, alive_msg = ollama_client.is_alive()
+    if not alive:
+        if cfg.model.provider == "ollama":
+            console.print(
+                f"[red]Ollama em {cfg.ollama.host} nao esta respondendo: {alive_msg}[/red]\n"
+                f"Verifique se o servidor Ollama esta rodando."
+            )
+            raise typer.Exit(code=1)
+        ollama_client = client
+
+    workspace.mkdir(parents=True, exist_ok=True)
+    tool_router = _build_router(cfg, workspace)
+    is_ollama = cfg.model.provider == "ollama"
+    main_model = cfg.model.name
+    code_model = cfg.router.code_model if is_ollama else main_model
+    reasoning_model = cfg.router.reasoning_model if is_ollama else main_model
+    direct_model = cfg.router.direct_model if is_ollama else main_model
+    router_cfg = RouterConfig(
+        router_model=cfg.router.router_model,
+        default_model=cfg.model.name,
+        routes=[
+            Route("code", "codigo", code_model),
+            Route("reasoning", "raciocinio", reasoning_model),
+            Route("tool", "ferramenta", code_model),
+            Route("direct", "direto", direct_model),
+        ],
+    )
+    model_router = ModelRouter(ollama_client, router_cfg)
+    orch_cfg = OrchestratorConfig(
+        planner_model=planner or (cfg.router.router_model if is_ollama else cfg.model.name),
+        synthesizer_model=synthesizer or (cfg.router.reasoning_model if is_ollama else cfg.model.name),
+        max_steps=MAX_STEPS,
+        parallel_steps=cfg.runtime.profile == "high",
+        agents_file=str(agents_file),
+    )
+    return AgentOrchestrator(
+        client,
+        tool_router,
+        model_router,
+        orch_cfg,
+        planner_client=ollama_client,
+        console=console,
+    )
+
+
 @orchestrate_app.command("run")
 def orchestrate_run(
     task: str = typer.Argument("", help="Descricao da tarefa — omita para modo entrevista"),
@@ -2044,6 +2212,10 @@ def orchestrate_run(
     synthesizer: str = typer.Option("", "--synthesizer", help="Modelo sintetizador (padrao: phi4-mini)"),
     interactive: bool = typer.Option(False, "--interactive", "-i", help="Modo passo-a-passo (confirma cada onda antes de executar)"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Retoma execucao anterior interrompida"),
+    mode: str = typer.Option("sync", "--mode", help="sync | hybrid | durable"),
+    node_runtime: str = typer.Option("auto", "--node-runtime", help="auto | inline | dispatcher"),
+    background: bool = typer.Option(False, "--background", help="Submete nodes ao dispatcher e retorna sem bloquear"),
+    run_id: str = typer.Option("", "--run-id", help="ID de orchestration_run para retomar/forcar"),
 ):
     """Executa tarefa complexa com orquestrador multi-passo (DAG + paralelo).
 
@@ -2243,6 +2415,70 @@ def orchestrate_run(
         console.print(Rule("[bold]Orquestrador[/bold]"))
         console.print(f"[dim]Tarefa:[/dim] {task}\n")
 
+        _mode = (mode or "sync").strip().lower()
+        if _mode not in {"sync", "hybrid", "durable"}:
+            console.print("[red]--mode invalido. Use sync, hybrid ou durable.[/red]")
+            raise typer.Exit(code=2)
+        _node_runtime = (node_runtime or "auto").strip().lower()
+        if _node_runtime not in {"auto", "inline", "dispatcher"}:
+            console.print("[red]--node-runtime invalido. Use auto, inline ou dispatcher.[/red]")
+            raise typer.Exit(code=2)
+        if background and not (_mode == "durable" or _node_runtime == "dispatcher"):
+            console.print("[red]--background requer --mode durable ou --node-runtime dispatcher.[/red]")
+            raise typer.Exit(code=2)
+
+        if _mode in {"hybrid", "durable"}:
+            from .execution_engine import DurableDAGExecutionEngine
+
+            console.print(
+                f"[yellow]ExecutionEngine duravel ativo:[/yellow] "
+                f"mode={_mode} node_runtime={_node_runtime}"
+            )
+            engine = DurableDAGExecutionEngine(
+                orch,
+                workspace=workspace,
+                mode=_mode,
+                node_runtime=_node_runtime,
+            )
+            if background:
+                result = engine.submit(
+                    task,
+                    resume=resume or bool(run_id),
+                    run_id=run_id,
+                    agents=_agents_list or None,
+                    specs=_active_specs or None,
+                )
+            else:
+                result = engine.run(
+                    task,
+                    resume=resume or bool(run_id),
+                    run_id=run_id,
+                    agents=_agents_list or None,
+                    specs=_active_specs or None,
+                )
+            console.print(
+                f"[dim]orchestration_run:[/dim] [cyan]{result.run_id}[/cyan] "
+                f"status={result.status} runtime={result.node_runtime} steps={len(result.results)}"
+            )
+            if background:
+                console.print(
+                    "[green]Run submetido ao dispatcher.[/green] "
+                    "Use [bold]bauer dispatch daemon[/bold] para processar em background."
+                )
+                if _agent_system_patch:
+                    _mod, _orig = _agent_system_patch
+                    _mod._build_system_prompt = _orig  # type: ignore[attr-defined]
+                return
+            console.print(Rule("[bold]Resultado Final[/bold]"))
+            sys.stdout.write("\033[32morchestrate>\033[0m ")
+            sys.stdout.write(result.final)
+            sys.stdout.write("\n\n")
+            sys.stdout.flush()
+            if _agent_system_patch:
+                _mod, _orig = _agent_system_patch
+                _mod._build_system_prompt = _orig  # type: ignore[attr-defined]
+            return
+
         if resume and orch.has_saved_progress(task):
             saved_steps = orch.load_plan(task)
             if saved_steps:
@@ -2424,8 +2660,148 @@ def orchestrate_run(
         _mod._build_system_prompt = _orig  # type: ignore[attr-defined]
 
 
+@orchestrate_app.command("node-worker")
+def orchestrate_node_worker(
+    run_id: str = typer.Argument(..., help="ID do orchestration_run"),
+    step_id: int = typer.Argument(..., help="ID do step/node dentro do plano"),
+    task_id: str = typer.Option("", "--task-id", help="Task Kanban claimed pelo dispatcher"),
+    claim_id: str = typer.Option("", "--claim-id", help="Claim id esperado"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
+    planner: str = typer.Option("", "--planner"),
+    synthesizer: str = typer.Option("", "--synthesizer"),
+):
+    """Worker interno: executa um node persistido de uma orchestration_run."""
+    from .execution_engine import run_orchestration_node
+
+    orch = _build_orchestrator_runtime(
+        config=config,
+        models=models,
+        workspace=workspace,
+        state_file=state_file,
+        agents_file=agents_file,
+        planner=planner,
+        synthesizer=synthesizer,
+    )
+    try:
+        result = run_orchestration_node(
+            orch,
+            workspace=workspace,
+            run_id=run_id,
+            step_id=step_id,
+            task_id=task_id,
+            claim_id=claim_id,
+        )
+    except Exception as exc:
+        console.print(f"[red]Erro no node-worker:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]orchestration_run:[/dim] [cyan]{result.run_id}[/cyan] "
+        f"step={result.step_id} status={result.status} "
+        f"orchestration={result.orchestration_status}"
+    )
+    if result.final:
+        console.print(Rule("[bold]Resultado Final[/bold]"))
+        sys.stdout.write("\033[32morchestrate>\033[0m ")
+        sys.stdout.write(result.final)
+        sys.stdout.write("\n\n")
+    else:
+        sys.stdout.write(result.step_result.response[:2000])
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+    if result.status == "failed":
+        raise typer.Exit(code=1)
+
+
+@orchestrate_app.command("advance")
+def orchestrate_advance(
+    run_id: str = typer.Argument(..., help="ID do orchestration_run"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
+):
+    """Avanca uma orchestration_run duravel: enfileira proximos nodes ou sintetiza final."""
+    from .execution_engine import DurableDAGExecutionEngine
+    from .orchestration_store import OrchestrationStore
+
+    store = OrchestrationStore(workspace)
+    run = store.get_run(run_id)
+    if run is None:
+        console.print(f"[red]orchestration_run nao encontrado:[/red] {run_id}")
+        raise typer.Exit(code=1)
+    orch = _build_orchestrator_runtime(
+        config=config,
+        models=models,
+        workspace=workspace,
+        state_file=state_file,
+        agents_file=agents_file,
+    )
+    engine = DurableDAGExecutionEngine(
+        orch,
+        workspace=workspace,
+        mode=run.mode or "durable",
+        node_runtime=run.metadata.get("node_runtime") or "dispatcher",
+    )
+    result = engine.advance(run_id)
+    console.print(
+        f"[dim]orchestration_run:[/dim] [cyan]{result.run_id}[/cyan] "
+        f"status={result.status} runtime={result.node_runtime} steps_done={len(result.results)}"
+    )
+    if result.final:
+        console.print(Rule("[bold]Resultado Final[/bold]"))
+        sys.stdout.write("\033[32morchestrate>\033[0m ")
+        sys.stdout.write(result.final)
+        sys.stdout.write("\n\n")
+        sys.stdout.flush()
+
+
+@orchestrate_app.command("resume")
+def orchestrate_resume(
+    run_id: str = typer.Argument(..., help="ID do orchestration_run"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
+):
+    """Retoma uma execucao duravel pelo run_id."""
+    from .orchestration_store import OrchestrationStore
+
+    store = OrchestrationStore(workspace)
+    run = store.get_run(run_id)
+    if run is None:
+        console.print(f"[red]orchestration_run nao encontrado:[/red] {run_id}")
+        raise typer.Exit(code=1)
+    orchestrate_run(
+        task=run.objective,
+        config=config,
+        models=models,
+        workspace=workspace,
+        state_file=state_file,
+        agents_file=agents_file,
+        agent_name="",
+        planner="",
+        synthesizer="",
+        interactive=False,
+        resume=True,
+        mode=run.mode or "hybrid",
+        node_runtime="auto",
+        background=False,
+        run_id=run_id,
+    )
+
+
 @orchestrate_app.command("list")
-def orchestrate_list():
+def orchestrate_list(
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+    durable: bool = typer.Option(True, "--durable/--legacy-only", help="Inclui runs duraveis"),
+):
     """Lista tarefas do orquestrador com progresso salvo (prontas para --resume)."""
     from .orchestrator import AgentOrchestrator, OrchestratorConfig
     from unittest.mock import MagicMock as _MM
@@ -2434,12 +2810,43 @@ def orchestrate_list():
     orch = AgentOrchestrator(_MM(), _MM(), _MM(), OrchestratorConfig())
 
     entries = orch.list_saved_progress()
-    if not entries:
+    durable_runs = []
+    if durable:
+        try:
+            from .orchestration_store import OrchestrationStore
+
+            durable_runs = OrchestrationStore(workspace).list_runs(limit=20)
+        except Exception:
+            durable_runs = []
+
+    if not entries and not durable_runs:
         console.print("[dim]Nenhuma tarefa com progresso salvo em .orchestrate_progress/[/dim]")
+        console.print("[dim]Nenhuma orchestration_run duravel encontrada.[/dim]")
         console.print("[dim]Tarefas aparecem aqui quando interrompidas antes de concluir.[/dim]")
         return
 
-    table = Table(title=f"Tarefas salvas ({len(entries)})", show_lines=True)
+    if durable_runs:
+        durable_table = Table(title=f"Runs duraveis ({len(durable_runs)})", show_lines=True)
+        durable_table.add_column("Run", style="cyan")
+        durable_table.add_column("Status")
+        durable_table.add_column("Mode")
+        durable_table.add_column("Steps", justify="right")
+        durable_table.add_column("Objetivo", style="bold")
+        for run in durable_runs:
+            durable_table.add_row(
+                run.run_id,
+                run.status,
+                run.mode,
+                str(len(run.plan)),
+                run.objective[:70],
+            )
+        console.print(durable_table)
+
+    if not entries:
+        console.print("\n[dim]Para retomar run duravel: [bold]bauer orchestrate resume <run_id>[/bold][/dim]")
+        return
+
+    table = Table(title=f"Progresso legado ({len(entries)})", show_lines=True)
     table.add_column("Tarefa", style="bold")
     table.add_column("Progresso", style="cyan")
     table.add_column("Criado", style="dim")
@@ -3029,6 +3436,763 @@ def task_board(
     )
 
 
+# --- ops --------------------------------------------------------------------
+
+
+@ops_app.command("status")
+def ops_status_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    limit: int = typer.Option(10, "--limit", help="Numero de runs/eventos recentes"),
+    as_json: bool = typer.Option(False, "--json", help="Imprime JSON bruto para automacao"),
+):
+    """Mostra saude operacional: filas, lanes, claims ativos, runs e eventos."""
+    import json as _json
+
+    from .ops_status import build_ops_status
+
+    status = build_ops_status(workspace, limit=limit)
+    if as_json:
+        console.print(_json.dumps(status, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+
+    counts = status["status_counts"]
+    summary = Table(title=f"Ops status - {workspace}", show_lines=False)
+    summary.add_column("Status", style="cyan")
+    summary.add_column("Qtd", justify="right")
+    for name in ("READY", "IN_PROGRESS", "FAILED", "BLOCKED", "TODO", "DONE"):
+        summary.add_row(name, str(counts.get(name, 0)))
+    console.print(summary)
+
+    lanes = status.get("lanes", [])
+    if lanes:
+        lane_table = Table(title="Lanes", show_lines=False)
+        lane_table.add_column("Lane", style="cyan")
+        lane_table.add_column("Agent")
+        lane_table.add_column("Capacidade", justify="right")
+        lane_table.add_column("Ready", justify="right")
+        lane_table.add_column("Running", justify="right")
+        lane_table.add_column("Failed", justify="right")
+        lane_table.add_column("Blocked", justify="right")
+        for lane in lanes:
+            lane_table.add_row(
+                str(lane.get("lane", "")),
+                str(lane.get("agent", "")),
+                str(lane.get("max_concurrent", "")),
+                str(lane.get("ready", 0)),
+                str(lane.get("running", 0)),
+                str(lane.get("failed", 0)),
+                str(lane.get("blocked", 0)),
+            )
+        console.print(lane_table)
+
+    claims = status.get("active_claims", [])
+    if claims:
+        claim_table = Table(title="Claims ativos", show_lines=False)
+        claim_table.add_column("Task", style="cyan")
+        claim_table.add_column("Lane")
+        claim_table.add_column("Run", style="dim")
+        claim_table.add_column("PID", justify="right")
+        claim_table.add_column("Alive")
+        claim_table.add_column("Lease", justify="right")
+        for claim in claims:
+            lease = claim.get("claim_seconds_left")
+            claim_table.add_row(
+                str(claim.get("public_id", "")),
+                str(claim.get("lane", "")),
+                str(claim.get("run_id", "")),
+                str(claim.get("worker_pid") or ""),
+                str(claim.get("worker_alive")),
+                "" if lease is None else f"{lease}s",
+            )
+        console.print(claim_table)
+    else:
+        console.print("[dim]Nenhum claim ativo.[/dim]")
+
+    runs = status.get("recent_runs", [])
+    if runs:
+        run_table = Table(title="Runs recentes", show_lines=False)
+        run_table.add_column("Run", style="dim")
+        run_table.add_column("Task")
+        run_table.add_column("Status")
+        run_table.add_column("Lane")
+        run_table.add_column("Heartbeat", style="dim")
+        for run in runs:
+            metadata = run.get("metadata", {}) or {}
+            run_table.add_row(
+                str(run.get("run_id", "")),
+                str(run.get("task_id", "")),
+                str(run.get("status", "")),
+                str(metadata.get("lane", "")),
+                str(run.get("heartbeat_at", "")),
+            )
+        console.print(run_table)
+
+    orchestrations = status.get("recent_orchestrations", [])
+    if orchestrations:
+        orch_table = Table(title="Orquestracoes duraveis", show_lines=False)
+        orch_table.add_column("Run", style="cyan")
+        orch_table.add_column("Status")
+        orch_table.add_column("Mode")
+        orch_table.add_column("Steps", justify="right")
+        orch_table.add_column("Objetivo")
+        for run in orchestrations:
+            orch_table.add_row(
+                str(run.get("run_id", "")),
+                str(run.get("status", "")),
+                str(run.get("mode", "")),
+                str(len(run.get("plan", []) or [])),
+                str(run.get("objective", ""))[:70],
+            )
+        console.print(orch_table)
+
+    automation_jobs = status.get("automation_jobs", [])
+    if automation_jobs:
+        cron_table = Table(title="Automacoes cron", show_lines=False)
+        cron_table.add_column("Nome", style="cyan")
+        cron_table.add_column("Status")
+        cron_table.add_column("Schedule")
+        cron_table.add_column("Next", style="dim")
+        cron_table.add_column("Runs", justify="right")
+        for job in automation_jobs:
+            cron_table.add_row(
+                str(job.get("name", "")),
+                str(job.get("status", "")),
+                str(job.get("schedule_str", "")),
+                str(job.get("next_run_at", "")),
+                str(job.get("run_count", 0)),
+            )
+        console.print(cron_table)
+
+    events = status.get("recent_events", [])
+    if events:
+        event_table = Table(title="Eventos recentes", show_lines=False)
+        event_table.add_column("ID", justify="right", style="dim")
+        event_table.add_column("Task")
+        event_table.add_column("Evento")
+        event_table.add_column("Mensagem")
+        for event in events:
+            event_table.add_row(
+                str(event.get("id", "")),
+                str(event.get("task_id", "")),
+                str(event.get("event_type", "")),
+                str(event.get("message", ""))[:80],
+            )
+        console.print(event_table)
+
+
+@ops_app.command("migrations")
+def ops_migrations_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    apply: bool = typer.Option(True, "--apply/--list-only", help="Registra baseline se ainda nao existir"),
+):
+    """Mostra/aplica ledger de schema migrations dos sidecars Bauer."""
+    from .schema_migrations import MigrationLedger, ensure_level8_migrations
+
+    records = ensure_level8_migrations(workspace) if apply else MigrationLedger(workspace).list_records()
+    if not records:
+        console.print("[dim]Nenhuma migration registrada.[/dim]")
+        return
+    table = Table(title=f"Schema migrations - {workspace}", show_lines=False)
+    table.add_column("Store", style="cyan")
+    table.add_column("Version", justify="right")
+    table.add_column("Name")
+    table.add_column("Applied", style="dim")
+    for record in records:
+        table.add_row(record.store, str(record.version), record.name, record.applied_at)
+    console.print(table)
+
+
+@ops_app.command("watch")
+def ops_watch_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    interval: float = typer.Option(2.0, "--interval"),
+    iterations: int = typer.Option(0, "--iterations", help="0 = infinito"),
+):
+    """TUI simples de observabilidade operacional com auto-refresh."""
+    import time as _time
+
+    from rich.live import Live
+    from rich.panel import Panel as _Panel
+
+    from .ops_status import build_ops_status
+
+    def _render():
+        status = build_ops_status(workspace, limit=5)
+        counts = status["status_counts"]
+        lines = [
+            f"Workspace: {status['workspace']}",
+            f"READY={counts.get('READY', 0)} IN_PROGRESS={counts.get('IN_PROGRESS', 0)} "
+            f"FAILED={counts.get('FAILED', 0)} BLOCKED={counts.get('BLOCKED', 0)}",
+            f"Claims ativos: {len(status.get('active_claims', []))}",
+            f"Automacoes: {len(status.get('automation_jobs', []))} | "
+            f"Outbox: {len(status.get('gateway_outbox', []))} | "
+            f"Orquestracoes: {len(status.get('recent_orchestrations', []))}",
+            f"Atualizado: {status['generated_at']}",
+        ]
+        return _Panel("\n".join(lines), title="Bauer Ops Watch", border_style="cyan")
+
+    count = 0
+    with Live(_render(), refresh_per_second=1, console=console) as live:
+        while True:
+            _time.sleep(max(0.5, float(interval)))
+            live.update(_render())
+            count += 1
+            if iterations and count >= iterations:
+                break
+
+
+# --- runtime supervisor -------------------------------------------------------
+
+
+def _runtime_supervise_args(
+    *,
+    workspace: Path,
+    config: Path,
+    models: Path,
+    dispatcher: bool,
+    cron: bool,
+    outbox: bool,
+    kanban: bool,
+    dispatch_interval: int,
+    cron_interval: int,
+    outbox_interval: int,
+    supervisor_interval: int,
+    kanban_host: str,
+    kanban_port: int,
+    max_spawn: int,
+    max_in_progress: int,
+    max_jobs: int,
+    delivery_limit: int,
+) -> list[str]:
+    args = [
+        "--workspace", str(workspace),
+        "--config", str(config),
+        "--models", str(models),
+        "--dispatch-interval", str(dispatch_interval),
+        "--cron-interval", str(cron_interval),
+        "--outbox-interval", str(outbox_interval),
+        "--supervisor-interval", str(supervisor_interval),
+        "--kanban-host", kanban_host,
+        "--kanban-port", str(kanban_port),
+        "--max-spawn", str(max_spawn),
+        "--max-in-progress", str(max_in_progress),
+        "--max-jobs", str(max_jobs),
+        "--delivery-limit", str(delivery_limit),
+    ]
+    args.append("--dispatcher" if dispatcher else "--no-dispatcher")
+    args.append("--cron" if cron else "--no-cron")
+    args.append("--outbox" if outbox else "--no-outbox")
+    args.append("--kanban" if kanban else "--no-kanban")
+    return args
+
+
+def _runtime_specs_table(specs) -> Table:
+    table = Table(title="Bauer Runtime Services", show_lines=False)
+    table.add_column("Service", style="cyan")
+    table.add_column("Enabled")
+    table.add_column("Restart")
+    table.add_column("Command")
+    for spec in specs:
+        table.add_row(
+            spec.name,
+            "yes" if spec.enabled else "no",
+            "yes" if spec.restart else "no",
+            " ".join(spec.command),
+        )
+    return table
+
+
+@runtime_app.command("start")
+def runtime_start_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    background: bool = typer.Option(True, "--background/--foreground", help="Roda supervisor em background ou prende este terminal"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria iniciado sem subir processos"),
+    dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
+    cron: bool = typer.Option(True, "--cron/--no-cron"),
+    outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
+    kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
+    dispatch_interval: int = typer.Option(30, "--dispatch-interval"),
+    cron_interval: int = typer.Option(60, "--cron-interval"),
+    outbox_interval: int = typer.Option(30, "--outbox-interval"),
+    supervisor_interval: int = typer.Option(5, "--supervisor-interval"),
+    kanban_host: str = typer.Option("127.0.0.1", "--kanban-host"),
+    kanban_port: int = typer.Option(8765, "--kanban-port"),
+    max_spawn: int = typer.Option(1, "--max-spawn"),
+    max_in_progress: int = typer.Option(1, "--max-in-progress"),
+    max_jobs: int = typer.Option(10, "--max-jobs"),
+    delivery_limit: int = typer.Option(20, "--delivery-limit"),
+):
+    """Sobe o runtime always-on: dispatcher, cron, outbox e kanban."""
+    import json as _json
+
+    from .supervisor import RuntimeSupervisor
+
+    supervisor = RuntimeSupervisor(workspace, config=config, models=models)
+    specs = supervisor.build_service_specs(
+        dispatcher=dispatcher,
+        cron=cron,
+        outbox=outbox,
+        kanban=kanban,
+        dispatch_interval=dispatch_interval,
+        cron_interval=cron_interval,
+        outbox_interval=outbox_interval,
+        kanban_host=kanban_host,
+        kanban_port=kanban_port,
+        max_spawn=max_spawn,
+        max_in_progress=max_in_progress,
+        max_jobs=max_jobs,
+        delivery_limit=delivery_limit,
+    )
+    if dry_run and not background:
+        console.print(_runtime_specs_table(specs))
+        return
+    args = _runtime_supervise_args(
+        workspace=workspace,
+        config=config,
+        models=models,
+        dispatcher=dispatcher,
+        cron=cron,
+        outbox=outbox,
+        kanban=kanban,
+        dispatch_interval=dispatch_interval,
+        cron_interval=cron_interval,
+        outbox_interval=outbox_interval,
+        supervisor_interval=supervisor_interval,
+        kanban_host=kanban_host,
+        kanban_port=kanban_port,
+        max_spawn=max_spawn,
+        max_in_progress=max_in_progress,
+        max_jobs=max_jobs,
+        delivery_limit=delivery_limit,
+    )
+    if background:
+        result = supervisor.start_background(args, dry_run=dry_run)
+        if dry_run:
+            console.print(_runtime_specs_table(specs))
+            console.print(_json.dumps(result, ensure_ascii=False, indent=2), soft_wrap=True)
+            return
+        console.print(f"[green]Runtime supervisor iniciado[/green] pid={result['pid']}")
+        console.print(f"[dim]Logs: {result['log_path']}[/dim]")
+        return
+
+    console.print("[green]Runtime supervisor iniciado em foreground[/green] Ctrl+C para parar.")
+    supervisor.run_forever(specs, supervisor_interval=supervisor_interval)
+
+
+@runtime_app.command("supervise", hidden=True)
+def runtime_supervise_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
+    cron: bool = typer.Option(True, "--cron/--no-cron"),
+    outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
+    kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
+    dispatch_interval: int = typer.Option(30, "--dispatch-interval"),
+    cron_interval: int = typer.Option(60, "--cron-interval"),
+    outbox_interval: int = typer.Option(30, "--outbox-interval"),
+    supervisor_interval: int = typer.Option(5, "--supervisor-interval"),
+    kanban_host: str = typer.Option("127.0.0.1", "--kanban-host"),
+    kanban_port: int = typer.Option(8765, "--kanban-port"),
+    max_spawn: int = typer.Option(1, "--max-spawn"),
+    max_in_progress: int = typer.Option(1, "--max-in-progress"),
+    max_jobs: int = typer.Option(10, "--max-jobs"),
+    delivery_limit: int = typer.Option(20, "--delivery-limit"),
+):
+    """Processo interno que supervisiona os servicos do runtime."""
+    from .supervisor import RuntimeSupervisor
+
+    supervisor = RuntimeSupervisor(workspace, config=config, models=models)
+    specs = supervisor.build_service_specs(
+        dispatcher=dispatcher,
+        cron=cron,
+        outbox=outbox,
+        kanban=kanban,
+        dispatch_interval=dispatch_interval,
+        cron_interval=cron_interval,
+        outbox_interval=outbox_interval,
+        kanban_host=kanban_host,
+        kanban_port=kanban_port,
+        max_spawn=max_spawn,
+        max_in_progress=max_in_progress,
+        max_jobs=max_jobs,
+        delivery_limit=delivery_limit,
+    )
+    supervisor.run_forever(specs, supervisor_interval=supervisor_interval)
+
+
+@runtime_app.command("status")
+def runtime_status_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Mostra estado do supervisor e dos servicos supervisionados."""
+    import json as _json
+
+    from .supervisor import RuntimeSupervisor
+
+    status = RuntimeSupervisor(workspace).status().to_public_dict()
+    if as_json:
+        console.print(_json.dumps(status, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+    table = Table(title=f"Bauer Runtime - {workspace}", show_lines=False)
+    table.add_column("Service", style="cyan")
+    table.add_column("State")
+    table.add_column("PID", justify="right")
+    table.add_column("Alive")
+    table.add_column("Restarts", justify="right")
+    table.add_column("Log")
+    console.print(
+        f"[bold]Supervisor:[/bold] state={status['state']} "
+        f"pid={status.get('supervisor_pid') or '-'} alive={status.get('supervisor_alive')}"
+    )
+    for service in status.get("services", []):
+        table.add_row(
+            str(service.get("name", "")),
+            str(service.get("state", "")),
+            str(service.get("pid") or "-"),
+            "yes" if service.get("alive") else "no",
+            str(service.get("restarts", 0)),
+            str(service.get("log_path", "")),
+        )
+    console.print(table)
+
+
+@runtime_app.command("stop")
+def runtime_stop_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    no_terminate: bool = typer.Option(False, "--no-terminate", help="Apenas escreve STOP; nao envia SIGTERM"),
+):
+    """Solicita parada do supervisor e encerra servicos supervisionados."""
+    from .supervisor import RuntimeSupervisor
+
+    status = RuntimeSupervisor(workspace).request_stop(terminate=not no_terminate)
+    console.print(f"[green]Stop solicitado[/green] state={status.get('state')} workspace={workspace}")
+
+
+@runtime_app.command("restart")
+def runtime_restart_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
+    cron: bool = typer.Option(True, "--cron/--no-cron"),
+    outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
+    kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
+):
+    """Para o runtime atual e sobe um novo supervisor em background."""
+    from .supervisor import RuntimeSupervisor
+
+    supervisor = RuntimeSupervisor(workspace, config=config, models=models)
+    if not dry_run:
+        supervisor.request_stop(terminate=True)
+    args = _runtime_supervise_args(
+        workspace=workspace,
+        config=config,
+        models=models,
+        dispatcher=dispatcher,
+        cron=cron,
+        outbox=outbox,
+        kanban=kanban,
+        dispatch_interval=30,
+        cron_interval=60,
+        outbox_interval=30,
+        supervisor_interval=5,
+        kanban_host="127.0.0.1",
+        kanban_port=8765,
+        max_spawn=1,
+        max_in_progress=1,
+        max_jobs=10,
+        delivery_limit=20,
+    )
+    result = supervisor.start_background(args, dry_run=dry_run)
+    console.print(f"[green]Runtime restart solicitado[/green] pid={result.get('pid') or '-'}")
+
+
+@runtime_app.command("logs")
+def runtime_logs_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    service: str = typer.Option("supervisor", "--service", "-s"),
+    lines: int = typer.Option(80, "--lines", "-n"),
+):
+    """Mostra as ultimas linhas de log do supervisor ou de um servico."""
+    from .supervisor import RuntimeSupervisor, tail_log
+
+    supervisor = RuntimeSupervisor(workspace)
+    status = supervisor.status().to_public_dict()
+    if service == "supervisor":
+        log_path = Path(status["runtime_dir"]) / "logs" / "supervisor.log"
+    else:
+        matches = [svc for svc in status.get("services", []) if svc.get("name") == service]
+        if not matches:
+            console.print(f"[red]Servico nao encontrado:[/red] {service}")
+            raise typer.Exit(code=1)
+        log_path = Path(str(matches[0].get("log_path", "")))
+    for line in tail_log(log_path, lines=lines):
+        console.print(line)
+
+
+# --- cron -------------------------------------------------------------------
+
+
+@cron_app.command("create")
+def cron_create_cmd(
+    name: str = typer.Argument(..., help="Nome unico do job"),
+    prompt: str = typer.Argument(..., help="Prompt a executar quando o job vencer"),
+    schedule: str = typer.Option(..., "--schedule", "-s", help="every 30m | every 2h | daily 09:00 | at ISO | cron: */15 * * * *"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    assignee: str = typer.Option("", "--assignee", help="Agent/lane preferido para a task"),
+    priority: str = typer.Option("medium", "--priority"),
+    max_retries: int = typer.Option(2, "--max-retries"),
+    max_runtime_seconds: int = typer.Option(0, "--max-runtime-seconds"),
+    deliver: str = typer.Option("", "--deliver", help="Entrega outbox: channel:<name> ou plataforma:<target>"),
+):
+    """Cria uma automacao duravel que enfileira tasks no dispatcher."""
+    from .automation_store import AutomationStore
+
+    metadata = {
+        "assignee": assignee,
+        "priority": priority,
+        "max_retries": max(1, int(max_retries)),
+    }
+    if max_runtime_seconds > 0:
+        metadata["max_runtime_seconds"] = int(max_runtime_seconds)
+    if deliver:
+        metadata["delivery"] = deliver
+    try:
+        job = AutomationStore(workspace).create_job(
+            name=name,
+            prompt=prompt,
+            schedule=schedule,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        console.print(f"[red]Erro criando cron job:[/red] {exc}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[green]cron criado[/green] [cyan]{job.name}[/cyan] "
+        f"schedule={job.schedule_str} next={job.next_run_at}"
+    )
+
+
+@cron_app.command("list")
+def cron_list_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    limit: int = typer.Option(50, "--limit"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Lista automacoes configuradas."""
+    import json as _json
+    from dataclasses import asdict
+
+    from .automation_store import AutomationStore
+
+    jobs = AutomationStore(workspace).list_jobs(limit=limit)
+    if as_json:
+        console.print(_json.dumps([asdict(job) for job in jobs], ensure_ascii=False, indent=2))
+        return
+    if not jobs:
+        console.print("[dim]Nenhuma automacao cron configurada.[/dim]")
+        return
+    table = Table(title=f"Cron jobs - {workspace}", show_lines=False)
+    table.add_column("Nome", style="cyan")
+    table.add_column("Status")
+    table.add_column("Schedule")
+    table.add_column("Next", style="dim")
+    table.add_column("Runs", justify="right")
+    for job in jobs:
+        table.add_row(job.name, job.status, job.schedule_str, job.next_run_at, str(job.run_count))
+    console.print(table)
+
+
+@cron_app.command("tick")
+def cron_tick_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    max_jobs: int = typer.Option(10, "--max-jobs"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Executa um tick do scheduler: jobs vencidos viram tasks READY."""
+    from .automation_scheduler import AutomationScheduler
+
+    result = AutomationScheduler(workspace).tick(max_jobs=max_jobs, dry_run=dry_run)
+    console.print(
+        "[bold]cron tick[/bold] "
+        f"due={len(result.due)} queued={len(result.queued)} "
+        f"skipped={len(result.skipped)} failed={len(result.failed)} dry={result.dry_run}"
+    )
+    for label, items in (
+        ("due", result.due),
+        ("queued", result.queued),
+        ("skipped", result.skipped),
+        ("failed", result.failed),
+    ):
+        if items:
+            console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
+
+
+@cron_app.command("run")
+def cron_run_cmd(
+    name: str = typer.Argument(..., help="Nome ou job_id"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Enfileira uma automacao imediatamente, independente do next_run_at."""
+    from .automation_scheduler import AutomationScheduler
+
+    try:
+        run = AutomationScheduler(workspace).run_now(name, dry_run=dry_run)
+    except Exception as exc:
+        console.print(f"[red]Erro executando cron job:[/red] {exc}")
+        raise typer.Exit(code=1)
+    if dry_run:
+        console.print(f"[yellow]dry-run[/yellow] cron run {name}")
+        return
+    console.print(f"[green]cron queued[/green] run={run.run_id} task={run.task_id}")  # type: ignore[union-attr]
+
+
+@cron_app.command("pause")
+def cron_pause_cmd(
+    name: str = typer.Argument(..., help="Nome ou job_id"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    """Pausa uma automacao."""
+    from .automation_store import AutomationStore
+
+    job = AutomationStore(workspace).update_job(name, status="paused")
+    if job is None:
+        console.print(f"[red]Cron job nao encontrado:[/red] {name}")
+        raise typer.Exit(code=1)
+    console.print(f"[yellow]cron paused[/yellow] {job.name}")
+
+
+@cron_app.command("resume")
+def cron_resume_cmd(
+    name: str = typer.Argument(..., help="Nome ou job_id"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    """Reativa uma automacao pausada/completed, recalculando next_run_at se necessario."""
+    from .automation_store import AutomationStore, next_run_after
+
+    store = AutomationStore(workspace)
+    job = store.get_job(name)
+    if job is None:
+        console.print(f"[red]Cron job nao encontrado:[/red] {name}")
+        raise typer.Exit(code=1)
+    next_run = job.next_run_at or next_run_after(job.schedule)
+    updated = store.update_job(job.job_id, status="active", next_run_at=next_run)
+    console.print(f"[green]cron active[/green] {updated.name} next={updated.next_run_at}")  # type: ignore[union-attr]
+
+
+@cron_app.command("delete")
+def cron_delete_cmd(
+    name: str = typer.Argument(..., help="Nome ou job_id"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+):
+    """Remove uma automacao."""
+    from .automation_store import AutomationStore
+
+    if not yes and not typer.confirm(f"Remover cron job '{name}'?", default=False):
+        console.print("[dim]Cancelado.[/dim]")
+        return
+    if not AutomationStore(workspace).delete_job(name):
+        console.print(f"[red]Cron job nao encontrado:[/red] {name}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]cron deleted[/green] {name}")
+
+
+@cron_app.command("daemon")
+def cron_daemon_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    interval: int = typer.Option(60, "--interval", help="Segundos entre ticks"),
+    max_jobs: int = typer.Option(10, "--max-jobs"),
+):
+    """Loop simples do scheduler. Use junto com dispatch daemon para executar."""
+    import time as _time
+
+    from .automation_scheduler import AutomationScheduler
+
+    scheduler = AutomationScheduler(workspace)
+    console.print(f"[green]Cron scheduler iniciado[/green] workspace={workspace} interval={interval}s")
+    try:
+        while True:
+            result = scheduler.tick(max_jobs=max_jobs)
+            if result.queued or result.failed:
+                console.print(
+                    f"[dim]tick[/dim] due={len(result.due)} "
+                    f"queued={len(result.queued)} failed={len(result.failed)}"
+                )
+            _time.sleep(max(1, int(interval)))
+    except KeyboardInterrupt:
+        console.print("\n[dim]Cron scheduler encerrado.[/dim]")
+
+
+# --- research ---------------------------------------------------------------
+
+
+@research_app.command("trajectory-add")
+def research_trajectory_add_cmd(
+    objective: str = typer.Argument(..., help="Objetivo ou tarefa da trajetória"),
+    kind: str = typer.Option("manual", "--kind"),
+    input_json: str = typer.Option("{}", "--input-json"),
+    output_json: str = typer.Option("{}", "--output-json"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    """Registra uma trajetória JSONL append-only para avaliação/treino."""
+    import json as _json
+
+    from .trajectory_store import TrajectoryStore
+
+    try:
+        input_data = _json.loads(input_json)
+        output_data = _json.loads(output_json)
+        if not isinstance(input_data, dict) or not isinstance(output_data, dict):
+            raise ValueError("input-json/output-json devem ser objetos JSON")
+    except Exception as exc:
+        console.print(f"[red]JSON invalido:[/red] {exc}")
+        raise typer.Exit(code=2)
+    record = TrajectoryStore(workspace).append(
+        kind=kind,
+        objective=objective,
+        input=input_data,
+        output=output_data,
+    )
+    console.print(f"[green]trajectory registrada[/green] {record.trajectory_id}")
+
+
+@research_app.command("trajectory-list")
+def research_trajectory_list_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    limit: int = typer.Option(20, "--limit"),
+    kind: str = typer.Option("", "--kind"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Lista trajetórias recentes."""
+    import json as _json
+    from dataclasses import asdict
+
+    from .trajectory_store import TrajectoryStore
+
+    records = TrajectoryStore(workspace).list(limit=limit, kind=kind)
+    if as_json:
+        console.print(_json.dumps([asdict(record) for record in records], ensure_ascii=False, indent=2))
+        return
+    if not records:
+        console.print("[dim]Nenhuma trajectory registrada.[/dim]")
+        return
+    table = Table(title=f"Trajectories - {workspace}", show_lines=False)
+    table.add_column("ID", style="cyan")
+    table.add_column("Kind")
+    table.add_column("Objetivo")
+    table.add_column("Criado", style="dim")
+    for record in records:
+        table.add_row(record.trajectory_id, record.kind, record.objective[:80], record.created_at)
+    console.print(table)
+
+
 # --- dispatch ---------------------------------------------------------------
 
 
@@ -3064,11 +4228,12 @@ def dispatch_once_cmd(
     )
     console.print(
         "[bold]dispatch once[/bold] "
-        f"reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
+        f"crashed={len(result.crashed)} reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
         f"spawned={len(result.spawned)} completed={len(result.completed)} "
         f"failed={len(result.failed)} dry={len(result.dry_run)}"
     )
     for label, items in (
+        ("crashed", result.crashed),
         ("reclaimed", result.reclaimed),
         ("claimed", result.claimed),
         ("spawned", result.spawned),
@@ -3079,6 +4244,125 @@ def dispatch_once_cmd(
     ):
         if items:
             console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
+
+
+@dispatch_app.command("status")
+def dispatch_status_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    limit: int = typer.Option(10, "--limit", help="Numero de runs/eventos recentes"),
+):
+    """Mostra fila, runs e eventos recentes do dispatcher."""
+    from collections import Counter
+
+    from .kanban_store import KanbanStore
+
+    wm = WorkspaceManager(workspace)
+    store = KanbanStore(workspace)
+    tasks = wm.list_tasks()
+    counts = Counter(t.status for t in tasks)
+
+    table = Table(title=f"Dispatcher status - {workspace}", show_lines=False)
+    table.add_column("Status", style="cyan")
+    table.add_column("Qtd", justify="right")
+    for status in ("READY", "IN_PROGRESS", "FAILED", "DONE", "BLOCKED", "TODO"):
+        table.add_row(status, str(counts.get(status, 0)))
+    console.print(table)
+
+    runs = store.list_runs(limit=limit)
+    if runs:
+        run_table = Table(title="Runs recentes", show_lines=False)
+        run_table.add_column("Run", style="dim")
+        run_table.add_column("Task")
+        run_table.add_column("Status")
+        run_table.add_column("Tent.", justify="right")
+        run_table.add_column("Worker")
+        run_table.add_column("Heartbeat", style="dim")
+        for run in runs:
+            run_table.add_row(
+                run.run_id,
+                run.task_id,
+                run.status,
+                str(run.attempt),
+                str(run.worker_pid or run.runner or ""),
+                run.heartbeat_at,
+            )
+        console.print(run_table)
+    else:
+        console.print("[dim]Nenhum task_run registrado ainda.[/dim]")
+
+    events = store.list_events(limit=limit)
+    if events:
+        event_table = Table(title="Eventos recentes", show_lines=False)
+        event_table.add_column("ID", justify="right", style="dim")
+        event_table.add_column("Task")
+        event_table.add_column("Evento")
+        event_table.add_column("Ator")
+        event_table.add_column("Mensagem")
+        for event in events:
+            event_table.add_row(
+                str(event.id),
+                event.task_id,
+                event.event_type,
+                event.actor,
+                event.message[:80],
+            )
+        console.print(event_table)
+
+
+@dispatch_app.command("reclaim")
+def dispatch_reclaim_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds"),
+    stale_seconds: int = typer.Option(1800, "--stale-seconds"),
+):
+    """Detecta workers mortos e devolve claims stale para READY."""
+    from .task_dispatcher import TaskDispatcher
+
+    dispatcher = TaskDispatcher(
+        workspace,
+        claim_ttl_seconds=claim_ttl_seconds,
+        stale_seconds=stale_seconds,
+    )
+    crashed = dispatcher.detect_crashed_workers()
+    reclaimed = dispatcher.reclaim_stale()
+    console.print(
+        f"[bold]dispatch reclaim[/bold] crashed={len(crashed)} reclaimed={len(reclaimed)}"
+    )
+    if crashed:
+        console.print(f"[dim]crashed:[/dim] {', '.join(crashed)}")
+    if reclaimed:
+        console.print(f"[dim]reclaimed:[/dim] {', '.join(reclaimed)}")
+
+
+@dispatch_app.command("cancel")
+def dispatch_cancel_cmd(
+    task_id: str = typer.Argument(..., help="ID da task"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    reason: str = typer.Option("cancelled by operator", "--reason", "-r"),
+    terminate_worker: bool = typer.Option(False, "--terminate-worker", help="Tenta encerrar PID do worker"),
+):
+    """Cancela uma task em execucao e fecha o run como cancelled."""
+    from .task_dispatcher import TaskDispatcher
+
+    task = TaskDispatcher(workspace).cancel_task(
+        task_id,
+        reason=reason,
+        terminate_worker=terminate_worker,
+    )
+    console.print(f"[yellow]{task.id}[/yellow] -> [BLOCKED] {task.title}")
+
+
+@dispatch_app.command("retry")
+def dispatch_retry_cmd(
+    task_id: str = typer.Argument(..., help="ID da task"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    reason: str = typer.Option("manual retry", "--reason", "-r"),
+):
+    """Retorna uma task FAILED/BLOCKED para READY."""
+    from .task_dispatcher import TaskDispatcher
+
+    task = TaskDispatcher(workspace).retry_failed(task_id, reason=reason)
+    console.print(f"[cyan]{task.id}[/cyan] -> [READY] {task.title}")
 
 
 @dispatch_app.command("daemon")
@@ -3104,23 +4388,28 @@ def dispatch_daemon_cmd(
         max_retries=max_retries,
     )
     console.print(f"[green]Dispatcher iniciado[/green] workspace={workspace} interval={interval}s")
+    dispatcher.record_daemon_started(
+        interval=interval,
+        max_spawn=max_spawn,
+        max_in_progress=max_in_progress,
+    )
     try:
         while True:
-            result = dispatcher.dispatch_once(
+            result = dispatcher.watchdog_tick(
                 max_spawn=max_spawn,
                 max_in_progress=max_in_progress,
-                spawn_background=True,
                 config=config,
                 models=models,
             )
-            if result.reclaimed or result.claimed or result.spawned or result.failed:
+            if result.crashed or result.reclaimed or result.claimed or result.spawned or result.failed:
                 console.print(
-                    f"[dim]tick[/dim] reclaimed={len(result.reclaimed)} "
+                    f"[dim]tick[/dim] crashed={len(result.crashed)} reclaimed={len(result.reclaimed)} "
                     f"claimed={len(result.claimed)} spawned={len(result.spawned)} "
                     f"failed={len(result.failed)}"
                 )
             _time.sleep(max(1, interval))
     except KeyboardInterrupt:
+        dispatcher.record_daemon_stopped(reason="KeyboardInterrupt")
         console.print("\n[dim]Dispatcher encerrado.[/dim]")
 
 
@@ -4185,6 +5474,260 @@ def gateway_cmd(
 
 
 # ── migrate ──────────────────────────────────────────────────────────────────
+
+
+@app.command("gateway-channel-add")
+def gateway_channel_add_cmd(
+    name: str = typer.Argument(..., help="Nome logico do canal"),
+    platform: str = typer.Argument(..., help="file, webhook, telegram, discord, slack ou whatsapp"),
+    target: str = typer.Argument(..., help="Destino da plataforma"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    metadata_json: str = typer.Option("{}", "--metadata-json", help="Metadados JSON sem segredos; use *_env"),
+    enabled: bool = typer.Option(True, "--enabled/--disabled"),
+):
+    """Registra ou atualiza um canal real de gateway."""
+    import json as _json
+
+    from .gateway_channels import GatewayChannelRegistry
+
+    try:
+        metadata = _json.loads(metadata_json)
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata-json deve ser um objeto JSON")
+        channel = GatewayChannelRegistry(workspace).upsert(
+            name=name,
+            platform=platform,
+            target=target,
+            enabled=enabled,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        console.print(f"[red]Erro configurando gateway channel:[/red] {exc}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[green]gateway channel salvo[/green] "
+        f"name={channel.name} platform={channel.platform} enabled={channel.enabled}"
+    )
+
+
+@app.command("gateway-channels")
+def gateway_channels_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    include_disabled: bool = typer.Option(False, "--include-disabled"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Lista canais reais configurados para entrega do gateway."""
+    import json as _json
+
+    from .gateway_channels import GatewayChannelRegistry
+
+    channels = GatewayChannelRegistry(workspace).list_channels(include_disabled=include_disabled)
+    payload = [channel.to_public_dict() for channel in channels]
+    if as_json:
+        console.print(_json.dumps(payload, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+    if not channels:
+        console.print("[dim]Nenhum gateway channel configurado.[/dim]")
+        return
+    table = Table(title=f"Gateway channels - {workspace}", show_lines=False)
+    table.add_column("Name", style="cyan")
+    table.add_column("Platform")
+    table.add_column("Enabled")
+    table.add_column("Target")
+    for channel in channels:
+        table.add_row(channel.name, channel.platform, str(channel.enabled), channel.target[:72])
+    console.print(table)
+
+
+@app.command("gateway-channel-delete")
+def gateway_channel_delete_cmd(
+    name: str = typer.Argument(..., help="Nome logico do canal"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+):
+    """Remove um canal configurado do gateway."""
+    from .gateway_channels import GatewayChannelRegistry
+
+    if not yes and not typer.confirm(f"Remover gateway channel '{name}'?", default=False):
+        console.print("[dim]Cancelado.[/dim]")
+        return
+    if not GatewayChannelRegistry(workspace).delete(name):
+        console.print(f"[red]Gateway channel nao encontrado:[/red] {name}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]gateway channel removido[/green] {name}")
+
+
+@app.command("gateway-send")
+def gateway_send_cmd(
+    channel: str = typer.Argument(..., help="Canal registrado ou plataforma direta"),
+    message: str = typer.Argument(..., help="Texto a enviar"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    target: str = typer.Option("", "--target", help="Destino direto quando channel for plataforma"),
+    platform: str = typer.Option("", "--platform", help="Forca plataforma ao usar target direto"),
+    metadata_json: str = typer.Option("{}", "--metadata-json", help="Metadados JSON sem segredos; use *_env"),
+    deliver_now: bool = typer.Option(False, "--deliver-now", help="Entrega exatamente esta mensagem agora"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Resolve destino sem enfileirar"),
+    max_attempts: int = typer.Option(3, "--max-attempts"),
+):
+    """Enfileira uma mensagem outbound para canal real ou plataforma direta."""
+    import json as _json
+
+    from .gateway_adapters import SUPPORTED_GATEWAY_CHANNELS
+    from .gateway_channels import GatewayChannelRegistry, validate_gateway_metadata
+    from .gateway_outbox import GatewayOutbox
+
+    try:
+        metadata = _json.loads(metadata_json)
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata-json deve ser um objeto JSON")
+    except Exception as exc:
+        console.print(f"[red]JSON invalido:[/red] {exc}")
+        raise typer.Exit(code=2)
+
+    try:
+        validate_gateway_metadata(metadata)
+    except Exception as exc:
+        console.print(f"[red]Metadata invalido:[/red] {exc}")
+        raise typer.Exit(code=2)
+
+    registry = GatewayChannelRegistry(workspace)
+    configured = registry.get(channel)
+    resolved_source = "direct"
+    if configured and not platform and not target:
+        if not configured.enabled:
+            console.print(f"[red]Gateway channel desabilitado:[/red] {configured.name}")
+            raise typer.Exit(code=1)
+        resolved_channel = configured.platform
+        resolved_target = configured.target
+        resolved_metadata = dict(configured.metadata)
+        resolved_metadata.update(metadata)
+        resolved_metadata["gateway_channel"] = configured.name
+        resolved_source = f"channel:{configured.name}"
+    else:
+        resolved_channel = (platform or channel).strip().lower()
+        resolved_target = target.strip()
+        if resolved_channel not in SUPPORTED_GATEWAY_CHANNELS:
+            allowed = ", ".join(sorted(SUPPORTED_GATEWAY_CHANNELS))
+            console.print(f"[red]Plataforma invalida:[/red] {resolved_channel}. Use: {allowed}")
+            raise typer.Exit(code=2)
+        if not resolved_target:
+            console.print("[red]--target e obrigatorio para envio direto por plataforma.[/red]")
+            raise typer.Exit(code=2)
+        resolved_metadata = metadata
+
+    summary = {
+        "channel": resolved_channel,
+        "target": resolved_target,
+        "source": resolved_source,
+        "metadata": resolved_metadata,
+        "payload": {"type": "operator.message", "text": message},
+    }
+    if dry_run:
+        console.print(_json.dumps(summary, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+
+    try:
+        outbox = GatewayOutbox(workspace)
+        outbox_message = outbox.enqueue(
+            channel=resolved_channel,
+            target=resolved_target,
+            payload={"type": "operator.message", "text": message},
+            max_attempts=max(1, int(max_attempts)),
+            metadata=resolved_metadata,
+        )
+        console.print(
+            f"[green]gateway mensagem enfileirada[/green] "
+            f"id={outbox_message.message_id} channel={resolved_channel} source={resolved_source}"
+        )
+        if deliver_now:
+            result = outbox.deliver_message(outbox_message.message_id)
+            console.print(
+                "[bold]gateway deliver-now[/bold] "
+                f"delivered={len(result.delivered)} failed={len(result.failed)} skipped={len(result.skipped)}"
+            )
+            if result.failed:
+                raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]Erro no gateway-send:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@app.command("gateway-outbox")
+def gateway_outbox_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    limit: int = typer.Option(20, "--limit"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Lista mensagens pendentes/recentes do outbox de entrega."""
+    import json as _json
+    from dataclasses import asdict
+
+    from .gateway_outbox import GatewayOutbox
+
+    messages = GatewayOutbox(workspace).list_messages(limit=limit)
+    if as_json:
+        console.print(_json.dumps([asdict(message) for message in messages], ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+    if not messages:
+        console.print("[dim]Nenhuma mensagem no gateway outbox.[/dim]")
+        return
+    table = Table(title=f"Gateway outbox - {workspace}", show_lines=False)
+    table.add_column("Message", style="cyan")
+    table.add_column("Channel")
+    table.add_column("Status")
+    table.add_column("Attempts", justify="right")
+    table.add_column("Target")
+    for message in messages:
+        table.add_row(
+            message.message_id,
+            message.channel,
+            message.status,
+            f"{message.attempts}/{message.max_attempts}",
+            message.target[:60],
+        )
+    console.print(table)
+
+
+@app.command("gateway-deliver")
+def gateway_deliver_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    limit: int = typer.Option(20, "--limit"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    watch: bool = typer.Option(False, "--watch", help="Roda em loop como worker de entrega"),
+    interval: int = typer.Option(30, "--interval", help="Segundos entre entregas no modo --watch"),
+):
+    """Processa mensagens pendentes do gateway outbox."""
+    import time as _time
+
+    from .gateway_outbox import GatewayOutbox
+
+    outbox = GatewayOutbox(workspace)
+
+    def _deliver_once() -> None:
+        result = outbox.deliver_once(limit=limit, dry_run=dry_run)
+        console.print(
+            "[bold]gateway deliver[/bold] "
+            f"delivered={len(result.delivered)} failed={len(result.failed)} skipped={len(result.skipped)}"
+        )
+        for label, items in (
+            ("delivered", result.delivered),
+            ("failed", result.failed),
+            ("skipped", result.skipped),
+        ):
+            if items:
+                console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
+
+    if not watch:
+        _deliver_once()
+        return
+
+    console.print(f"[green]Gateway outbox worker iniciado[/green] workspace={workspace} interval={interval}s")
+    try:
+        while True:
+            _deliver_once()
+            _time.sleep(max(1, int(interval)))
+    except KeyboardInterrupt:
+        console.print("\n[dim]Gateway outbox worker encerrado.[/dim]")
 
 
 def _print_migration_result(result, console: Console) -> None:  # type: ignore[type-arg]
