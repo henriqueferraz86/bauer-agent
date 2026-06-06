@@ -6174,5 +6174,207 @@ def boards_rm_cmd(
     console.print(f"[green]✓[/green] Board removido: [bold]{name}[/bold]")
 
 
+# ============================================================================
+# bauer kanban-{specify, decompose, swarm} — Wave 3 (LLM kanban features)
+# ============================================================================
+
+
+@app.command("kanban-specify")
+def kanban_specify_cmd(
+    task_id: str = typer.Argument(..., help="Task ID a especificar"),
+    board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config",
+                                  help="Path do config.yaml"),
+):
+    """Promove uma triage task para todo via LLM auxiliar.
+
+    A task deve estar em 'triage'. O modelo configurado em
+    auxiliary.triage_specifier (ou o modelo principal se vazio) reescreve
+    title + body em formato estruturado (Goal/Approach/Acceptance/Out of
+    scope) e transiciona para 'todo'.
+    """
+    from .config_loader import load_config
+    from .kanban_specify import specify_task
+
+    cfg = None
+    if config.exists():
+        try:
+            cfg = load_config(str(config))
+        except Exception as exc:
+            console.print(f"[yellow]Config nao carregada ({exc}); usando "
+                           f"autoload[/yellow]")
+
+    target = board or None
+    outcome = specify_task(task_id, board=target, cfg=cfg)
+    if outcome.ok:
+        if outcome.reason == "not_triage":
+            console.print(f"[yellow]Task {task_id} ja foi specifield "
+                           f"anteriormente.[/yellow]")
+            return
+        console.print(f"[green]✓[/green] Task [bold]{outcome.task_id}[/bold] "
+                       f"specifield e promovida para todo")
+        console.print(f"\n[bold]Title:[/bold] {outcome.title}\n")
+        console.print(f"[bold]Body:[/bold]\n{outcome.body}\n")
+        return
+
+    console.print(f"[red]Falha:[/red] {outcome.reason}")
+    raise typer.Exit(code=1)
+
+
+@app.command("kanban-decompose")
+def kanban_decompose_cmd(
+    task_id: str = typer.Argument(..., help="Task ID a decompor"),
+    board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config",
+                                  help="Path do config.yaml"),
+):
+    """Decompoe uma task complexa em sub-tasks via LLM.
+
+    A task deve estar em 'triage' ou 'todo'. O modelo auxiliary.kanban_decomposer
+    retorna um plano de 2-6 sub-tasks com dependencias declaradas. Cada filho
+    e criado em 'todo' e linkado via task_links; o root espera todos os leaves
+    completarem antes de virar 'ready' (se ainda estiver pendente).
+
+    Se o modelo julgar a task atomica (fanout=false), reescreve title+body em
+    place e promove para 'todo' — equivalente a `kanban-specify`.
+    """
+    from .config_loader import load_config
+    from .kanban_decompose import decompose_task
+
+    cfg = None
+    if config.exists():
+        try:
+            cfg = load_config(str(config))
+        except Exception:
+            pass
+
+    target = board or None
+    outcome = decompose_task(task_id, board=target, cfg=cfg)
+    if not outcome.ok:
+        console.print(f"[red]Falha:[/red] {outcome.reason}")
+        raise typer.Exit(code=1)
+
+    if outcome.fanout:
+        from rich.table import Table
+        tbl = Table(title=f"Decomposed {outcome.task_id} → "
+                          f"{len(outcome.child_ids)} children",
+                    show_header=True, header_style="bold cyan")
+        tbl.add_column("Child ID", style="dim", no_wrap=True)
+        tbl.add_column("Title")
+        from . import kanban_db as _kb
+        with _kb.connect(target) as conn:
+            for cid in outcome.child_ids:
+                child = _kb.get_task_or_none(conn, cid)
+                tbl.add_row(cid[:12], child.title if child else "?")
+        console.print(tbl)
+        if outcome.rationale:
+            console.print(f"\n[dim]Rationale:[/dim] {outcome.rationale}")
+    else:
+        console.print(f"[yellow]Decomposer julgou atomica;[/yellow] task "
+                       f"[bold]{outcome.task_id}[/bold] reescrita e promovida.")
+        if outcome.rationale:
+            console.print(f"\n[dim]Rationale:[/dim] {outcome.rationale}")
+
+
+@app.command("kanban-swarm")
+def kanban_swarm_cmd(
+    goal: str = typer.Argument(..., help="Objetivo do swarm (titulo do root)"),
+    workers: list[str] = typer.Option(
+        ..., "--worker", "-w",
+        help="Titulo de um worker. Repita a flag para varios workers.",
+    ),
+    verifier: str = typer.Option("", "--verifier", help="Titulo customizado"),
+    synthesizer: str = typer.Option("", "--synthesizer", help="Titulo customizado"),
+    board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
+    priority: str = typer.Option("high", "--priority", "-p",
+                                  help="critical | high | medium | low"),
+):
+    """Cria um swarm de agents: root + N workers paralelos + verifier + synthesizer.
+
+    Workers ficam em 'ready' imediatamente (dispatcher pode rodar paralelo).
+    Verifier espera todos os workers completarem; synthesizer espera o
+    verifier. Coordenacao entre workers via blackboard (comentarios
+    estruturados no root).
+
+    Exemplo:
+      bauer kanban-swarm "Implementar OAuth" \\
+        -w "Auth API" -w "Login UI" -w "Tests" \\
+        --verifier "Verify e2e"
+    """
+    from .kanban_swarm import create_swarm
+
+    target = board or None
+    try:
+        result = create_swarm(
+            goal,
+            workers=list(workers),
+            verifier=verifier or None,
+            synthesizer=synthesizer or None,
+            board=target,
+            priority=priority,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+    from rich.table import Table
+    tbl = Table(title=f"Swarm criado: {result.goal}", show_header=True,
+                header_style="bold cyan")
+    tbl.add_column("Role", style="dim", no_wrap=True)
+    tbl.add_column("ID", no_wrap=True)
+    tbl.add_row("Root (done)", result.root_id[:12])
+    for idx, wid in enumerate(result.worker_ids, 1):
+        tbl.add_row(f"Worker {idx} (ready)", wid[:12])
+    tbl.add_row("Verifier (todo)", result.verifier_id[:12])
+    tbl.add_row("Synthesizer (todo)", result.synthesizer_id[:12])
+    console.print(tbl)
+    console.print(f"\n[dim]Use [bold]bauer dispatch once[/bold] para promover "
+                   f"e claimar workers. Inspecione com [bold]bauer kanban-swarm-status "
+                   f"{result.root_id[:8]}[/bold].[/dim]")
+
+
+@app.command("kanban-swarm-status")
+def kanban_swarm_status_cmd(
+    root_id: str = typer.Argument(..., help="Root ID do swarm"),
+    board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
+):
+    """Mostra snapshot atual de um swarm: status dos workers + blackboard."""
+    from .kanban_swarm import swarm_summary
+
+    target = board or None
+    snap = swarm_summary(root_id, board=target)
+    if "error" in snap:
+        console.print(f"[red]{snap['error']}[/red]")
+        raise typer.Exit(code=1)
+
+    from rich.table import Table
+    console.print(f"[bold]Swarm:[/bold] {snap['goal']}")
+    console.print(f"[dim]Root:[/dim] {snap['root_id']}\n")
+
+    tbl = Table(show_header=True, header_style="bold cyan")
+    tbl.add_column("Role", no_wrap=True)
+    tbl.add_column("ID", style="dim", no_wrap=True)
+    tbl.add_column("Title")
+    tbl.add_column("Status", no_wrap=True)
+    for idx, w in enumerate(snap["workers"], 1):
+        tbl.add_row(f"Worker {idx}", w.get("id", "?")[:12],
+                     w.get("title", "?"), w.get("status", "?"))
+    v = snap.get("verifier", {})
+    tbl.add_row("Verifier", v.get("id", "?")[:12], v.get("title", "?"),
+                 v.get("status", "?"))
+    s = snap.get("synthesizer", {})
+    tbl.add_row("Synthesizer", s.get("id", "?")[:12], s.get("title", "?"),
+                 s.get("status", "?"))
+    console.print(tbl)
+
+    bb = snap.get("blackboard", {})
+    if bb:
+        console.print(f"\n[bold]Blackboard:[/bold]")
+        for key, value in bb.items():
+            console.print(f"  [cyan]{key}[/cyan]: {value}")
+    else:
+        console.print(f"\n[dim]Blackboard vazia.[/dim]")
+
+
 if __name__ == "__main__":
     sys.exit(app())
