@@ -905,17 +905,34 @@ def run_one_turn(
     router: ToolRouter,
     client: OllamaClient,
     model_name: str,
+    *,
+    budget: "IterationBudget | None" = None,
 ) -> tuple[str, list[dict]]:
     """Executa um turno completo do agente, incluindo tool calls encadeados.
 
     Se o cliente suporta native tool calling (OpenAI function calling), usa esse modo.
     Caso contrário, usa o Tool Bridge (JSON parsing da resposta do modelo).
 
+    Args:
+        ctx: ContextManager com histórico e payload do prompt.
+        router: ToolRouter para dispatch de tools.
+        client: cliente LLM (OllamaClient / OpenAIClient / AnthropicClient).
+        model_name: nome do modelo a usar nesta chamada.
+        budget: IterationBudget opcional. Se None, constrói um com
+            `MAX_TOOL_TURNS + 1` como cap. Subagents (delegate_task) podem
+            passar um budget próprio para isolar seu cap do parent.
+
     Pode levantar OllamaError se o modelo falhar.
     Retorna (resposta_final_em_texto, log_de_tool_calls).
     Usado tanto pelo CLI quanto pelo bauer serve.
     """
+    from .iteration_budget import IterationBudget as _IterBudget
+
     tool_log: list[dict] = []
+    if budget is None:
+        # `MAX_TOOL_TURNS + 1`: até MAX rodadas de tool call, +1 turno final para
+        # o modelo emitir resposta de texto após a última tool.
+        budget = _IterBudget(max_total=MAX_TOOL_TURNS + 1)
 
     # Native tool calling: disponível em OpenAIClient mas não em OllamaClient.
     # Checa a classe concreta para evitar falsos positivos com MagicMock em testes.
@@ -923,7 +940,8 @@ def run_one_turn(
     use_native = isinstance(client, _OpenAIClient) and getattr(client, "supports_native_tools", False)
 
     if use_native:
-        for _ in range(MAX_TOOL_TURNS + 1):
+        while not budget.exhausted:
+            budget.consume()
             result = _run_native_tool_turn(ctx, router, client, model_name, tool_log)
             if result is not None:
                 return result, tool_log
@@ -933,12 +951,13 @@ def run_one_turn(
                 ctx.add_user(loop_warn)
                 if hard_stop:
                     return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
-        # Fallthrough: atingiu limite de turns sem resposta final
+        # Fallthrough: budget esgotado sem resposta final
         return "[Limite de iterações atingido]", tool_log
 
     # Tool Bridge (fallback para Ollama e modelos sem native tool calling)
     _empty_retried = False
-    for _ in range(MAX_TOOL_TURNS + 1):
+    while not budget.exhausted:
+        budget.consume()
         response = _collect_response(client, model_name, ctx.get_payload())
 
         # Resposta vazia: pode ser rate-limit silencioso (free tier), filtro
@@ -1892,7 +1911,15 @@ def run_agent_session(
             ctx.messages = saved
 
     tool_names = ", ".join(router.available_tools())
-    stats = SessionStats(model=model_name, context_tokens=applied_context, machine_id=get_machine_id())
+    # `provider` is needed for cost lookup in usage_pricing. Derive from the
+    # ContextManager's `_provider` (set above from cfg) — falls back to "" which
+    # cleanly disables costing without errors.
+    stats = SessionStats(
+        model=model_name,
+        context_tokens=applied_context,
+        machine_id=get_machine_id(),
+        provider=_provider or "",
+    )
     skills = SkillRegistry()
     routing = model_router is not None and model_router.config.enabled
     orch_enabled = orchestrator is not None and routing
@@ -2198,6 +2225,35 @@ def run_agent_session(
             # Resposta final em texto — extrai se o modelo usou JSON de conversa
             display = _extract_text_from_pseudo_json(response) or response
             stats.end_turn(len(display))
+
+            # Wave 1 — capture real token usage from the client (provider-agnostic).
+            # `last_usage` is populated by openai_client / anthropic_client; if the
+            # provider doesn't surface usage (e.g. Ollama local, some compat
+            # backends), record_turn_usage gets {} and is a no-op.
+            _turn_usage: dict = {}
+            _turn_cost_line: str = ""
+            try:
+                _raw_usage = getattr(client, "last_usage", None) or {}
+                _turn_usage = stats.record_turn_usage(_raw_usage)
+                # Compose a one-line cost summary for the user. Only show when
+                # we actually have token data — silent fallback to old behaviour
+                # for providers without usage support.
+                if _turn_usage and (_turn_usage.get("total_tokens", 0) > 0):
+                    from .usage_pricing import format_cost as _fmt_cost
+                    _in = _turn_usage.get("prompt_tokens", 0)
+                    _out = _turn_usage.get("completion_tokens", 0)
+                    _cache_read = _turn_usage.get("cache_read_input_tokens", 0)
+                    _cache_part = ""
+                    if _cache_read and _in:
+                        _cache_part = f" cache:{_cache_read * 100 // _in}%"
+                    _cost_now = _fmt_cost(stats.cost_usd_total)
+                    _turn_cost_line = (
+                        f"[dim]  ↳ {_in}→{_out} tok{_cache_part} | "
+                        f"sess total: {_cost_now}[/dim]"
+                    )
+            except Exception:
+                pass  # never block the chat on a cost-display failure
+
             # Persiste sessao apos cada turno completo
             if session_store is not None and session_id:
                 try:
@@ -2208,4 +2264,6 @@ def run_agent_session(
             sys.stdout.write(display)
             sys.stdout.write("\n\n")
             sys.stdout.flush()
+            if _turn_cost_line:
+                console.print(_turn_cost_line)
             break
