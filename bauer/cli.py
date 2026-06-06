@@ -68,6 +68,7 @@ agent_app = typer.Typer(
 spec_app = typer.Typer(help="Spec-Driven Development — contratos de features em YAML")
 company_app = typer.Typer(help="Gestao multi-empresa — namespaces isolados por empresa")
 migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (Hermes, OpenClaw)")
+boards_app = typer.Typer(help="Multi-board kanban — cada projeto pode ter seu proprio store SQLite")
 
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
@@ -87,6 +88,7 @@ app.add_typer(agent_app, name="agent")
 app.add_typer(spec_app, name="spec")
 app.add_typer(company_app, name="company")
 app.add_typer(migrate_app, name="migrate")
+app.add_typer(boards_app, name="boards")
 
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
@@ -5933,6 +5935,243 @@ def migrate_info(ctx: typer.Context) -> None:
     console.print(table)
     console.print()
     console.print("[dim]Use [bold]--dry-run[/bold] para simular sem alterar nada.[/dim]")
+
+
+# ============================================================================
+# bauer kanban-migrate / bauer boards * — Wave 2 (Kanban SQLite backend)
+# ============================================================================
+
+
+@app.command("kanban-migrate")
+def kanban_migrate_cmd(
+    workspace: Path = typer.Option(
+        _WORKSPACE_DIR, "--workspace",
+        help="Workspace contendo o TASKS.md de origem",
+    ),
+    board: str = typer.Option(
+        "", "--board", "-b",
+        help="Board kanban_db de destino. Vazio = board ativo (default).",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Le e mostra o que seria migrado, sem escrever no SQLite",
+    ),
+):
+    """Migra workspace/TASKS.md para o store SQLite kanban_db.
+
+    Idempotente: rodar duas vezes nao duplica tasks. Migra:
+      - Tasks com ID, status (TODO/IN_PROGRESS/DONE/etc.), titulo, body
+      - Comentarios (cada bullet vira uma linha de task_comments)
+      - Metadata (priority, assignee → colunas; resto → event 'legacy_metadata')
+      - Parent/child links (campo 'parent:' do markdown → task_links)
+      - Timestamps originais preservados em events 'legacy_created_at'
+
+    Depois da migracao, use bauer/workspace_manager_sqlite.WorkspaceManagerSqlite
+    para acessar o store — todos os campos round-trippam com a API antiga.
+    """
+    from .kanban_migration import migrate_tasks_md, read_tasks_md
+
+    tasks_md = workspace / "TASKS.md"
+    target = board or None
+    if not tasks_md.exists():
+        console.print(f"[yellow]TASKS.md nao encontrado em {tasks_md}.[/yellow]")
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        parsed = read_tasks_md(tasks_md)
+        from rich.table import Table
+        tbl = Table(
+            title=f"Dry-run: {len(parsed)} tasks em {tasks_md}",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        tbl.add_column("ID", style="dim", no_wrap=True)
+        tbl.add_column("Status", no_wrap=True)
+        tbl.add_column("Titulo")
+        tbl.add_column("Comentarios", justify="right")
+        for t in parsed:
+            tbl.add_row(t.id, t.status, t.title[:60], str(len(t.comments)))
+        console.print(tbl)
+        console.print(f"[dim]Use sem --dry-run para escrever no board "
+                       f"'{target or 'default'}'.[/dim]")
+        return
+
+    report = migrate_tasks_md(tasks_md, board=target)
+    console.print(f"[green]Migracao concluida:[/green] {report.summary()}")
+    if report.errors:
+        from rich.table import Table
+        tbl = Table(title="Erros", show_header=True, header_style="bold red")
+        tbl.add_column("ID")
+        tbl.add_column("Erro")
+        for tid, err in report.errors:
+            tbl.add_row(tid, err[:80])
+        console.print(tbl)
+
+
+@boards_app.command("list")
+def boards_list_cmd():
+    """Lista todos os boards kanban_db existentes em ~/.bauer/kanban/boards/."""
+    from . import kanban_db as _kb
+    from rich.table import Table
+
+    boards = _kb.list_boards()
+    active = _kb.get_active_board()
+    if not boards:
+        console.print("[dim]Nenhum board encontrado. Crie com [bold]bauer boards create <nome>[/bold].[/dim]")
+        return
+
+    tbl = Table(title=f"Kanban boards ({len(boards)})", show_header=True,
+                header_style="bold cyan")
+    tbl.add_column("Nome", no_wrap=True)
+    tbl.add_column("Ativo", justify="center")
+    tbl.add_column("Tasks", justify="right")
+    tbl.add_column("Path", style="dim")
+    for name in boards:
+        with _kb.connect(name) as conn:
+            try:
+                row = conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()
+                count = row["c"] if row else 0
+            except Exception:
+                count = 0
+        is_active = "★" if name == active else ""
+        tbl.add_row(name, is_active, str(count), str(_kb.board_path(name)))
+    console.print(tbl)
+
+
+@boards_app.command("create")
+def boards_create_cmd(
+    name: str = typer.Argument(..., help="Nome do board (alnum/dash/underscore)"),
+    activate: bool = typer.Option(
+        False, "--activate", "-a",
+        help="Define este board como o ativo apos criar",
+    ),
+):
+    """Cria um novo board kanban_db (DB SQLite vazia)."""
+    from . import kanban_db as _kb
+
+    if not name.strip():
+        console.print("[red]Nome do board nao pode ser vazio.[/red]")
+        raise typer.Exit(code=1)
+
+    if name in _kb.list_boards():
+        console.print(f"[yellow]Board '[bold]{name}[/bold]' ja existe.[/yellow]")
+        if not activate:
+            raise typer.Exit(code=0)
+
+    with _kb.connect(name) as conn:
+        _kb.init_db(conn)
+    console.print(f"[green]✓[/green] Board criado: [bold]{name}[/bold]")
+    console.print(f"  Path: [dim]{_kb.board_path(name)}[/dim]")
+
+    if activate:
+        _kb.set_active_board(name)
+        console.print(f"[green]✓[/green] Board ativo agora: [bold]{name}[/bold]")
+
+
+@boards_app.command("switch")
+def boards_switch_cmd(
+    name: str = typer.Argument(..., help="Nome do board a ativar"),
+):
+    """Define o board ativo (escreve em ~/.bauer/kanban/active_board)."""
+    from . import kanban_db as _kb
+
+    if name not in _kb.list_boards():
+        console.print(f"[red]Board '[bold]{name}[/bold]' nao existe.[/red]")
+        existing = ", ".join(_kb.list_boards()) or "(nenhum)"
+        console.print(f"[dim]Boards disponiveis: {existing}[/dim]")
+        raise typer.Exit(code=1)
+
+    _kb.set_active_board(name)
+    console.print(f"[green]✓[/green] Board ativo: [bold]{name}[/bold]")
+
+
+@boards_app.command("show")
+def boards_show_cmd(
+    name: str = typer.Argument("", help="Nome do board (vazio = ativo)"),
+):
+    """Mostra estatisticas e tasks de um board."""
+    from . import kanban_db as _kb
+    from rich.table import Table
+
+    target = name or _kb.get_active_board()
+    if target not in _kb.list_boards():
+        console.print(f"[red]Board '[bold]{target}[/bold]' nao existe.[/red]")
+        raise typer.Exit(code=1)
+
+    with _kb.connect(target) as conn:
+        tasks = _kb.list_tasks(conn)
+        counts: dict[str, int] = {}
+        for t in tasks:
+            counts[t.status] = counts.get(t.status, 0) + 1
+
+    console.print(f"[bold]Board:[/bold] {target}")
+    console.print(f"[dim]Path:[/dim] {_kb.board_path(target)}")
+    console.print()
+    if not tasks:
+        console.print("[dim]Sem tasks.[/dim]")
+        return
+
+    summary = Table(show_header=True, header_style="bold cyan")
+    summary.add_column("Status")
+    summary.add_column("Tasks", justify="right")
+    for status in sorted(counts):
+        summary.add_row(status, str(counts[status]))
+    console.print(summary)
+    console.print()
+
+    tbl = Table(title=f"Tasks ({len(tasks)})", show_header=True,
+                header_style="bold")
+    tbl.add_column("ID", style="dim", no_wrap=True)
+    tbl.add_column("Status", no_wrap=True)
+    tbl.add_column("Prioridade", no_wrap=True)
+    tbl.add_column("Titulo")
+    for t in tasks[:25]:
+        tbl.add_row(t.id[:12], t.status, t.priority, t.title[:60])
+    console.print(tbl)
+    if len(tasks) > 25:
+        console.print(f"[dim]... +{len(tasks) - 25} tasks (use boards-show "
+                      f"com filtros para ver tudo).[/dim]")
+
+
+@boards_app.command("rm")
+def boards_rm_cmd(
+    name: str = typer.Argument(..., help="Nome do board a remover"),
+    force: bool = typer.Option(False, "--force", "-f",
+                                help="Nao pede confirmacao"),
+):
+    """Remove um board (apaga o arquivo SQLite). Operacao IRREVERSIVEL."""
+    from . import kanban_db as _kb
+
+    if name not in _kb.list_boards():
+        console.print(f"[yellow]Board '[bold]{name}[/bold]' nao existe.[/yellow]")
+        raise typer.Exit(code=1)
+
+    path = _kb.board_path(name)
+    if not force:
+        if not typer.confirm(
+            f"Remover board '{name}' definitivamente? Path: {path}",
+            default=False,
+        ):
+            console.print("[dim]Cancelado.[/dim]")
+            return
+
+    try:
+        path.unlink(missing_ok=True)
+        # Remove o diretorio do board se estiver vazio (mas mantem workspaces/logs).
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+    except OSError as exc:
+        console.print(f"[red]Erro removendo {path}:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+    # Se era o board ativo, reseta o marcador.
+    if _kb.get_active_board() == name:
+        _kb.active_board_marker_path().unlink(missing_ok=True)
+        console.print(f"[yellow]Marcador 'active_board' removido — proximo "
+                      f"comando usara 'default'.[/yellow]")
+    console.print(f"[green]✓[/green] Board removido: [bold]{name}[/bold]")
 
 
 if __name__ == "__main__":
