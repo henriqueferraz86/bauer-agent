@@ -69,6 +69,7 @@ spec_app = typer.Typer(help="Spec-Driven Development — contratos de features e
 company_app = typer.Typer(help="Gestao multi-empresa — namespaces isolados por empresa")
 migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (Hermes, OpenClaw)")
 boards_app = typer.Typer(help="Multi-board kanban — cada projeto pode ter seu proprio store SQLite")
+daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que processam tasks do kanban")
 
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
@@ -89,6 +90,7 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(company_app, name="company")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(boards_app, name="boards")
+app.add_typer(daemon_app, name="daemon")
 
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
@@ -3935,6 +3937,400 @@ def runtime_logs_cmd(
         log_path = Path(str(matches[0].get("log_path", "")))
     for line in tail_log(log_path, lines=lines):
         console.print(line)
+
+
+# --- daemon -----------------------------------------------------------------
+
+
+def _daemon_state_dir() -> "Path":
+    """Return the default daemon state directory (~/.bauer/daemon)."""
+    import os as _os
+    home = _os.environ.get("BAUER_HOME")
+    base = Path(home).expanduser() if home else Path.home() / ".bauer"
+    return base / "daemon"
+
+
+def _daemon_log_path() -> "Path":
+    return _daemon_state_dir() / "daemon.log"
+
+
+def _daemon_pid_path() -> "Path":
+    return _daemon_state_dir() / "daemon.pid"
+
+
+def _read_daemon_pid() -> "int | None":
+    pid_path = _daemon_pid_path()
+    if not pid_path.exists():
+        return None
+    try:
+        return int(pid_path.read_text().strip())
+    except Exception:
+        return None
+
+
+def _daemon_pid_alive(pid: int) -> bool:
+    """Return True if a process with *pid* is currently running."""
+    import psutil
+    try:
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
+    # Fallback: os.kill(pid, 0) — works on Unix; skip on Windows
+    import os as _os
+    try:
+        _os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+
+@daemon_app.command("start")
+def daemon_start_cmd(
+    board: str = typer.Option("default", "--board", "-b", help="Kanban board slug"),
+    workers: int = typer.Option(2, "--workers", "-w", help="Numero de workers paralelos"),
+    budget_usd: float = typer.Option(5.0, "--budget-usd", help="Limite de custo USD por sessao"),
+    budget_hours: float = typer.Option(1.0, "--budget-hours", help="Limite de tempo em horas"),
+    max_llm_calls: int = typer.Option(200, "--max-llm-calls"),
+    max_tool_calls: int = typer.Option(500, "--max-tool-calls"),
+    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Segundos de sleep quando sem task"),
+    profile: str = typer.Option("low", "--profile", help="Perfil do modelo: low/medium/high"),
+    headless_mode: str = typer.Option(
+        "threshold", "--headless-mode",
+        help="Modo de aprovacao: threshold | yolo | deny_all",
+    ),
+    detach: bool = typer.Option(True, "--detach/--foreground", help="Roda em background (detach) ou prende o terminal"),
+    log_level: str = typer.Option("INFO", "--log-level", help="DEBUG | INFO | WARNING | ERROR"),
+):
+    """Inicia o BauerDaemon — pool de workers que executam tasks do kanban autonomamente."""
+    import subprocess as _sp
+    import sys as _sys
+    import logging as _logging
+
+    state_dir = _daemon_state_dir()
+
+    if detach:
+        # Check for existing alive daemon
+        existing_pid = _read_daemon_pid()
+        if existing_pid and _daemon_pid_alive(existing_pid):
+            console.print(
+                f"[yellow]Daemon ja rodando[/yellow] pid={existing_pid} "
+                f"board={board}. Use [bold]bauer daemon status[/bold] para ver detalhes."
+            )
+            raise typer.Exit(code=0)
+
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = _daemon_log_path()
+        log_handle = log_path.open("ab")
+
+        cmd = [
+            _sys.executable, "-m", "bauer.cli", "daemon", "_run",
+            "--board", board,
+            "--workers", str(workers),
+            "--budget-usd", str(budget_usd),
+            "--budget-hours", str(budget_hours),
+            "--max-llm-calls", str(max_llm_calls),
+            "--max-tool-calls", str(max_tool_calls),
+            "--poll-interval", str(poll_interval),
+            "--profile", profile,
+            "--headless-mode", headless_mode,
+            "--log-level", log_level,
+        ]
+
+        import os as _os
+        popen_kwargs: dict = {
+            "stdout": log_handle,
+            "stderr": _sp.STDOUT,
+            "stdin": _sp.DEVNULL,
+            "close_fds": True,
+        }
+        if _os.name == "nt":
+            popen_kwargs["creationflags"] = (
+                getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(_sp, "DETACHED_PROCESS", 0)
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        try:
+            proc = _sp.Popen(cmd, **popen_kwargs)
+        finally:
+            log_handle.close()
+
+        console.print(
+            f"[green]BauerDaemon iniciado em background[/green] pid={proc.pid} "
+            f"board={board} workers={workers} budget=${budget_usd:.2f}"
+        )
+        console.print(f"[dim]Log: {log_path}[/dim]")
+        console.print("[dim]Use [bold]bauer daemon status[/bold] e [bold]bauer daemon logs[/bold] para monitorar.[/dim]")
+        return
+
+    # ── foreground mode ──────────────────────────────────────────────────────
+    import asyncio as _asyncio
+    _logging.basicConfig(
+        level=getattr(_logging, log_level.upper(), _logging.INFO),
+        format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+    )
+
+    from .daemon import BauerDaemon, DaemonConfig
+
+    cfg = DaemonConfig(
+        board=board,
+        workers=workers,
+        max_cost_usd=budget_usd,
+        max_wall_seconds=int(budget_hours * 3600),
+        max_llm_calls=max_llm_calls,
+        max_tool_calls=max_tool_calls,
+        poll_interval_seconds=poll_interval,
+        profile=profile,
+        headless_mode=headless_mode,
+        state_dir=state_dir,
+    )
+    console.print(
+        f"[green]BauerDaemon iniciando em foreground[/green] "
+        f"board={board} workers={workers} budget=${budget_usd:.2f} Ctrl+C para parar."
+    )
+    exit_code = _asyncio.run(BauerDaemon(cfg).start())
+    raise typer.Exit(code=exit_code)
+
+
+@daemon_app.command("_run", hidden=True)
+def daemon_run_internal_cmd(
+    board: str = typer.Option("default", "--board"),
+    workers: int = typer.Option(2, "--workers"),
+    budget_usd: float = typer.Option(5.0, "--budget-usd"),
+    budget_hours: float = typer.Option(1.0, "--budget-hours"),
+    max_llm_calls: int = typer.Option(200, "--max-llm-calls"),
+    max_tool_calls: int = typer.Option(500, "--max-tool-calls"),
+    poll_interval: float = typer.Option(5.0, "--poll-interval"),
+    profile: str = typer.Option("low", "--profile"),
+    headless_mode: str = typer.Option("threshold", "--headless-mode"),
+    log_level: str = typer.Option("INFO", "--log-level"),
+):
+    """Processo interno chamado por 'daemon start --detach'. Nao chamar diretamente."""
+    import asyncio as _asyncio
+    import logging as _logging
+
+    _logging.basicConfig(
+        level=getattr(_logging, log_level.upper(), _logging.INFO),
+        format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+    )
+
+    from .daemon import BauerDaemon, DaemonConfig
+
+    cfg = DaemonConfig(
+        board=board,
+        workers=workers,
+        max_cost_usd=budget_usd,
+        max_wall_seconds=int(budget_hours * 3600),
+        max_llm_calls=max_llm_calls,
+        max_tool_calls=max_tool_calls,
+        poll_interval_seconds=poll_interval,
+        profile=profile,
+        headless_mode=headless_mode,
+        state_dir=_daemon_state_dir(),
+    )
+    exit_code = _asyncio.run(BauerDaemon(cfg).start())
+    raise typer.Exit(code=exit_code)
+
+
+@daemon_app.command("stop")
+def daemon_stop_cmd(
+    force: bool = typer.Option(False, "--force", "-f", help="Envia SIGKILL apos timeout"),
+    timeout: int = typer.Option(10, "--timeout", help="Segundos para aguardar parada graceful"),
+):
+    """Para o daemon em execucao (envia SIGTERM; aguarda parada graceful)."""
+    import os as _os
+    import signal as _signal
+    import time as _time
+
+    pid = _read_daemon_pid()
+    if pid is None:
+        console.print("[yellow]Nenhum daemon.pid encontrado. Daemon pode nao estar rodando.[/yellow]")
+        raise typer.Exit(code=0)
+
+    if not _daemon_pid_alive(pid):
+        console.print(f"[yellow]PID {pid} nao esta mais ativo. Removendo pid file.[/yellow]")
+        _daemon_pid_path().unlink(missing_ok=True)
+        raise typer.Exit(code=0)
+
+    console.print(f"[cyan]Enviando SIGTERM para pid={pid}...[/cyan]")
+    try:
+        if _os.name == "nt":
+            import subprocess as _sp
+            _sp.call(["taskkill", "/PID", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        else:
+            _os.kill(pid, _signal.SIGTERM)
+    except ProcessLookupError:
+        console.print("[green]Processo ja encerrado.[/green]")
+        raise typer.Exit(code=0)
+
+    # Wait for graceful shutdown
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        if not _daemon_pid_alive(pid):
+            console.print(f"[green]Daemon encerrado graciosamente[/green] pid={pid}")
+            raise typer.Exit(code=0)
+        _time.sleep(0.5)
+
+    if force:
+        console.print(f"[yellow]Timeout — enviando SIGKILL para pid={pid}[/yellow]")
+        try:
+            if _os.name == "nt":
+                import subprocess as _sp
+                _sp.call(["taskkill", "/F", "/PID", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            else:
+                _os.kill(pid, _signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        console.print("[green]Daemon encerrado forcosamente.[/green]")
+    else:
+        console.print(
+            f"[yellow]Daemon ainda ativo apos {timeout}s. "
+            f"Use --force para SIGKILL.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+
+@daemon_app.command("status")
+def daemon_status_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Saida em JSON"),
+    all_sessions: bool = typer.Option(False, "--all", "-a", help="Mostra todas as sessoes, nao so as ativas"),
+):
+    """Mostra estado atual do daemon (sessoes ativas, budget, workers)."""
+    import json as _json
+    import time as _time
+
+    state_db_path = _daemon_state_dir() / "daemon_state.db"
+    pid = _read_daemon_pid()
+    alive = pid is not None and _daemon_pid_alive(pid)
+
+    if not state_db_path.exists():
+        if as_json:
+            console.print(_json.dumps({"running": False, "pid": None, "sessions": []}, indent=2))
+        else:
+            console.print("[dim]Nenhuma sessao de daemon encontrada.[/dim]")
+            console.print(f"[dim]Use [bold]bauer daemon start[/bold] para iniciar.[/dim]")
+        raise typer.Exit(code=0)
+
+    from .daemon import DaemonStateDB
+
+    db = DaemonStateDB(state_db_path)
+    if all_sessions:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(state_db_path), timeout=5.0)
+        conn.row_factory = _sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM daemon_sessions ORDER BY started_at DESC LIMIT 20"
+        ).fetchall()
+        sessions = [dict(r) for r in rows]
+        conn.close()
+    else:
+        sessions = db.get_running()
+        # Also include the latest if nothing is running
+        if not sessions:
+            latest = db.get_latest()
+            if latest:
+                sessions = [latest]
+
+    if as_json:
+        console.print(_json.dumps(
+            {"running": alive, "pid": pid, "sessions": sessions},
+            indent=2, ensure_ascii=False,
+        ))
+        raise typer.Exit(code=0)
+
+    # Pretty table
+    console.print(
+        f"\n[bold]BauerDaemon[/bold]  "
+        + ("[green]RODANDO[/green]" if alive else "[red]PARADO[/red]")
+        + (f"  pid={pid}" if pid else "")
+    )
+    if not sessions:
+        console.print("[dim]Nenhuma sessao registrada.[/dim]")
+        raise typer.Exit(code=0)
+
+    table = Table(show_lines=False, box=None)
+    table.add_column("Sessao", style="cyan", no_wrap=True)
+    table.add_column("Board")
+    table.add_column("Workers", justify="right")
+    table.add_column("Status")
+    table.add_column("Uptime")
+    table.add_column("Budget")
+    table.add_column("Shutdown")
+
+    now = _time.time()
+    for s in sessions:
+        uptime_s = now - (s.get("started_at") or now)
+        uptime_str = (
+            f"{int(uptime_s // 3600)}h{int(uptime_s % 3600 // 60)}m"
+            if uptime_s >= 60 else f"{int(uptime_s)}s"
+        )
+        budget_info = ""
+        if s.get("budget_json"):
+            try:
+                b = _json.loads(s["budget_json"])
+                cost = b.get("cost_usd", 0)
+                pct = b.get("cost_pct", 0)
+                budget_info = f"${cost:.3f} ({pct:.0f}%)"
+            except Exception:
+                pass
+        status_color = "green" if s.get("status") == "running" else "dim"
+        table.add_row(
+            s.get("id", "")[:24],
+            s.get("board", ""),
+            str(s.get("workers", "")),
+            f"[{status_color}]{s.get('status', '')}[/{status_color}]",
+            uptime_str,
+            budget_info or "-",
+            s.get("shutdown_reason") or "-",
+        )
+    console.print(table)
+    console.print()
+
+
+@daemon_app.command("logs")
+def daemon_logs_cmd(
+    lines: int = typer.Option(50, "--lines", "-n", help="Numero de linhas iniciais"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Segue o arquivo de log (tail -f)"),
+):
+    """Exibe o log do daemon (tail). Use --follow para acompanhar em tempo real."""
+    import time as _time
+
+    log_path = _daemon_log_path()
+    if not log_path.exists():
+        console.print(f"[dim]Nenhum log encontrado em {log_path}[/dim]")
+        console.print("[dim]Inicie o daemon com [bold]bauer daemon start[/bold] primeiro.[/dim]")
+        raise typer.Exit(code=0)
+
+    # Print last N lines
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as exc:
+        console.print(f"[red]Erro ao ler log:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+    for line in content[-lines:]:
+        console.print(line)
+
+    if not follow:
+        return
+
+    # Follow mode — poll for new content
+    console.print(f"\n[dim]--- seguindo {log_path} (Ctrl+C para parar) ---[/dim]")
+    offset = log_path.stat().st_size
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            while True:
+                line = fh.readline()
+                if line:
+                    console.print(line, end="")
+                else:
+                    _time.sleep(0.25)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Log encerrado.[/dim]")
 
 
 # --- cron -------------------------------------------------------------------
