@@ -7,7 +7,7 @@ name = "bauer-agent"
 version = "0.1.0"
 description = "Runtime adaptativo para LLMs locais — sobe com o que tem, ajusta o que precisa, avisa claramente."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Henrique Ferraz Moura" }]
 dependencies = [
