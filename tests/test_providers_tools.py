@@ -738,7 +738,8 @@ class TestHttpRequest:
 
     def test_blocks_localhost(self, router_web):
         from bauer.tool_router import ToolError
-        with pytest.raises(ToolError, match="interno"):
+        # Blocked by Wave 4.5 url_safety (SSRF) or legacy blocklist.
+        with pytest.raises(ToolError, match=r"(?i)(interno|BLOCKED|SSRF|loopback|private|blocked)"):
             router_web.execute('{"action":"http_request","args":{"url":"http://localhost:8080/api"}}')
 
     def test_blocks_private_ip(self, router_web):

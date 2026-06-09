@@ -65,6 +65,26 @@ from .tool_policy import load_tool_policy
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
 from .workspace_manager import WorkspaceError, WorkspaceManager
 
+# Wave 4.5: lazy imports so the tool_router stays importable even if the
+# security modules are somehow unavailable (e.g. stripped install).
+try:
+    from .url_safety import UrlSafetyError, is_safe_url as _is_safe_url
+    _URL_SAFETY_AVAILABLE = True
+except ImportError:
+    _URL_SAFETY_AVAILABLE = False
+
+try:
+    from .schema_sanitizer import sanitize_tool_schemas as _sanitize_schemas
+    _SCHEMA_SANITIZER_AVAILABLE = True
+except ImportError:
+    _SCHEMA_SANITIZER_AVAILABLE = False
+
+try:
+    from .approval import check_all_command_guards as _check_command_guards
+    _APPROVAL_AVAILABLE = True
+except ImportError:
+    _APPROVAL_AVAILABLE = False
+
 
 def _package_available(name: str) -> bool:
     """Verifica se um pacote Python está disponível sem importá-lo."""
@@ -1133,6 +1153,10 @@ class ToolRouter:
                     },
                 },
             })
+        # Wave 4.5: sanitise schemas before sending to LLM (fix nullable unions,
+        # unwrap single-branch combinators, etc.)
+        if _SCHEMA_SANITIZER_AVAILABLE:
+            schemas = _sanitize_schemas(schemas)
         return schemas
 
     def execute_native_call(self, tool_name: str, tool_args: dict) -> str:
@@ -1198,6 +1222,16 @@ class ToolRouter:
                 f"Limite de {self._max_tool_calls} chamadas de tool por sessão atingido. "
                 "Use reset_call_count() para iniciar nova sessão ou aumente max_tool_calls."
             )
+
+        # Wave 4.5: command guards — HARDLINE always blocked; DANGEROUS denied
+        # when no interactive approver is available (non-interactive mode).
+        if _APPROVAL_AVAILABLE and name in {"run_command", "execute_code"}:
+            _cmd = str(args.get("command", args.get("code", "")))
+            _guard_dec = _check_command_guards(_cmd, yolo=False)
+            if _guard_dec.action == "denied":
+                raise ToolError(
+                    f"[BLOCKED] {_guard_dec.scope.upper()}: {_guard_dec.reason}"
+                )
 
         # SAFETY-002: modo dry_run — não executa side effects
         _DRY_RUN_SIDE_EFFECTS = frozenset({
@@ -1628,6 +1662,14 @@ class ToolRouter:
         url = args.get("url")
         if not url:
             raise ToolError("web_fetch requer 'url'.")
+
+        # Wave 4.5: SSRF prevention
+        if _URL_SAFETY_AVAILABLE:
+            try:
+                _is_safe_url(url)
+            except UrlSafetyError as exc:
+                raise ToolError(f"[BLOCKED] SSRF: {exc}") from exc
+
         max_chars = int(args.get("max_chars", self._web.max_chars))
 
         from .web.dispatcher import WebError
@@ -1984,21 +2026,27 @@ class ToolRouter:
         if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"):
             raise ToolError(f"Metodo '{method}' nao suportado. Use: GET, POST, PUT, PATCH, DELETE.")
 
-        # Blocklist de hosts internos / privados
-        import ipaddress
-        import urllib.parse as _urlparse
-
-        parsed = _urlparse.urlparse(url)
-        hostname = parsed.hostname or ""
-        _BLOCKED = ("localhost", "127.", "0.0.0.0", "::1")
-        if any(hostname.startswith(b) or hostname == b.rstrip(".") for b in _BLOCKED):
-            raise ToolError(f"Acesso bloqueado a host interno: '{hostname}'")
-        try:
-            addr = ipaddress.ip_address(hostname)
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                raise ToolError(f"Acesso bloqueado a endereco IP privado: '{hostname}'")
-        except ValueError:
-            pass  # não é IP, ok
+        # Wave 4.5: SSRF prevention (replaces manual blocklist)
+        if _URL_SAFETY_AVAILABLE:
+            try:
+                _is_safe_url(url)
+            except UrlSafetyError as exc:
+                raise ToolError(f"[BLOCKED] SSRF: {exc}") from exc
+        else:
+            # Fallback minimal blocklist when url_safety module unavailable
+            import ipaddress as _ipaddress
+            import urllib.parse as _urlparse
+            _parsed = _urlparse.urlparse(url)
+            _hostname = _parsed.hostname or ""
+            _BLOCKED = ("localhost", "127.", "0.0.0.0", "::1")
+            if any(_hostname.startswith(b) or _hostname == b.rstrip(".") for b in _BLOCKED):
+                raise ToolError(f"Acesso bloqueado a host interno: '{_hostname}'")
+            try:
+                _addr = _ipaddress.ip_address(_hostname)
+                if _addr.is_private or _addr.is_loopback or _addr.is_link_local:
+                    raise ToolError(f"Acesso bloqueado a endereco IP privado: '{_hostname}'")
+            except ValueError:
+                pass
 
         import httpx
 

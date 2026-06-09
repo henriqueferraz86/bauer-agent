@@ -332,12 +332,13 @@ def test_tool_router_without_shell_runner_no_run_command(ws: Path):
 
 
 def test_tool_router_run_command_denylist_via_tool_error(ws: Path):
-    """Denylist via router lança ToolError com mensagem de perigoso."""
+    """Denylist / HARDLINE approval lança ToolError bloqueando shutdown."""
     from bauer.tool_router import ToolError, ToolRouter
 
     runner = ShellRunner(workspace=ws, safe_mode=False)
     router = ToolRouter(workspace=ws, shell_runner=runner)
-    with pytest.raises(ToolError, match="perigoso"):
+    # Blocked either by Wave 4.5 HARDLINE approval OR by shell_runner denylist.
+    with pytest.raises(ToolError, match=r"(?i)(perigoso|BLOCKED|shutdown|hardline)"):
         router.execute({"action": "run_command", "args": {"command": "shutdown now"}})
 
 

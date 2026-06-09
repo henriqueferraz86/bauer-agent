@@ -843,6 +843,7 @@ def _run_native_tool_turn(
     client,
     model_name: str,
     tool_log: list[dict],
+    _guardrail=None,
 ) -> str | None:
     """Executa um turno usando native function calling (OpenAI format).
 
@@ -884,10 +885,39 @@ def _run_native_tool_turn(
         except _json.JSONDecodeError:
             args = {}
 
-        try:
-            result = router.execute_native_call(name, args)
-        except (ToolError, SandboxError) as exc:
-            result = f"[Erro: {exc}]"
+        # Wave 4.5: pre-call guardrail check (native path)
+        _native_guardrail_blocked = False
+        if _guardrail is not None:
+            _pre_n = _guardrail.before_call(name, args)
+            if _pre_n.should_halt:
+                ctx.add_user(_pre_n.message)
+                result = f"[BLOCKED] {_pre_n.message}"
+                _native_guardrail_blocked = True
+                # For halt: add the blocked result and return immediately
+                # after processing all pending tool_calls in this batch.
+                if _pre_n.action == "halt":
+                    tool_log.append({"tool": name, "result": result[:300]})
+                    ctx.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": result,
+                    })
+                    # Signal caller by returning None; run_one_turn will halt.
+                    return _pre_n.message
+
+        if not _native_guardrail_blocked:
+            _native_failed = False
+            try:
+                result = router.execute_native_call(name, args)
+            except (ToolError, SandboxError) as exc:
+                result = f"[Erro: {exc}]"
+                _native_failed = True
+
+            # Wave 4.5: post-call guardrail update (native path)
+            if _guardrail is not None:
+                _post_n = _guardrail.after_call(name, args, result, failed=_native_failed)
+                if _post_n.action == "warn":
+                    ctx.add_user(_post_n.message)
 
         ctx_result, _ = _ctx_result_for_context(name, result)
         tool_log.append({"tool": name, "result": result[:300]})
@@ -934,6 +964,15 @@ def run_one_turn(
         # o modelo emitir resposta de texto após a última tool.
         budget = _IterBudget(max_total=MAX_TOOL_TURNS + 1)
 
+    # Wave 4.5: per-turn guardrail controller (tracks cumulative failures /
+    # no-progress across all tool calls in this turn).
+    _guardrail = None
+    try:
+        from .tool_guardrails import ToolCallGuardrailController as _GuardrailCtrl
+        _guardrail = _GuardrailCtrl()
+    except ImportError:
+        pass
+
     # Native tool calling: disponível em OpenAIClient mas não em OllamaClient.
     # Checa a classe concreta para evitar falsos positivos com MagicMock em testes.
     from .openai_client import OpenAIClient as _OpenAIClient
@@ -942,7 +981,8 @@ def run_one_turn(
     if use_native:
         while not budget.exhausted:
             budget.consume()
-            result = _run_native_tool_turn(ctx, router, client, model_name, tool_log)
+            result = _run_native_tool_turn(ctx, router, client, model_name, tool_log,
+                                           _guardrail=_guardrail)
             if result is not None:
                 return result, tool_log
             # Detecção de loop após cada rodada de tool calls (native path)
@@ -1010,10 +1050,38 @@ def run_one_turn(
                 if len(tool_log) >= MAX_TOOL_TURNS:
                     break
                 action_name = action_dict.get("action", "?")
+                action_args = action_dict.get("args", {}) or {}
+
+                # Wave 4.5: pre-call guardrail check
+                if _guardrail is not None:
+                    _pre = _guardrail.before_call(action_name, action_args)
+                    if _pre.should_halt:
+                        ctx.add_user(_pre.message)
+                        if _pre.action == "halt":
+                            return _pre.message, tool_log
+                        tool_result = f"[BLOCKED] {_pre.message}"
+                        tool_log.append({"tool": action_name, "result": tool_result[:300]})
+                        combined_parts.append(f"[Resultado de {action_name}]\n{tool_result}")
+                        continue
+
+                _tool_failed = False
                 try:
                     tool_result = router.execute(action_dict)
                 except (ToolError, SandboxError) as exc:
                     tool_result = f"[Erro: {exc}]"
+                    _tool_failed = True
+
+                # Wave 4.5: post-call guardrail update
+                if _guardrail is not None:
+                    _post = _guardrail.after_call(
+                        action_name, action_args, tool_result, failed=_tool_failed
+                    )
+                    if _post.action == "warn":
+                        ctx.add_user(_post.message)
+                    elif _post.should_halt:
+                        ctx.add_user(_post.message)
+                        tool_log.append({"tool": action_name, "result": tool_result[:300]})
+                        return _post.message, tool_log
 
                 tool_log.append({"tool": action_name, "result": tool_result[:300]})
 
