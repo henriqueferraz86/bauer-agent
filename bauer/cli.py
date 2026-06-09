@@ -6376,5 +6376,151 @@ def kanban_swarm_status_cmd(
         console.print(f"\n[dim]Blackboard vazia.[/dim]")
 
 
+# ---------------------------------------------------------------------------
+# Wave 5: kanban-diagnostics + kanban-show (with diagnostics inline)
+# ---------------------------------------------------------------------------
+
+_DIAG_SEVERITY_COLOR = {
+    "critical": "bold red",
+    "error": "red",
+    "warning": "yellow",
+    "info": "dim",
+}
+
+
+def _render_diagnostics(diags, *, header: bool = True) -> None:
+    """Print diagnostics to the console (Rich-formatted)."""
+    from rich.table import Table
+    if not diags:
+        if header:
+            console.print("[green]✓ Nenhum diagnóstico ativo.[/green]")
+        return
+    if header:
+        console.print(f"\n[bold]Diagnósticos:[/bold] {len(diags)} iss{'ue' if len(diags)==1 else 'ues'}")
+    for d in diags:
+        color = _DIAG_SEVERITY_COLOR.get(d.severity, "white")
+        console.print(
+            f"  [{color}][{d.severity.upper()}][/{color}] "
+            f"[bold]{d.rule}[/bold] — {d.message}"
+        )
+
+
+@app.command("kanban-show")
+def kanban_show_cmd(
+    task_id: str = typer.Argument(..., help="ID da task (prefixo aceito)"),
+    board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
+    no_diag: bool = typer.Option(False, "--no-diag", help="Omitir diagnósticos"),
+):
+    """Exibe detalhes de uma task + diagnósticos inline."""
+    import bauer.kanban_db as kb
+    from .kanban_diagnostics import compute_task_diagnostics
+
+    target = board or None
+    with kb.connect(board=target) as conn:
+        kb.init_db(conn)
+        task = kb.get_task_or_none(conn, task_id)
+        if task is None:
+            # Try prefix match
+            all_tasks = kb.list_tasks(conn)
+            matches = [t for t in all_tasks if t.id.startswith(task_id)]
+            if len(matches) == 1:
+                task = matches[0]
+            elif len(matches) > 1:
+                console.print(f"[yellow]Prefixo ambíguo: {[t.id for t in matches]}[/yellow]")
+                raise typer.Exit(code=1)
+            else:
+                console.print(f"[red]Task não encontrada: {task_id!r}[/red]")
+                raise typer.Exit(code=1)
+
+        events = kb.list_events(conn, task.id)
+        runs = kb.list_runs(conn, task.id)
+        all_ids = frozenset(t.id for t in kb.list_tasks(conn))
+
+    # Render task details
+    console.print(f"\n[bold cyan]{task.title}[/bold cyan]  [dim]{task.id}[/dim]")
+    console.print(f"  Status   : [bold]{task.status}[/bold]")
+    console.print(f"  Assignee : {task.assignee or '—'}")
+    console.print(f"  Priority : {task.priority}")
+    if task.consecutive_failures:
+        console.print(f"  Failures : [red]{task.consecutive_failures}[/red]")
+    if task.body:
+        console.print(f"\n[dim]{task.body[:500]}{'…' if len(task.body) > 500 else ''}[/dim]")
+
+    if runs:
+        console.print(f"\n  [bold]Runs ({len(runs)}):[/bold]")
+        for r in runs[-3:]:
+            outcome = r.get("outcome") or "?"
+            color = "green" if outcome == "success" else "red" if outcome in ("error", "crash") else "dim"
+            console.print(f"    [{color}]{outcome}[/{color}]  {(r.get('summary') or '')[:80]}")
+
+    if not no_diag:
+        diags = compute_task_diagnostics(task, events, runs, all_task_ids=all_ids)
+        _render_diagnostics(diags)
+
+
+@app.command("kanban-diagnostics")
+def kanban_diagnostics_cmd(
+    board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
+    severity: str = typer.Option(
+        "", "--severity", "-s",
+        help="Filtrar por severity: info, warning, error, critical",
+    ),
+    task_id: str = typer.Option("", "--task", "-t", help="Diagnóstico de task específica"),
+):
+    """Mostra diagnósticos ativos em todo o board (ou task específica).
+
+    Exit 0 se nenhum diagnóstico. Exit 1 se há erros/críticos.
+    """
+    import bauer.kanban_db as kb
+    from .kanban_diagnostics import compute_board_diagnostics, compute_task_diagnostics
+
+    target = board or None
+    with kb.connect(board=target) as conn:
+        kb.init_db(conn)
+        tasks = kb.list_tasks(conn)
+        all_ids = frozenset(t.id for t in tasks)
+
+        if task_id:
+            task = kb.get_task_or_none(conn, task_id)
+            if task is None:
+                console.print(f"[red]Task não encontrada: {task_id!r}[/red]")
+                raise typer.Exit(code=1)
+            events = kb.list_events(conn, task.id)
+            runs = kb.list_runs(conn, task.id)
+            diags = compute_task_diagnostics(task, events, runs, all_task_ids=all_ids)
+        else:
+            events_by_task = {
+                t.id: kb.list_events(conn, t.id) for t in tasks
+            }
+            runs_by_task = {
+                t.id: kb.list_runs(conn, t.id) for t in tasks
+            }
+            diags = compute_board_diagnostics(
+                tasks,
+                events_by_task=events_by_task,
+                runs_by_task=runs_by_task,
+            )
+
+    # Filter by severity if requested
+    if severity:
+        diags = [d for d in diags if d.severity == severity]
+
+    if not diags:
+        console.print("[green]✓ Sem diagnósticos ativos.[/green]")
+        raise typer.Exit(code=0)
+
+    # Group by task for readability
+    by_task: dict[str, list] = {}
+    for d in diags:
+        by_task.setdefault(d.task_id, []).append(d)
+
+    for tid, task_diags in by_task.items():
+        console.print(f"\n[bold]{tid}[/bold]")
+        _render_diagnostics(task_diags, header=False)
+
+    has_errors = any(d.severity in {"error", "critical"} for d in diags)
+    raise typer.Exit(code=1 if has_errors else 0)
+
+
 if __name__ == "__main__":
     sys.exit(app())
