@@ -28,6 +28,8 @@ class ModelfileParams:
     """Subset relevante dos parameters de um Modelfile."""
 
     num_ctx: int | None
+    context_length: int | None  # da arquitetura nativa (model_info)
+    size_bytes: int             # tamanho do arquivo no disco
     raw: dict[str, Any]
 
 
@@ -38,6 +40,8 @@ class OllamaClient:
         self._headers: dict[str, str] = (
             {"Authorization": f"Bearer {api_key}"} if api_key else {}
         )
+        self.num_ctx: int | None = None   # definido pelo doctor (applied_context)
+        self.think: bool | None = None   # None → False (desabilita thinking mode)
 
     # --- saude / disponibilidade ------------------------------------------------
 
@@ -70,11 +74,42 @@ class OllamaClient:
         data = r.json()
         return [m.get("name", "?") for m in data.get("models", [])]
 
-    def has_model(self, name: str) -> bool:
+    def list_models_with_sizes(self) -> list[dict]:
+        """Retorna lista de {name, size_bytes} para todos os modelos instalados."""
         try:
-            return name in self.list_models()
+            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+            return [
+                {"name": m.get("name", "?"), "size_bytes": m.get("size", 0)}
+                for m in data.get("models", [])
+            ]
+        except Exception:
+            return []
+
+    def has_model(self, name: str) -> bool:
+        return self.resolve_model_name(name) is not None
+
+    def resolve_model_name(self, name: str) -> str | None:
+        """Retorna o nome exato no Ollama que bate com 'name', ou None se não encontrado.
+
+        Aceita match exato ou por prefixo de base+tag (ex: "gemma4:12b" resolve
+        "gemma4:12b-it" se for o único modelo gemma4 instalado).
+        """
+        try:
+            installed = self.list_models()
         except OllamaError:
-            return False
+            return None
+        if name in installed:
+            return name
+        name_base = name.split(":")[0]
+        name_tag = name.split(":")[1] if ":" in name else ""
+        for m in installed:
+            m_base = m.split(":")[0]
+            m_tag = m.split(":")[1] if ":" in m else ""
+            if m_base == name_base and (not name_tag or m_tag.startswith(name_tag) or name_tag.startswith(m_tag)):
+                return m
+        return None
 
     def show_model(self, name: str) -> ModelfileParams:
         """Retorna parameters do Modelfile (Decisao 2 - Camada A)."""
@@ -98,20 +133,40 @@ class OllamaClient:
         data = r.json()
         params = data.get("parameters") or {}
         num_ctx = _extract_num_ctx(params)
-        return ModelfileParams(num_ctx=num_ctx, raw=data)
+        # Extrai context_length nativo da arquitetura (ex: gemma3.context_length)
+        context_length: int | None = None
+        for key, value in (data.get("model_info") or {}).items():
+            if key.endswith(".context_length"):
+                try:
+                    context_length = int(value)
+                except (TypeError, ValueError):
+                    pass
+                break
+        # Tamanho do arquivo em bytes (disponível no /api/show via details.size ou tags)
+        size_bytes = data.get("size_vram") or 0
+        return ModelfileParams(num_ctx=num_ctx, context_length=context_length, size_bytes=size_bytes, raw=data)
 
 
-    def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
+    def chat_stream(self, model: str, messages: list[dict], num_ctx: int | None = None) -> Iterator[str]:
         """Streaming de resposta via /api/chat. Yields chunks de texto conforme chegam.
 
         Levanta OllamaError com mensagem clara em qualquer falha de rede ou HTTP.
         Premortem item 9: erro precisa ter causa, valor configurado e ação sugerida.
         """
+        effective_num_ctx = num_ctx or self.num_ctx
+        # `think` é top-level no /api/chat do Ollama (não dentro de options).
+        # Desabilitar evita que gemma4 e similares retornem resposta no campo
+        # `thinking` com `content` vazio — o que o parser interpretaria como vazio.
+        # self.think=None → False (desabilitado por padrão); True ativa thinking mode.
+        think_flag = self.think if self.think is not None else False
+        body: dict = {"model": model, "messages": messages, "stream": True, "think": think_flag}
+        if effective_num_ctx:
+            body["options"] = {"num_ctx": effective_num_ctx}
         try:
             with httpx.stream(
                 "POST",
                 f"{self.host}/api/chat",
-                json={"model": model, "messages": messages, "stream": True},
+                json=body,
                 headers=self._headers,
                 timeout=httpx.Timeout(
                     connect=float(self.timeout),
@@ -121,6 +176,8 @@ class OllamaClient:
                 ),
             ) as response:
                 response.raise_for_status()
+                thinking_buf: list[str] = []
+                content_seen = False
                 for line in response.iter_lines():
                     if not line:
                         continue
@@ -128,11 +185,21 @@ class OllamaClient:
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    msg = data.get("message") or {}
                     if data.get("done"):
+                        # Fallback: se o modelo só gerou thinking e nada de content,
+                        # emite o thinking como resposta (comportamento seguro).
+                        if not content_seen and thinking_buf:
+                            yield "".join(thinking_buf)
                         break
-                    chunk = data.get("message", {}).get("content", "")
+                    chunk = msg.get("content", "")
                     if chunk:
+                        content_seen = True
                         yield chunk
+                    # Captura thinking como fallback caso content nunca apareça.
+                    thinking = msg.get("thinking", "")
+                    if thinking and not content_seen:
+                        thinking_buf.append(thinking)
         except httpx.ConnectError as exc:
             raise OllamaError(
                 f"Conexao recusada em {self.host}.\n"

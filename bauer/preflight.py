@@ -92,6 +92,28 @@ def _resolve_context(
     return applied, reason, notes
 
 
+# Contextos padrão por provider cloud (quando requested_context < padrão).
+# Valores conservadores — a maioria suporta mais, mas isso evita surpresas com
+# limites de rate/custo em tiers gratuitos. Ollama não aparece aqui.
+_CLOUD_CONTEXT_DEFAULTS: dict[str, int] = {
+    "opencode":   65536,   # deepseek-v4-flash-free, mimo, nemotron (opencode.ai/zen/v1)
+    "openai":    128000,   # gpt-4o, gpt-4o-mini
+    "anthropic": 200000,   # claude-3-5-sonnet, claude-3-haiku
+    "openrouter": 128000,  # maioria dos modelos premium; conservador para open
+    "groq":       131072,  # llama-3.3-70b, mixtral
+    "mistral":    32768,   # mistral-large, codestral
+    "xai":        131072,  # grok-3, grok-beta
+    "together":   32768,   # llama-3.3-70b, qwen2.5
+    "deepseek":   65536,   # deepseek-chat (V3), deepseek-reasoner (R1)
+    "gemini":    1000000,  # gemini-2.0-flash (1M), 1.5-pro (2M)
+    "azure":      128000,  # espelha openai
+    "github":     128000,  # gpt-4o, phi-4 via GitHub Models
+    "copilot":    128000,  # gpt-4o, claude-sonnet via Copilot
+    "custom":      32768,  # endpoint desconhecido — conservador
+}
+_CLOUD_CONTEXT_FALLBACK = 32768
+
+
 def run_doctor(
     config: BauerConfig,
     registry: ModelRegistry,
@@ -131,10 +153,26 @@ def run_doctor(
     model_name = config.model.name
     info = registry.get(model_name)
     if info is None and not is_cloud:
-        findings.append(
-            f"Modelo '{model_name}' não está no models.yaml. "
-            f"Adicione um entry com ram_base_mb e ram_per_1k_ctx_mb."
-        )
+        # Tenta auto-detectar via Ollama API quando modelo não está no models.yaml
+        if alive and client:
+            from .model_registry import auto_detect_from_ollama
+            info = auto_detect_from_ollama(client, model_name)
+            if info:
+                findings.append(
+                    f"Modelo '{model_name}' auto-detectado: "
+                    f"contexto nativo={info.max_context_safe} tokens "
+                    f"(ram_base≈{info.ram_base_mb} MB)."
+                )
+            else:
+                findings.append(
+                    f"Modelo '{model_name}' não está no models.yaml e não foi possível "
+                    f"auto-detectar. Adicione um entry com ram_base_mb e ram_per_1k_ctx_mb."
+                )
+        else:
+            findings.append(
+                f"Modelo '{model_name}' não está no models.yaml. "
+                f"Adicione um entry com ram_base_mb e ram_per_1k_ctx_mb."
+            )
 
     model_available = False
     modelfile_num_ctx: int | None = None
@@ -166,8 +204,26 @@ def run_doctor(
     if env_num_ctx:
         findings.append(f"OLLAMA_CONTEXT_LENGTH no ambiente: {env_num_ctx}")
 
+    # Para providers cloud, requested_context costuma ser baixo porque foi definido
+    # sob restrição de RAM do Ollama. Usamos o máximo entre o valor configurado e o
+    # padrão do provider — o usuário pode sempre configurar explicitamente um valor
+    # maior para override.
+    if is_cloud:
+        cloud_default = _CLOUD_CONTEXT_DEFAULTS.get(
+            config.model.provider, _CLOUD_CONTEXT_FALLBACK
+        )
+        effective_requested = max(config.model.requested_context, cloud_default)
+        if effective_requested != config.model.requested_context:
+            findings.append(
+                f"requested_context={config.model.requested_context} < padrão cloud "
+                f"para {config.model.provider} ({cloud_default}) — "
+                f"contexto ajustado para {effective_requested}."
+            )
+    else:
+        effective_requested = config.model.requested_context
+
     applied, reason, ctx_notes = _resolve_context(
-        requested=config.model.requested_context,
+        requested=effective_requested,
         minimum=config.model.minimum_context,
         auto_downgrade=config.model.auto_downgrade_context,
         modelfile_num_ctx=modelfile_num_ctx,
@@ -201,7 +257,7 @@ def run_doctor(
         )
         if blocked:
             status = "blocked"
-        elif applied != config.model.requested_context or ctx_notes:
+        elif applied != effective_requested or ctx_notes:
             status = "ok_with_adjustments"
         else:
             status = "ok"
@@ -215,7 +271,7 @@ def run_doctor(
         ollama_alive=alive,
         ollama_host=config.ollama.host if not is_cloud else "",
         context=ContextState(
-            requested=config.model.requested_context,
+            requested=effective_requested,
             modelfile_num_ctx=modelfile_num_ctx,
             env_OLLAMA_CONTEXT_LENGTH=env_num_ctx,
             applied=applied,

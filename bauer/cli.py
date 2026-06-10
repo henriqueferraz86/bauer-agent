@@ -120,14 +120,28 @@ def _get_or_run_state(cfg, reg, state_file: Path) -> dict:
     Para providers cloud (opencode, openai, openrouter…): re-executa apenas se o
     provider mudou — trocar o modelo cloud nao requer re-checagem local.
     """
+    from .preflight import _CLOUD_CONTEXT_DEFAULTS, _CLOUD_CONTEXT_FALLBACK
+
     state = read_state(state_file)
     is_ollama = cfg.model.provider == "ollama"
+
+    # Para cloud, o doctor aplica max(requested_context, padrão_do_provider).
+    # A comparação de stale precisa usar esse mesmo valor efetivo — caso contrário
+    # o state armazenado (65536) nunca bate com cfg.requested_context (4096) e o
+    # doctor re-roda em loop, OU (com a comparação antiga) nunca re-roda quando
+    # o provider cloud foi configurado pela primeira vez.
+    if is_ollama:
+        effective_ctx = cfg.model.requested_context
+    else:
+        cloud_default = _CLOUD_CONTEXT_DEFAULTS.get(cfg.model.provider, _CLOUD_CONTEXT_FALLBACK)
+        effective_ctx = max(cfg.model.requested_context, cloud_default)
 
     stale = (
         state is None
         or state.get("configured_provider", "ollama") != cfg.model.provider
         or (is_ollama and state.get("configured_model") != cfg.model.name)
         or (is_ollama and state.get("ollama_host") != cfg.ollama.host)
+        or state.get("context", {}).get("requested") != effective_ctx
     )
     if stale:
         if state is not None:
@@ -425,6 +439,11 @@ def chat(
 
     client = _build_client(cfg)
     applied_context = state["context"]["applied"]
+    is_ollama_chat = cfg.model.provider == "ollama"
+    if is_ollama_chat and hasattr(client, "num_ctx"):
+        client.num_ctx = applied_context
+    if is_ollama_chat and hasattr(client, "think"):
+        client.think = cfg.model.think
 
     if model:
         model_name = model
@@ -1482,12 +1501,30 @@ def agent(
 
     client = _build_client(cfg)
     applied_context = state["context"]["applied"]
+    # Propaga num_ctx ao OllamaClient — sem isso o Ollama usa o default do modelo (geralmente 2048)
+    if is_ollama_provider and hasattr(client, "num_ctx"):
+        client.num_ctx = applied_context
+    # Propaga think ao OllamaClient — usa valor de config.yaml (None → False no cliente)
+    if is_ollama_provider and hasattr(client, "think"):
+        client.think = cfg.model.think
 
     # Resolucao do modelo: --model > --pick > auto (com RAM check so para Ollama)
+    import logging as _logging
+    _mlog = _logging.getLogger("bauer.model_selection")
+    _mlog.info("[model-selection] config.model.name=%s", cfg.model.name)
+    _mlog.info("[model-selection] config.model.provider=%s", cfg.model.provider)
+    _mlog.info("[model-selection] router.enabled=%s", cfg.router.enabled)
+    _mlog.info("[model-selection] requested_context=%s  applied_context=%s",
+               cfg.model.requested_context, applied_context)
+    if is_ollama_provider:
+        _mlog.info("[model-selection] think=%s", cfg.model.think)
+
     if model:
         model_name = model
+        _mlog.info("[model-selection] source=--model flag  active=%s", model_name)
     elif pick:
         model_name = _pick_model(client, state["configured_model"])
+        _mlog.info("[model-selection] source=--pick  active=%s", model_name)
     else:
         if is_ollama_provider:
             model_name = _resolve_model_with_ram_check(
@@ -1497,14 +1534,21 @@ def agent(
         else:
             # Providers cloud: usa o modelo configurado diretamente (sem RAM check local)
             model_name = cfg.model.name
+        _mlog.info("[model-selection] source=config.yaml  active=%s", model_name)
 
     # Verifica modelo no Ollama apenas quando provider=ollama
-    if is_ollama_provider and not client.has_model(model_name):
-        console.print(
-            f"[red]Modelo '{model_name}' nao encontrado no Ollama.[/red]\n"
-            f"Rode: [bold]ollama pull {model_name}[/bold]"
-        )
-        raise typer.Exit(code=1)
+    if is_ollama_provider:
+        resolved = client.resolve_model_name(model_name)
+        if resolved is None:
+            console.print(
+                f"[red]Modelo '{model_name}' nao encontrado no Ollama.[/red]\n"
+                f"Rode: [bold]ollama pull {model_name}[/bold]\n"
+                f"Ou veja os modelos instalados: [bold]ollama list[/bold]"
+            )
+            raise typer.Exit(code=1)
+        if resolved != model_name:
+            console.print(f"[dim]Modelo resolvido: '{model_name}' → '{resolved}'[/dim]")
+            model_name = resolved
 
     # ── Empresa ativa — redireciona workspace ANTES de construir o router ────
     from .company_manager import CompanyManager as _CompanyManager
@@ -6916,6 +6960,184 @@ def kanban_diagnostics_cmd(
 
     has_errors = any(d.severity in {"error", "critical"} for d in diags)
     raise typer.Exit(code=1 if has_errors else 0)
+
+
+# ---------------------------------------------------------------------------
+# bauer skill — install / list / show / remove / render
+# ---------------------------------------------------------------------------
+
+@app.command("skill-install")
+def skill_install_cmd(
+    source: str = typer.Argument(..., help="Path to YAML file, directory, or URL"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite if already installed"),
+) -> None:
+    """Install a skill from a YAML file, directory, or URL.
+
+    Examples:
+        bauer skill-install ./my_skill.yaml
+        bauer skill-install ./skills/        # installs all *.yaml files
+        bauer skill-install https://example.com/skill.yaml
+    """
+    from .skill_system import get_default_manager, SkillError
+
+    manager = get_default_manager()
+    p = Path(source)
+
+    try:
+        if source.startswith("http://") or source.startswith("https://"):
+            skill = manager.install_from_url(source, force=force)
+            console.print(f"[green]✓ Installed:[/green] {skill.summary()}")
+        elif p.is_dir():
+            skills = manager.install_from_directory(p, force=force)
+            if skills:
+                for s in skills:
+                    console.print(f"[green]✓[/green] {s.summary()}")
+                console.print(f"\n[bold]{len(skills)} skill(s) installed.[/bold]")
+            else:
+                console.print("[yellow]No new skills found (already installed or no *.yaml files).[/yellow]")
+        else:
+            skill = manager.install_from_file(p, force=force)
+            console.print(f"[green]✓ Installed:[/green] {skill.summary()}")
+    except SkillError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+
+@app.command("skill-list")
+def skill_list_cmd(
+    tags: str = typer.Option("", "--tags", help="Filter by comma-separated tags"),
+    query: str = typer.Option("", "--query", "-q", help="Filter by name/description substring"),
+) -> None:
+    """List all installed skills."""
+    from .skill_system import get_default_manager
+
+    manager = get_default_manager()
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+    skills = manager.list_skills(tags=tag_list, query=query or None)
+
+    if not skills:
+        console.print("[yellow]No skills installed.[/yellow]")
+        console.print("Install with: [bold]bauer skill-install <file.yaml>[/bold]")
+        return
+
+    from rich.table import Table
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Version")
+    table.add_column("Tags")
+    table.add_column("Description")
+    for s in sorted(skills, key=lambda x: x.name):
+        table.add_row(
+            s.name,
+            s.version,
+            ", ".join(s.tags) if s.tags else "",
+            s.description,
+        )
+    console.print(table)
+    console.print(f"\n{len(skills)} skill(s) installed.")
+
+
+@app.command("skill-show")
+def skill_show_cmd(
+    name: str = typer.Argument(..., help="Skill name"),
+) -> None:
+    """Show full details of an installed skill."""
+    from .skill_system import get_default_manager, SkillNotFound
+
+    manager = get_default_manager()
+    try:
+        skill = manager.get(name)
+    except SkillNotFound as exc:
+        console.print(f"[red]Not found:[/red] {exc}")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold cyan]{skill.name}[/bold cyan] v{skill.version}")
+    console.print(f"[dim]{skill.description}[/dim]")
+    if skill.author:
+        console.print(f"  Author  : {skill.author}")
+    if skill.tags:
+        console.print(f"  Tags    : {', '.join(skill.tags)}")
+    if skill.tools:
+        console.print(f"  Tools   : {', '.join(skill.tools)}")
+    if skill.model:
+        console.print(f"  Model   : {skill.model}")
+    if skill.source:
+        console.print(f"  Source  : {skill.source}")
+    if skill.params:
+        console.print("\n[bold]Parameters:[/bold]")
+        for pname, pdef in skill.params.items():
+            req = "[red]*[/red]" if pdef.required else ""
+            default = f" (default: {pdef.default})" if pdef.default else ""
+            console.print(f"  {pname}{req}: {pdef.description}{default}")
+    console.print("\n[bold]Invoke template:[/bold]")
+    from rich.syntax import Syntax
+    console.print(Syntax(skill.invoke, "markdown", theme="monokai", word_wrap=True))
+
+
+@app.command("skill-remove")
+def skill_remove_cmd(
+    name: str = typer.Argument(..., help="Skill name to remove"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+) -> None:
+    """Remove an installed skill."""
+    from .skill_system import get_default_manager
+
+    manager = get_default_manager()
+    if not manager.exists(name):
+        console.print(f"[yellow]Skill '{name}' is not installed.[/yellow]")
+        raise typer.Exit(1)
+
+    if not yes:
+        confirmed = typer.confirm(f"Remove skill '{name}'?", default=False)
+        if not confirmed:
+            console.print("Cancelled.")
+            return
+
+    removed = manager.remove(name)
+    if removed:
+        console.print(f"[green]✓ Removed:[/green] {name}")
+    else:
+        console.print(f"[red]Failed to remove '{name}'.[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("skill-render")
+def skill_render_cmd(
+    name: str = typer.Argument(..., help="Skill name"),
+    params: list[str] = typer.Option(
+        [], "--param", "-p",
+        help="Parameter in key=value format. Can be repeated.",
+    ),
+) -> None:
+    """Render a skill's invoke template with provided parameter values.
+
+    Example:
+        bauer skill-render summarise_code --param path=bauer/agent.py
+    """
+    from .skill_system import get_default_manager, SkillNotFound, SkillError
+
+    manager = get_default_manager()
+    try:
+        skill = manager.get(name)
+    except SkillNotFound as exc:
+        console.print(f"[red]Not found:[/red] {exc}")
+        raise typer.Exit(1)
+
+    values: dict[str, str] = {}
+    for p in params:
+        if "=" in p:
+            k, _, v = p.partition("=")
+            values[k.strip()] = v.strip()
+        else:
+            console.print(f"[yellow]Warning: param '{p}' has no '=', ignoring.[/yellow]")
+
+    try:
+        rendered = skill.render(values)
+    except SkillError as exc:
+        console.print(f"[red]Render error:[/red] {exc}")
+        raise typer.Exit(1)
+
+    console.print(rendered)
 
 
 if __name__ == "__main__":

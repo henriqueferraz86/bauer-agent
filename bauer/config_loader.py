@@ -197,6 +197,7 @@ class ModelSection(BaseModel):
     requested_context: int = Field(ge=512, le=1_000_000)
     minimum_context: int = Field(ge=512, le=1_000_000, default=8192)
     auto_downgrade_context: bool = True
+    think: bool | None = None  # Ollama only: desativa thinking mode (gemma4, qwq, etc.)
     fallback_providers: list[str] = Field(
         default_factory=list,
         description="Providers alternativos quando o principal falha (ex: ['openrouter', 'groq']).",

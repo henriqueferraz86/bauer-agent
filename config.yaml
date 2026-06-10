@@ -6,10 +6,11 @@ logging:
   level: info
 model:
   auto_downgrade_context: true
-  minimum_context: 8192
-  name: gpt-5-mini
-  provider: openai
-  requested_context: 128000
+  minimum_context: 4096
+  name: qwen2.5-coder:3b
+  provider: ollama
+  requested_context: 4096
+  think: false
 ollama:
   api_key: ''
   host: http://localhost:11434
@@ -22,15 +23,15 @@ openrouter:
   api_key: ''
   timeout_seconds: 60
 router:
-  code_model: Impulse2000/smollm3:latest
-  direct_model: qwen3:0.6b
   enabled: true
-  reasoning_model: phi4-mini:latest
-  router_model: qwen3:0.6b
+  router_model: llama3.2:3b
+  direct_model: qwen2.5-coder:3b
+  code_model: qwen2.5-coder:3b
+  reasoning_model: qwen2.5-coder:3b
 runtime:
   profile: low
-  ram_limit_mb: 4096
-  safety_margin_mb: 1024
+  ram_limit_mb: 8192
+  safety_margin_mb: 2048
 serve:
   api_key: ''
   host: 0.0.0.0
@@ -40,5 +41,5 @@ tools:
   max_output_kb: 50
   safe_mode: true
   shell_enabled: true
-  timeout_seconds: 30
+  timeout_seconds: 300
   web_enabled: true
