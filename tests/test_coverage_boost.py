@@ -28,8 +28,12 @@ class TestContextManagerExtras:
 
     def test_context_window_known_provider(self):
         from bauer.context_manager import ContextManager, PROVIDER_CONTEXT_WINDOWS
-        ctx = ContextManager(applied_context=4096, provider="gemini")
+        # applied_context=0 → cai no default do provider (fonte única).
+        # Com applied_context calibrado (>0), ele SEMPRE vence o mapa.
+        ctx = ContextManager(applied_context=0, provider="gemini")
         assert ctx.context_window == PROVIDER_CONTEXT_WINDOWS["gemini"]
+        calibrated = ContextManager(applied_context=4096, provider="gemini")
+        assert calibrated.context_window == 4096
 
     def test_context_window_unknown_provider(self):
         from bauer.context_manager import ContextManager
@@ -37,29 +41,31 @@ class TestContextManagerExtras:
         # deve usar applied_context como fallback
         assert ctx.context_window > 0
 
-    def test_auto_summarize_with_llm_client(self):
+    def test_auto_summarize_with_llm_client(self, monkeypatch):
         """Usa LLM client para compressão semântica quando disponível."""
+        import bauer.auxiliary_client as aux_mod
         from bauer.context_manager import ContextManager
 
         mock_client = MagicMock()
         mock_client.chat_stream.return_value = iter(["Resumo da conversa anterior."])
 
+        # Força auxiliary_client a retornar (None, "") → o mock principal é usado
+        monkeypatch.setattr(aux_mod, "get_compression_client", lambda: (None, ""))
+
         ctx = ContextManager(applied_context=20_000, provider="openai")
         ctx.set_llm(mock_client, "gpt-4o")
 
-        # Preenche para ultrapassar 70% do budget (20K * 0.75 = 15K, 70% = 10.5K tokens)
-        # 10.5K * 4 chars/token = 42K chars
+        # Preenche para ultrapassar 75% do budget (20K * 0.75 = 15K threshold)
         chars_per_msg = 5_000
-        # 12 msgs * 5000 chars = 60K chars = 15K tokens > 10.5K threshold
         for i in range(12):
             role = "user" if i % 2 == 0 else "assistant"
             ctx.messages.append({"role": role, "content": "x" * chars_per_msg})
 
         ctx._auto_summarize()
 
-        # Deve ter chamado o LLM para comprimir
+        # mock_client é o cliente de compressão escolhido — deve ter sido chamado
         assert mock_client.chat_stream.called
-        # Deve ter resumo no contexto
+        # E o resumo deve aparecer no contexto
         assert any("[Resumo" in m.get("content", "") for m in ctx.messages)
 
     def test_auto_summarize_llm_fallback_on_error(self):

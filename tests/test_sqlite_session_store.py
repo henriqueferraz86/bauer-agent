@@ -309,12 +309,13 @@ class TestSearch:
             assert key in r, f"Chave ausente: {key}"
 
     def test_search_role_filter_user(self, populated_store: SqliteSessionStore):
-        # "concordo" está apenas na role=assistant
-        results = populated_store.search_sessions("concordo", role_filter="user")
+        # "concordo" está apenas na role=assistant; use_vectors=False para
+        # isolar de sessions reais na global VectorStore (~/.bauer/vector_store.db)
+        results = populated_store.search_sessions("concordo", role_filter="user", use_vectors=False)
         assert results == []
 
     def test_search_role_filter_assistant(self, populated_store: SqliteSessionStore):
-        results = populated_store.search_sessions("concordo", role_filter="assistant")
+        results = populated_store.search_sessions("concordo", role_filter="assistant", use_vectors=False)
         assert any(r["session_id"] == "s1" for r in results)
 
     def test_search_after_delete(self, populated_store: SqliteSessionStore):

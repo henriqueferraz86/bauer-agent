@@ -170,6 +170,22 @@ class VectorStore:
             )
         return cur.rowcount
 
+    def delete_prefix(self, source_id_prefix: str, source_type: str) -> int:
+        """Delete all vectors whose source_id starts with the prefix.
+
+        Sessões indexam mensagens como "{session_id}:{role}:{idx}" — deletar
+        a sessão exige remover todas. Sem isto, a busca semântica continuava
+        retornando sessões já deletadas (bug real pego por
+        test_search_after_delete em 2026-06-10).
+        """
+        like = source_id_prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+        with self._connect() as conn:
+            cur = conn.execute(
+                r"DELETE FROM vectors WHERE source_id LIKE ? ESCAPE '\' AND source_type = ?",
+                (like, source_type),
+            )
+        return cur.rowcount
+
     def count(self, source_type: str | None = None) -> int:
         """Return total number of stored vectors, optionally filtered by source_type."""
         with self._connect() as conn:

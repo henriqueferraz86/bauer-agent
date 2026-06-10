@@ -262,9 +262,18 @@ class SqliteSessionStore:
                 cur = conn.execute(
                     "DELETE FROM sessions WHERE session_id=?", (session_id,)
                 )
-                return cur.rowcount > 0
+                deleted = cur.rowcount > 0
         finally:
             conn.close()
+        # Remove também do índice vetorial (RAG) — sem isto a busca semântica
+        # continuava retornando a sessão deletada (source_id "{sid}:{role}:{idx}").
+        if deleted:
+            try:
+                from .vector_store import get_default_store as _get_store
+                _get_store().delete_prefix(f"{session_id}:", "session_msg")
+            except Exception:
+                pass  # índice vetorial é best-effort; FTS5 já está consistente
+        return deleted
 
     def exists(self, session_id: str) -> bool:
         conn = self._connect()

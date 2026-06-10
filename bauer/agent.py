@@ -258,6 +258,18 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
             "Analise o que já foi obtido e responda diretamente ao usuário "
             "com o resultado atual ou indique o que está impedindo o progresso."
         )
+        # Telemetria: loops hard-stop viram incidentes → testes de regressão
+        try:
+            from .incidents import record_incident
+            record_incident(
+                "tool_loop_hard_stop",
+                tool=last_tool,
+                consecutive=consecutive,
+                tool_log_size=len(tool_log),
+                recent_tools=[e["tool"] for e in tool_log[-8:]],
+            )
+        except Exception:
+            pass
         return msg, True  # hard stop
 
     if consecutive >= _LOOP_REPEAT_WARN:
@@ -785,6 +797,18 @@ def _collect_response(
     except Exception:
         pass
 
+    # Cost meter — entrega o custo real desta call ao sink ativo (daemon,
+    # goal tracker, benchmark). No-op quando ninguém está medindo.
+    try:
+        from .cost_meter import provider_from_client, report_llm_cost
+        report_llm_cost(
+            provider_from_client(client),
+            model_name,
+            getattr(client, "last_usage", None),
+        )
+    except Exception:
+        pass
+
     # Escanear resposta do modelo por segredos antes de processar/logar
     try:
         from .secrets_scanner import scan as _scan
@@ -800,6 +824,87 @@ def _collect_response(
         pass
 
     return response
+
+
+def _recover_empty_response(
+    client: OllamaClient,
+    model_name: str,
+    ctx: ContextManager,
+    console: Console | None = None,
+) -> tuple[str, str]:
+    """Recuperação em camadas quando o modelo retorna resposta vazia.
+
+    Camadas (param na primeira que produzir resposta):
+      1. Retry com backoff 2s   — rate-limit silencioso / transiente
+      2. force_compress + retry — contexto sobrecarregado (causa mais comum
+                                  observada em uso real; antes o usuário era
+                                  instruído a dar /clear manualmente)
+
+    Returns:
+        (response, diagnostico):
+        - response != ""  → recuperado; diagnostico é vazio
+        - response == ""  → falha definitiva; diagnostico tem mensagem acionável.
+          O incidente é gravado em logs/incidents/ para virar teste de regressão.
+    """
+    import time as _time
+
+    # Camada 1: retry simples
+    _time.sleep(2.0)
+    response = _collect_response(client, model_name, ctx.get_payload())
+    if response.strip():
+        return response, ""
+
+    # Camada 2: compressão forçada + retry
+    compressed = False
+    try:
+        compressed = ctx.force_compress()
+    except Exception:
+        compressed = False
+    if compressed:
+        if console is not None:
+            console.print("[dim][recovery] contexto comprimido — tentando novamente...[/dim]")
+        response = _collect_response(client, model_name, ctx.get_payload())
+        if response.strip():
+            return response, ""
+
+    # Falha definitiva: grava incidente (sem conteúdo de mensagens) + diagnóstico
+    payload = ctx.get_payload()
+    approx_chars = sum(
+        len(m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content", "")))
+        for m in payload
+    )
+    approx_tokens = approx_chars // 4
+    applied = getattr(ctx, "applied_context", 0) or 0
+    pct = f" (~{approx_tokens * 100 // applied}% do contexto)" if applied else ""
+
+    try:
+        from .incidents import record_incident
+        record_incident(
+            "empty_response",
+            model=model_name,
+            provider=getattr(ctx, "provider", "?"),
+            messages_count=len(payload),
+            approx_tokens=approx_tokens,
+            applied_context=applied,
+            compressed_before_final_retry=compressed,
+        )
+    except Exception:
+        pass
+
+    diagnostico = (
+        f"[Modelo retornou resposta vazia mesmo após retry + compressão]\n"
+        f"  Modelo: {model_name}\n"
+        f"  Contexto: {len(payload)} mensagens, ~{approx_tokens:,} tokens{pct}\n"
+        f"  Prováveis causas:\n"
+        f"    1. Rate-limit silencioso do provider (comum em free tier)\n"
+        f"    2. Filtro de conteúdo bloqueando a resposta\n"
+        f"    3. Modelo sobrecarregado no servidor\n"
+        f"  Soluções:\n"
+        f"    Aguarde 30s — pode ser rate-limit transiente\n"
+        f"    /model      — troca de provider/modelo\n"
+        f"    /clear      — última opção: limpa todo o histórico"
+    )
+    return "", diagnostico
 
 
 def _collect_with_fallback(
@@ -818,9 +923,11 @@ def _collect_with_fallback(
         OllamaError | OpenAIClientError: quando todos os providers falham.
     """
     # Derive provider name from client for circuit breaker tracking
-    _primary_provider = getattr(client, "_provider", None) or getattr(client, "provider_name", lambda: "unknown")()
-    if callable(_primary_provider):
-        _primary_provider = _primary_provider()
+    try:
+        from .cost_meter import provider_from_client as _pfn
+        _primary_provider = _pfn(client)
+    except Exception:
+        _primary_provider = getattr(client, "_provider", None) or "openai"
 
     # --- Circuit breaker: skip primary if already OPEN ---
     try:
@@ -869,9 +976,14 @@ def _collect_with_fallback(
             raise _primary_failed_exc  # type: ignore[name-defined]
         raise OllamaError("Circuit OPEN e sem fallback configurado")
 
-    for fb_client, fb_model in fallback_clients:
-        _fb_label = getattr(fb_client, "default_model", fb_model)
-        _fb_provider = getattr(fb_client, "_provider", None) or "unknown"
+    for fb_entry in fallback_clients:
+        fb_client, fb_model = fb_entry[0], fb_entry[1]
+        _fb_label = fb_entry[2] if len(fb_entry) > 2 else getattr(fb_client, "default_model", fb_model)
+        try:
+            from .cost_meter import provider_from_client as _pfn
+            _fb_provider = _pfn(fb_client)
+        except Exception:
+            _fb_provider = getattr(fb_client, "_provider", None) or "openai"
         if _cb_available and global_cb is not None and global_cb.is_open(_fb_provider):
             console.print(f"[dim]  Fallback {_fb_label}: circuit OPEN, pulando[/dim]")
             continue
@@ -895,6 +1007,41 @@ def _collect_with_fallback(
     raise OllamaError("Todos os providers estão com circuit OPEN ou falharam")
 
 
+class _NativeToolsUnsupported(Exception):
+    """Provider rejeitou o parâmetro tools= — downgrade definitivo para bridge."""
+
+
+# Códigos HTTP que indicam "provider não suporta native tools" (downgrade).
+# 429 (rate limit) e 5xx (transiente) NÃO entram — retry native é o correto.
+_NATIVE_UNSUPPORTED_CODES = {400, 404, 405, 422, 501}
+
+
+def _is_native_unsupported_error(exc: Exception) -> bool:
+    """True se o erro indica que o provider não aceita o parâmetro tools=."""
+    import re as _re
+    m = _re.search(r"HTTP (\d{3})", str(exc))
+    return bool(m) and int(m.group(1)) in _NATIVE_UNSUPPORTED_CODES
+
+
+# Reflexão forçada: a cada N tool calls sem resposta final, injeta um nudge
+# pedindo ao modelo para resumir progresso e decidir o próximo passo. Evita
+# que o modelo "vagueie" por dezenas de calls sem convergir.
+_REFLECT_EVERY = 6
+
+_REFLECT_NUDGE = (
+    "[SISTEMA — ponto de reflexão] Você já executou {n} tool calls neste turno "
+    "sem dar uma resposta final. Pare e avalie: (1) resuma em 1 frase o que já "
+    "descobriu; (2) decida se falta UM passo concreto — se sim, execute apenas "
+    "ele; (3) caso contrário, responda ao usuário agora com o que tem."
+)
+
+
+def _maybe_reflect(ctx, n_calls: int) -> None:
+    """Injeta nudge de reflexão a cada _REFLECT_EVERY tool calls."""
+    if n_calls > 0 and n_calls % _REFLECT_EVERY == 0:
+        ctx.add_user(_REFLECT_NUDGE.format(n=n_calls))
+
+
 def _run_native_tool_turn(
     ctx,
     router: ToolRouter,
@@ -902,12 +1049,19 @@ def _run_native_tool_turn(
     model_name: str,
     tool_log: list[dict],
     _guardrail=None,
+    _deduper=None,
 ) -> str | None:
     """Executa um turno usando native function calling (OpenAI format).
 
     Retorna a resposta final de texto quando o modelo para de chamar tools,
     ou None se deve continuar no loop.
     Modifica ctx e tool_log in-place.
+
+    Raises:
+        _NativeToolsUnsupported: provider rejeitou tools= (HTTP 400/404/405/
+        422/501) — o caller deve fazer downgrade definitivo para o bridge.
+        Antes este caso era engolido com `return None`, o que fazia o loop
+        re-tentar native até estourar o budget inteiro.
     """
     import json as _json
     schemas = router.get_tool_schemas()
@@ -915,8 +1069,10 @@ def _run_native_tool_turn(
 
     try:
         msg = client.chat_with_tools(model_name, messages, tools=schemas)
-    except Exception:
-        return None  # fallback para Tool Bridge
+    except Exception as exc:
+        if _is_native_unsupported_error(exc):
+            raise _NativeToolsUnsupported(str(exc)) from exc
+        return None  # transiente (timeout, 5xx, rede): tenta de novo no loop
 
     tool_calls = msg.get("tool_calls") or []
     content = msg.get("content") or ""
@@ -965,11 +1121,18 @@ def _run_native_tool_turn(
 
         if not _native_guardrail_blocked:
             _native_failed = False
-            try:
-                result = router.execute_native_call(name, args)
-            except (ToolError, SandboxError) as exc:
-                result = f"[Erro: {exc}]"
-                _native_failed = True
+            # Dedup: chamada idêntica bem-sucedida → replay sem re-executar
+            _replayed_n = _deduper.check(name, args) if _deduper is not None else None
+            if _replayed_n is not None:
+                result = _replayed_n
+            else:
+                try:
+                    result = router.execute_native_call(name, args)
+                except (ToolError, SandboxError) as exc:
+                    result = f"[Erro: {exc}]"
+                    _native_failed = True
+                if _deduper is not None:
+                    _deduper.record(name, args, result, failed=_native_failed)
 
             # Wave 4.5: post-call guardrail update (native path)
             if _guardrail is not None:
@@ -986,6 +1149,85 @@ def _run_native_tool_turn(
         })
 
     return None  # continua o loop
+
+
+def _native_turn_interactive(
+    ctx,
+    router: ToolRouter,
+    client,
+    model_name: str,
+    console: Console,
+    cli_tool_log: list[dict],
+    deduper,
+    calls_left: int,
+) -> tuple[str, str | None]:
+    """Um turno de native function calling no chat interativo.
+
+    Espelha o fluxo bridge do run_agent_session (display por tool, dedup,
+    cli_tool_log) mas usa tool_calls nativos do provider em vez de parsing
+    JSON da resposta — mais confiável em modelos que suportam.
+
+    Returns:
+        ("final", texto)   — modelo respondeu sem tools; exibir e encerrar turno
+        ("continue", None) — tools executadas; voltar ao loop para nova chamada
+
+    Raises:
+        _NativeToolsUnsupported: downgrade definitivo para bridge (sessão).
+        OpenAIClientError: erros de rede/HTTP — tratados pelo handler do loop.
+    """
+    import json as _json
+
+    schemas = router.get_tool_schemas()
+    try:
+        msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+    except Exception as exc:
+        if _is_native_unsupported_error(exc):
+            raise _NativeToolsUnsupported(str(exc)) from exc
+        raise
+
+    tool_calls = msg.get("tool_calls") or []
+    content = msg.get("content") or ""
+
+    if not tool_calls:
+        return "final", content
+
+    ctx.messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+
+    for tc in tool_calls[:max(0, calls_left)]:
+        tc_id = tc.get("id", "call_0")
+        fn = tc.get("function", {})
+        name = fn.get("name", "?")
+        try:
+            args = _json.loads(fn.get("arguments", "{}"))
+        except _json.JSONDecodeError:
+            args = {}
+
+        _failed = False
+        _cached = deduper.check(name, args) if deduper is not None else None
+        if _cached is not None:
+            result = _cached
+        else:
+            try:
+                result = router.execute_native_call(name, args)
+            except (ToolError, SandboxError) as exc:
+                result = f"[Erro: {exc}]"
+                _failed = True
+            if deduper is not None:
+                deduper.record(name, args, result, failed=_failed)
+
+        display_line = _format_tool_display(name, result)
+        console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
+
+        ctx_result, _ = _ctx_result_for_context(name, result)
+        cli_tool_log.append({"tool": name, "result": result[:300]})
+        ctx.messages.append({
+            "role": "tool",
+            "tool_call_id": tc_id,
+            "content": ctx_result,
+        })
+
+    console.print()
+    return "continue", None
 
 
 def run_one_turn(
@@ -1031,6 +1273,10 @@ def run_one_turn(
     except ImportError:
         pass
 
+    # Dedup de chamadas idênticas bem-sucedidas (replay em vez de re-executar)
+    from .tool_dedup import ToolCallDeduper as _Deduper
+    _deduper = _Deduper()
+
     # Native tool calling: disponível em OpenAIClient mas não em OllamaClient.
     # Checa a classe concreta para evitar falsos positivos com MagicMock em testes.
     from .openai_client import OpenAIClient as _OpenAIClient
@@ -1039,63 +1285,45 @@ def run_one_turn(
     if use_native:
         while not budget.exhausted:
             budget.consume()
-            result = _run_native_tool_turn(ctx, router, client, model_name, tool_log,
-                                           _guardrail=_guardrail)
+            try:
+                result = _run_native_tool_turn(ctx, router, client, model_name, tool_log,
+                                               _guardrail=_guardrail, _deduper=_deduper)
+            except _NativeToolsUnsupported:
+                # Provider não aceita tools= — downgrade definitivo para o
+                # bridge (abaixo) sem queimar o restante do budget.
+                use_native = False
+                budget.refund()
+                break
             if result is not None:
                 return result, tool_log
+            _maybe_reflect(ctx, len(tool_log))
             # Detecção de loop após cada rodada de tool calls (native path)
             loop_warn, hard_stop = _detect_loop(tool_log)
             if loop_warn:
                 ctx.add_user(loop_warn)
                 if hard_stop:
                     return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
-        # Fallthrough: budget esgotado sem resposta final
-        return "[Limite de iterações atingido]", tool_log
+        if use_native:
+            # Budget esgotado sem resposta final (ainda em native)
+            return "[Limite de iterações atingido]", tool_log
 
     # Tool Bridge (fallback para Ollama e modelos sem native tool calling)
-    _empty_retried = False
+    _empty_recovered = False
     while not budget.exhausted:
         budget.consume()
         response = _collect_response(client, model_name, ctx.get_payload())
 
-        # Resposta vazia: pode ser rate-limit silencioso (free tier), filtro
-        # de conteudo ou contexto sobrecarregado. Faz 1 retry com backoff
-        # antes de desistir — resolve a maioria dos casos transientes.
+        # Resposta vazia: recovery em camadas (retry → compress+retry).
+        # Só tenta o recovery completo uma vez por run para não mascarar
+        # um provider genuinamente fora do ar.
         if not response.strip():
-            if not _empty_retried:
-                _empty_retried = True
-                import time as _time
-                _time.sleep(2.0)  # pequeno backoff antes do retry
-                response = _collect_response(client, model_name, ctx.get_payload())
-
-            if not response.strip():
-                # Diagnostico acionavel — calcula tamanho aproximado do contexto
-                payload = ctx.get_payload()
-                approx_chars = sum(
-                    len(m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content", "")))
-                    for m in payload
-                )
-                approx_tokens = approx_chars // 4
-                ctx_used_pct = ""
-                try:
-                    budget = getattr(ctx, "applied_context", 0) or 0
-                    if budget:
-                        ctx_used_pct = f" (~{approx_tokens * 100 // budget}% do budget)"
-                except Exception:
-                    pass
-                return (
-                    f"[Modelo retornou resposta vazia mesmo apos retry]\n"
-                    f"  Modelo: {model_name}\n"
-                    f"  Contexto: {len(payload)} mensagens, ~{approx_tokens:,} tokens{ctx_used_pct}\n"
-                    f"  Provaveis causas:\n"
-                    f"    1. Rate-limit silencioso do provider (comum em free tier)\n"
-                    f"    2. Filtro de conteudo bloqueando a resposta\n"
-                    f"    3. Modelo sobrecarregado no servidor\n"
-                    f"  Solucoes:\n"
-                    f"    /clear      — limpa o historico e tenta de novo\n"
-                    f"    /model      — troca de provider/modelo\n"
-                    f"    Aguarde 30s — pode ser rate-limit transiente"
-                ), tool_log
+            if not _empty_recovered:
+                _empty_recovered = True
+                response, diagnostico = _recover_empty_response(client, model_name, ctx)
+                if not response:
+                    return diagnostico, tool_log
+            else:
+                return "[Modelo retornou resposta vazia repetidamente — sessão instável]", tool_log
 
         ctx.add_assistant(response)
 
@@ -1122,12 +1350,18 @@ def run_one_turn(
                         combined_parts.append(f"[Resultado de {action_name}]\n{tool_result}")
                         continue
 
+                # Dedup: chamada idêntica bem-sucedida → replay sem re-executar
+                _replayed = _deduper.check(action_name, action_args)
                 _tool_failed = False
-                try:
-                    tool_result = router.execute(action_dict)
-                except (ToolError, SandboxError) as exc:
-                    tool_result = f"[Erro: {exc}]"
-                    _tool_failed = True
+                if _replayed is not None:
+                    tool_result = _replayed
+                else:
+                    try:
+                        tool_result = router.execute(action_dict)
+                    except (ToolError, SandboxError) as exc:
+                        tool_result = f"[Erro: {exc}]"
+                        _tool_failed = True
+                    _deduper.record(action_name, action_args, tool_result, failed=_tool_failed)
 
                 # Wave 4.5: post-call guardrail update
                 if _guardrail is not None:
@@ -1148,6 +1382,7 @@ def run_one_turn(
 
             if combined_parts:
                 ctx.add_user("\n\n".join(combined_parts))
+            _maybe_reflect(ctx, len(tool_log))
             # Detecção de loop após cada batch de tool calls (Tool Bridge path)
             loop_warn, hard_stop = _detect_loop(tool_log)
             if loop_warn:
@@ -2075,6 +2310,15 @@ def run_agent_session(
             console.print(f"[dim](autocomplete indisponível: {_pt_exc})[/dim]")
             _pt_session = None  # terminal incompatível — usa fallback
 
+    # Native tool calling no chat interativo (antes só o run_one_turn usava).
+    # Flag de sessão: 1º HTTP 400/404/405/422/501 em tools= → downgrade
+    # definitivo para o bridge JSON pelo resto da sessão.
+    from .openai_client import OpenAIClient as _OpenAIClientCls
+    _native_session_ok = (
+        isinstance(client, _OpenAIClientCls)
+        and getattr(client, "supports_native_tools", False)
+    )
+
     while True:
         # --- entrada do usuário ---
         try:
@@ -2236,6 +2480,10 @@ def run_agent_session(
         # --- loop de tool turns (um turno do usuário pode ter N tool calls) ---
         tool_turns = 0
         cli_tool_log: list[dict] = []  # para detecção de loop no CLI path
+        # Dedup por turno de usuário: replay de chamadas idênticas DENTRO do
+        # turno; reset a cada input ("rode de novo" deve re-executar de fato).
+        from .tool_dedup import ToolCallDeduper as _CliDeduper
+        _cli_deduper = _CliDeduper()
         while True:
             # Aviso precoce de contexto cheio — antes de travar silenciosamente
             usage = ctx.usage_pct
@@ -2246,10 +2494,42 @@ def run_agent_session(
                     f"({ctx.used_tokens}/{ctx.budget} tokens). "
                     "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
                 )
+            _native_final = False
             try:
-                response, client, active_model = _collect_with_fallback(
-                    client, active_model, ctx.get_payload(), fallback_clients, console
-                )
+                if _native_session_ok:
+                    try:
+                        _nkind, _ntext = _native_turn_interactive(
+                            ctx, router, client, active_model, console,
+                            cli_tool_log, _cli_deduper,
+                            MAX_TOOL_TURNS - tool_turns,
+                        )
+                    except _NativeToolsUnsupported:
+                        _native_session_ok = False
+                        console.print(
+                            "[dim][native→bridge] provider sem suporte a tools "
+                            "nativas — usando Tool Bridge JSON nesta sessão.[/dim]"
+                        )
+                    else:
+                        if _nkind == "continue":
+                            tool_turns = len(cli_tool_log)
+                            _maybe_reflect(ctx, tool_turns)
+                            loop_warn, hard_stop = _detect_loop(cli_tool_log)
+                            if loop_warn:
+                                console.print(f"[bold yellow]⚠ {loop_warn}[/bold yellow]")
+                                ctx.add_user(loop_warn)
+                                if hard_stop:
+                                    console.print(
+                                        "[red]Loop detectado — interrompendo turno automaticamente.[/red]"
+                                    )
+                                    break
+                            continue
+                        # _nkind == "final": resposta de texto sem tools
+                        response = _ntext or ""
+                        _native_final = True
+                if not _native_final:
+                    response, client, active_model = _collect_with_fallback(
+                        client, active_model, ctx.get_payload(), fallback_clients, console
+                    )
             except (OllamaError, OpenAIClientError) as exc:
                 _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
                 console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
@@ -2263,21 +2543,25 @@ def run_agent_session(
                     ctx.messages.pop()
                 break
 
-            # Resposta vazia: contexto provavelmente sobrecarregado
+            # Resposta vazia: recovery automático (retry → compress+retry)
+            # antes de devolver o problema ao usuário.
             if not response.strip():
-                console.print(
-                    "[yellow]Modelo retornou resposta vazia. "
-                    "O contexto pode estar sobrecarregado — use [bold]/clear[/bold] para reiniciar "
-                    "ou faça uma pergunta mais curta.[/yellow]"
+                console.print("[dim][recovery] resposta vazia — tentando recuperar...[/dim]")
+                response, diagnostico = _recover_empty_response(
+                    client, model_name, ctx, console=console
                 )
-                if ctx.messages and ctx.messages[-1]["role"] == "user":
-                    ctx.messages.pop()
-                break
+                if not response:
+                    console.print(f"[yellow]{diagnostico}[/yellow]")
+                    if ctx.messages and ctx.messages[-1]["role"] == "user":
+                        ctx.messages.pop()
+                    break
 
             ctx.add_assistant(response)
 
-            # Tenta parsear como tool action(s) — suporta batch (múltiplos JSONs por resposta)
-            actions = _try_parse_tools_batch(response, router)
+            # Tenta parsear como tool action(s) — suporta batch (múltiplos JSONs por resposta).
+            # Resposta final do native NÃO é re-parseada: texto que por acaso
+            # contenha JSON não deve re-disparar tools.
+            actions = None if _native_final else _try_parse_tools_batch(response, router)
 
             if actions is not None and tool_turns < MAX_TOOL_TURNS:
                 combined_parts: list[str] = []
@@ -2290,18 +2574,26 @@ def run_agent_session(
                         "neste turno.[/yellow]"
                     )
 
+                def _exec_action(action_dict: dict) -> tuple[str, str]:
+                    """Executa 1 action com dedup (replay de chamada idêntica)."""
+                    _name = action_dict.get("action", "?")
+                    _args = action_dict.get("args", {}) or {}
+                    _cached = _cli_deduper.check(_name, _args)
+                    if _cached is not None:
+                        return _name, _cached
+                    _failed = False
+                    try:
+                        _result = router.execute(action_dict)
+                    except (ToolError, SandboxError) as _exc:
+                        _result = f"[Erro: {_exc}]"
+                        _failed = True
+                    _cli_deduper.record(_name, _args, _result, failed=_failed)
+                    return _name, _result
+
                 # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
                 if len(pending_actions) > 1:
                     from concurrent.futures import ThreadPoolExecutor
                     from concurrent.futures import as_completed as _as_completed
-
-                    def _exec_action(action_dict: dict) -> tuple[str, str]:
-                        _name = action_dict.get("action", "?")
-                        try:
-                            _result = router.execute(action_dict)
-                        except (ToolError, SandboxError) as _exc:
-                            _result = f"[Erro: {_exc}]"
-                        return _name, _result
 
                     ordered_results: list[tuple[str, str]] = [("", "")] * len(pending_actions)
                     with ThreadPoolExecutor(max_workers=min(len(pending_actions), 8)) as _ex:
@@ -2309,14 +2601,7 @@ def run_agent_session(
                         for _fut in _as_completed(_fmap):
                             ordered_results[_fmap[_fut]] = _fut.result()
                 else:
-                    ordered_results = []
-                    for a in pending_actions:
-                        _name = a.get("action", "?")
-                        try:
-                            _result = router.execute(a)
-                        except (ToolError, SandboxError) as exc:
-                            _result = f"[Erro: {exc}]"
-                        ordered_results.append((_name, _result))
+                    ordered_results = [_exec_action(a) for a in pending_actions]
 
                 for action_name, tool_result in ordered_results:
                     # Display inteligente — filtra ruído, mostra apenas o relevante
@@ -2334,6 +2619,7 @@ def run_agent_session(
                     console.print()
                     ctx.add_user("\n\n".join(combined_parts))
 
+                _maybe_reflect(ctx, tool_turns)
                 # Detecção de loop após cada batch de tool calls (CLI path)
                 loop_warn, hard_stop = _detect_loop(cli_tool_log)
                 if loop_warn:

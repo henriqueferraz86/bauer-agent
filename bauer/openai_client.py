@@ -8,20 +8,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+# Canônico em ollama_client — manter definição duplicada aqui causou drift real
+# (show_model passava context_length/size_bytes que a cópia local não tinha).
+from .ollama_client import ModelfileParams
+
 
 class OpenAIClientError(Exception):
     pass
-
-
-@dataclass
-class ModelfileParams:
-    num_ctx: int | None
-    raw: dict[str, Any]
 
 
 class OpenAIClient:

@@ -25,26 +25,37 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 class ConfigError(Exception):
     """Erro de configuração com mensagem amigável."""
 
 
-class AgentSection(BaseModel):
+class _StrictSection(BaseModel):
+    """Base para todas as sections: campos desconhecidos são ERRO, não silêncio.
+
+    Premortem (bug real 2026-06-10): `think: false` no config.yaml foi
+    silenciosamente ignorado porque ModelSection não tinha o campo — o usuário
+    acreditou que a config estava ativa. extra="forbid" converte typos e campos
+    não suportados em erro de validação com hint dos campos válidos.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+
+class AgentSection(_StrictSection):
     name: str = "Bauer Agent"
     workspace: str = "./workspace"
 
 
-class OpenAICompatSection(BaseModel):
+class OpenAICompatSection(_StrictSection):
     """Configuração para OpenAI e endpoints OpenAI-compatible (LM Studio, vLLM, etc.)."""
     host: str = "https://api.openai.com"
     timeout_seconds: int = Field(ge=1, le=600, default=60)
     api_key: str = ""  # ou via OPENAI_API_KEY no .env
 
 
-class OpenRouterSection(BaseModel):
+class OpenRouterSection(_StrictSection):
     """Configuração para OpenRouter — acessa 200+ modelos com uma chave só.
 
     Modelos: "openai/gpt-4o-mini", "anthropic/claude-haiku-3",
@@ -57,7 +68,7 @@ class OpenRouterSection(BaseModel):
     x_title: str = "Bauer Agent"
 
 
-class OpencodeSection(BaseModel):
+class OpencodeSection(_StrictSection):
     """Configuração para OpenCode Zen — modelos gratuitos sem API key.
 
     Endpoint: https://opencode.ai/zen/v1 (OpenAI-compatible)
@@ -67,7 +78,7 @@ class OpencodeSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class GroqSection(BaseModel):
+class GroqSection(_StrictSection):
     """Groq — inferência ultra-rápida para modelos open-source.
 
     Endpoint: https://api.groq.com/openai/v1 (OpenAI-compatible)
@@ -78,7 +89,7 @@ class GroqSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=30)
 
 
-class MistralSection(BaseModel):
+class MistralSection(_StrictSection):
     """Mistral AI — modelos europeus de alta qualidade.
 
     Endpoint: https://api.mistral.ai/v1 (OpenAI-compatible)
@@ -89,7 +100,7 @@ class MistralSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class XAISection(BaseModel):
+class XAISection(_StrictSection):
     """xAI — modelos Grok da Elon Musk.
 
     Endpoint: https://api.x.ai/v1 (OpenAI-compatible)
@@ -100,7 +111,7 @@ class XAISection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class TogetherSection(BaseModel):
+class TogetherSection(_StrictSection):
     """Together AI — 200+ modelos open-source com preços agressivos.
 
     Endpoint: https://api.together.xyz/v1 (OpenAI-compatible)
@@ -111,7 +122,7 @@ class TogetherSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class DeepSeekSection(BaseModel):
+class DeepSeekSection(_StrictSection):
     """DeepSeek — modelos chineses com custo/benefício imbatível.
 
     Endpoint: https://api.deepseek.com/v1 (OpenAI-compatible)
@@ -122,7 +133,7 @@ class DeepSeekSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class AnthropicSection(BaseModel):
+class AnthropicSection(_StrictSection):
     """Anthropic — Claude family (wire protocol nativo, não OpenAI-compat).
 
     Endpoint: https://api.anthropic.com/v1
@@ -134,7 +145,7 @@ class AnthropicSection(BaseModel):
     api_version: str = "2023-06-01"
 
 
-class GeminiSection(BaseModel):
+class GeminiSection(_StrictSection):
     """Google Gemini — via endpoint OpenAI-compatible da Google.
 
     Endpoint: https://generativelanguage.googleapis.com/v1beta/openai/
@@ -145,7 +156,7 @@ class GeminiSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class AzureSection(BaseModel):
+class AzureSection(_StrictSection):
     """Azure OpenAI — OpenAI wire protocol com autenticação e URL customizadas.
 
     URL: https://{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}
@@ -158,7 +169,7 @@ class AzureSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class GithubSection(BaseModel):
+class GithubSection(_StrictSection):
     """GitHub Models — inferência de IA via infraestrutura Azure da Microsoft.
 
     Endpoint: https://models.inference.ai.azure.com (OpenAI-compatible)
@@ -173,7 +184,7 @@ class GithubSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class CopilotSection(BaseModel):
+class CopilotSection(_StrictSection):
     """GitHub Copilot API — acesso aos modelos via assinatura Copilot.
 
     Endpoint: https://api.githubcopilot.com (OpenAI-compatible)
@@ -186,7 +197,7 @@ class CopilotSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
-class ModelSection(BaseModel):
+class ModelSection(_StrictSection):
     provider: Literal[
         "ollama", "openai", "openrouter", "opencode", "custom",
         "groq", "mistral", "xai", "together", "deepseek",
@@ -214,13 +225,13 @@ class ModelSection(BaseModel):
         return v
 
 
-class OllamaSection(BaseModel):
+class OllamaSection(_StrictSection):
     host: str = "http://localhost:11434"
     timeout_seconds: int = Field(ge=1, le=600, default=30)
     api_key: str = ""  # Bearer token para Ollama remoto protegido por proxy
 
 
-class ServeSection(BaseModel):
+class ServeSection(_StrictSection):
     host: str = "0.0.0.0"
     port: int = Field(ge=1, le=65535, default=8000)
     api_key: str = ""  # Bearer token para proteger o bauer serve (ou BAUER_SERVE_API_KEY no .env)
@@ -229,13 +240,13 @@ class ServeSection(BaseModel):
     rate_limit_window_s: float = Field(ge=1.0, default=60.0)  # janela em segundos
 
 
-class RuntimeSection(BaseModel):
+class RuntimeSection(_StrictSection):
     profile: Literal["low", "medium", "high"] = "low"
     ram_limit_mb: int = Field(ge=512, default=4096)
     safety_margin_mb: int = Field(ge=0, default=1024)
 
 
-class RouterSection(BaseModel):
+class RouterSection(_StrictSection):
     enabled: bool = False
     router_model: str = "qwen3:0.6b"
     code_model: str = "smollm3"
@@ -243,12 +254,12 @@ class RouterSection(BaseModel):
     direct_model: str = "qwen3:0.6b"
 
 
-class LoggingSection(BaseModel):
+class LoggingSection(_StrictSection):
     level: Literal["debug", "info", "warning", "error"] = "info"
     file: str | None = "./logs/bauer.log"
 
 
-class ToolsSection(BaseModel):
+class ToolsSection(_StrictSection):
     shell_enabled: bool = False
     web_enabled: bool = False
     safe_mode: bool = True
@@ -256,7 +267,7 @@ class ToolsSection(BaseModel):
     max_output_kb: int = Field(ge=1, le=1000, default=50)
 
 
-class McpServerEntry(BaseModel):
+class McpServerEntry(_StrictSection):
     """Configuração de um servidor MCP individual.
 
     Exemplo em config.yaml:
@@ -284,7 +295,7 @@ class McpServerEntry(BaseModel):
         return v
 
 
-class McpSection(BaseModel):
+class McpSection(_StrictSection):
     """Configuração de servidores MCP (Model Context Protocol) stdio.
 
     Servidores são iniciados sob demanda quando a tool mcp_call é usada.
@@ -292,7 +303,7 @@ class McpSection(BaseModel):
     servers: dict[str, McpServerEntry] = Field(default_factory=dict)
 
 
-class AuxiliarySlot(BaseModel):
+class AuxiliarySlot(_StrictSection):
     """One auxiliary-client slot — points to a (provider, model) pair.
 
     Both fields default to empty, meaning "use the main model.name from
@@ -314,7 +325,7 @@ class AuxiliarySlot(BaseModel):
     model: str = ""      # Empty → fall back to main model.name
 
 
-class AuxiliarySection(BaseModel):
+class AuxiliarySection(_StrictSection):
     """Auxiliary LLM slots — cheap/fast models for routine subtasks.
 
     Each slot is consumed by a specific Bauer subsystem:
@@ -331,7 +342,7 @@ class AuxiliarySection(BaseModel):
     compression_model: AuxiliarySlot = AuxiliarySlot()
 
 
-class WebSection(BaseModel):
+class WebSection(_StrictSection):
     """Configuração de backends web para web_search e web_fetch.
 
     Backends de busca (search_backend):
@@ -354,7 +365,7 @@ class WebSection(BaseModel):
     timeout_seconds: int = Field(ge=1, le=60, default=15)
 
 
-class BauerConfig(BaseModel):
+class BauerConfig(_StrictSection):
     agent: AgentSection = AgentSection()
     model: ModelSection
     ollama: OllamaSection = OllamaSection()
@@ -381,6 +392,18 @@ class BauerConfig(BaseModel):
     auxiliary: AuxiliarySection = AuxiliarySection()
 
 
+def _valid_fields_for(section_name: str) -> str:
+    """Retorna lista legível dos campos válidos de uma section do BauerConfig."""
+    field_info = BauerConfig.model_fields.get(section_name)
+    if field_info is None:
+        # Nível raiz: lista as sections válidas
+        return ", ".join(sorted(BauerConfig.model_fields))
+    annotation = field_info.annotation
+    if annotation is not None and hasattr(annotation, "model_fields"):
+        return ", ".join(sorted(annotation.model_fields))
+    return ""
+
+
 def load_config(path: str | Path = "config.yaml") -> BauerConfig:
     """Lê e valida config.yaml. Aplica .env automaticamente. Levanta ConfigError em falha."""
     p = Path(path)
@@ -402,11 +425,19 @@ def load_config(path: str | Path = "config.yaml") -> BauerConfig:
         cfg = BauerConfig(**raw)
     except ValidationError as exc:
         # Pydantic produz mensagens longas; reformata pra ficar útil.
-        problems = "\n".join(
-            f"  - {'/'.join(str(x) for x in e['loc'])}: {e['msg']}"
-            for e in exc.errors()
-        )
-        raise ConfigError(f"Config inválida em {p}:\n{problems}") from exc
+        lines: list[str] = []
+        for e in exc.errors():
+            loc = "/".join(str(x) for x in e["loc"])
+            if e.get("type") == "extra_forbidden":
+                # Campo desconhecido — quase sempre typo. Lista os campos válidos
+                # da section para o usuário se localizar sem abrir o código.
+                section_name = str(e["loc"][0]) if e["loc"] else ""
+                valid = _valid_fields_for(section_name)
+                hint = f" Campos válidos de '{section_name}': {valid}" if valid else ""
+                lines.append(f"  - {loc}: campo desconhecido (typo?).{hint}")
+            else:
+                lines.append(f"  - {loc}: {e['msg']}")
+        raise ConfigError(f"Config inválida em {p}:\n" + "\n".join(lines)) from exc
 
     # Aplica .env (procura na mesma pasta do config.yaml e na cwd)
     from .env_loader import apply_env_to_config, load_dotenv

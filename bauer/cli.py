@@ -70,6 +70,7 @@ company_app = typer.Typer(help="Gestao multi-empresa — namespaces isolados por
 migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (Hermes, OpenClaw)")
 boards_app = typer.Typer(help="Multi-board kanban — cada projeto pode ter seu proprio store SQLite")
 daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que processam tasks do kanban")
+telegram_app = typer.Typer(help="Telegram Bridge — agente Bauer via Telegram")
 
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
@@ -91,6 +92,7 @@ app.add_typer(company_app, name="company")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(boards_app, name="boards")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(telegram_app, name="telegram")
 
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
@@ -7138,6 +7140,140 @@ def skill_render_cmd(
         raise typer.Exit(1)
 
     console.print(rendered)
+
+
+
+
+# --- telegram bridge --------------------------------------------------------
+
+@telegram_app.command("start", help="Inicia o Telegram Bridge em background")
+def telegram_start(
+    config: str = typer.Option("config/telegram.yaml", "--config", "-c",
+                               help="Caminho do config YAML"),
+    background: bool = typer.Option(True, "--background/--foreground",
+                                     help="Rodar em background (processo separado)"),
+):
+    """Inicia o bridge Telegram que conecta o Bauer ao seu bot."""
+    from bauer.telegram_bridge import run_bridge, load_config
+
+    cfg = load_config(config)
+    if not cfg["bot_token"]:
+        console.print("[red]ERRO:[/red] TELEGRAM_BOT_TOKEN nao configurado.")
+        console.print("Edite config/telegram.yaml ou defina env var TELEGRAM_BOT_TOKEN")
+        raise typer.Exit(code=1)
+
+    bot_name = "?"
+    try:
+        import httpx
+        r = httpx.get(f"https://api.telegram.org/bot{cfg['bot_token']}/getMe", timeout=10)
+        bot_name = r.json().get("result", {}).get("username", "?")
+    except Exception:
+        pass
+
+    if background:
+        import subprocess, sys, os
+        # roda em background
+        script = os.path.join(os.path.dirname(__file__), "telegram_bridge.py")
+        proc = subprocess.Popen(
+            [sys.executable, script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=os.path.dirname(os.path.dirname(__file__))
+        )
+        console.print(f"[green]Telegram Bridge iniciado em background (PID {proc.pid}).[/green]")
+        console.print(f"Bot: @{bot_name}")
+    else:
+        console.print(f"[green]Telegram Bridge (@{bot_name}) — foreground mode[/green]")
+        console.print("Pressione Ctrl+C para parar.")
+        run_bridge(config)
+
+
+@telegram_app.command("stop", help="Para o Telegram Bridge")
+def telegram_stop():
+    """Para o bridge Telegram em background."""
+    import subprocess, sys, signal
+    # procura processo telegram_bridge.py
+    try:
+        result = subprocess.run(
+            [sys.executable or "python", "-c", """
+import subprocess, sys, os
+# find telegram_bridge processes
+import psutil
+for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+    try:
+        cmdline = proc.info.get('cmdline') or []
+        if any('telegram_bridge' in str(c).lower() for c in cmdline):
+            print(proc.info['pid'])
+    except:
+        pass
+"""],
+            capture_output=True, text=True, timeout=10
+        )
+        pids = [int(p.strip()) for p in result.stdout.strip().split() if p.strip()]
+        if pids:
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except:
+                    pass
+            console.print(f"[green]Bridge parado ({len(pids)} processo(s)).[/green]")
+        else:
+            console.print("[yellow]Nenhum bridge em execucao.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Erro ao parar bridge: {e}[/red]")
+
+
+@telegram_app.command("status", help="Status do Telegram Bridge")
+def telegram_status():
+    """Verifica se o bridge esta rodando."""
+    import subprocess, sys
+    try:
+        result = subprocess.run(
+            [sys.executable or "python", "-c", """
+import psutil
+for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+    try:
+        cmdline = proc.info.get('cmdline') or []
+        if any('telegram_bridge' in str(c).lower() for c in cmdline):
+            print(f"PID {proc.info['pid']}: {' '.join(cmdline[:4])}")
+    except:
+        pass
+"""],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.stdout.strip():
+            console.print(f"[green]Bridge ATIVO:[/green]\n{result.stdout.strip()}")
+        else:
+            console.print("[yellow]Bridge INATIVO.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Erro: {e}[/red]")
+
+
+@telegram_app.command("config", help="Configura o bot token")
+def telegram_config(
+    token: str = typer.Argument(..., help="Token do bot do Telegram (do @BotFather)"),
+):
+    """Salva o token do bot no config/telegram.yaml."""
+    import yaml
+    from pathlib import Path
+    cfg_path = Path("config/telegram.yaml")
+    data = {"bot_token": token, "allowed_users": [], "poll_interval": 2.0}
+    if cfg_path.exists():
+        with open(cfg_path) as f:
+            existing = yaml.safe_load(f) or {}
+        existing["bot_token"] = token
+        data = existing
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cfg_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False)
+    console.print(f"[green]Token salvo em {cfg_path}[/green]")
+    # testa o token
+    try:
+        import httpx
+        r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+        bot = r.json().get("result", {})
+        console.print(f"Bot @{bot.get('username', '?')} — [green]conectado![/green]")
+    except Exception as e:
+        console.print(f"[red]Erro ao conectar: {e}[/red]")
 
 
 if __name__ == "__main__":

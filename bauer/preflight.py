@@ -92,26 +92,16 @@ def _resolve_context(
     return applied, reason, notes
 
 
-# Contextos padrão por provider cloud (quando requested_context < padrão).
-# Valores conservadores — a maioria suporta mais, mas isso evita surpresas com
-# limites de rate/custo em tiers gratuitos. Ollama não aparece aqui.
-_CLOUD_CONTEXT_DEFAULTS: dict[str, int] = {
-    "opencode":   65536,   # deepseek-v4-flash-free, mimo, nemotron (opencode.ai/zen/v1)
-    "openai":    128000,   # gpt-4o, gpt-4o-mini
-    "anthropic": 200000,   # claude-3-5-sonnet, claude-3-haiku
-    "openrouter": 128000,  # maioria dos modelos premium; conservador para open
-    "groq":       131072,  # llama-3.3-70b, mixtral
-    "mistral":    32768,   # mistral-large, codestral
-    "xai":        131072,  # grok-3, grok-beta
-    "together":   32768,   # llama-3.3-70b, qwen2.5
-    "deepseek":   65536,   # deepseek-chat (V3), deepseek-reasoner (R1)
-    "gemini":    1000000,  # gemini-2.0-flash (1M), 1.5-pro (2M)
-    "azure":      128000,  # espelha openai
-    "github":     128000,  # gpt-4o, phi-4 via GitHub Models
-    "copilot":    128000,  # gpt-4o, claude-sonnet via Copilot
-    "custom":      32768,  # endpoint desconhecido — conservador
-}
-_CLOUD_CONTEXT_FALLBACK = 32768
+# Contextos padrão por provider — FONTE ÚNICA em provider_profile.py.
+# Estes aliases existem para compatibilidade com importadores antigos (cli.py,
+# testes); novos código deve usar provider_profile.get_default_context().
+from .provider_profile import (  # noqa: E402
+    _DEFAULT_CONTEXT_FALLBACK as _CLOUD_CONTEXT_FALLBACK,
+    default_context_map as _default_context_map,
+    get_default_context as _get_default_context,
+)
+
+_CLOUD_CONTEXT_DEFAULTS: dict[str, int] = _default_context_map()
 
 
 def run_doctor(

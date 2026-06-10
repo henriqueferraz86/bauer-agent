@@ -354,6 +354,33 @@ try:
 except Exception:
     pass
 
+
+def _syntax_check(path, text: str) -> str | None:
+    """Valida sintaxe de arquivos .py/.json/.yaml recém-escritos.
+
+    Retorna descrição curta do erro ou None se OK/extensão não suportada.
+    Feedback imediato pro modelo: sem isto, um write_file com syntax error
+    só era descoberto tool calls depois, ao tentar executar/importar.
+    """
+    suffix = str(getattr(path, "suffix", "")).lower()
+    try:
+        if suffix == ".py":
+            import ast as _ast
+            _ast.parse(text)
+        elif suffix == ".json":
+            import json as _json
+            _json.loads(text)
+        elif suffix in (".yaml", ".yml"):
+            import yaml as _yaml
+            _yaml.safe_load(text)
+        return None
+    except SyntaxError as exc:
+        return f"Python syntax error na linha {exc.lineno}: {exc.msg}"
+    except Exception as exc:
+        kind = suffix.lstrip(".").upper()
+        return f"{kind} syntax error: {str(exc)[:200]}"
+
+
 _TOOL_CONTEXTS = ("supervisor", "orchestrator", "chat", "worker")
 _TOOL_CONTEXT_ALIASES = {
     "": "supervisor",
@@ -1665,7 +1692,16 @@ class ToolRouter:
         p.parent.mkdir(parents=True, exist_ok=True)
         text = str(content)
         p.write_text(text, encoding="utf-8")
-        return f"Gravado: '{path}' ({len(text)} chars)"
+        result = f"Gravado: '{path}' ({len(text)} chars)"
+        # Verificação pós-write: o modelo recebe o erro de sintaxe IMEDIATAMENTE
+        # em vez de descobrir 3 tool calls depois ao tentar executar o arquivo.
+        syntax_err = _syntax_check(p, text)
+        if syntax_err:
+            result += (
+                f"\n[ATENÇÃO — erro de sintaxe detectado] {syntax_err}\n"
+                "Corrija com a tool patch antes de usar o arquivo."
+            )
+        return result
 
     def _search_text(self, args: dict) -> str:
         path = args.get("path", ".")
@@ -2220,7 +2256,14 @@ class ToolRouter:
         if len(diff_lines) > 40:
             diff_str += f"\n... (+{len(diff_lines) - 40} linhas)"
 
-        return f"Arquivo '{path}' atualizado.\n{diff_str}"
+        result = f"Arquivo '{path}' atualizado.\n{diff_str}"
+        syntax_err = _syntax_check(p, updated)
+        if syntax_err:
+            result += (
+                f"\n[ATENÇÃO — erro de sintaxe detectado] {syntax_err}\n"
+                "O patch foi aplicado mas quebrou o arquivo — corrija antes de usar."
+            )
+        return result
 
     # --- todo ------------------------------------------------------------------
 

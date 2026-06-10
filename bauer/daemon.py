@@ -467,22 +467,50 @@ class BauerDaemon:
         Falls back gracefully if the full agent stack isn't available.
         """
         try:
+            import contextvars as _cv
+
             from .task_dispatcher import TaskDispatcher
 
             dispatcher = TaskDispatcher(
                 workspace=Path.cwd(),
                 profile=ctx.config.profile,
             )
-            # Run in executor to avoid blocking the event loop.
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: dispatcher.run_task(
-                    task_id,
-                    board=ctx.board,
-                    headless=True,
-                ),
-            )
+
+            # Cost meter: cada LLM call dentro da task reporta custo real ao
+            # budget do daemon. Sem isto o max_cost_usd era cap sem medição.
+            _sink_token = None
+            if self._budget is not None:
+                from .cost_meter import cost_sink
+
+                _budget = self._budget
+
+                def _daemon_cost_sink(provider, model, usage, cost_usd):
+                    if cost_usd > 0:
+                        _budget.consume_llm_call(
+                            cost_usd=cost_usd,
+                            output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                        )
+
+                _sink_token = cost_sink.set(_daemon_cost_sink)
+
+            try:
+                # copy_context: run_in_executor NÃO propaga ContextVars por
+                # padrão — sem a cópia o sink não existiria na thread do executor.
+                _cv_ctx = _cv.copy_context()
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: _cv_ctx.run(
+                        dispatcher.run_task,
+                        task_id,
+                        board=ctx.board,
+                        headless=True,
+                    ),
+                )
+            finally:
+                if _sink_token is not None:
+                    from .cost_meter import cost_sink
+                    cost_sink.reset(_sink_token)
         except (ImportError, AttributeError):
             # Minimal fallback: just mark the task as running for N seconds.
             logger.debug(

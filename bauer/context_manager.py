@@ -25,41 +25,14 @@ SUMMARY_THRESHOLD_RATIO = 0.70  # comprime quando uso > 70% do budget
 # Alias para compatibilidade com testes antigos
 SUMMARY_THRESHOLD_TOKENS = int(32768 * SUMMARY_THRESHOLD_RATIO)  # ~22937 tokens
 
-# ─── Context windows reais por provider ────────────────────────────────────────
-# Valores em tokens. Usados quando applied_context=0 ou para validar o valor.
-PROVIDER_CONTEXT_WINDOWS: dict[str, int] = {
-    # Ollama (depende do modelo — usamos applied_context do preflight)
-    "ollama": 32768,
-    # OpenAI
-    "openai": 128000,
-    "openai-api": 128000,
-    # Anthropic
-    "anthropic": 200000,
-    # Groq
-    "groq": 32768,
-    # Mistral
-    "mistral": 128000,
-    # xAI Grok
-    "xai": 131072,
-    # Together AI
-    "together": 32768,
-    # DeepSeek
-    "deepseek": 65536,
-    # Google Gemini 2.0
-    "gemini": 1048576,
-    # OpenRouter (depende do modelo; usamos um valor conservador)
-    "openrouter": 128000,
-    # Azure (depende do deployment)
-    "azure": 128000,
-    # GitHub Models (GPT-4o base)
-    "github": 128000,
-    # GitHub Copilot (GPT-4o / Claude Sonnet)
-    "copilot": 128000,
-    # OpenCode
-    "opencode": 128000,
-    # Custom fallback
-    "custom": 32768,
-}
+# ─── Context windows por provider ──────────────────────────────────────────────
+# FONTE ÚNICA: provider_profile.py (default_context de cada profile).
+# Este alias existe porque testes e código antigo importam o nome daqui.
+# Bug real (2026-06-10): este mapa divergia do mapa do preflight (opencode
+# 128000 aqui vs 65536 lá) — consolidado na fonte única.
+from .provider_profile import default_context_map as _default_context_map  # noqa: E402
+
+PROVIDER_CONTEXT_WINDOWS: dict[str, int] = _default_context_map()
 
 # ─── Tail protection dinâmica por tokens ──────────────────────────────────────
 # Mantém as mensagens mais recentes que cabem neste budget.
@@ -107,6 +80,11 @@ class ContextManager:
         # 3. Reserva 25% para output do modelo; floor de 512
         effective = self.applied_context or PROVIDER_CONTEXT_WINDOWS.get(self.provider, 32768)
         self._budget = max(512, int(effective * 0.75))
+        # Tail dinâmico: bug real (2026-06-10) — com budget 3072 (ctx 4096) o tail
+        # fixo de 8192 era maior que o budget inteiro → to_compress sempre vazio →
+        # compressão jamais disparava e o modelo travava com contexto cheio.
+        # Regra: tail = min(constante, 1/3 do budget), floor 512.
+        self._tail_budget = min(TAIL_BUDGET_TOKENS, max(512, self._budget // 3))
 
     def set_llm(self, client: Any, model: str) -> None:
         """Configura cliente LLM para compressão semântica."""
@@ -182,7 +160,7 @@ class ContextManager:
             return
 
         # ── 1. Split tail dinâmico por tokens ──────────────────────────────
-        to_compress, tail = _split_tail_by_tokens(self.messages, TAIL_BUDGET_TOKENS)
+        to_compress, tail = _split_tail_by_tokens(self.messages, self._tail_budget)
         if not to_compress:
             return  # nada a comprimir além do tail
 
@@ -192,18 +170,7 @@ class ContextManager:
         to_compress = _prune_tool_results(to_compress)
 
         # ── 3. Compressão semântica ou rule-based ──────────────────────────
-        _client = self._llm_client
-        _model = self._llm_model
-        # Try auxiliary client if primary not set (Wave E)
-        if not (_client and _model):
-            try:
-                from .auxiliary_client import get_compression_client as _get_aux
-                _aux_client, _aux_model = _get_aux()
-                if _aux_client and _aux_model:
-                    _client, _model = _aux_client, _aux_model
-            except Exception:
-                pass
-
+        _client, _model = self._compression_client()
         if _client and _model:
             summary = _summarize_llm(_client, _model, to_compress)
         else:
@@ -231,6 +198,47 @@ class ContextManager:
                 self._threshold_boost = max(
                     self._threshold_boost - THRASH_DECAY_STEP, 0.0
                 )
+
+    def _compression_client(self) -> tuple[Any, str]:
+        """Seleciona o cliente de compressão: auxiliary PRIMEIRO, principal depois.
+
+        O auxiliary (modelo leve/barato, configurável em `auxiliary.compression_model`)
+        tem prioridade — comprimir histórico com o modelo principal da sessão
+        desperdiça o modelo caro numa tarefa de resumo. Fallback: modelo da
+        sessão; sem nenhum → (None, "") e o caller usa o rule-based.
+        """
+        try:
+            from .auxiliary_client import get_compression_client as _get_aux
+            _aux_client, _aux_model = _get_aux()
+            if _aux_client and _aux_model:
+                return _aux_client, _aux_model
+        except Exception:
+            pass
+        if self._llm_client and self._llm_model:
+            return self._llm_client, self._llm_model
+        return None, ""
+
+    def force_compress(self) -> bool:
+        """Comprime o histórico AGORA, ignorando o threshold.
+
+        Usado pelo auto-recovery quando o modelo retorna resposta vazia —
+        contexto sobrecarregado é causa comum e comprimir + retry resolve
+        sem intervenção do usuário. Retorna True se algo foi comprimido.
+        """
+        to_compress, tail = _split_tail_by_tokens(self.messages, self._tail_budget)
+        if not to_compress:
+            return False
+        to_compress = _prune_tool_results(to_compress)
+        _client, _model = self._compression_client()
+        if _client and _model:
+            summary = _summarize_llm(_client, _model, to_compress)
+        else:
+            summary = _summarize_messages(to_compress)
+        self.messages = [
+            {"role": "system", "content": f"[Resumo de contexto anterior]\n{summary}"}
+        ] + tail
+        self._compress_count += 1
+        return True
 
     def _trim(self) -> None:
         """Remove mensagens antigas do início até caber no budget.

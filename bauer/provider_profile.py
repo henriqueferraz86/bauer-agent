@@ -79,6 +79,14 @@ class ProviderProfile:
     wire_protocol: str = "openai"
     """One of: 'openai' (default), 'anthropic', 'ollama'."""
 
+    default_context: int = 32768
+    """Default context window (tokens) when config doesn't override.
+
+    FONTE ÚNICA de contexto por provider — preflight e context_manager leem
+    daqui. Antes existiam 3 mapas divergentes (bug real 2026-06-10: opencode
+    65536 no preflight vs 128000 no context_manager).
+    """
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -170,6 +178,7 @@ def _reg(p: ProviderProfile) -> ProviderProfile:
 
 _reg(ProviderProfile(
     name="ollama",
+    default_context=8192,
     display_name="Ollama",
     description="Modelos locais gratuitos (requer Ollama rodando)",
     auth_type="none",
@@ -182,6 +191,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="opencode",
+    default_context=65536,
     display_name="OpenCode Zen",
     description="Modelos gratuitos via opencode.ai — sem API key",
     auth_type="none",
@@ -193,6 +203,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="openrouter",
+    default_context=128000,
     display_name="OpenRouter",
     description="200+ modelos: GPT, Claude, Gemini — 1 chave",
     auth_type="api_key",
@@ -203,6 +214,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="openai",
+    default_context=128000,
     display_name="ChatGPT OAuth",
     description="Login com conta ChatGPT — sem API key (via browser)",
     auth_type="oauth",
@@ -213,6 +225,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="openai-api",
+    default_context=128000,
     display_name="OpenAI API Key",
     description="ChatGPT com API key (sk-...) — platform.openai.com",
     auth_type="api_key",
@@ -223,6 +236,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="anthropic",
+    default_context=200000,
     display_name="Anthropic",
     description="Claude Haiku, Sonnet, Opus",
     auth_type="api_key",
@@ -235,6 +249,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="gemini",
+    default_context=1000000,
     display_name="Google Gemini",
     description="Gemini Flash, Pro (GEMINI_API_KEY)",
     auth_type="api_key",
@@ -246,6 +261,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="groq",
+    default_context=131072,
     display_name="Groq",
     description="Llama ultra-rápido, gratuito com limites",
     auth_type="api_key",
@@ -256,6 +272,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="mistral",
+    default_context=32768,
     display_name="Mistral AI",
     description="Mistral Small/Medium/Large, Codestral",
     auth_type="api_key",
@@ -266,6 +283,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="xai",
+    default_context=131072,
     display_name="xAI Grok",
     description="Grok 3 — modelos da xAI/Elon Musk",
     auth_type="api_key",
@@ -276,6 +294,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="together",
+    default_context=32768,
     display_name="Together AI",
     description="Llama, Mistral, Qwen — hospedagem aberta",
     auth_type="api_key",
@@ -286,6 +305,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="deepseek",
+    default_context=65536,
     display_name="DeepSeek",
     description="DeepSeek V3 e R1 — China, preço baixo",
     auth_type="api_key",
@@ -296,6 +316,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="github",
+    default_context=128000,
     display_name="GitHub Models",
     description="GPT-4o, Llama via GitHub (requer GITHUB_TOKEN)",
     auth_type="device_flow",
@@ -308,6 +329,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="copilot",
+    default_context=128000,
     display_name="GitHub Copilot",
     description="Copilot API — requer 'bauer auth login -p copilot'",
     auth_type="device_flow",
@@ -326,6 +348,7 @@ _reg(ProviderProfile(
 
 _reg(ProviderProfile(
     name="custom",
+    default_context=32768,
     display_name="Custom",
     description="Qualquer endpoint OpenAI-compatible (LM Studio, vLLM…)",
     auth_type="api_key",
@@ -333,15 +356,42 @@ _reg(ProviderProfile(
     base_url="",  # set dynamically from config
 ))
 
+_reg(ProviderProfile(
+    name="azure",
+    default_context=128000,
+    display_name="Azure OpenAI",
+    description="OpenAI via Azure — deployment próprio",
+    auth_type="api_key",
+    env_vars=["AZURE_OPENAI_API_KEY"],
+    base_url="",  # https://{endpoint}/openai/deployments/{deployment}
+))
+
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
+_DEFAULT_CONTEXT_FALLBACK = 32768
+
 
 def get_profile(name: str) -> ProviderProfile | None:
     """Return the ProviderProfile for *name*, or None if unknown."""
     return _PROFILES.get(name)
+
+
+def get_default_context(provider: str) -> int:
+    """Contexto padrão (tokens) de um provider — FONTE ÚNICA.
+
+    preflight (doctor) e context_manager leem daqui. Providers desconhecidos
+    recebem fallback conservador de 32768.
+    """
+    profile = _PROFILES.get(provider)
+    return profile.default_context if profile else _DEFAULT_CONTEXT_FALLBACK
+
+
+def default_context_map() -> dict[str, int]:
+    """Mapa {provider: default_context} de todos os profiles registrados."""
+    return {name: p.default_context for name, p in _PROFILES.items()}
 
 
 def list_providers() -> list[ProviderProfile]:
