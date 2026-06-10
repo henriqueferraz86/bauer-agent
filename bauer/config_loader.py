@@ -365,6 +365,43 @@ class WebSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=60, default=15)
 
 
+class TelegramSection(_StrictSection):
+    """Canal Telegram — bot conversacional via long-polling.
+
+    Token: prefira TELEGRAM_BOT_TOKEN no .env (bot_token aqui é fallback).
+    Segurança: allowed_users vazio NEGA todo mundo; para liberar geral é
+    preciso allow_all: true explícito (não recomendado).
+    """
+    enabled: bool = False
+    bot_token: str = ""                  # ou TELEGRAM_BOT_TOKEN no .env (preferido)
+    allowed_users: list[int] = Field(default_factory=list)  # ids numéricos do Telegram
+    allow_all: bool = False              # true = responde qualquer usuário (cuidado)
+    poll_interval: float = Field(ge=0.5, le=60.0, default=2.0)
+    max_msgs_per_minute: int = Field(ge=1, le=600, default=20)
+
+
+class DiscordSection(_StrictSection):
+    """Canal Discord — bot conversacional via Gateway WebSocket.
+
+    Requer extra: pip install 'bauer-agent[gateway]' (websockets).
+    O bot precisa do intent MESSAGE_CONTENT habilitado no Developer Portal.
+    Token: prefira DISCORD_BOT_TOKEN no .env.
+    """
+    enabled: bool = False
+    bot_token: str = ""                  # ou DISCORD_BOT_TOKEN no .env (preferido)
+    allowed_users: list[str] = Field(default_factory=list)     # ids de usuário (snowflakes)
+    allowed_guilds: list[str] = Field(default_factory=list)    # vazio = qualquer guild
+    allowed_channels: list[str] = Field(default_factory=list)  # vazio = qualquer canal
+    allow_all: bool = False
+    mention_only: bool = True            # em guild só responde se mencionado; DM sempre responde
+    max_msgs_per_minute: int = Field(ge=1, le=600, default=20)
+
+
+class GatewaySection(_StrictSection):
+    """Bauer Gateway — runtime unificado de canais + entrega do outbox."""
+    outbox_drain_interval_s: int = Field(ge=1, le=3600, default=15)
+
+
 class BauerConfig(_StrictSection):
     agent: AgentSection = AgentSection()
     model: ModelSection
@@ -390,6 +427,9 @@ class BauerConfig(_StrictSection):
     serve: ServeSection = ServeSection()
     router: RouterSection = RouterSection()
     auxiliary: AuxiliarySection = AuxiliarySection()
+    telegram: TelegramSection = TelegramSection()
+    discord: DiscordSection = DiscordSection()
+    gateway: GatewaySection = GatewaySection()
 
 
 def _valid_fields_for(section_name: str) -> str:

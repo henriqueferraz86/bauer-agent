@@ -13,7 +13,8 @@ Runtime adaptativo para LLMs locais e cloud.
 - [⚙️ Configuração](#configuração)
 - [🧠 bauer agent](#bauer-agent)
 - [🌐 bauer serve](#bauer-serve)
-- [🔌 bauer gateway](#bauer-gateway)
+- [💬 bauer gateway — canais de chat](#bauer-gateway--canais-de-chat-telegram-discord)
+- [🔌 bauer gateway-ws (Claw3D)](#bauer-gateway-ws-claw3d)
 - [🔗 Providers suportados](#providers-suportados)
 - [🛠️ Tools disponíveis](#tools-disponíveis)
 - [🐳 Docker](#docker)
@@ -320,16 +321,80 @@ O `bauer serve` expõe `/v1/chat/completions` no formato OpenAI SSE — funciona
 
 ---
 
-## 🔌 bauer gateway
+## 💬 bauer gateway — canais de chat (Telegram, Discord…)
 
-O **bauer gateway** é uma camada WebSocket que faz bridge entre clientes WebSocket e o `bauer serve` (HTTP).
+O **Bauer Gateway** conecta o agent a canais de chat: você conversa com o Bauer
+pelo Telegram ou Discord, com sessão persistente por chat, e o agent pode
+enviar notificações a canais via tool `channel_send`.
+
+### 🚀 Setup em 3 passos
+
+```bash
+bauer gateway init     # wizard: token, validação live, allowlist, .env
+bauer gateway start    # sobe todos os canais habilitados + entrega do outbox
+bauer gateway status   # canais, tokens, allowlists, outbox
+```
+
+### 📱 Telegram
+
+1. Crie um bot com o [@BotFather](https://t.me/BotFather) e copie o token.
+2. `bauer gateway init` → cole o token → envie `/start` ao bot para o wizard
+   descobrir seu user id (allowlist automática).
+3. `bauer gateway start` (ou `bauer telegram start` para só este canal).
+
+### 🎮 Discord
+
+1. [Developer Portal](https://discord.com/developers/applications) → New
+   Application → Bot → copie o token.
+2. Aba **Bot** → habilite **MESSAGE CONTENT INTENT**.
+3. Convide o bot (OAuth2 → URL Generator → scope `bot` → Send Messages).
+4. `bauer gateway init` → cole o token e seu user id.
+5. Requer extra: `pip install 'bauer-agent[gateway]'` (websockets).
+
+Em servidores o bot responde só quando **mencionado** (`mention_only: true`);
+DMs respondem sempre. Allowlists de usuário/guild/canal no `config.yaml`.
+
+### ⚙️ Config (config.yaml)
+
+```yaml
+telegram:
+  enabled: true
+  allowed_users: [123456789]    # vazio = NEGA todo mundo (seguro por default)
+discord:
+  enabled: true
+  allowed_users: ["111222333444555666"]
+  mention_only: true
+gateway:
+  outbox_drain_interval_s: 15   # frequência de entrega do outbox
+```
+
+Tokens ficam no `.env` (`TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`) — nunca no
+config.yaml em produção.
+
+### 📤 Notificações do agent (tool channel_send)
+
+```bash
+# registra um canal de notificação (telegram/discord/slack/webhook/file)
+bauer gateway-channel-add alerts telegram 123456789
+```
+
+No chat, o agent pode usar `channel_send` — a mensagem entra no **outbox
+durável** (SQLite, retry automático) e é entregue pelo `bauer gateway start`.
+
+Comandos dentro do chat: `/status`, `/clear`, `/help`.
+
+---
+
+## 🔌 bauer gateway-ws (Claw3D)
+
+O **bauer gateway-ws** é uma camada WebSocket que faz bridge entre clientes WebSocket e o `bauer serve` (HTTP).
 
 ### 🏗️ Arquitetura
 
 ```
 🖥️  Cliente WebSocket
         ↕  ws://localhost:18789
-🔌  bauer gateway
+🔌  bauer gateway-ws
         ↕  http://localhost:7770
 🌐  bauer serve
         ↕
@@ -343,10 +408,10 @@ O **bauer gateway** é uma camada WebSocket que faz bridge entre clientes WebSoc
 bauer serve &
 
 # Depois inicia o gateway
-bauer gateway
+bauer gateway-ws
 # Padrão: ws://localhost:18789 → http://localhost:7770
 
-bauer gateway --port 18789 --bauer-url http://localhost:7770
+bauer gateway-ws --port 18789 --bauer-url http://localhost:7770
 ```
 
 ### 📡 Eventos WebSocket suportados
@@ -378,7 +443,7 @@ gateway → event     {type: "final", content: "Olá! Como posso ajudar?"}
 ### 🔑 Configuração de API key
 
 ```bash
-bauer gateway --api-key sua-chave-secreta
+bauer gateway-ws --api-key sua-chave-secreta
 ```
 
 O gateway repassa a key automaticamente para o `bauer serve` em todas as requisições.

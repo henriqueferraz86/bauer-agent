@@ -304,6 +304,9 @@ _TOOL_SECURITY: dict[str, dict] = {
     "browser_dialog": {"permission": "network", "risk": "medium", "approval": False},
     "browser_cdp":    {"permission": "network", "risk": "high",   "approval": True},
     "mcp_call":       {"permission": "network", "risk": "medium", "approval": False},
+    # Canais do Bauer Gateway — outbound para humanos (outbox durável)
+    "channel_send":   {"permission": "network", "risk": "medium", "approval": False},
+    "channel_list":   {"permission": "read",    "risk": "low",    "approval": False},
     # Sistema
     "video_generate": {"permission": "network", "risk": "low",    "approval": False},
 }
@@ -1034,6 +1037,26 @@ class ToolRouter:
                 "tool": "str — nome da tool a chamar no servidor (obrigatorio)",
                 "arguments": "dict — argumentos da tool (obrigatorio)",
             },
+        }
+
+        # ── Tools de canal — Bauer Gateway (Telegram, Discord, webhook…) ────
+        self._tools["channel_send"] = {
+            "fn": self._channel_send,
+            "description": (
+                "Envia mensagem a um canal configurado do Bauer Gateway "
+                "(telegram, discord, slack, webhook…). A mensagem entra no outbox "
+                "duravel e e entregue pelo gateway (retry automatico). "
+                "Use channel_list para ver os canais disponiveis."
+            ),
+            "args": {
+                "channel": "str — nome do canal registrado (obrigatorio)",
+                "text": "str — texto da mensagem (obrigatorio)",
+            },
+        }
+        self._tools["channel_list"] = {
+            "fn": self._channel_list,
+            "description": "Lista os canais de notificacao configurados no Bauer Gateway.",
+            "args": {},
         }
 
         if shell_runner is not None:
@@ -2717,6 +2740,65 @@ class ToolRouter:
             "Google (gemini-*), OpenRouter.\n"
             "Configure no config.yaml e reinicie o agente."
         )
+
+    # --- channel_send / channel_list — Bauer Gateway ----------------------------
+
+    def _channel_send(self, args: dict) -> str:
+        """Envia mensagem a um canal do gateway via outbox durável.
+
+        A mensagem NÃO é entregue inline — entra no GatewayOutbox (SQLite)
+        e o `bauer gateway start` (pump) entrega com retry. Isso torna o
+        envio auditável e resiliente a quedas de rede no meio do turno.
+        """
+        channel_name = str(args.get("channel", "")).strip()
+        text = str(args.get("text", "")).strip()
+        if not channel_name:
+            raise ToolError("channel_send requer 'channel'. Use channel_list para ver os nomes.")
+        if not text:
+            raise ToolError("channel_send requer 'text'.")
+
+        from .gateway_channels import GatewayChannelRegistry
+        from .gateway_outbox import GatewayOutbox
+
+        registry = GatewayChannelRegistry(self.workspace)
+        entry = registry.get(channel_name)
+        if entry is None:
+            known = ", ".join(c.name for c in registry.list_channels()) or "(nenhum)"
+            raise ToolError(
+                f"Canal '{channel_name}' não existe. Canais configurados: {known}. "
+                "Registre com: bauer gateway-channel-add <nome> <plataforma> <target>"
+            )
+        if not entry.enabled:
+            raise ToolError(f"Canal '{channel_name}' está desabilitado.")
+
+        outbox = GatewayOutbox(self.workspace)
+        message = outbox.enqueue(
+            channel=entry.platform,
+            target=entry.target,
+            payload={"text": text, "source": "channel_send"},
+            metadata=dict(entry.metadata),
+        )
+        return (
+            f"Mensagem enfileirada para '{channel_name}' ({entry.platform}). "
+            f"id={message.message_id} — entrega via `bauer gateway start`."
+        )
+
+    def _channel_list(self, args: dict) -> str:
+        """Lista canais de notificação registrados no gateway."""
+        from .gateway_channels import GatewayChannelRegistry
+
+        registry = GatewayChannelRegistry(self.workspace)
+        channels = registry.list_channels(include_disabled=True)
+        if not channels:
+            return (
+                "Nenhum canal configurado. Registre com: "
+                "bauer gateway-channel-add <nome> <plataforma> <target>"
+            )
+        lines = ["Canais do Bauer Gateway:"]
+        for c in channels:
+            state = "on" if c.enabled else "off"
+            lines.append(f"- {c.name} [{c.platform}] → {c.target} ({state})")
+        return "\n".join(lines)
 
     # --- mcp_call --------------------------------------------------------------
 

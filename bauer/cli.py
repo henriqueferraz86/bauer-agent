@@ -71,6 +71,8 @@ migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (
 boards_app = typer.Typer(help="Multi-board kanban — cada projeto pode ter seu proprio store SQLite")
 daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que processam tasks do kanban")
 telegram_app = typer.Typer(help="Telegram Bridge — agente Bauer via Telegram")
+discord_app = typer.Typer(help="Discord Bridge — agente Bauer via Discord")
+gateway_app = typer.Typer(help="Bauer Gateway — todos os canais de chat + entrega do outbox")
 
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
@@ -93,6 +95,8 @@ app.add_typer(migrate_app, name="migrate")
 app.add_typer(boards_app, name="boards")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(telegram_app, name="telegram")
+app.add_typer(discord_app, name="discord")
+app.add_typer(gateway_app, name="gateway")
 
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
@@ -5871,7 +5875,7 @@ def _start_gateway_thread_cli(
 # ── bauer gateway command ─────────────────────────────────────────────────────
 
 
-@app.command("gateway")
+@app.command("gateway-ws")
 def gateway_cmd(
     bauer_url: str = typer.Option(
         "http://localhost:7770",
@@ -7144,136 +7148,273 @@ def skill_render_cmd(
 
 
 
-# --- telegram bridge --------------------------------------------------------
+# --- Bauer Gateway: telegram / discord / gateway -----------------------------
 
-@telegram_app.command("start", help="Inicia o Telegram Bridge em background")
+def _gateway_pid_file(workspace: Path) -> Path:
+    return workspace / ".bauer_gateway" / "gateway.pid"
+
+
+@telegram_app.command("start", help="Inicia o canal Telegram (foreground)")
 def telegram_start(
-    config: str = typer.Option("config/telegram.yaml", "--config", "-c",
-                               help="Caminho do config YAML"),
-    background: bool = typer.Option(True, "--background/--foreground",
-                                     help="Rodar em background (processo separado)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
 ):
-    """Inicia o bridge Telegram que conecta o Bauer ao seu bot."""
-    from bauer.telegram_bridge import run_bridge, load_config
+    """Sobe só o bridge Telegram. Para todos os canais use `bauer gateway start`."""
+    from bauer.telegram_bridge import run_bridge
 
-    cfg = load_config(config)
-    if not cfg["bot_token"]:
-        console.print("[red]ERRO:[/red] TELEGRAM_BOT_TOKEN nao configurado.")
-        console.print("Edite config/telegram.yaml ou defina env var TELEGRAM_BOT_TOKEN")
+    console.print("[green]Telegram bridge — foreground (Ctrl+C para parar)[/green]")
+    try:
+        run_bridge(config)
+    except RuntimeError as exc:
+        console.print(f"[red]ERRO:[/red] {exc}")
         raise typer.Exit(code=1)
 
-    bot_name = "?"
-    try:
-        import httpx
-        r = httpx.get(f"https://api.telegram.org/bot{cfg['bot_token']}/getMe", timeout=10)
-        bot_name = r.json().get("result", {}).get("username", "?")
-    except Exception:
-        pass
 
-    if background:
-        import subprocess, sys, os
-        # roda em background
-        script = os.path.join(os.path.dirname(__file__), "telegram_bridge.py")
-        proc = subprocess.Popen(
-            [sys.executable, script],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            cwd=os.path.dirname(os.path.dirname(__file__))
-        )
-        console.print(f"[green]Telegram Bridge iniciado em background (PID {proc.pid}).[/green]")
-        console.print(f"Bot: @{bot_name}")
-    else:
-        console.print(f"[green]Telegram Bridge (@{bot_name}) — foreground mode[/green]")
-        console.print("Pressione Ctrl+C para parar.")
-        run_bridge(config)
-
-
-@telegram_app.command("stop", help="Para o Telegram Bridge")
-def telegram_stop():
-    """Para o bridge Telegram em background."""
-    import subprocess, sys, signal
-    # procura processo telegram_bridge.py
-    try:
-        result = subprocess.run(
-            [sys.executable or "python", "-c", """
-import subprocess, sys, os
-# find telegram_bridge processes
-import psutil
-for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-    try:
-        cmdline = proc.info.get('cmdline') or []
-        if any('telegram_bridge' in str(c).lower() for c in cmdline):
-            print(proc.info['pid'])
-    except:
-        pass
-"""],
-            capture_output=True, text=True, timeout=10
-        )
-        pids = [int(p.strip()) for p in result.stdout.strip().split() if p.strip()]
-        if pids:
-            for pid in pids:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except:
-                    pass
-            console.print(f"[green]Bridge parado ({len(pids)} processo(s)).[/green]")
-        else:
-            console.print("[yellow]Nenhum bridge em execucao.[/yellow]")
-    except Exception as e:
-        console.print(f"[red]Erro ao parar bridge: {e}[/red]")
-
-
-@telegram_app.command("status", help="Status do Telegram Bridge")
-def telegram_status():
-    """Verifica se o bridge esta rodando."""
-    import subprocess, sys
-    try:
-        result = subprocess.run(
-            [sys.executable or "python", "-c", """
-import psutil
-for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-    try:
-        cmdline = proc.info.get('cmdline') or []
-        if any('telegram_bridge' in str(c).lower() for c in cmdline):
-            print(f"PID {proc.info['pid']}: {' '.join(cmdline[:4])}")
-    except:
-        pass
-"""],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.stdout.strip():
-            console.print(f"[green]Bridge ATIVO:[/green]\n{result.stdout.strip()}")
-        else:
-            console.print("[yellow]Bridge INATIVO.[/yellow]")
-    except Exception as e:
-        console.print(f"[red]Erro: {e}[/red]")
-
-
-@telegram_app.command("config", help="Configura o bot token")
-def telegram_config(
-    token: str = typer.Argument(..., help="Token do bot do Telegram (do @BotFather)"),
+@telegram_app.command("test", help="Valida o token do bot (getMe)")
+def telegram_test(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
 ):
-    """Salva o token do bot no config/telegram.yaml."""
-    import yaml
-    from pathlib import Path
-    cfg_path = Path("config/telegram.yaml")
-    data = {"bot_token": token, "allowed_users": [], "poll_interval": 2.0}
-    if cfg_path.exists():
-        with open(cfg_path) as f:
-            existing = yaml.safe_load(f) or {}
-        existing["bot_token"] = token
-        data = existing
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cfg_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False)
-    console.print(f"[green]Token salvo em {cfg_path}[/green]")
-    # testa o token
+    from bauer.channel_base import resolve_token
+    from bauer.config_loader import load_config as _load_cfg
+
+    cfg = _load_cfg(config)
+    token = resolve_token(cfg.telegram.bot_token, "TELEGRAM_BOT_TOKEN")
+    if not token:
+        console.print("[red]Token ausente.[/red] Defina TELEGRAM_BOT_TOKEN no .env "
+                      "ou rode `bauer gateway init`.")
+        raise typer.Exit(code=1)
+    import httpx
     try:
-        import httpx
         r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
         bot = r.json().get("result", {})
-        console.print(f"Bot @{bot.get('username', '?')} — [green]conectado![/green]")
-    except Exception as e:
-        console.print(f"[red]Erro ao conectar: {e}[/red]")
+        if r.json().get("ok"):
+            console.print(f"[green]✓ Bot @{bot.get('username')} conectado.[/green]")
+        else:
+            console.print(f"[red]Token inválido:[/red] {r.json().get('description')}")
+            raise typer.Exit(code=1)
+    except httpx.HTTPError as exc:
+        console.print(f"[red]Erro de rede:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@discord_app.command("start", help="Inicia o canal Discord (foreground)")
+def discord_start(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+):
+    """Sobe só o bridge Discord. Para todos os canais use `bauer gateway start`."""
+    from bauer.discord_bridge import run_bridge
+
+    console.print("[green]Discord bridge — foreground (Ctrl+C para parar)[/green]")
+    try:
+        run_bridge(config)
+    except RuntimeError as exc:
+        console.print(f"[red]ERRO:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@gateway_app.command("start", help="Inicia todos os canais habilitados + outbox pump")
+def gateway_start(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+):
+    """Bauer Gateway: canais do config.yaml (telegram/discord) + entrega do outbox."""
+    import logging
+    import os
+
+    from bauer.gateway_runtime import BauerGatewayRuntime
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    runtime = BauerGatewayRuntime.from_config(config)
+    if not runtime.bridges:
+        console.print(
+            "[yellow]Nenhum canal habilitado.[/yellow] Habilite telegram/discord no "
+            "config.yaml ou rode [bold]bauer gateway init[/bold]."
+        )
+    names = ", ".join(b.name for b in runtime.bridges) or "nenhum canal"
+    console.print(f"[green]Bauer Gateway no ar[/green] — {names} + outbox pump. Ctrl+C para parar.")
+    pid_file = _gateway_pid_file(Path(runtime.workspace))
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        runtime.start(block=True)
+    finally:
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+@gateway_app.command("status", help="Status dos canais e do outbox")
+def gateway_status(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+):
+    from bauer.channel_base import resolve_token
+    from bauer.config_loader import load_config as _load_cfg
+    from bauer.gateway_outbox import GatewayOutbox
+
+    cfg = _load_cfg(config)
+    table = Table(title="Bauer Gateway", show_lines=False)
+    table.add_column("Canal")
+    table.add_column("Habilitado")
+    table.add_column("Token")
+    table.add_column("Allowlist")
+
+    tg_token = resolve_token(cfg.telegram.bot_token, "TELEGRAM_BOT_TOKEN")
+    dc_token = resolve_token(cfg.discord.bot_token, "DISCORD_BOT_TOKEN")
+    table.add_row(
+        "telegram",
+        "[green]sim[/green]" if cfg.telegram.enabled else "[dim]não[/dim]",
+        "[green]ok[/green]" if tg_token else "[red]ausente[/red]",
+        f"{len(cfg.telegram.allowed_users)} usuários"
+        + (" [yellow](allow_all!)[/yellow]" if cfg.telegram.allow_all else ""),
+    )
+    table.add_row(
+        "discord",
+        "[green]sim[/green]" if cfg.discord.enabled else "[dim]não[/dim]",
+        "[green]ok[/green]" if dc_token else "[red]ausente[/red]",
+        f"{len(cfg.discord.allowed_users)} usuários"
+        + (" [yellow](allow_all!)[/yellow]" if cfg.discord.allow_all else ""),
+    )
+    console.print(table)
+
+    workspace = Path(cfg.agent.workspace)
+    try:
+        pending = len(GatewayOutbox(workspace).pending(limit=100))
+        console.print(f"Outbox: [bold]{pending}[/bold] mensagem(ns) pendente(s)")
+    except Exception:
+        console.print("Outbox: [dim]vazio/indisponível[/dim]")
+
+    pid_file = _gateway_pid_file(workspace)
+    if pid_file.exists():
+        console.print(f"Runtime: [green]possivelmente ativo[/green] (PID {pid_file.read_text().strip()})")
+    else:
+        console.print("Runtime: [dim]parado[/dim] — inicie com `bauer gateway start`")
+
+
+@gateway_app.command("init", help="Wizard interativo: configura Telegram/Discord")
+def gateway_init(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+):
+    """Configura canais passo a passo: token, validação live, allowlist, .env."""
+    import time
+
+    import httpx
+    import yaml as _yaml
+    from rich.prompt import Confirm, Prompt
+
+    console.print(Panel.fit("[bold]Bauer Gateway — setup de canais[/bold]\n"
+                            "Tokens vão para o [cyan].env[/cyan]; o resto para o config.yaml."))
+
+    if not config.exists():
+        console.print(f"[red]{config} não encontrado.[/red]")
+        raise typer.Exit(code=1)
+    raw = _yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    env_lines: list[str] = []
+
+    # ── Telegram ───────────────────────────────────────────────────────────
+    if Confirm.ask("Configurar [bold]Telegram[/bold]?", default=True):
+        console.print("\nCrie um bot com o [bold]@BotFather[/bold] no Telegram e copie o token.")
+        token = Prompt.ask("Token do bot", password=True).strip()
+        bot_name = ""
+        if token:
+            try:
+                r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+                if r.json().get("ok"):
+                    bot_name = r.json()["result"].get("username", "")
+                    console.print(f"[green]✓ Token válido — bot @{bot_name}[/green]")
+                else:
+                    console.print(f"[red]Token rejeitado:[/red] {r.json().get('description')}")
+                    token = ""
+            except httpx.HTTPError as exc:
+                console.print(f"[yellow]Não validou (rede): {exc} — salvando assim mesmo.[/yellow]")
+        allowed: list[int] = list((raw.get("telegram") or {}).get("allowed_users", []))
+        if token and Confirm.ask(
+            "Descobrir seu user id agora? (envie /start ao bot)", default=True
+        ):
+            console.print(f"[cyan]Aguardando mensagem para @{bot_name} (60s)…[/cyan]")
+            deadline = time.time() + 60
+            found: set[int] = set()
+            offset = 0
+            while time.time() < deadline and not found:
+                try:
+                    r = httpx.get(
+                        f"https://api.telegram.org/bot{token}/getUpdates",
+                        params={"timeout": 10, "offset": offset + 1}, timeout=20,
+                    )
+                    for up in r.json().get("result", []):
+                        offset = max(offset, up.get("update_id", 0))
+                        uid = ((up.get("message") or {}).get("from") or {}).get("id")
+                        uname = ((up.get("message") or {}).get("from") or {}).get("username", "?")
+                        if uid:
+                            found.add(int(uid))
+                            console.print(f"[green]✓ Detectado: @{uname} (id {uid})[/green]")
+                except httpx.HTTPError:
+                    time.sleep(2)
+            allowed = sorted(set(allowed) | found)
+            if not found:
+                console.print("[yellow]Nenhuma mensagem recebida — adicione seu id depois "
+                              "em telegram.allowed_users.[/yellow]")
+        if token:
+            env_lines.append(f"TELEGRAM_BOT_TOKEN={token}")
+        tg = raw.setdefault("telegram", {})
+        tg["enabled"] = True
+        tg["allowed_users"] = allowed
+
+    # ── Discord ────────────────────────────────────────────────────────────
+    if Confirm.ask("\nConfigurar [bold]Discord[/bold]?", default=False):
+        console.print(
+            "\n1. https://discord.com/developers/applications → New Application → Bot\n"
+            "2. Copie o token; habilite [bold]MESSAGE CONTENT INTENT[/bold] na aba Bot\n"
+            "3. Convide o bot: OAuth2 → URL Generator → scope 'bot' → Send Messages"
+        )
+        token = Prompt.ask("Token do bot", password=True).strip()
+        if token:
+            try:
+                r = httpx.get(
+                    "https://discord.com/api/v10/users/@me",
+                    headers={"Authorization": f"Bot {token}"}, timeout=10,
+                )
+                if r.status_code == 200:
+                    console.print(f"[green]✓ Token válido — bot {r.json().get('username')}[/green]")
+                else:
+                    console.print(f"[red]Token rejeitado (HTTP {r.status_code}).[/red]")
+                    token = ""
+            except httpx.HTTPError as exc:
+                console.print(f"[yellow]Não validou (rede): {exc} — salvando assim mesmo.[/yellow]")
+        user_id = Prompt.ask(
+            "Seu user id do Discord (Configurações → Avançado → Modo desenvolvedor → "
+            "botão direito no seu nome → Copiar ID)", default=""
+        ).strip()
+        if token:
+            env_lines.append(f"DISCORD_BOT_TOKEN={token}")
+        dc = raw.setdefault("discord", {})
+        dc["enabled"] = True
+        if user_id:
+            existing = set(dc.get("allowed_users", []))
+            existing.add(user_id)
+            dc["allowed_users"] = sorted(existing)
+
+    # ── Persistência ───────────────────────────────────────────────────────
+    if env_lines:
+        env_path = Path(".env")
+        current = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        new_content = current.rstrip("\n")
+        for line in env_lines:
+            key = line.split("=", 1)[0]
+            if f"{key}=" in current:
+                console.print(f"[yellow]{key} já existe no .env — não sobrescrevi.[/yellow]")
+                continue
+            new_content += ("\n" if new_content else "") + line
+        env_path.write_text(new_content + "\n", encoding="utf-8")
+        console.print(f"[green]✓ Tokens gravados no {env_path}[/green]")
+
+    config.write_text(
+        _yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    console.print(f"[green]✓ Seções atualizadas no {config}[/green]")
+    console.print("\nPróximo passo: [bold]bauer gateway start[/bold]")
 
 
 if __name__ == "__main__":
