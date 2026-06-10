@@ -113,7 +113,7 @@ class AnthropicClient:
             return True
 
     def show_model(self, name: str) -> ModelfileParams:
-        return ModelfileParams(num_ctx=None, raw={"id": name})
+        return ModelfileParams(num_ctx=None, context_length=None, size_bytes=0, raw={"id": name})
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
         """Streaming via /v1/messages com SSE Anthropic.

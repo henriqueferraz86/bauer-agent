@@ -62,6 +62,45 @@ def load_registry(path: str | Path = "models.yaml") -> ModelRegistry:
         raise ModelRegistryError(f"models.yaml inválido:\n{problems}") from exc
 
 
+def auto_detect_from_ollama(client, model_name: str) -> ModelInfo | None:
+    """Detecta ModelInfo automaticamente via Ollama API.
+
+    Não bloqueia por RAM (ram_base_mb=0, ram_per_1k_ctx_mb=0) — usa max_context_safe
+    como teto. O valor de max_context_safe vem do context_length nativo da arquitetura
+    reportado pelo /api/show (ex: gemma3.context_length = 131072).
+    """
+    try:
+        params = client.show_model(model_name)
+    except Exception:
+        return None
+
+    # Contexto máximo nativo do modelo (da arquitetura GGUF)
+    native_ctx = params.context_length or params.num_ctx
+    if not native_ctx or native_ctx <= 0:
+        native_ctx = 32768  # fallback conservador
+
+    # Tamanho em bytes: tenta show_model first, fallback para list_models_with_sizes
+    size_bytes = params.size_bytes or 0
+    if not size_bytes:
+        for entry in client.list_models_with_sizes():
+            if entry["name"] == model_name:
+                size_bytes = entry["size_bytes"]
+                break
+
+    # ram_base_mb estimado do tamanho do arquivo (modelo carregado ≈ tamanho * 1.1)
+    # Usado apenas como informação — ram_per_1k_ctx_mb=0 desativa o bloqueio por RAM.
+    ram_base = int(size_bytes / 1024 / 1024 * 1.1) if size_bytes else 0
+
+    return ModelInfo(
+        provider="ollama",
+        ram_base_mb=ram_base,
+        ram_per_1k_ctx_mb=0,      # desativa bloqueio por KV cache — usa max_context_safe
+        max_context_safe=native_ctx,
+        supports_tools=False,
+        ram_profile="medium",
+    )
+
+
 def contexto_seguro(
     info: ModelInfo,
     ram_disponivel_mb: int,
@@ -70,12 +109,14 @@ def contexto_seguro(
     """Calcula contexto máximo seguro para RAM disponível (Decisão 3).
 
     Retorna 0 se o modelo nem cabe vazio nesta máquina.
+    Quando ram_per_1k_ctx_mb=0 (auto-detectado), retorna max_context_safe diretamente
+    sem checar RAM — o modelo já está rodando ou o usuário optou por não limitar.
     """
+    if info.ram_per_1k_ctx_mb <= 0:
+        return info.max_context_safe
     ram_para_contexto = ram_disponivel_mb - info.ram_base_mb - folga_mb
     if ram_para_contexto <= 0:
         return 0
-    if info.ram_per_1k_ctx_mb <= 0:
-        return info.max_context_safe
     tokens_seguros = (ram_para_contexto / info.ram_per_1k_ctx_mb) * 1024
     # Arredondar para múltiplo de 256 (mais previsível).
     tokens_seguros = int(tokens_seguros // 256) * 256

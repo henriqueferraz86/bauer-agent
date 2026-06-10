@@ -398,30 +398,66 @@ class McpManager:
 
     def __init__(self, configs: list[McpServerConfig] | None = None) -> None:
         self._configs: dict[str, McpServerConfig] = {}
-        self._clients: dict[str, McpClient] = {}
+        self._http_configs: dict[str, dict] = {}  # {name: {url, headers, timeout}}
+        self._clients: dict[str, Any] = {}        # McpClient | McpHttpClient
         for cfg in (configs or []):
             self.add_server(cfg)
 
     def add_server(self, cfg: McpServerConfig) -> None:
-        """Adiciona configuração de servidor (não inicia ainda)."""
+        """Adiciona configuração de servidor stdio (não inicia ainda)."""
         self._configs[cfg.name] = cfg
 
+    def add_http_server(
+        self,
+        name: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: float = 30.0,
+    ) -> None:
+        """Adiciona configuração de servidor MCP via HTTP/SSE (não inicia ainda)."""
+        self._http_configs[name] = {
+            "url": url,
+            "headers": headers or {},
+            "timeout": timeout,
+        }
+
     def remove_server(self, name: str) -> None:
-        """Remove e encerra servidor."""
+        """Remove e encerra servidor (stdio ou HTTP)."""
         self.stop(name)
         self._configs.pop(name, None)
+        self._http_configs.pop(name, None)
 
     def server_names(self) -> list[str]:
-        """Retorna nomes de servidores configurados."""
-        return sorted(self._configs)
+        """Retorna nomes de todos os servidores configurados (stdio + HTTP)."""
+        return sorted(set(self._configs) | set(self._http_configs))
 
-    def get_client(self, name: str) -> McpClient:
-        """Retorna cliente para o servidor, iniciando se necessário."""
-        if name not in self._configs:
+    def get_client(self, name: str) -> "McpClient | Any":
+        """Retorna cliente para o servidor, iniciando se necessário.
+
+        Se o servidor tem ``url`` configurado em vez de ``command``, retorna
+        um :class:`~bauer.mcp_http_client.McpHttpClient` (HTTP/SSE transport).
+        """
+        if name not in self._configs and name not in self._http_configs:
             raise McpError(
                 f"Servidor MCP '{name}' nao configurado. "
                 f"Servidores disponíveis: {self.server_names()}"
             )
+
+        # HTTP client path
+        if name in self._http_configs:
+            if name not in self._clients:
+                from .mcp_http_client import McpHttpClient
+                cfg = self._http_configs[name]
+                client = McpHttpClient(
+                    cfg["url"],
+                    headers=cfg.get("headers") or {},
+                    timeout=float(cfg.get("timeout", 30)),
+                )
+                self._clients[name] = client
+            return self._clients[name]
+
+        # Stdio client path
         if name not in self._clients or not self._clients[name].is_running:
             cfg = self._configs[name]
             client = McpClient(cfg)
@@ -494,20 +530,36 @@ class McpManager:
 
         for name, srv in servers.items():
             if isinstance(srv, dict):
+                url = srv.get("url") or None
                 command = srv.get("command", [])
                 if isinstance(command, str):
                     command = command.split()
                 env = srv.get("env", {}) or {}
                 timeout = float(srv.get("timeout", 30))
                 cwd = srv.get("cwd") or None
+                headers = srv.get("headers", {}) or {}
+            elif hasattr(srv, "url") and getattr(srv, "url", None):
+                url = srv.url
+                command = []
+                env = {}
+                timeout = float(getattr(srv, "timeout", 30))
+                cwd = None
+                headers = dict(getattr(srv, "headers", {}) or {})
             elif hasattr(srv, "command"):
+                url = None
                 command = srv.command
                 if isinstance(command, str):
                     command = command.split()
                 env = dict(getattr(srv, "env", {}) or {})
                 timeout = float(getattr(srv, "timeout", 30))
                 cwd = getattr(srv, "cwd", None)
+                headers = {}
             else:
+                continue
+
+            # Route: HTTP transport if url is set
+            if url:
+                manager.add_http_server(name, url, headers=headers, timeout=timeout)
                 continue
 
             if not command:

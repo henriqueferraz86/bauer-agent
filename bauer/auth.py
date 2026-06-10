@@ -1148,8 +1148,12 @@ def _switch_config_to_provider(provider: str) -> None:
 
     config["model"]["provider"] = cfg["provider"]
     config["model"]["name"] = cfg["model"]
-    config["model"]["requested_context"] = cfg["context"]
-    config["model"]["minimum_context"] = min(cfg["context"], 8192)
+    current_requested = int(config.get("model", {}).get("requested_context") or 16384)
+    safe_context = min(cfg["context"], current_requested)
+
+    config["model"]["requested_context"] = safe_context
+    config["model"]["minimum_context"] = min(safe_context, 8192)
+    config["model"]["think"] = False
 
     # Salvar
     with open(config_path, "w", encoding="utf-8") as f:

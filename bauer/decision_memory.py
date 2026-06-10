@@ -309,10 +309,21 @@ class DecisionMemory:
         if not records:
             return []
 
-        # Compute similarity scores
-        for rec in records:
-            combined = f"{rec.context} {rec.decision}"
-            rec.similarity = _similarity(query, combined)
+        # Try semantic search via EmbeddingEngine first; fall back to TF-IDF
+        try:
+            from .embeddings import get_default_engine as _get_engine
+            _engine = _get_engine()
+            _q_vec = _engine.embed(query)
+            for rec in records:
+                combined = f"{rec.context} {rec.decision}"
+                _c_vec = _engine.embed(combined)
+                from .embeddings import cosine_similarity as _cos
+                rec.similarity = _cos(_q_vec, _c_vec)
+        except Exception:
+            # Fall back to TF-IDF scoring
+            for rec in records:
+                combined = f"{rec.context} {rec.decision}"
+                rec.similarity = _similarity(query, combined)
 
         # Sort by similarity desc, then by quality score desc
         records.sort(key=lambda r: (r.similarity, r.score), reverse=True)

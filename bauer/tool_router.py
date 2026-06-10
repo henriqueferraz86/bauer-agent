@@ -308,6 +308,52 @@ _TOOL_SECURITY: dict[str, dict] = {
     "video_generate": {"permission": "network", "risk": "low",    "approval": False},
 }
 
+# Per-tool hard timeout in seconds (enforced via ThreadPoolExecutor).
+# 0 = no timeout. Pulled from tools.yaml `timeout_seconds` key if present,
+# otherwise defaults below are used.
+_TOOL_TIMEOUTS: dict[str, int] = {
+    # Execution tools — cap to avoid runaway processes
+    "execute_code":   120,
+    "run_command":    120,
+    "delegate_task":  600,
+    "mixture_of_agents": 300,
+    # Network tools — prevent hung connections
+    "web_fetch":       60,
+    "web_search":      30,
+    "http_request":    60,
+    "browser_navigate": 60,
+    "browser_snapshot": 30,
+    "browser_click":    30,
+    "browser_type":     30,
+    "mcp_call":         60,
+    # IO tools
+    "image_generate": 120,
+    "text_to_speech":  90,
+    "vision_analyze":  60,
+    "video_analyze":  180,
+    # Default for everything else (0 = no timeout)
+}
+
+def _load_tool_timeouts_from_yaml() -> None:
+    """Override _TOOL_TIMEOUTS from tools.yaml timeout_seconds keys (if present)."""
+    try:
+        from pathlib import Path as _Path
+        import yaml as _yaml
+        _p = _Path(__file__).parent.parent / "tools.yaml"
+        if not _p.exists():
+            return
+        data = _yaml.safe_load(_p.read_text())
+        for tool_name, cfg in (data.get("tools") or {}).items():
+            if isinstance(cfg, dict) and "timeout_seconds" in cfg:
+                _TOOL_TIMEOUTS[tool_name] = int(cfg["timeout_seconds"])
+    except Exception:
+        pass  # Never crash on config load
+
+try:
+    _load_tool_timeouts_from_yaml()
+except Exception:
+    pass
+
 _TOOL_CONTEXTS = ("supervisor", "orchestrator", "chat", "worker")
 _TOOL_CONTEXT_ALIASES = {
     "": "supervisor",
@@ -1267,11 +1313,26 @@ class ToolRouter:
         _audit_error: Exception | None = None
 
         try:
-            # Tool externa (ToolRegistry) tem prioridade sobre built-in
-            if _ext_fn is not None:
-                result = _ext_fn(args)
+            # Per-tool timeout enforcement (Wave E)
+            _timeout_sec = _TOOL_TIMEOUTS.get(name, 0)
+            if _timeout_sec > 0:
+                import concurrent.futures as _cf
+                _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
+                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                    _future = _pool.submit(_fn, args)
+                    try:
+                        result = _future.result(timeout=_timeout_sec)
+                    except _cf.TimeoutError as _te:
+                        raise ToolError(
+                            f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
+                            "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                        ) from _te
             else:
-                result = self._tools[name]["fn"](args)
+                # Tool externa (ToolRegistry) tem prioridade sobre built-in
+                if _ext_fn is not None:
+                    result = _ext_fn(args)
+                else:
+                    result = self._tools[name]["fn"](args)
         except Exception as _exc:
             _audit_error = _exc
             _duration_ms = (_time.monotonic() - _t0) * 1000

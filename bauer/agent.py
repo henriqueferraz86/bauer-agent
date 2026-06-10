@@ -124,7 +124,7 @@ try:
     from prompt_toolkit.completion import ThreadedCompleter
     from prompt_toolkit.document import Document as PtDocument
     from prompt_toolkit.formatted_text import HTML
-    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.history import FileHistory, InMemoryHistory
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.styles import Style as PtStyle
 
@@ -174,18 +174,31 @@ try:
         return kb
 
     def _make_prompt_session() -> "PromptSession":
-        # Força saída VT100 (compatível com VSCode / Windows Terminal / xterm)
+        # Histórico persistido entre sessões em ~/.bauer/.cli_history
+        import os as _os
+        from pathlib import Path as _Path
+        _bauer_home = _Path(_os.environ.get("BAUER_HOME", str(_Path.home() / ".bauer")))
+        _bauer_home.mkdir(parents=True, exist_ok=True)
+        _hist_path = _bauer_home / ".cli_history"
         try:
-            import sys as _sys
-            from prompt_toolkit.output import create_output
-            _output = create_output(stdout=_sys.stdout)
+            _history = FileHistory(str(_hist_path))
         except Exception:
-            _output = None  # deixa prompt_toolkit auto-detectar
+            _history = InMemoryHistory()  # fallback se o arquivo não puder ser criado
+
+        # create_output detecta Win32Console / VT100 e habilita o popup de completions.
+        # Sem isso, em certos terminais Windows o menu de autocomplete não renderiza.
+        # Se falhar (ex: Git Bash sem pty), usa output=None (auto-detect do prompt_toolkit).
+        import sys as _sys
+        try:
+            from prompt_toolkit.output import create_output as _create_output
+            _output = _create_output(stdout=_sys.stdout)
+        except Exception:
+            _output = None
 
         return PromptSession(
             completer=_SlashCompleter(),
             complete_while_typing=True,
-            history=InMemoryHistory(),
+            history=_history,
             style=_PT_STYLE,
             mouse_support=False,
             key_bindings=_make_slash_kb(),
@@ -804,37 +817,82 @@ def _collect_with_fallback(
     Raises:
         OllamaError | OpenAIClientError: quando todos os providers falham.
     """
+    # Derive provider name from client for circuit breaker tracking
+    _primary_provider = getattr(client, "_provider", None) or getattr(client, "provider_name", lambda: "unknown")()
+    if callable(_primary_provider):
+        _primary_provider = _primary_provider()
+
+    # --- Circuit breaker: skip primary if already OPEN ---
     try:
-        return _collect_response(client, model_name, payload), client, model_name
-    except (OllamaError, OpenAIClientError) as primary_exc:
-        if not fallback_clients:
-            raise
+        from .circuit_breaker import global_cb, CircuitOpenError
+        _cb_available = True
+    except Exception:
+        _cb_available = False
+        global_cb = None  # type: ignore[assignment]
+        CircuitOpenError = Exception  # type: ignore[assignment, misc]
 
-        # Classifica o erro — só faz fallback para erros "de provider", não de auth
-        _should_fallback = True
+    if _cb_available and global_cb is not None and global_cb.is_open(_primary_provider):
+        console.print(
+            f"[yellow]⚡ Circuit OPEN para '{_primary_provider}' — saltando para fallback[/yellow]"
+        )
+    else:
         try:
-            from .error_classifier import classify_api_error
-            classified = classify_api_error(primary_exc)
-            _should_fallback = classified.should_fallback
-        except Exception:
-            pass  # sem classifier: assume que deve tentar fallback
+            resp = _collect_response(client, model_name, payload)
+            if _cb_available and global_cb is not None:
+                global_cb.record_success(_primary_provider)
+            return resp, client, model_name
+        except (OllamaError, OpenAIClientError) as primary_exc:
+            if _cb_available and global_cb is not None:
+                global_cb.record_failure(_primary_provider, primary_exc)
+            if not fallback_clients:
+                raise
 
-        if not _should_fallback:
-            raise
-
-        for fb_client, fb_model in fallback_clients:
-            _fb_label = getattr(fb_client, "default_model", fb_model)
-            console.print(
-                f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_label}[/bold][/yellow]"
-            )
+            # Classifica o erro — só faz fallback para erros "de provider", não de auth
+            _should_fallback = True
             try:
-                resp = _collect_response(fb_client, fb_model, payload)
-                return resp, fb_client, fb_model
-            except Exception as fb_exc:
-                console.print(f"[dim]  Fallback {_fb_label} também falhou: {fb_exc}[/dim]")
-                continue
+                from .error_classifier import classify_api_error
+                classified = classify_api_error(primary_exc)
+                _should_fallback = classified.should_fallback
+            except Exception:
+                pass  # sem classifier: assume que deve tentar fallback
 
-        raise  # todos os fallbacks esgotados
+            if not _should_fallback:
+                raise
+
+            # Fall through to try fallback_clients below
+            _primary_failed_exc = primary_exc
+        else:
+            _primary_failed_exc = None  # type: ignore[assignment]
+
+    if not fallback_clients:
+        if "_primary_failed_exc" in dir():
+            raise _primary_failed_exc  # type: ignore[name-defined]
+        raise OllamaError("Circuit OPEN e sem fallback configurado")
+
+    for fb_client, fb_model in fallback_clients:
+        _fb_label = getattr(fb_client, "default_model", fb_model)
+        _fb_provider = getattr(fb_client, "_provider", None) or "unknown"
+        if _cb_available and global_cb is not None and global_cb.is_open(_fb_provider):
+            console.print(f"[dim]  Fallback {_fb_label}: circuit OPEN, pulando[/dim]")
+            continue
+        console.print(
+            f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_label}[/bold][/yellow]"
+        )
+        try:
+            resp = _collect_response(fb_client, fb_model, payload)
+            if _cb_available and global_cb is not None:
+                global_cb.record_success(_fb_provider)
+            return resp, fb_client, fb_model
+        except Exception as fb_exc:
+            if _cb_available and global_cb is not None:
+                global_cb.record_failure(_fb_provider, fb_exc)
+            console.print(f"[dim]  Fallback {_fb_label} também falhou: {fb_exc}[/dim]")
+            continue
+
+    # All fallbacks exhausted
+    if "_primary_failed_exc" in dir() and "_primary_failed_exc" in locals():
+        raise _primary_failed_exc  # type: ignore[name-defined]
+    raise OllamaError("Todos os providers estão com circuit OPEN ou falharam")
 
 
 def _run_native_tool_turn(
@@ -2006,13 +2064,15 @@ def run_agent_session(
         pass
 
     # Cria sessão prompt_toolkit (autocomplete de /) apenas em terminal interativo real.
+    # Só exige stdin como tty — stdout pode estar capturado pelo Rich em alguns terminais.
     # Tenta criar; se o terminal não suportar (ex: pipe, CI), cai para console.input().
-    _is_interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    _is_interactive = sys.stdin.isatty()
     _pt_session = None
     if _PT_AVAILABLE and _is_interactive:
         try:
             _pt_session = _make_prompt_session()
-        except Exception:
+        except Exception as _pt_exc:
+            console.print(f"[dim](autocomplete indisponível: {_pt_exc})[/dim]")
             _pt_session = None  # terminal incompatível — usa fallback
 
     while True:

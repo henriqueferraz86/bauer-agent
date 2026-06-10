@@ -100,7 +100,7 @@ class OpenAIClient:
             return True  # assume disponível se não conseguir listar (ex: Groq, OpenRouter)
 
     def show_model(self, name: str) -> ModelfileParams:
-        return ModelfileParams(num_ctx=None, raw={"id": name})
+        return ModelfileParams(num_ctx=None, context_length=None, size_bytes=0, raw={"id": name})
 
     @property
     def supports_native_tools(self) -> bool:

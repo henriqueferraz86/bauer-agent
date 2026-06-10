@@ -130,8 +130,8 @@ class ContextManager:
 
     @property
     def context_window(self) -> int:
-        """Janela de contexto real do provider."""
-        return PROVIDER_CONTEXT_WINDOWS.get(self.provider, self.applied_context or 32768)
+        """Janela de contexto efetiva aplicada."""
+        return self.applied_context or PROVIDER_CONTEXT_WINDOWS.get(self.provider, 32768)
 
     @property
     def effective_threshold(self) -> float:
@@ -192,8 +192,20 @@ class ContextManager:
         to_compress = _prune_tool_results(to_compress)
 
         # ── 3. Compressão semântica ou rule-based ──────────────────────────
-        if self._llm_client and self._llm_model:
-            summary = _summarize_llm(self._llm_client, self._llm_model, to_compress)
+        _client = self._llm_client
+        _model = self._llm_model
+        # Try auxiliary client if primary not set (Wave E)
+        if not (_client and _model):
+            try:
+                from .auxiliary_client import get_compression_client as _get_aux
+                _aux_client, _aux_model = _get_aux()
+                if _aux_client and _aux_model:
+                    _client, _model = _aux_client, _aux_model
+            except Exception:
+                pass
+
+        if _client and _model:
+            summary = _summarize_llm(_client, _model, to_compress)
         else:
             summary = _summarize_messages(to_compress)
 

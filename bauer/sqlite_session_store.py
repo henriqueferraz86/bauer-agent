@@ -310,8 +310,15 @@ class SqliteSessionStore:
         query: str,
         top_k: int = 5,
         role_filter: str | None = None,
+        *,
+        use_vectors: bool = True,
     ) -> list[dict]:
-        """Busca mensagens usando FTS5 (ou LIKE como fallback).
+        """Busca mensagens usando vector similarity (RAG), FTS5, ou LIKE como fallback.
+
+        Ordem de preferência:
+        1. VectorStore (embedding semântico) — retorna resultados ranqueados por cosseno.
+        2. FTS5 full-text search (se disponível na compilação SQLite).
+        3. LIKE simples (fallback universal).
 
         Args:
             query: Termos de busca.
@@ -319,13 +326,23 @@ class SqliteSessionStore:
                    Termos simples são envolvidos em aspas automaticamente.
             top_k: Número máximo de sessões únicas retornadas.
             role_filter: Filtra por role ('user', 'assistant', 'tool').
+            use_vectors: Se False, pula VectorStore e vai direto para FTS5/LIKE.
 
         Returns:
             Lista de dicts com keys: session_id, role, snippet, rank, updated_at.
-            Ordenado do mais relevante ao menos (rank menor = mais relevante em FTS5).
+            Ordenado do mais relevante ao menos.
         """
         if not query or not query.strip():
             return []
+
+        # 1. Tenta busca semântica via VectorStore
+        if use_vectors:
+            try:
+                vector_results = self._vector_search(query, top_k, role_filter)
+                if vector_results:
+                    return vector_results
+            except Exception:
+                pass  # Fallback silencioso para FTS5/LIKE
 
         conn = self._connect()
         try:
@@ -337,6 +354,66 @@ class SqliteSessionStore:
             return self._like_search(conn, query, top_k, role_filter)
         finally:
             conn.close()
+
+    def _vector_search(
+        self,
+        query: str,
+        top_k: int,
+        role_filter: str | None,
+    ) -> list[dict]:
+        """Busca semântica via VectorStore (EmbeddingEngine + cosine similarity).
+
+        Retorna lista vazia se VectorStore não estiver disponível ou não tiver
+        entradas suficientes para produzir resultado confiável.
+        """
+        from .vector_store import get_default_store as _get_store
+        store = _get_store()
+
+        # Fonte dos vetores: "session_msg" com source_id = "{session_id}:{role}:{idx}"
+        source_type = "session_msg"
+        if store.count(source_type) == 0:
+            return []  # Ainda sem vetores indexados
+
+        results = store.search(
+            query,
+            top_k=top_k * 4,  # busca mais para poder filtrar + deduplicar
+            source_type=source_type,
+            min_score=0.15,    # threshold mínimo para evitar noise
+        )
+
+        # Extrai session_id e filtra por role se necessário
+        conn = self._connect()
+        try:
+            seen: dict[str, dict] = {}
+            for r in results:
+                # source_id format: "{session_id}:{role}:{idx}"
+                parts = r.source_id.split(":", 2)
+                if len(parts) < 3:
+                    continue
+                sid, role, _ = parts
+                if role_filter and role != role_filter:
+                    continue
+                if sid in seen:
+                    continue
+                # Pega updated_at da tabela sessions
+                row = conn.execute(
+                    "SELECT updated_at FROM sessions WHERE session_id=?", (sid,)
+                ).fetchone()
+                updated_at = row["updated_at"] if row else ""
+                seen[sid] = {
+                    "session_id": sid,
+                    "role": role,
+                    "snippet": r.text[:200].replace("\n", " "),
+                    "rank": float(r.score),   # higher = better (reversed from FTS5)
+                    "updated_at": updated_at,
+                }
+                if len(seen) >= top_k:
+                    break
+        finally:
+            conn.close()
+
+        # Ordena por score desc (melhor similaridade primeiro)
+        return sorted(seen.values(), key=lambda x: x["rank"], reverse=True)
 
     def _fts5_search(
         self,
@@ -472,3 +549,23 @@ class SqliteSessionStore:
                     "VALUES (?,?,?,?,?)",
                     (session_id, idx, role, content, now),
                 )
+
+        # Asynchronously index new messages in VectorStore for semantic search
+        import threading as _threading
+
+        def _index_in_background() -> None:
+            try:
+                from .vector_store import get_default_store as _get_store
+                _store = _get_store()
+                for _idx, _msg in enumerate(messages):
+                    _role = _msg.get("role", "")
+                    _content = _content_to_str(_msg.get("content", ""))
+                    if not _content.strip():
+                        continue
+                    _source_id = f"{session_id}:{_role}:{_idx}"
+                    _store.store(_source_id, "session_msg", _content)
+            except Exception:
+                pass  # Never raise in background thread
+
+        _t = _threading.Thread(target=_index_in_background, daemon=True)
+        _t.start()

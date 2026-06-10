@@ -311,6 +311,19 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
 # ---------------------------------------------------------------------------
 
 
+def get_compression_client(cfg=None) -> tuple["TextLLMClient | None", "str | None"]:
+    """Return (client, model_name) for context compression.
+
+    Shorthand for ``get_text_auxiliary_client("compression_model", cfg)``.
+    Used by :mod:`bauer.context_manager` for semantic summarisation when the
+    primary model is not passed explicitly.
+
+    Returns ``(None, None)`` when the slot is unconfigured — the caller
+    should fall back to rule-based summarisation.
+    """
+    return get_text_auxiliary_client("compression_model", cfg)
+
+
 def call_aux_text(
     slot: str,
     messages: list[dict],
