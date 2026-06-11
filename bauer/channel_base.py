@@ -466,15 +466,15 @@ class AgentBackend:
         return models
 
     def _configured_providers(self) -> list[str]:
-        """Lista de providers com credenciais configuradas (env vars presentes)."""
+        """Todos os providers suportados (para /model mostrar lista completa)."""
         if self._providers_fetcher is not None:
             try:
                 return list(self._providers_fetcher())
             except Exception:  # noqa: BLE001
                 pass
         try:
-            from .provider_profile import configured_providers as _cp
-            result = [p.name for p in _cp()]
+            from .provider_profile import list_providers as _lp
+            result = [p.name for p in _lp()]
             return result if result else [self._provider]
         except Exception:  # noqa: BLE001
             return [self._provider]
