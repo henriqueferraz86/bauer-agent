@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from bauer.context_manager import ContextManager, _estimate_tokens
+from bauer.context_manager import ContextManager, _estimate_tokens, _strip_orphan_tool_messages
 
 
 # --- _estimate_tokens -------------------------------------------------------
@@ -149,3 +149,76 @@ def test_clear_allows_new_messages_after():
     ctx.add_user("new")
     assert len(ctx.messages) == 1
     assert ctx.messages[0]["content"] == "new"
+
+
+# --- _strip_orphan_tool_messages ---------------------------------------------
+
+
+def test_strip_tool_result_sem_assistant():
+    """role:tool sem assistant:tool_calls correspondente é removido."""
+    msgs = [
+        {"role": "user", "content": "pergunta"},
+        {"role": "tool", "tool_call_id": "call_abc", "content": "resultado"},
+    ]
+    clean = _strip_orphan_tool_messages(msgs)
+    assert len(clean) == 1
+    assert clean[0]["role"] == "user"
+
+
+def test_strip_assistant_tool_calls_sem_resultado():
+    """role:assistant com tool_calls mas sem nenhum result correspondente é removido."""
+    msgs = [
+        {"role": "user", "content": "pergunta"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {}}]},
+    ]
+    clean = _strip_orphan_tool_messages(msgs)
+    assert all(m.get("role") != "assistant" or not m.get("tool_calls") for m in clean)
+
+
+def test_strip_par_valido_permanece():
+    """Par assistant+tool_calls com resultado correspondente não é alterado."""
+    msgs = [
+        {"role": "user", "content": "pergunta"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "resultado"},
+        {"role": "assistant", "content": "resposta final"},
+    ]
+    clean = _strip_orphan_tool_messages(msgs)
+    assert len(clean) == 4
+
+
+def test_get_payload_strip_automatico():
+    """get_payload() remove tool results órfãos transparentemente (fix do 400)."""
+    ctx = ContextManager(applied_context=4096)
+    # Injeta estado quebrado diretamente em messages (simula sessão corrupta)
+    ctx.messages = [
+        {"role": "tool", "tool_call_id": "call_orfao", "content": "resultado perdido"},
+        {"role": "user", "content": "nova pergunta"},
+    ]
+    payload = ctx.get_payload()
+    assert not any(m.get("role") == "tool" for m in payload)
+    assert any(m["content"] == "nova pergunta" for m in payload)
+
+
+def test_trim_remove_par_atomicamente():
+    """_trim não deixa role:tool órfão quando remove o assistant correspondente."""
+    ctx = ContextManager(applied_context=512)
+    # Adiciona par completo ao messages diretamente (sem passar pelo add_user/add_assistant
+    # que aciona auto_summarize)
+    ctx.messages = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "resultado"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    # Força trim adicionando mensagem enorme
+    ctx.add_user("x" * 10_000)
+    # Verifica que não há tool result órfão
+    payload = ctx.get_payload()
+    tool_ids = {m.get("tool_call_id") for m in payload if m.get("role") == "tool"}
+    declared = set()
+    for m in payload:
+        if m.get("role") == "assistant":
+            for tc in m.get("tool_calls") or []:
+                if tc.get("id"):
+                    declared.add(tc["id"])
+    assert not (tool_ids - declared), f"tool results órfãos: {tool_ids - declared}"

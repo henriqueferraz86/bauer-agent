@@ -129,7 +129,7 @@ class ContextManager:
         result: list[dict] = []
         if self.system_prompt:
             result.append({"role": "system", "content": self.system_prompt})
-        result.extend(self.messages)
+        result.extend(_strip_orphan_tool_messages(self.messages))
         return result
 
     def clear(self) -> None:
@@ -245,12 +245,58 @@ class ContextManager:
 
         Nunca remove a última mensagem (a do usuário recém-chegada) para
         garantir que sempre enviamos algo ao modelo.
+        Remove pares assistant+tool_calls atomicamente para não deixar
+        role:tool órfãos que causam 400 "tool_call_id is not set".
         """
         while len(self.messages) > 1 and _estimate_tokens(self.messages) > self._budget:
-            self.messages.pop(0)
+            dropped = self.messages.pop(0)
+            # Se removemos um assistant com tool_calls, também remove os
+            # tool results correspondentes para não deixar pares quebrados.
+            if dropped.get("role") == "assistant" and dropped.get("tool_calls"):
+                tc_ids = {tc.get("id") for tc in (dropped["tool_calls"] or []) if tc.get("id")}
+                if tc_ids:
+                    self.messages = [
+                        m for m in self.messages
+                        if not (m.get("role") == "tool" and m.get("tool_call_id") in tc_ids)
+                    ]
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _strip_orphan_tool_messages(messages: list[dict]) -> list[dict]:
+    """Remove pares assistant+tool quebrados que causariam 400 no provider.
+
+    _trim e _auto_summarize podem remover a metade de um par:
+    - remove o assistant com tool_calls mas deixa o role:tool atrás
+    - remove o role:tool mas deixa o assistant com tool_calls na frente
+
+    Providers como OpenCode/Xiaomi retornam "tool_call_id is not set" quando
+    recebem role:tool sem um assistant:tool_calls correspondente.
+    """
+    declared_ids: set[str] = set()
+    result_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if tc.get("id"):
+                    declared_ids.add(tc["id"])
+        elif msg.get("role") == "tool":
+            if msg.get("tool_call_id"):
+                result_ids.add(msg["tool_call_id"])
+
+    clean: list[dict] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "tool":
+            if msg.get("tool_call_id") not in declared_ids:
+                continue  # tool result sem assistant correspondente
+        elif role == "assistant" and msg.get("tool_calls"):
+            tc_ids = {tc.get("id") for tc in (msg.get("tool_calls") or []) if tc.get("id")}
+            if tc_ids and not any(tid in result_ids for tid in tc_ids):
+                continue  # assistant com tool_calls sem nenhum resultado correspondente
+        clean.append(msg)
+    return clean
+
 
 def _estimate_tokens(messages: list[dict]) -> int:
     total_chars = sum(len(m.get("content", "") or "") for m in messages)
@@ -363,7 +409,7 @@ def _prune_tool_results(messages: list[dict]) -> list[dict]:
 def _summarize_llm(client: Any, model: str, messages: list[dict]) -> str:
     """Compressão semântica via LLM — pede ao modelo para resumir o histórico."""
     transcript = "\n".join(
-        f"{m['role'].upper()}: {m.get('content', '')[:400]}"
+        f"{m['role'].upper()}: {(m.get('content') or '')[:400]}"
         for m in messages
     )
     prompt = (
