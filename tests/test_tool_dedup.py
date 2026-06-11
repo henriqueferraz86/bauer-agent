@@ -42,6 +42,38 @@ class TestDedupBasico:
         assert d.check("read_file", {"path": "a.py"}) is None
 
 
+class TestEscaladaDeReplay:
+    def test_segundo_replay_escala_o_tom(self):
+        d = ToolCallDeduper()
+        d.record("web_search", {"query": "x"}, "resultado")
+        r1 = d.check("web_search", {"query": "x"})
+        r2 = d.check("web_search", {"query": "x"})
+        r3 = d.check("web_search", {"query": "x"})
+        assert "[dedup]" in r1 and "loop" not in r1
+        assert "loop" in r2 and "2ª repetição" in r2
+        assert "3ª repetição" in r3
+        # o resultado original continua presente em todos
+        assert all("resultado" in r for r in (r1, r2, r3))
+
+    def test_chamadas_diferentes_nao_compartilham_contagem(self):
+        d = ToolCallDeduper()
+        d.record("read_file", {"path": "a"}, "A")
+        d.record("read_file", {"path": "b"}, "B")
+        d.check("read_file", {"path": "a"})
+        r_b = d.check("read_file", {"path": "b"})
+        assert "loop" not in r_b  # 1º replay de b é nota neutra
+
+    def test_clear_zera_escalada(self):
+        d = ToolCallDeduper()
+        d.record("read_file", {"path": "a"}, "A")
+        d.check("read_file", {"path": "a"})
+        d.check("read_file", {"path": "a"})
+        d.clear()
+        d.record("read_file", {"path": "a"}, "A")
+        r = d.check("read_file", {"path": "a"})
+        assert "loop" not in r
+
+
 class TestMutacao:
     def test_tool_mutante_nunca_e_dedupada(self):
         d = ToolCallDeduper()

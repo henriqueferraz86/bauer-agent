@@ -7169,6 +7169,69 @@ def telegram_start(
         raise typer.Exit(code=1)
 
 
+def _kill_bridge_processes(*needles: str) -> int:
+    """Mata processos cujo cmdline contém qualquer needle (exceto o atual).
+
+    Necessário porque versões antigas iniciavam o bridge em background sem
+    PID file — o processo órfão continua consumindo o getUpdates do bot
+    (Telegram 409) e respondendo com o código antigo.
+    """
+    import os
+
+    import psutil
+
+    killed = 0
+    me = os.getpid()
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if proc.pid == me:
+                continue
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            if any(n in cmdline for n in needles):
+                proc.terminate()
+                killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return killed
+
+
+@telegram_app.command("stop", help="Para bridges Telegram em execução (inclusive antigos)")
+def telegram_stop():
+    killed = _kill_bridge_processes("telegram_bridge")
+    if killed:
+        console.print(f"[green]✓ {killed} processo(s) de bridge encerrado(s).[/green]")
+    else:
+        console.print("[yellow]Nenhum bridge Telegram em execução.[/yellow]")
+
+
+@gateway_app.command("stop", help="Para o Bauer Gateway em execução")
+def gateway_stop(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+):
+    from bauer.config_loader import load_config as _load_cfg
+
+    try:
+        workspace = Path(_load_cfg(config).agent.workspace)
+    except Exception:
+        workspace = Path("workspace")
+    pid_file = _gateway_pid_file(workspace)
+    killed = 0
+    if pid_file.exists():
+        try:
+            import psutil
+            pid = int(pid_file.read_text().strip())
+            psutil.Process(pid).terminate()
+            killed += 1
+        except Exception:
+            pass
+        pid_file.unlink(missing_ok=True)
+    killed += _kill_bridge_processes("gateway_runtime", "telegram_bridge", "discord_bridge")
+    if killed:
+        console.print(f"[green]✓ Gateway parado ({killed} processo(s)).[/green]")
+    else:
+        console.print("[yellow]Nenhum gateway em execução.[/yellow]")
+
+
 @telegram_app.command("test", help="Valida o token do bot (getMe)")
 def telegram_test(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
@@ -7297,6 +7360,7 @@ def gateway_init(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
 ):
     """Configura canais passo a passo: token, validação live, allowlist, .env."""
+    import os
     import time
 
     import httpx
@@ -7312,10 +7376,25 @@ def gateway_init(
     raw = _yaml.safe_load(config.read_text(encoding="utf-8")) or {}
     env_lines: list[str] = []
 
+    def _ask_token(label: str, env_var: str) -> str:
+        """Pede um token com colagem funcionando.
+
+        password=True (getpass) bloqueia paste em vários terminais Windows —
+        usuário relatou não conseguir colar. Entrada visível resolve; quem
+        já exportou a env var nem precisa digitar.
+        """
+        existing = os.environ.get(env_var, "").strip()
+        if existing:
+            masked = existing[:6] + "…" + existing[-4:] if len(existing) > 12 else "***"
+            if Confirm.ask(f"{env_var} já está definido ({masked}). Usar esse?", default=True):
+                return existing
+        console.print("[dim](entrada visível para permitir colar — Ctrl+V / botão direito)[/dim]")
+        return Prompt.ask(label, default="").strip()
+
     # ── Telegram ───────────────────────────────────────────────────────────
     if Confirm.ask("Configurar [bold]Telegram[/bold]?", default=True):
         console.print("\nCrie um bot com o [bold]@BotFather[/bold] no Telegram e copie o token.")
-        token = Prompt.ask("Token do bot", password=True).strip()
+        token = _ask_token("Token do bot", "TELEGRAM_BOT_TOKEN")
         bot_name = ""
         if token:
             try:
@@ -7368,7 +7447,7 @@ def gateway_init(
             "2. Copie o token; habilite [bold]MESSAGE CONTENT INTENT[/bold] na aba Bot\n"
             "3. Convide o bot: OAuth2 → URL Generator → scope 'bot' → Send Messages"
         )
-        token = Prompt.ask("Token do bot", password=True).strip()
+        token = _ask_token("Token do bot", "DISCORD_BOT_TOKEN")
         if token:
             try:
                 r = httpx.get(

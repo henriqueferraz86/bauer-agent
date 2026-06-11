@@ -63,7 +63,9 @@ def record_incident(kind: str, incidents_dir: Path | None = None, **details: Any
             json.dumps(payload, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
-        logger.warning("[incident] %s gravado em %s", kind, path)
+        # info, não warning: incidente é telemetria de rotina — em WARNING ele
+        # estourava no console do chat junto da resposta, virando ruído.
+        logger.info("[incident] %s gravado em %s", kind, path)
         _enforce_retention(base)
         return path
     except Exception as exc:  # noqa: BLE001 — telemetria nunca propaga

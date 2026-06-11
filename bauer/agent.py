@@ -251,12 +251,12 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
     last_tool = tool_log[-1]["tool"]
 
     if consecutive >= _LOOP_REPEAT_HARD:
+        # Conciso de propósito: esta string é injetada no contexto da sessão
+        # e ecoada ao usuário — um parágrafo gritado a cada repetição só
+        # polui o histórico sem mudar o comportamento do modelo.
         msg = (
-            f"[AVISO DO SISTEMA — LOOP DETECTADO] Você chamou '{last_tool}' "
-            f"{consecutive} vezes consecutivas com resultado idêntico. "
-            "PARE IMEDIATAMENTE. Não chame mais nenhuma tool agora. "
-            "Analise o que já foi obtido e responda diretamente ao usuário "
-            "com o resultado atual ou indique o que está impedindo o progresso."
+            f"[sistema] Loop: '{last_tool}' repetida {consecutive}x com resultado "
+            "idêntico — turno interrompido. Responda com o que já foi obtido."
         )
         # Telemetria: loops hard-stop viram incidentes → testes de regressão
         try:
@@ -272,13 +272,16 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
             pass
         return msg, True  # hard stop
 
-    if consecutive >= _LOOP_REPEAT_WARN:
+    if consecutive == _LOOP_REPEAT_WARN:
+        # `==` e não `>=`: o aviso dispara UMA vez (na 3ª repetição). Repetir
+        # o mesmo aviso na 4ª só enche o contexto — se o modelo ignorou a
+        # primeira, a próxima parada é o hard stop acima.
         msg = (
-            f"[AVISO DO SISTEMA] Você chamou '{last_tool}' {consecutive} vezes "
-            "consecutivas com o mesmo resultado. O resultado não vai mudar. "
-            "Considere uma abordagem diferente ou conclua com os dados já obtidos."
+            f"[sistema] Você chamou '{last_tool}' {consecutive}x seguidas com o "
+            "mesmo resultado — ele não vai mudar. Use o que já tem ou mude de "
+            f"abordagem; na {_LOOP_REPEAT_HARD}ª repetição o turno será interrompido."
         )
-        return msg, False  # soft warning
+        return msg, False  # soft warning (única)
 
     # ── 2. Oscilação A→B→A→B (últimas N calls alternam entre 2 tools) ─────────
     if len(tool_log) >= _LOOP_OSCIL_WINDOW:

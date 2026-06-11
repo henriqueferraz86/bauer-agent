@@ -899,14 +899,14 @@ class TestBrowserUtilities:
 
 
 # =============================================================================
-# Integração: 57 tools registradas
+# Integração: 59 tools registradas (57 Wave 6 + channel_send/channel_list)
 # =============================================================================
 
 class TestRegistro57Tools:
 
-    def test_total_57_tools(self, ws):
+    def test_total_59_tools(self, ws):
         router = ToolRouter(workspace=ws, web_enabled=True)
-        assert len(router._tools) == 57
+        assert len(router._tools) == 59
 
     def test_skills_registradas(self, ws):
         router = ToolRouter(workspace=ws)

@@ -146,6 +146,107 @@ class TestAgentBackendProcess:
         assert backend.process(_msg("   ")) == ""
 
 
+class TestComandoModel:
+    def test_model_mostra_ativo(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        resp = backend.process(_msg("/model"))
+        assert "fake-model" in resp
+        assert "ollama" in resp
+
+    def test_comando_com_sufixo_de_bot(self, tmp_path):
+        # Telegram em grupo: "/status@MeuBot"
+        backend = _make_backend(tmp_path)
+        resp = backend.process(_msg("/status@bauer_bot"))
+        assert "fake-model" in resp
+
+
+class TestErrosDeProviderAmigaveis:
+    def _backend_que_falha(self, tmp_path, exc: Exception):
+        class FailingClient:
+            host = "http://localhost:11434"
+
+            def chat_stream(self, model, messages):
+                raise exc
+                yield  # pragma: no cover
+
+        return _make_backend(tmp_path, client=FailingClient())
+
+    def test_rate_limit_vira_mensagem_de_espera(self, tmp_path):
+        backend = self._backend_que_falha(
+            tmp_path, RuntimeError("HTTP 429: rate limit exceeded, retry later")
+        )
+        resp = backend.process(_msg("oi"))
+        assert "limite" in resp.lower()
+        assert "429" in resp or "rate" in resp.lower()
+
+    def test_auth_orienta_doctor(self, tmp_path):
+        backend = self._backend_que_falha(
+            tmp_path, RuntimeError("HTTP 401: invalid api key")
+        )
+        resp = backend.process(_msg("oi"))
+        assert "autentica" in resp.lower() or "key" in resp.lower()
+
+    def test_erro_generico_inclui_detalhe(self, tmp_path):
+        backend = self._backend_que_falha(tmp_path, RuntimeError("explodiu sem motivo"))
+        resp = backend.process(_msg("oi"))
+        assert "explodiu sem motivo" in resp
+        assert "Traceback" not in resp
+
+
+class TestHotReload:
+    def test_mudanca_no_config_troca_modelo(self, tmp_path, monkeypatch):
+        import time as _time
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            "model:\n  provider: ollama\n  name: modelo-velho\n"
+            "  requested_context: 4096\n  minimum_context: 2048\n"
+            f"agent:\n  workspace: {(tmp_path / 'ws').as_posix()}\n",
+            encoding="utf-8",
+        )
+        backend = _make_backend(tmp_path)
+        backend.config_path = cfg_file
+        backend._config_mtime = cfg_file.stat().st_mtime
+        backend._model_name = "modelo-velho"
+
+        # builder injetável: não exige provider real nem importa bauer.cli
+        new_client = _EchoClient()
+        backend._client_builder = lambda cfg: new_client
+
+        # muda o modelo no disco (mtime precisa diferir)
+        _time.sleep(0.05)
+        cfg_file.write_text(
+            cfg_file.read_text(encoding="utf-8").replace("modelo-velho", "modelo-novo"),
+            encoding="utf-8",
+        )
+        import os as _os
+        _os.utime(cfg_file, (cfg_file.stat().st_atime, cfg_file.stat().st_mtime + 5))
+
+        backend.process(_msg("oi"))
+        assert backend._model_name == "modelo-novo"
+        assert backend._client is new_client
+
+    def test_reload_com_config_quebrado_mantem_atual(self, tmp_path):
+        import os as _os
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            "model:\n  provider: ollama\n  name: m\n"
+            "  requested_context: 4096\n  minimum_context: 2048\n",
+            encoding="utf-8",
+        )
+        backend = _make_backend(tmp_path)
+        backend.config_path = cfg_file
+        backend._config_mtime = cfg_file.stat().st_mtime
+
+        cfg_file.write_text("model:\n  invalido: {{{", encoding="utf-8")
+        _os.utime(cfg_file, (cfg_file.stat().st_atime, cfg_file.stat().st_mtime + 5))
+
+        resp = backend.process(_msg("ainda funciona?"))
+        assert "eco:" in resp  # client antigo continua respondendo
+        assert backend._model_name == "fake-model"
+
+
 class TestRateLimiter:
     def test_permite_ate_o_limite(self):
         rl = RateLimiter(max_per_minute=3)

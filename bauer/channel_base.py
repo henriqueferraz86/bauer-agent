@@ -36,10 +36,11 @@ logger = logging.getLogger("bauer.channels")
 _MAX_ACTIVE_SESSIONS = 50
 
 HELP_TEXT = (
-    "🤖 Bauer Agent\n\n"
+    "🤖 *Bauer Agent*\n\n"
     "Mande qualquer mensagem e eu respondo usando o modelo configurado.\n\n"
     "Comandos:\n"
     "/status — modelo, contexto e sessão atual\n"
+    "/model — modelo ativo do agent\n"
     "/clear — apaga o histórico desta conversa\n"
     "/help — esta mensagem"
 )
@@ -137,8 +138,18 @@ class AgentBackend:
         self._store: Any = None
         self._system_prompt: str = ""
         self._init_error: str = ""
+        self._config_mtime: float = 0.0  # hot-reload: detecta `bauer model` etc.
+        # Injetável (testes / embedding): callable(cfg) -> client.
+        # Default None → usa bauer.cli._build_client (import tardio).
+        self._client_builder: Any = None
         self.msgs_processed = 0
         self.errors = 0
+
+    def _build_client_fn(self):
+        if self._client_builder is not None:
+            return self._client_builder
+        from .cli import _build_client  # tardio: cli é pesado e importa este módulo
+        return _build_client
 
     # ── Inicialização ──────────────────────────────────────────────────────
 
@@ -159,7 +170,6 @@ class AgentBackend:
                 return
             # Imports tardios: bauer.cli é pesado e importá-lo no topo
             # criaria ciclo (cli importa os bridges para os comandos).
-            from .cli import _build_client
             from .config_loader import load_config
             from .agent import _build_system_prompt
             from .context_manager import ContextManager  # noqa: F401 (valida import)
@@ -169,7 +179,7 @@ class AgentBackend:
 
             try:
                 cfg = load_config(self.config_path)
-                self._client = _build_client(cfg)
+                self._client = self._build_client_fn()(cfg)
                 self._model_name = cfg.model.name
                 self._provider = cfg.model.provider
                 default_ctx = get_default_context(self._provider)
@@ -187,6 +197,10 @@ class AgentBackend:
                 self._store = SqliteSessionStore(self.sessions_dir)
                 self._system_prompt = _build_system_prompt(self._router)
                 self._init_error = ""
+                try:
+                    self._config_mtime = self.config_path.stat().st_mtime
+                except OSError:
+                    self._config_mtime = 0.0
                 logger.info(
                     "AgentBackend pronto: %s/%s ctx=%d",
                     self._provider, self._model_name, self._applied_context,
@@ -196,6 +210,52 @@ class AgentBackend:
                 self._init_error = f"{type(exc).__name__}: {exc}"
                 logger.error("AgentBackend falhou ao inicializar: %s", self._init_error)
                 raise
+
+    def _maybe_reload(self) -> None:
+        """Hot-reload do client/modelo quando o config.yaml muda no disco.
+
+        Sem isto, `bauer model` (ou edição manual) no servidor não tem efeito
+        até reiniciar o gateway — o usuário troca o modelo e o bot continua
+        respondendo com o antigo. Sessões são preservadas; só o client troca.
+        Falha de reload mantém o client anterior (não derruba o canal).
+        """
+        if not self.is_ready:
+            return
+        try:
+            mtime = self.config_path.stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._config_mtime:
+            return
+        with self._init_lock:
+            if mtime == self._config_mtime:  # outro thread já recarregou
+                return
+            try:
+                from .config_loader import load_config
+                from .provider_profile import get_default_context
+
+                cfg = load_config(self.config_path)
+                new_client = self._build_client_fn()(cfg)
+                self._client = new_client
+                self._model_name = cfg.model.name
+                self._provider = cfg.model.provider
+                default_ctx = get_default_context(self._provider)
+                if self._provider == "ollama":
+                    self._applied_context = cfg.model.requested_context
+                else:
+                    self._applied_context = max(cfg.model.requested_context, default_ctx)
+                # Sessões vivas passam a comprimir/conversar com o client novo
+                with self._sessions_lock:
+                    for ctx, _lock in self._sessions.values():
+                        ctx.set_llm(new_client, self._model_name)
+                self._config_mtime = mtime
+                logger.info(
+                    "config.yaml mudou — gateway agora usa %s/%s",
+                    self._provider, self._model_name,
+                )
+            except Exception as exc:  # noqa: BLE001 — mantém client anterior
+                self._config_mtime = mtime  # não tenta de novo a cada msg
+                logger.error("Reload do config falhou (mantendo modelo atual): %s", exc)
 
     # ── Sessões ────────────────────────────────────────────────────────────
 
@@ -250,15 +310,26 @@ class AgentBackend:
                     "Verifique o config.yaml e rode `bauer doctor` no servidor."
                 )
 
+        self._maybe_reload()  # `bauer model` no servidor vale na próxima msg
+
         text = (msg.text or "").strip()
         if not text:
             return ""
 
         command = text.split()[0].lower() if text.startswith("/") else ""
+        # Telegram em grupo manda "/status@MeuBot" — normaliza
+        command = command.split("@")[0]
         if command in ("/start", "/help"):
             return HELP_TEXT
         if command == "/status":
             return self._cmd_status(msg)
+        if command == "/model":
+            return (
+                f"🧠 Modelo ativo: *{self._model_name}* ({self._provider})\n"
+                f"Contexto: {self._applied_context} tokens\n\n"
+                "Para trocar: rode `bauer model` no servidor — "
+                "o gateway recarrega sozinho na próxima mensagem."
+            )
         if command == "/clear":
             self._clear_session(msg.session_key)
             return "🧹 Histórico desta conversa apagado."
@@ -268,7 +339,48 @@ class AgentBackend:
         except Exception as exc:  # noqa: BLE001
             self.errors += 1
             logger.error("Erro processando msg de %s/%s: %s", msg.channel, msg.user_id, exc)
-            return "⚠️ Erro ao processar sua mensagem. Tente novamente em instantes."
+            return self._friendly_provider_error(exc)
+
+    @staticmethod
+    def _friendly_provider_error(exc: Exception) -> str:
+        """Traduz a falha do provider para o usuário do canal.
+
+        Antes: qualquer erro virava um genérico "tente novamente" — rate
+        limit, key inválida e provider fora do ar ficavam indistinguíveis
+        e o usuário não sabia se era para esperar, corrigir ou desistir.
+        """
+        detail = str(exc)[:200]
+        try:
+            from .error_classifier import FailReason, classify_api_error
+            reason = classify_api_error(exc).reason
+        except Exception:  # noqa: BLE001
+            return f"⚠️ Erro ao processar sua mensagem: {detail}"
+
+        if reason in (FailReason.RATE_LIMIT, FailReason.QUOTA_EXCEEDED):
+            return (
+                "⏳ O provider atingiu o limite de uso (rate limit/quota). "
+                "Aguarde alguns minutos e tente de novo.\n"
+                f"Detalhe: {detail}"
+            )
+        if reason in (FailReason.AUTH_ERROR, FailReason.AUTH_PERMANENT):
+            return (
+                "🔑 Falha de autenticação no provider — a API key pode ter "
+                "expirado. No servidor, rode `bauer doctor -p` para verificar.\n"
+                f"Detalhe: {detail}"
+            )
+        if reason == FailReason.CONTEXT_OVERFLOW:
+            return (
+                "📚 O contexto desta conversa estourou o limite do modelo. "
+                "Use /clear para começar do zero.\n"
+                f"Detalhe: {detail}"
+            )
+        if reason == FailReason.PROVIDER_DOWN:
+            return (
+                "🔌 O provider parece fora do ar (5xx/timeout). "
+                "Tente novamente em instantes.\n"
+                f"Detalhe: {detail}"
+            )
+        return f"⚠️ Erro ao processar sua mensagem: {detail}"
 
     def _run_turn(self, msg: ChannelMessage, text: str) -> str:
         from .agent import run_one_turn

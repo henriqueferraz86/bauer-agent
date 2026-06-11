@@ -155,6 +155,95 @@ class TestOffsetPersistence:
         assert bridge._offset == 0
 
 
+class TestMarkdownParaHtml:
+    def test_negrito_italico_code(self):
+        from bauer.telegram_bridge import md_to_telegram_html
+        out = md_to_telegram_html("**forte** e *leve* e `x = 1`")
+        assert "<b>forte</b>" in out
+        assert "<i>leve</i>" in out
+        assert "<code>x = 1</code>" in out
+
+    def test_bloco_de_codigo_vira_pre(self):
+        from bauer.telegram_bridge import md_to_telegram_html
+        out = md_to_telegram_html("antes\n```python\nprint('oi')\n```\ndepois")
+        assert "<pre>print(&#x27;oi&#x27;)</pre>" in out or "<pre>print('oi')</pre>" in out
+
+    def test_html_do_modelo_e_escapado(self):
+        from bauer.telegram_bridge import md_to_telegram_html
+        out = md_to_telegram_html("perigo <script>alert(1)</script>")
+        assert "<script>" not in out
+        assert "&lt;script&gt;" in out
+
+    def test_link_markdown(self):
+        from bauer.telegram_bridge import md_to_telegram_html
+        out = md_to_telegram_html("veja [docs](https://example.com/x)")
+        assert '<a href="https://example.com/x">docs</a>' in out
+
+    def test_texto_simples_intacto(self):
+        from bauer.telegram_bridge import md_to_telegram_html
+        assert md_to_telegram_html("ola mundo") == "ola mundo"
+
+
+class TestMenuDeComandos:
+    def test_register_commands_chama_set_my_commands(self, tmp_path):
+        calls: list[str] = []
+
+        def handler(request):
+            calls.append(str(request.url))
+            return httpx.Response(200, json={"ok": True, "result": True})
+
+        bridge = _make_bridge(tmp_path, handler)
+        bridge.register_commands()
+        assert any("setMyCommands" in c for c in calls)
+
+    def test_falha_no_menu_nao_propaga(self, tmp_path):
+        bridge = _make_bridge(tmp_path, lambda r: httpx.Response(500))
+        bridge.register_commands()  # não levanta
+
+
+class TestEnvioHtmlComFallback:
+    def test_envia_com_parse_mode_html(self, tmp_path):
+        sent: list[dict] = []
+
+        def handler(request):
+            if "sendMessage" in str(request.url):
+                sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        bridge = _make_bridge(tmp_path, handler)
+        bridge.send_text("42", "**negrito**")
+        assert sent[0]["parse_mode"] == "HTML"
+        assert "<b>negrito</b>" in sent[0]["text"]
+
+    def test_fallback_plain_quando_html_rejeitado(self, tmp_path):
+        sent: list[dict] = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            if "sendMessage" in str(request.url):
+                sent.append(body)
+                if body.get("parse_mode") == "HTML":
+                    return httpx.Response(400, json={"ok": False, "description": "can't parse"})
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        bridge = _make_bridge(tmp_path, handler)
+        bridge.send_text("42", "texto com <tag> esquisita")
+        # 1ª tentativa HTML falhou → 2ª sem parse_mode com o texto cru
+        assert len(sent) == 2
+        assert "parse_mode" not in sent[1]
+        assert sent[1]["text"] == "texto com <tag> esquisita"
+
+
+class TestConflito409:
+    def test_409_da_mensagem_acionavel(self, tmp_path):
+        def handler(request):
+            return httpx.Response(409, json={"ok": False, "description": "Conflict"})
+
+        bridge = _make_bridge(tmp_path, handler)
+        with pytest.raises(RuntimeError, match="outro processo"):
+            bridge.get_me()
+
+
 class TestBuildFromConfig:
     def test_monta_do_bauer_config(self, tmp_path, monkeypatch):
         from bauer.config_loader import BauerConfig

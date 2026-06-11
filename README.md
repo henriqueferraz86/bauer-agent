@@ -333,7 +333,11 @@ enviar notificações a canais via tool `channel_send`.
 bauer gateway init     # wizard: token, validação live, allowlist, .env
 bauer gateway start    # sobe todos os canais habilitados + entrega do outbox
 bauer gateway status   # canais, tokens, allowlists, outbox
+bauer gateway stop     # encerra o gateway (e bridges antigos órfãos)
 ```
+
+> Se o bot responder com um menu antigo ou der erro 409, há um bridge órfão
+> de versão anterior rodando — `bauer telegram stop` resolve.
 
 ### 📱 Telegram
 

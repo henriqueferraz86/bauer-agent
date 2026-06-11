@@ -39,6 +39,12 @@ _REPLAY_PREFIX = (
     "[dedup] Chamada idêntica à anterior nesta sessão — resultado reutilizado "
     "sem re-executar. Se precisar re-executar de verdade, mude algum argumento.\n"
 )
+# 2º+ replay da MESMA chamada: o aviso gentil não funcionou — escala o tom
+# antes que o loop detector precise interromper o turno.
+_REPLAY_REPEAT_PREFIX = (
+    "[dedup] {n}ª repetição da MESMA chamada — você está em loop. NÃO chame "
+    "esta tool de novo: use o resultado abaixo e responda ao usuário.\n"
+)
 
 
 class ToolCallDeduper:
@@ -56,6 +62,7 @@ class ToolCallDeduper:
 
     def __init__(self, max_entries: int = _MAX_ENTRIES):
         self._cache: OrderedDict[str, str] = OrderedDict()
+        self._replay_counts: dict[str, int] = {}  # escalada por chamada repetida
         self._max = max_entries
         self._lock = threading.Lock()  # execução paralela compartilha a instância
         self.replays = 0  # contagem para diagnostics/incidents
@@ -69,14 +76,24 @@ class ToolCallDeduper:
         return hashlib.sha256(f"{action}|{canon}".encode()).hexdigest()
 
     def check(self, action: str, args: dict) -> str | None:
-        """Retorna replay (com aviso) se a chamada é duplicata; None caso contrário."""
+        """Retorna replay (com aviso) se a chamada é duplicata; None caso contrário.
+
+        O aviso escala: 1º replay é nota neutra; do 2º em diante o prefixo
+        deixa explícito que é loop — feedback cedo evita chegar no hard stop
+        do detector (que interrompe o turno).
+        """
         if action in MUTATING_TOOLS:
             return None
+        key = self._key(action, args)
         with self._lock:
-            cached = self._cache.get(self._key(action, args))
+            cached = self._cache.get(key)
             if cached is None:
                 return None
             self.replays += 1
+            n = self._replay_counts.get(key, 0) + 1
+            self._replay_counts[key] = n
+        if n >= 2:
+            return _REPLAY_REPEAT_PREFIX.format(n=n) + cached
         return _REPLAY_PREFIX + cached
 
     def record(self, action: str, args: dict, result: str, failed: bool = False) -> None:
@@ -91,11 +108,13 @@ class ToolCallDeduper:
         with self._lock:
             if action in MUTATING_TOOLS:
                 self._cache.clear()
+                self._replay_counts.clear()
                 return
             if failed:
                 return
             if action == "execute_code":
                 self._cache.clear()  # leituras anteriores podem estar obsoletas
+                self._replay_counts.clear()
             key = self._key(action, args)
             self._cache[key] = result
             self._cache.move_to_end(key)
@@ -105,3 +124,4 @@ class ToolCallDeduper:
     def clear(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._replay_counts.clear()

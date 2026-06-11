@@ -112,6 +112,28 @@ def test_detect_loop_soft_warning_not_hard():
     assert hard is False
 
 
+def test_detect_loop_warning_dispara_uma_unica_vez():
+    """Na 4ª repetição NÃO repete o aviso (anti-ruído, 2026-06-11).
+
+    O aviso é injetado no contexto da sessão — repeti-lo a cada chamada
+    enchia o histórico com o mesmo parágrafo. Dispara só em ==3; entre o
+    aviso e o hard stop (5) o sistema fica em silêncio.
+    """
+    log = [_entry("web_search")] * (_LOOP_REPEAT_WARN + 1)  # 4 repetições
+    warn, hard = _detect_loop(log)
+    assert warn is None
+    assert hard is False
+
+
+def test_detect_loop_hard_stop_mensagem_concisa():
+    """Hard stop vai para o contexto E para o usuário — precisa ser curto."""
+    log = [_entry("web_search")] * _LOOP_REPEAT_HARD
+    warn, hard = _detect_loop(log)
+    assert hard is True
+    assert len(warn) < 250
+    assert "web_search" in warn
+
+
 # ─── _detect_loop — hard stop (5×) ───────────────────────────────────────────
 
 
