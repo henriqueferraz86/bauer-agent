@@ -125,11 +125,16 @@ class ContextManager:
         self.messages.append({"role": "assistant", "content": text})
 
     def get_payload(self) -> list[dict]:
-        """Retorna lista de mensagens pronta para o /api/chat."""
+        """Retorna lista de mensagens pronta para o /api/chat.
+
+        Sana pares assistant+tool quebrados in-place: ctx.messages é atualizado
+        para que o estado corrigido seja o que persiste no SQLite após o turno.
+        """
+        self.messages = _strip_orphan_tool_messages(self.messages)
         result: list[dict] = []
         if self.system_prompt:
             result.append({"role": "system", "content": self.system_prompt})
-        result.extend(_strip_orphan_tool_messages(self.messages))
+        result.extend(self.messages)
         return result
 
     def clear(self) -> None:
@@ -266,12 +271,16 @@ class ContextManager:
 def _strip_orphan_tool_messages(messages: list[dict]) -> list[dict]:
     """Remove pares assistant+tool quebrados que causariam 400 no provider.
 
-    _trim e _auto_summarize podem remover a metade de um par:
-    - remove o assistant com tool_calls mas deixa o role:tool atrás
-    - remove o role:tool mas deixa o assistant com tool_calls na frente
+    Dois tipos de quebra:
+    1. role:tool sem assistant:tool_calls correspondente (tool result órfão)
+    2. role:assistant com tool_calls onde nenhuma call tem id válido, ou não
+       tem result correspondente (assistant:tool_calls malformado/incompleto)
 
-    Providers como OpenCode/Xiaomi retornam "tool_call_id is not set" quando
-    recebem role:tool sem um assistant:tool_calls correspondente.
+    Providers como OpenCode/Xiaomi retornam "tool_call_id is not set" para
+    qualquer das duas situações.
+
+    get_payload() chama esta função E também atualiza ctx.messages em lugar
+    (self.messages = clean) para que o estado quebrado não persista no SQLite.
     """
     declared_ids: set[str] = set()
     result_ids: set[str] = set()
@@ -281,19 +290,22 @@ def _strip_orphan_tool_messages(messages: list[dict]) -> list[dict]:
                 if tc.get("id"):
                     declared_ids.add(tc["id"])
         elif msg.get("role") == "tool":
-            if msg.get("tool_call_id"):
-                result_ids.add(msg["tool_call_id"])
+            tc_id = msg.get("tool_call_id")
+            if tc_id:
+                result_ids.add(tc_id)
 
     clean: list[dict] = []
     for msg in messages:
         role = msg.get("role")
         if role == "tool":
-            if msg.get("tool_call_id") not in declared_ids:
-                continue  # tool result sem assistant correspondente
+            tc_id = msg.get("tool_call_id")
+            if not tc_id or tc_id not in declared_ids:
+                continue  # sem tool_call_id ou sem assistant correspondente
         elif role == "assistant" and msg.get("tool_calls"):
             tc_ids = {tc.get("id") for tc in (msg.get("tool_calls") or []) if tc.get("id")}
-            if tc_ids and not any(tid in result_ids for tid in tc_ids):
-                continue  # assistant com tool_calls sem nenhum resultado correspondente
+            # Remove se: nenhuma call tem id (malformado) OU nenhum result existe
+            if not tc_ids or not any(tid in result_ids for tid in tc_ids):
+                continue
         clean.append(msg)
     return clean
 
