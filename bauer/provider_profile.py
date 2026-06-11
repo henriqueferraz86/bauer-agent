@@ -87,6 +87,9 @@ class ProviderProfile:
     65536 no preflight vs 128000 no context_manager).
     """
 
+    is_free: bool = False
+    """True quando o provider não cobra por uso (local, sem API key, ou tier gratuito real)."""
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -191,6 +194,7 @@ _reg(ProviderProfile(
     chat_path="/v1/chat/completions",
     models_url="http://localhost:11434/api/tags",
     wire_protocol="ollama",
+    is_free=True,
 ))
 
 _reg(ProviderProfile(
@@ -203,6 +207,7 @@ _reg(ProviderProfile(
     base_url="https://opencode.ai/zen",
     models_url="https://opencode.ai/zen/v1/models",
     extra_headers={"User-Agent": "opencode/1.15.11"},
+    is_free=True,
 ))
 
 _reg(ProviderProfile(
@@ -272,6 +277,7 @@ _reg(ProviderProfile(
     env_vars=["GROQ_API_KEY"],
     base_url="https://api.groq.com/openai",
     models_url="https://api.groq.com/openai/v1/models",
+    is_free=True,
 ))
 
 _reg(ProviderProfile(
@@ -329,6 +335,7 @@ _reg(ProviderProfile(
     chat_path="/chat/completions",
     no_v1_prefix=True,
     extra_headers={"X-GitHub-Api-Version": "2023-07-07"},
+    is_free=True,
 ))
 
 _reg(ProviderProfile(

@@ -169,7 +169,7 @@ class TestComandoModel:
         backend = _make_backend(tmp_path)
         backend._providers_fetcher = lambda: ["ollama", "opencode", "anthropic"]
         resp = backend.process(_msg("/model"))
-        assert "1. ollama ←" in resp  # ativo marcado
+        assert "1. ollama" in resp and "←" in resp  # ativo marcado
         assert "2. opencode" in resp
         assert "3. anthropic" in resp
 

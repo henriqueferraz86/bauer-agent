@@ -519,14 +519,21 @@ class AgentBackend:
 
         # ── Sem argumento: lista providers ───────────────────────────────────
         if not arg:
+            try:
+                from .provider_profile import get_profile as _gp
+            except Exception:  # noqa: BLE001
+                _gp = lambda _: None  # noqa: E731
             lines = [f"🧠 Ativo: *{active_model}* ({active_provider})"]
             if key in self._session_overrides or key in self._model_overrides:
                 lines.append(f"(global: {self._model_name} via {self._provider})")
-            lines.append("\nProviders configurados:")
+            lines.append("\nProviders disponíveis:")
             for i, p in enumerate(providers, 1):
                 marker = " ←" if p == active_provider else ""
-                lines.append(f"{i}. {p}{marker}")
-            lines.append("\n/model <número ou nome> — ver modelos do provider")
+                profile = _gp(p)
+                free_tag = " 🆓" if profile and profile.is_free else ""
+                lines.append(f"{i}. {p}{free_tag}{marker}")
+            lines.append("\n🆓 = gratuito ou sem cobrança por uso")
+            lines.append("/model <número ou nome> — ver modelos do provider")
             lines.append("/model <provider> <modelo> — trocar direto")
             lines.append("/model reset — voltar ao padrão")
             return "\n".join(lines)
