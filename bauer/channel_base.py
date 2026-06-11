@@ -149,12 +149,18 @@ class AgentBackend:
         # Default None → usa bauer.cli._build_client (import tardio).
         self._client_builder: Any = None
         # /model por conversa: session_key -> nome do modelo (override).
-        # Em memória de propósito — restart do gateway volta ao global,
-        # igual ao comportamento per-session do Hermes.
+        # Em memória de propósito — restart do gateway volta ao global.
         self._model_overrides: dict[str, str] = {}
+        # /model provider+model override: session_key -> (client, model, provider)
+        # Permite trocar o PROVIDER inteiro por conversa (não só o modelo).
+        self._session_overrides: dict[str, tuple[Any, str, str]] = {}
         # Injetável: callable() -> list[str]. Default: provider_profile.
         self._models_fetcher: Any = None
+        # Injetável: callable() -> list[str] de nomes de providers.
+        self._providers_fetcher: Any = None
+        # Cache de modelos: provider_name -> (fetched_at, list[str])
         self._models_cache: tuple[float, list[str]] = (0.0, [])
+        self._models_cache_by_provider: dict[str, tuple[float, list[str]]] = {}
         self.msgs_processed = 0
         self.errors = 0
 
@@ -304,6 +310,8 @@ class AgentBackend:
     def _clear_session(self, key: str) -> None:
         with self._sessions_lock:
             self._sessions.pop(key, None)
+        self._model_overrides.pop(key, None)
+        self._session_overrides.pop(key, None)
         try:
             self._store.delete(key)
         except Exception:
@@ -400,12 +408,19 @@ class AgentBackend:
     def _run_turn(self, msg: ChannelMessage, text: str) -> str:
         from .agent import run_one_turn
 
-        model = self._model_overrides.get(msg.session_key, self._model_name)
+        # Provider+model override de sessão (/model <provider> <modelo>) tem
+        # prioridade; senão, usa model-only override ou o global.
+        if msg.session_key in self._session_overrides:
+            client, model, _provider = self._session_overrides[msg.session_key]
+        else:
+            client = self._client
+            model = self._model_overrides.get(msg.session_key, self._model_name)
+
         ctx, lock = self._get_session(msg.session_key)
         with lock:
             ctx.add_user(text)
             response, _tool_log = run_one_turn(
-                ctx, self._router, self._client, model
+                ctx, self._router, client, model
             )
             try:
                 self._store.save(msg.session_key, ctx.messages)
@@ -414,60 +429,203 @@ class AgentBackend:
         self.msgs_processed += 1
         return response.strip() or "🤔 O modelo não retornou resposta. Tente reformular."
 
-    # ── /model — listar e trocar por conversa ──────────────────────────────
+    # ── /model — listar providers + modelos e trocar por conversa ─────────────
 
     def _available_models(self) -> list[str]:
-        """Modelos do provider atual, com cache TTL (fetch HTTP é lento)."""
+        """Modelos do provider ativo, com cache TTL."""
+        return self._models_for_provider(self._provider)
+
+    def _models_for_provider(self, provider: str) -> list[str]:
+        """Modelos de um provider específico, com cache por provider."""
         now = time.monotonic()
-        fetched_at, models = self._models_cache
-        if models and now - fetched_at < _MODELS_CACHE_TTL_S:
-            return models
-        try:
-            if self._models_fetcher is not None:
+        cached_at, cached_models = self._models_cache_by_provider.get(provider, (0.0, []))
+        if cached_models and now - cached_at < _MODELS_CACHE_TTL_S:
+            return cached_models
+
+        # Fallback para o provider ativo: aceita _models_fetcher injetado (testes)
+        if provider == self._provider and self._models_fetcher is not None:
+            try:
                 models = list(self._models_fetcher())
-            else:
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fetch_models falhou: %s", exc)
+                models = []
+        else:
+            try:
                 from .provider_profile import get_profile
-                profile = get_profile(self._provider)
+                profile = get_profile(provider)
                 models = profile.fetch_models() if profile else []
-        except Exception as exc:  # noqa: BLE001 — lista é conveniência
-            logger.warning("fetch_models falhou: %s", exc)
-            models = []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fetch_models(%s) falhou: %s", provider, exc)
+                models = []
+
         if models:
+            self._models_cache_by_provider[provider] = (now, models)
+        # Compatibilidade com o cache legado do provider ativo
+        if provider == self._provider and models:
             self._models_cache = (now, models)
         return models
 
+    def _configured_providers(self) -> list[str]:
+        """Lista de providers com credenciais configuradas (env vars presentes)."""
+        if self._providers_fetcher is not None:
+            try:
+                return list(self._providers_fetcher())
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            from .provider_profile import configured_providers as _cp
+            result = [p.name for p in _cp()]
+            return result if result else [self._provider]
+        except Exception:  # noqa: BLE001
+            return [self._provider]
+
+    def _build_client_for_provider(self, provider: str, model: str) -> Any:
+        """Constrói um cliente LLM para um provider diferente do ativo.
+
+        Carrega o config.yaml atual, modifica provider+model em memória
+        (Pydantic v2 é mutável por padrão) e delega ao mesmo _build_client_fn.
+        """
+        from .config_loader import load_config
+        cfg = load_config(self.config_path)
+        cfg.model.provider = provider
+        cfg.model.name = model
+        return self._build_client_fn()(cfg)
+
     def _cmd_model(self, msg: ChannelMessage, arg: str) -> str:
-        """`/model` lista; `/model <n|nome>` troca NESTA conversa; `reset` volta."""
+        """Dois níveis:
+        /model               → lista providers configurados
+        /model <p>           → lista modelos do provider p
+        /model <p> <m>       → troca para provider p, modelo m
+        /model reset         → volta ao global
+        """
         key = msg.session_key
-        active = self._model_overrides.get(key, self._model_name)
+        # Determina o par (provider, model) ativo nesta sessão
+        if key in self._session_overrides:
+            _, active_model, active_provider = self._session_overrides[key]
+        else:
+            active_model = self._model_overrides.get(key, self._model_name)
+            active_provider = self._provider
 
         if arg.lower() in ("reset", "padrao", "padrão", "default"):
             self._model_overrides.pop(key, None)
-            return f"↩️ Conversa voltou ao modelo global: *{self._model_name}*"
+            self._session_overrides.pop(key, None)
+            with self._sessions_lock:
+                entry = self._sessions.get(key)
+            if entry is not None:
+                entry[0].set_llm(self._client, self._model_name)
+            return f"↩️ Voltou ao padrão global: *{self._provider}* / *{self._model_name}*"
 
-        models = self._available_models()
+        providers = self._configured_providers()
 
+        # ── Sem argumento: lista providers ───────────────────────────────────
         if not arg:
-            lines = [f"🧠 Modelo desta conversa: *{active}* ({self._provider})"]
-            if key in self._model_overrides:
-                lines.append(f"(global: {self._model_name} — use /model reset para voltar)")
-            if models:
-                lines.append("\nDisponíveis:")
-                for i, m in enumerate(models[:20], 1):
-                    marker = " ←" if m == active else ""
-                    lines.append(f"{i}. {m}{marker}")
-                lines.append("\nTrocar: /model <número ou nome>")
-            else:
-                lines.append(
-                    "\n(não consegui listar os modelos do provider — "
-                    "troque pelo nome: /model <nome>)"
-                )
+            lines = [f"🧠 Ativo: *{active_model}* ({active_provider})"]
+            if key in self._session_overrides or key in self._model_overrides:
+                lines.append(f"(global: {self._model_name} via {self._provider})")
+            lines.append("\nProviders configurados:")
+            for i, p in enumerate(providers, 1):
+                marker = " ←" if p == active_provider else ""
+                lines.append(f"{i}. {p}{marker}")
+            lines.append("\n/model <número ou nome> — ver modelos do provider")
+            lines.append("/model <provider> <modelo> — trocar direto")
+            lines.append("/model reset — voltar ao padrão")
             return "\n".join(lines)
 
-        # `/model 3` → resolve pelo índice da lista
-        chosen = arg
+        # ── Parseia args: pode ser "2", "ollama", "2 3", "ollama qwen2.5:3b" ─
+        parts = arg.split(None, 1)
+        provider_arg = parts[0]
+        model_arg = parts[1].strip() if len(parts) > 1 else ""
+
+        # Resolve provider_arg como nome ou índice; None = não é um provider
+        chosen_provider = self._resolve_provider(provider_arg, providers)
+
+        # ── Arg não é provider conhecido: fallback para troca de modelo no
+        #    provider atual (backward compat: /model alfa / /model 3) ─────────
+        if chosen_provider is None:
+            return self._switch_model_same_provider(
+                key, provider_arg, active_model, active_provider
+            )
+
+        # ── Só provider informado: lista modelos desse provider ───────────────
+        if not model_arg:
+            models = self._models_for_provider(chosen_provider)
+            if not models:
+                return (
+                    f"📦 *{chosen_provider}* — não consegui listar modelos.\n"
+                    f"Troque direto: /model {chosen_provider} <nome-do-modelo>"
+                )
+            lines = [f"📦 *{chosen_provider}* — modelos disponíveis:"]
+            for i, m in enumerate(models[:20], 1):
+                marker = " ←" if m == active_model and chosen_provider == active_provider else ""
+                lines.append(f"{i}. {m}{marker}")
+            lines.append(f"\nTrocar: /model {chosen_provider} <número ou nome>")
+            return "\n".join(lines)
+
+        # ── Provider + modelo: troca ──────────────────────────────────────────
+        models = self._models_for_provider(chosen_provider)
+        chosen_model = model_arg
+        if model_arg.isdigit():
+            idx = int(model_arg)
+            if not models:
+                return f"Lista de modelos de {chosen_provider} indisponível — use o nome direto."
+            if not 1 <= idx <= min(len(models), 20):
+                return f"Número fora da lista (1–{min(len(models), 20)})."
+            chosen_model = models[idx - 1]
+
+        warning = ""
+        if models and chosen_model not in models:
+            warning = "\n⚠️ Modelo não está na lista — usando assim mesmo."
+
+        if chosen_provider == self._provider:
+            # Mesmo provider: só override de modelo (sem rebuild de client)
+            self._session_overrides.pop(key, None)
+            self._model_overrides[key] = chosen_model
+            with self._sessions_lock:
+                entry = self._sessions.get(key)
+            if entry is not None:
+                entry[0].set_llm(self._client, chosen_model)
+        else:
+            # Provider diferente: precisa de novo client
+            try:
+                new_client = self._build_client_for_provider(chosen_provider, chosen_model)
+            except Exception as exc:  # noqa: BLE001
+                return f"⚠️ Não consegui conectar ao provider {chosen_provider}: {exc}"
+            self._model_overrides.pop(key, None)
+            self._session_overrides[key] = (new_client, chosen_model, chosen_provider)
+            with self._sessions_lock:
+                entry = self._sessions.get(key)
+            if entry is not None:
+                entry[0].set_llm(new_client, chosen_model)
+
+        return f"✅ Esta conversa agora usa *{chosen_provider}* / *{chosen_model}*.{warning}"
+
+    @staticmethod
+    def _resolve_provider(arg: str, providers: list[str]) -> str | None:
+        """Resolve arg (nome ou índice 1-N) para nome de provider.
+
+        Retorna None quando não bate com nenhum provider — o caller pode
+        usar isso como fallback para troca de modelo no provider atual.
+        """
         if arg.isdigit():
             idx = int(arg)
+            if 1 <= idx <= len(providers):
+                return providers[idx - 1]
+            return None  # número fora do range de providers
+        arg_low = arg.lower()
+        for p in providers:
+            if p.lower() == arg_low:
+                return p
+        return None  # nome não reconhecido como provider
+
+    def _switch_model_same_provider(
+        self, key: str, model_arg: str, active_model: str, active_provider: str
+    ) -> str:
+        """Troca modelo no provider atual (backward compat: /model <nome|número>)."""
+        models = self._models_for_provider(self._provider)
+
+        chosen = model_arg
+        if model_arg.isdigit():
+            idx = int(model_arg)
             if not models:
                 return "Lista de modelos indisponível — use /model <nome>."
             if not 1 <= idx <= min(len(models), 20):
@@ -477,13 +635,14 @@ class AgentBackend:
         warning = ""
         if models and chosen not in models:
             warning = "\n⚠️ Não está na lista do provider — usando assim mesmo."
+
+        self._session_overrides.pop(key, None)
         self._model_overrides[key] = chosen
-        # Sessão viva passa a comprimir com o modelo escolhido também
         with self._sessions_lock:
             entry = self._sessions.get(key)
         if entry is not None:
             entry[0].set_llm(self._client, chosen)
-        return f"✅ Esta conversa agora usa *{chosen}*.{warning}"
+        return f"✅ Esta conversa agora usa *{self._provider}* / *{chosen}*.{warning}"
 
     def _cmd_tasks(self) -> str:
         """Lista read-only do kanban do workspace (TASKS.md)."""
@@ -511,10 +670,14 @@ class AgentBackend:
         ctx, _lock = self._get_session(msg.session_key)
         n_msgs = len(ctx.messages)
         pct = int(ctx.usage_pct * 100)
-        active = self._model_overrides.get(msg.session_key, self._model_name)
-        model_line = f"Modelo: {active} ({self._provider})"
-        if msg.session_key in self._model_overrides:
-            model_line += f" — desta conversa (global: {self._model_name})"
+        if msg.session_key in self._session_overrides:
+            _, active, active_prov = self._session_overrides[msg.session_key]
+        else:
+            active = self._model_overrides.get(msg.session_key, self._model_name)
+            active_prov = self._provider
+        model_line = f"Modelo: {active} ({active_prov})"
+        if msg.session_key in self._session_overrides or msg.session_key in self._model_overrides:
+            model_line += f" — desta conversa (global: {self._model_name} via {self._provider})"
         return (
             f"📊 Bauer Agent\n"
             f"{model_line}\n"

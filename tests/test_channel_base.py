@@ -156,37 +156,82 @@ class TestAgentBackendProcess:
 
 
 class TestComandoModel:
+    # ── /model sem args: lista providers ──────────────────────────────────────
+
     def test_model_mostra_ativo(self, tmp_path):
         backend = _make_backend(tmp_path)
-        backend._models_fetcher = lambda: []
+        backend._providers_fetcher = lambda: ["ollama"]
         resp = backend.process(_msg("/model"))
         assert "fake-model" in resp
         assert "ollama" in resp
 
-    def test_model_lista_numerada(self, tmp_path):
+    def test_model_lista_providers_numerada(self, tmp_path):
         backend = _make_backend(tmp_path)
-        backend._models_fetcher = lambda: ["alfa", "fake-model", "gama"]
+        backend._providers_fetcher = lambda: ["ollama", "opencode", "anthropic"]
         resp = backend.process(_msg("/model"))
+        assert "1. ollama ←" in resp  # ativo marcado
+        assert "2. opencode" in resp
+        assert "3. anthropic" in resp
+
+    # ── /model <provider>: lista modelos do provider ──────────────────────────
+
+    def test_model_provider_lista_modelos(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
+        backend._models_fetcher = lambda: ["alfa", "fake-model", "gama"]
+        resp = backend.process(_msg("/model ollama"))
         assert "1. alfa" in resp
         assert "2. fake-model ←" in resp  # marca o ativo
-        assert "/model <número ou nome>" in resp
+        assert "ollama" in resp
 
-    def test_model_troca_por_numero(self, tmp_path):
+    def test_model_provider_por_numero(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
+        backend._models_fetcher = lambda: ["alfa", "beta"]
+        resp = backend.process(_msg("/model 1"))  # provider #1 = ollama
+        assert "1. alfa" in resp
+        assert "ollama" in resp
+
+    # ── /model <provider> <modelo>: troca ─────────────────────────────────────
+
+    def test_model_troca_provider_e_modelo(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa", "beta", "gama"]
-        resp = backend.process(_msg("/model 3"))
+        resp = backend.process(_msg("/model ollama gama"))
         assert "gama" in resp and "✅" in resp
         assert backend._model_overrides["tg:42"] == "gama"
 
-    def test_model_troca_por_nome(self, tmp_path):
+    def test_model_troca_por_numero_de_modelo(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
+        backend._models_fetcher = lambda: ["alfa", "beta", "gama"]
+        resp = backend.process(_msg("/model ollama 3"))
+        assert "gama" in resp and "✅" in resp
+
+    # ── Backward compat: /model <nome> sem provider ───────────────────────────
+
+    def test_model_troca_por_nome_sem_provider(self, tmp_path):
+        """Arg que não é provider → troca modelo no provider atual."""
+        backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa", "beta"]
         resp = backend.process(_msg("/model beta"))
         assert backend._model_overrides["tg:42"] == "beta"
         assert "⚠️" not in resp
 
+    def test_model_numero_sem_provider_troca_modelo(self, tmp_path):
+        """Número fora do range de providers → troca modelo por índice."""
+        backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]  # só 1 provider
+        backend._models_fetcher = lambda: ["alfa", "beta", "gama"]
+        # /model 3: não é provider #3 (só tem 1), logo é modelo #3
+        resp = backend.process(_msg("/model 3"))
+        assert "gama" in resp and "✅" in resp
+
     def test_model_nome_fora_da_lista_avisa_mas_aceita(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa"]
         resp = backend.process(_msg("/model modelo-exotico"))
         assert backend._model_overrides["tg:42"] == "modelo-exotico"
@@ -194,6 +239,7 @@ class TestComandoModel:
 
     def test_model_numero_invalido(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa", "beta"]
         resp = backend.process(_msg("/model 99"))
         assert "fora da lista" in resp
@@ -201,16 +247,19 @@ class TestComandoModel:
 
     def test_model_reset_volta_ao_global(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa"]
-        backend.process(_msg("/model alfa"))
+        backend.process(_msg("/model ollama alfa"))
         resp = backend.process(_msg("/model reset"))
         assert "tg:42" not in backend._model_overrides
+        assert "tg:42" not in backend._session_overrides
         assert "fake-model" in resp
 
     def test_override_e_por_conversa(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa"]
-        backend.process(_msg("/model alfa", chat="111"))
+        backend.process(_msg("/model ollama alfa", chat="111"))
         assert backend._model_overrides.get("tg:111") == "alfa"
         assert "tg:222" not in backend._model_overrides
 
@@ -225,15 +274,17 @@ class TestComandoModel:
                 yield "ok"
 
         backend = _make_backend(tmp_path, client=RecordingClient())
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["modelo-x"]
-        backend.process(_msg("/model modelo-x"))
+        backend.process(_msg("/model ollama modelo-x"))
         backend.process(_msg("oi"))
         assert used[-1] == "modelo-x"
 
     def test_status_mostra_override(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = lambda: ["alfa"]
-        backend.process(_msg("/model alfa"))
+        backend.process(_msg("/model ollama alfa"))
         resp = backend.process(_msg("/status"))
         assert "alfa" in resp
         assert "global: fake-model" in resp
@@ -252,10 +303,11 @@ class TestComandoModel:
             return ["alfa"]
 
         backend = _make_backend(tmp_path)
+        backend._providers_fetcher = lambda: ["ollama"]
         backend._models_fetcher = fetcher
-        backend.process(_msg("/model"))
-        backend.process(_msg("/model"))
-        assert calls["n"] == 1  # segunda chamada veio do cache
+        backend.process(_msg("/model ollama"))  # busca modelos de ollama
+        backend.process(_msg("/model ollama"))  # deve usar cache
+        assert calls["n"] == 1
 
 
 class TestComandosNovosETasks:
