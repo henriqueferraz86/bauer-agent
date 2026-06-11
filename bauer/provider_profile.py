@@ -94,6 +94,19 @@ class ProviderProfile:
     # Helpers
     # ------------------------------------------------------------------
 
+    def is_model_free(self, model_name: str) -> bool:
+        """Retorna True se este modelo específico não tem custo de uso.
+
+        Regras por provider:
+        - Providers inteiramente gratuitos (is_free=True): todos os modelos.
+        - openrouter: modelos com sufixo ':free' (convenção oficial).
+        """
+        if self.is_free:
+            return True
+        if self.name == "openrouter":
+            return model_name.endswith(":free")
+        return False
+
     def get_api_key(self) -> str | None:
         """Return the first non-empty value from env_vars, or None."""
         for var in self.env_vars:

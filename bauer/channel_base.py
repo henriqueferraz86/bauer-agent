@@ -561,10 +561,19 @@ class AgentBackend:
                     f"📦 *{chosen_provider}* — não consegui listar modelos.\n"
                     f"Troque direto: /model {chosen_provider} <nome-do-modelo>"
                 )
+            try:
+                from .provider_profile import get_profile as _gp2
+                _prof = _gp2(chosen_provider)
+            except Exception:  # noqa: BLE001
+                _prof = None
+            any_free = _prof and any(_prof.is_model_free(m) for m in models[:20])
             lines = [f"📦 *{chosen_provider}* — modelos disponíveis:"]
             for i, m in enumerate(models[:20], 1):
                 marker = " ←" if m == active_model and chosen_provider == active_provider else ""
-                lines.append(f"{i}. {m}{marker}")
+                free_tag = " 🆓" if _prof and _prof.is_model_free(m) else ""
+                lines.append(f"{i}. {m}{free_tag}{marker}")
+            if any_free:
+                lines.append("\n🆓 = gratuito")
             lines.append(f"\nTrocar: /model {chosen_provider} <número ou nome>")
             return "\n".join(lines)
 

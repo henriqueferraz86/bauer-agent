@@ -181,7 +181,7 @@ class TestComandoModel:
         backend._models_fetcher = lambda: ["alfa", "fake-model", "gama"]
         resp = backend.process(_msg("/model ollama"))
         assert "1. alfa" in resp
-        assert "2. fake-model ←" in resp  # marca o ativo
+        assert "2. fake-model" in resp and "←" in resp  # marca o ativo
         assert "ollama" in resp
 
     def test_model_provider_por_numero(self, tmp_path):
