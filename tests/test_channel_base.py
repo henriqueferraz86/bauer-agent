@@ -29,11 +29,20 @@ class _EchoClient:
 
 
 def _make_backend(tmp_path: Path, client=None) -> AgentBackend:
-    """Backend com dependências injetadas (sem config.yaml / sem rede)."""
+    """Backend com dependências injetadas (sem config.yaml / sem rede).
+
+    config_path aponta para um arquivo INEXISTENTE de propósito: o default
+    ("config.yaml") acharia o config real do repo no CWD e o _maybe_reload
+    substituiria o client fake por um provider REAL — foi exatamente o que
+    aconteceu no CI (testes responderam com o opencode de verdade).
+    """
     from bauer.sqlite_session_store import SqliteSessionStore
     from bauer.tool_router import ToolRouter
 
-    backend = AgentBackend(sessions_dir=tmp_path / "sessions")
+    backend = AgentBackend(
+        config_path=tmp_path / "no-such-config.yaml",
+        sessions_dir=tmp_path / "sessions",
+    )
     backend._client = client or _EchoClient()
     backend._model_name = "fake-model"
     backend._provider = "ollama"

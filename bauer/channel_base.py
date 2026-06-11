@@ -232,7 +232,11 @@ class AgentBackend:
         respondendo com o antigo. Sessões são preservadas; só o client troca.
         Falha de reload mantém o client anterior (não derruba o canal).
         """
-        if not self.is_ready:
+        # _config_mtime == 0 significa que o client NÃO veio do config.yaml
+        # (injetado via testes/embedding) — não há o que "re"-carregar; sem
+        # este guard, um backend fake era substituído por um provider real
+        # quando havia um config.yaml no CWD (aconteceu no CI).
+        if not self.is_ready or self._config_mtime == 0.0:
             return
         try:
             mtime = self.config_path.stat().st_mtime
