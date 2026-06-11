@@ -185,6 +185,11 @@ class TestMarkdownParaHtml:
 
 
 class TestMenuDeComandos:
+    def test_menu_tem_todos_os_comandos_suportados(self):
+        from bauer.telegram_bridge import BOT_COMMANDS
+        names = {c["command"] for c in BOT_COMMANDS}
+        assert {"start", "help", "status", "model", "tasks", "new", "clear"} <= names
+
     def test_register_commands_chama_set_my_commands(self, tmp_path):
         calls: list[str] = []
 

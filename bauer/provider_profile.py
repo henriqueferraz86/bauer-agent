@@ -131,9 +131,13 @@ class ProviderProfile:
             # OpenAI-compat: {"data": [{"id": "..."}]}
             if "data" in data:
                 return [m.get("id", "") for m in data["data"] if m.get("id")]
-            # Anthropic: {"models": [{"id": "..."}]}
+            # Anthropic: {"models": [{"id": ...}]} | Ollama: {"models": [{"name": ...}]}
             if "models" in data:
-                return [m.get("id", "") for m in data["models"] if m.get("id")]
+                return [
+                    m.get("id") or m.get("name", "")
+                    for m in data["models"]
+                    if isinstance(m, dict) and (m.get("id") or m.get("name"))
+                ]
             # Ollama: {"models": [{"name": "..."}]}
             if isinstance(data, list):
                 return [m.get("id") or m.get("name", "") for m in data if isinstance(m, dict)]

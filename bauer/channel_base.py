@@ -40,10 +40,16 @@ HELP_TEXT = (
     "Mande qualquer mensagem e eu respondo usando o modelo configurado.\n\n"
     "Comandos:\n"
     "/status — modelo, contexto e sessão atual\n"
-    "/model — modelo ativo do agent\n"
-    "/clear — apaga o histórico desta conversa\n"
+    "/model — lista modelos e troca o desta conversa\n"
+    "/tasks — tarefas do kanban do workspace\n"
+    "/new — começa uma conversa nova (apaga o histórico)\n"
+    "/clear — o mesmo que /new\n"
     "/help — esta mensagem"
 )
+
+# TTL do cache da lista de modelos do provider (chamada HTTP de 8s — não
+# vale a pena repetir a cada /model)
+_MODELS_CACHE_TTL_S = 300.0
 
 
 def resolve_token(config_value: str, env_var: str) -> str:
@@ -142,6 +148,13 @@ class AgentBackend:
         # Injetável (testes / embedding): callable(cfg) -> client.
         # Default None → usa bauer.cli._build_client (import tardio).
         self._client_builder: Any = None
+        # /model por conversa: session_key -> nome do modelo (override).
+        # Em memória de propósito — restart do gateway volta ao global,
+        # igual ao comportamento per-session do Hermes.
+        self._model_overrides: dict[str, str] = {}
+        # Injetável: callable() -> list[str]. Default: provider_profile.
+        self._models_fetcher: Any = None
+        self._models_cache: tuple[float, list[str]] = (0.0, [])
         self.msgs_processed = 0
         self.errors = 0
 
@@ -324,15 +337,13 @@ class AgentBackend:
         if command == "/status":
             return self._cmd_status(msg)
         if command == "/model":
-            return (
-                f"🧠 Modelo ativo: *{self._model_name}* ({self._provider})\n"
-                f"Contexto: {self._applied_context} tokens\n\n"
-                "Para trocar: rode `bauer model` no servidor — "
-                "o gateway recarrega sozinho na próxima mensagem."
-            )
-        if command == "/clear":
+            arg = text.split(maxsplit=1)[1].strip() if " " in text else ""
+            return self._cmd_model(msg, arg)
+        if command == "/tasks":
+            return self._cmd_tasks()
+        if command in ("/clear", "/new"):
             self._clear_session(msg.session_key)
-            return "🧹 Histórico desta conversa apagado."
+            return "🧹 Conversa nova — histórico apagado."
 
         try:
             return self._run_turn(msg, text)
@@ -385,11 +396,12 @@ class AgentBackend:
     def _run_turn(self, msg: ChannelMessage, text: str) -> str:
         from .agent import run_one_turn
 
+        model = self._model_overrides.get(msg.session_key, self._model_name)
         ctx, lock = self._get_session(msg.session_key)
         with lock:
             ctx.add_user(text)
             response, _tool_log = run_one_turn(
-                ctx, self._router, self._client, self._model_name
+                ctx, self._router, self._client, model
             )
             try:
                 self._store.save(msg.session_key, ctx.messages)
@@ -398,13 +410,110 @@ class AgentBackend:
         self.msgs_processed += 1
         return response.strip() or "🤔 O modelo não retornou resposta. Tente reformular."
 
+    # ── /model — listar e trocar por conversa ──────────────────────────────
+
+    def _available_models(self) -> list[str]:
+        """Modelos do provider atual, com cache TTL (fetch HTTP é lento)."""
+        now = time.monotonic()
+        fetched_at, models = self._models_cache
+        if models and now - fetched_at < _MODELS_CACHE_TTL_S:
+            return models
+        try:
+            if self._models_fetcher is not None:
+                models = list(self._models_fetcher())
+            else:
+                from .provider_profile import get_profile
+                profile = get_profile(self._provider)
+                models = profile.fetch_models() if profile else []
+        except Exception as exc:  # noqa: BLE001 — lista é conveniência
+            logger.warning("fetch_models falhou: %s", exc)
+            models = []
+        if models:
+            self._models_cache = (now, models)
+        return models
+
+    def _cmd_model(self, msg: ChannelMessage, arg: str) -> str:
+        """`/model` lista; `/model <n|nome>` troca NESTA conversa; `reset` volta."""
+        key = msg.session_key
+        active = self._model_overrides.get(key, self._model_name)
+
+        if arg.lower() in ("reset", "padrao", "padrão", "default"):
+            self._model_overrides.pop(key, None)
+            return f"↩️ Conversa voltou ao modelo global: *{self._model_name}*"
+
+        models = self._available_models()
+
+        if not arg:
+            lines = [f"🧠 Modelo desta conversa: *{active}* ({self._provider})"]
+            if key in self._model_overrides:
+                lines.append(f"(global: {self._model_name} — use /model reset para voltar)")
+            if models:
+                lines.append("\nDisponíveis:")
+                for i, m in enumerate(models[:20], 1):
+                    marker = " ←" if m == active else ""
+                    lines.append(f"{i}. {m}{marker}")
+                lines.append("\nTrocar: /model <número ou nome>")
+            else:
+                lines.append(
+                    "\n(não consegui listar os modelos do provider — "
+                    "troque pelo nome: /model <nome>)"
+                )
+            return "\n".join(lines)
+
+        # `/model 3` → resolve pelo índice da lista
+        chosen = arg
+        if arg.isdigit():
+            idx = int(arg)
+            if not models:
+                return "Lista de modelos indisponível — use /model <nome>."
+            if not 1 <= idx <= min(len(models), 20):
+                return f"Número fora da lista (1–{min(len(models), 20)}). Veja /model."
+            chosen = models[idx - 1]
+
+        warning = ""
+        if models and chosen not in models:
+            warning = "\n⚠️ Não está na lista do provider — usando assim mesmo."
+        self._model_overrides[key] = chosen
+        # Sessão viva passa a comprimir com o modelo escolhido também
+        with self._sessions_lock:
+            entry = self._sessions.get(key)
+        if entry is not None:
+            entry[0].set_llm(self._client, chosen)
+        return f"✅ Esta conversa agora usa *{chosen}*.{warning}"
+
+    def _cmd_tasks(self) -> str:
+        """Lista read-only do kanban do workspace (TASKS.md)."""
+        try:
+            from .workspace_manager import WorkspaceManager
+            wm = WorkspaceManager(self._router.workspace)
+            tasks = wm.list_tasks()
+        except Exception as exc:  # noqa: BLE001
+            return f"⚠️ Não consegui ler as tasks: {exc}"
+        if not tasks:
+            return "📋 Nenhuma tarefa no kanban. Peça: \"crie uma task para...\""
+        by_status: dict[str, int] = {}
+        lines = ["📋 *Tasks do workspace:*"]
+        for t in tasks[:15]:
+            status = getattr(t, "status", "?")
+            by_status[status] = by_status.get(status, 0) + 1
+            lines.append(f"• [{status}] {getattr(t, 'id', '')} {getattr(t, 'title', '')}")
+        if len(tasks) > 15:
+            lines.append(f"… e mais {len(tasks) - 15}.")
+        resumo = " | ".join(f"{k}: {v}" for k, v in sorted(by_status.items()))
+        lines.append(f"\n{resumo}")
+        return "\n".join(lines)
+
     def _cmd_status(self, msg: ChannelMessage) -> str:
         ctx, _lock = self._get_session(msg.session_key)
         n_msgs = len(ctx.messages)
         pct = int(ctx.usage_pct * 100)
+        active = self._model_overrides.get(msg.session_key, self._model_name)
+        model_line = f"Modelo: {active} ({self._provider})"
+        if msg.session_key in self._model_overrides:
+            model_line += f" — desta conversa (global: {self._model_name})"
         return (
             f"📊 Bauer Agent\n"
-            f"Modelo: {self._model_name} ({self._provider})\n"
+            f"{model_line}\n"
             f"Contexto: {ctx.used_tokens}/{ctx.budget} tokens ({pct}%)\n"
             f"Sessão: {msg.session_key} — {n_msgs} mensagens\n"
             f"Processadas neste uptime: {self.msgs_processed}"

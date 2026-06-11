@@ -149,15 +149,133 @@ class TestAgentBackendProcess:
 class TestComandoModel:
     def test_model_mostra_ativo(self, tmp_path):
         backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: []
         resp = backend.process(_msg("/model"))
         assert "fake-model" in resp
         assert "ollama" in resp
+
+    def test_model_lista_numerada(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa", "fake-model", "gama"]
+        resp = backend.process(_msg("/model"))
+        assert "1. alfa" in resp
+        assert "2. fake-model ←" in resp  # marca o ativo
+        assert "/model <número ou nome>" in resp
+
+    def test_model_troca_por_numero(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa", "beta", "gama"]
+        resp = backend.process(_msg("/model 3"))
+        assert "gama" in resp and "✅" in resp
+        assert backend._model_overrides["tg:42"] == "gama"
+
+    def test_model_troca_por_nome(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa", "beta"]
+        resp = backend.process(_msg("/model beta"))
+        assert backend._model_overrides["tg:42"] == "beta"
+        assert "⚠️" not in resp
+
+    def test_model_nome_fora_da_lista_avisa_mas_aceita(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa"]
+        resp = backend.process(_msg("/model modelo-exotico"))
+        assert backend._model_overrides["tg:42"] == "modelo-exotico"
+        assert "⚠️" in resp
+
+    def test_model_numero_invalido(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa", "beta"]
+        resp = backend.process(_msg("/model 99"))
+        assert "fora da lista" in resp
+        assert "tg:42" not in backend._model_overrides
+
+    def test_model_reset_volta_ao_global(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa"]
+        backend.process(_msg("/model alfa"))
+        resp = backend.process(_msg("/model reset"))
+        assert "tg:42" not in backend._model_overrides
+        assert "fake-model" in resp
+
+    def test_override_e_por_conversa(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa"]
+        backend.process(_msg("/model alfa", chat="111"))
+        assert backend._model_overrides.get("tg:111") == "alfa"
+        assert "tg:222" not in backend._model_overrides
+
+    def test_run_turn_usa_o_override(self, tmp_path):
+        used: list[str] = []
+
+        class RecordingClient:
+            host = "http://localhost:11434"
+
+            def chat_stream(self, model, messages):
+                used.append(model)
+                yield "ok"
+
+        backend = _make_backend(tmp_path, client=RecordingClient())
+        backend._models_fetcher = lambda: ["modelo-x"]
+        backend.process(_msg("/model modelo-x"))
+        backend.process(_msg("oi"))
+        assert used[-1] == "modelo-x"
+
+    def test_status_mostra_override(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = lambda: ["alfa"]
+        backend.process(_msg("/model alfa"))
+        resp = backend.process(_msg("/status"))
+        assert "alfa" in resp
+        assert "global: fake-model" in resp
 
     def test_comando_com_sufixo_de_bot(self, tmp_path):
         # Telegram em grupo: "/status@MeuBot"
         backend = _make_backend(tmp_path)
         resp = backend.process(_msg("/status@bauer_bot"))
         assert "fake-model" in resp
+
+    def test_cache_da_lista_de_modelos(self, tmp_path):
+        calls = {"n": 0}
+
+        def fetcher():
+            calls["n"] += 1
+            return ["alfa"]
+
+        backend = _make_backend(tmp_path)
+        backend._models_fetcher = fetcher
+        backend.process(_msg("/model"))
+        backend.process(_msg("/model"))
+        assert calls["n"] == 1  # segunda chamada veio do cache
+
+
+class TestComandosNovosETasks:
+    def test_new_e_alias_de_clear(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        backend.process(_msg("lembra disso"))
+        backend.process(_msg("/new"))
+        ctx, _ = backend._get_session("tg:42")
+        assert len(ctx.messages) == 0
+
+    def test_tasks_vazio_orienta(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        resp = backend.process(_msg("/tasks"))
+        assert "Nenhuma tarefa" in resp
+
+    def test_tasks_lista_kanban(self, tmp_path):
+        from bauer.workspace_manager import WorkspaceManager
+
+        backend = _make_backend(tmp_path)
+        wm = WorkspaceManager(backend._router.workspace)
+        wm.add_task("Revisar relatório de vendas")
+        resp = backend.process(_msg("/tasks"))
+        assert "Revisar relatório" in resp
+        assert "TODO" in resp
+
+    def test_help_menciona_novos_comandos(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        resp = backend.process(_msg("/help"))
+        assert "/model" in resp and "/tasks" in resp and "/new" in resp
 
 
 class TestErrosDeProviderAmigaveis:

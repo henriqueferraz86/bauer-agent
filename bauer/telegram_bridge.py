@@ -49,12 +49,16 @@ MAX_MESSAGE_CHARS = 4096
 POLL_TIMEOUT_S = 30  # long-polling do getUpdates
 
 # Menu "/" do Telegram (setMyCommands) — igual Hermes/OpenClaw: ao digitar /
-# o cliente mostra estas opções com descrição.
+# o cliente mostra estas opções com descrição. Mantenha em sincronia com os
+# handlers de AgentBackend.process() e com o HELP_TEXT do channel_base.
 BOT_COMMANDS = [
-    {"command": "status", "description": "Modelo, contexto e sessão atual"},
-    {"command": "model", "description": "Modelo ativo do agent"},
-    {"command": "clear", "description": "Apagar histórico desta conversa"},
+    {"command": "start", "description": "Menu inicial"},
     {"command": "help", "description": "Ajuda e comandos disponíveis"},
+    {"command": "status", "description": "Modelo, contexto e sessão atual"},
+    {"command": "model", "description": "Listar modelos e trocar o desta conversa"},
+    {"command": "tasks", "description": "Tarefas do kanban do workspace"},
+    {"command": "new", "description": "Conversa nova (apaga o histórico)"},
+    {"command": "clear", "description": "O mesmo que /new"},
 ]
 
 
