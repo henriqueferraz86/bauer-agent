@@ -73,6 +73,10 @@ daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que pro
 telegram_app = typer.Typer(help="Telegram Bridge — agente Bauer via Telegram")
 discord_app = typer.Typer(help="Discord Bridge — agente Bauer via Discord")
 gateway_app = typer.Typer(help="Bauer Gateway — todos os canais de chat + entrega do outbox")
+gateway_service_app = typer.Typer(
+    help="Gateway como SERVIÇO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
+)
+gateway_app.add_typer(gateway_service_app, name="service")
 
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
@@ -7348,11 +7352,103 @@ def gateway_status(
     except Exception:
         console.print("Outbox: [dim]vazio/indisponível[/dim]")
 
-    pid_file = _gateway_pid_file(workspace)
-    if pid_file.exists():
-        console.print(f"Runtime: [green]possivelmente ativo[/green] (PID {pid_file.read_text().strip()})")
+    # Estado real do processo (PID vivo? uptime? memória?) — não só PID file
+    from bauer.gateway_service import format_uptime, read_process_status
+    pid, uptime, mem = read_process_status(Path.cwd())
+    if pid is not None:
+        console.print(
+            f"Runtime: [green]ativo[/green] — PID {pid}, "
+            f"uptime {format_uptime(uptime or 0)}, {mem:.0f}MB"
+        )
     else:
-        console.print("Runtime: [dim]parado[/dim] — inicie com `bauer gateway start`")
+        console.print(
+            "Runtime: [dim]parado[/dim] — `bauer gateway start` (foreground) "
+            "ou `bauer gateway service install` (serviço)"
+        )
+
+
+# ── bauer gateway service — serviço do sistema (paridade hermes-gateway) ─────
+
+
+def _service_manager():
+    from bauer.gateway_service import GatewayServiceManager
+    return GatewayServiceManager(project_dir=Path.cwd())
+
+
+@gateway_service_app.command("install", help="Instala E inicia o serviço (systemd/Task Scheduler)")
+def gateway_service_install():
+    try:
+        msg = _service_manager().install()
+        console.print(f"[green]✓[/green] {msg}")
+        console.print("Acompanhe: [bold]bauer gateway service status[/bold] | logs: [bold]bauer gateway service logs[/bold]")
+    except RuntimeError as exc:
+        console.print(f"[red]ERRO:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@gateway_service_app.command("uninstall", help="Para e remove o serviço")
+def gateway_service_uninstall():
+    try:
+        console.print(f"[green]✓[/green] {_service_manager().uninstall()}")
+    except RuntimeError as exc:
+        console.print(f"[red]ERRO:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@gateway_service_app.command("start", help="Inicia o serviço instalado")
+def gateway_service_start():
+    try:
+        console.print(f"[green]✓[/green] {_service_manager().start()}")
+    except RuntimeError as exc:
+        console.print(f"[red]ERRO:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@gateway_service_app.command("stop", help="Para o serviço (a tarefa/unit continua instalada)")
+def gateway_service_stop():
+    try:
+        console.print(f"[green]✓[/green] {_service_manager().stop()}")
+    except RuntimeError as exc:
+        console.print(f"[red]ERRO:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@gateway_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime, memória")
+def gateway_service_status():
+    from bauer.gateway_service import SERVICE_NAME, TASK_NAME, format_uptime
+
+    mgr = _service_manager()
+    st = mgr.status()
+    name = SERVICE_NAME if st.platform == "systemd" else TASK_NAME
+    table = Table(title=f"Bauer Gateway Service — {name}", show_lines=False)
+    table.add_column("Campo")
+    table.add_column("Valor")
+    table.add_row("Plataforma", st.platform)
+    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
+    table.add_row(
+        "Inicia no boot/logon",
+        "[green]sim[/green]" if st.enabled else "[dim]não[/dim]",
+    )
+    table.add_row(
+        "Em execução",
+        "[green]sim[/green]" if st.running else "[red]não[/red]",
+    )
+    if st.pid is not None:
+        table.add_row("PID", str(st.pid))
+        table.add_row("Uptime", format_uptime(st.uptime_s or 0))
+        table.add_row("Memória", f"{st.memory_mb:.0f} MB" if st.memory_mb else "—")
+    if st.detail:
+        table.add_row("Obs", st.detail)
+    console.print(table)
+    if not st.installed:
+        console.print("Instale com: [bold]bauer gateway service install[/bold]")
+
+
+@gateway_service_app.command("logs", help="Últimas linhas de log do gateway")
+def gateway_service_logs(
+    lines: int = typer.Option(50, "--lines", "-n", help="Quantidade de linhas"),
+):
+    console.print(_service_manager().logs(lines=lines))
 
 
 @gateway_app.command("init", help="Wizard interativo: configura Telegram/Discord")

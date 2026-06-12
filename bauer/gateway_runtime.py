@@ -183,11 +183,60 @@ class BauerGatewayRuntime:
         }
 
 
+def _setup_service_logging() -> None:
+    """Console + arquivo rotativo logs/gateway.log.
+
+    Como serviço (Task Scheduler/systemd) não há console visível — o arquivo
+    é a fonte de `bauer gateway service logs` no Windows; no Linux o journald
+    também captura o stream.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+    try:
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        fileh = RotatingFileHandler(
+            log_dir / "gateway.log", maxBytes=5 * 1024 * 1024,
+            backupCount=3, encoding="utf-8",
+        )
+        fileh.setFormatter(fmt)
+        root.addHandler(fileh)
+    except OSError:
+        logger.warning("Sem permissão para logs/gateway.log — só console")
+
+
+def _write_pid_file(workspace: Path) -> Path | None:
+    """PID file para `service status` saber se o processo está vivo."""
+    import os
+
+    pid_file = workspace / ".bauer_gateway" / "gateway.pid"
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+        return pid_file
+    except OSError:
+        return None
+
+
 def run_gateway(config_path: str | Path = "config.yaml") -> None:
-    """Entry point: python -m bauer.gateway_runtime."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    """Entry point: python -m bauer.gateway_runtime (foreground e serviço)."""
+    _setup_service_logging()
     runtime = BauerGatewayRuntime.from_config(config_path)
-    runtime.start(block=True)
+    pid_file = _write_pid_file(Path(runtime.workspace))
+    try:
+        runtime.start(block=True)
+    finally:
+        if pid_file is not None:
+            try:
+                pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
