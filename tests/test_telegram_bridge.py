@@ -23,7 +23,7 @@ class _EchoBackend(AgentBackend):
     def is_ready(self):
         return True
 
-    def process(self, msg: ChannelMessage) -> str:
+    def process(self, msg: ChannelMessage, on_delta=None, send_fn=None) -> str:
         self.received.append(msg)
         return f"resposta para: {msg.text}"
 
@@ -108,6 +108,7 @@ class TestHandleUpdate:
 
         bridge = _make_bridge(tmp_path, handler)
         bridge._handle_update(_update(1, user_id=42, chat_id=42, text="oi bauer"))
+        bridge._executor.shutdown(wait=True)  # turnos rodam no executor
         assert any("resposta para: oi bauer" in m["text"] for m in sent)
 
     def test_nao_autorizado_sem_resposta(self, tmp_path):

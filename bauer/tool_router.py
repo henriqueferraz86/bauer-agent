@@ -307,6 +307,8 @@ _TOOL_SECURITY: dict[str, dict] = {
     # Canais do Bauer Gateway — outbound para humanos (outbox durável)
     "channel_send":   {"permission": "network", "risk": "medium", "approval": False},
     "channel_list":   {"permission": "read",    "risk": "low",    "approval": False},
+    "send_message":   {"permission": "network", "risk": "medium", "approval": False},
+    "transcribe_audio": {"permission": "network", "risk": "low",  "approval": False},
     # Sistema
     "video_generate": {"permission": "network", "risk": "low",    "approval": False},
 }
@@ -334,6 +336,8 @@ _TOOL_TIMEOUTS: dict[str, int] = {
     "text_to_speech":  90,
     "vision_analyze":  60,
     "video_analyze":  180,
+    "transcribe_audio": 150,
+    "send_message":    60,
     # Default for everything else (0 = no timeout)
 }
 
@@ -1057,6 +1061,30 @@ class ToolRouter:
             "fn": self._channel_list,
             "description": "Lista os canais de notificacao configurados no Bauer Gateway.",
             "args": {},
+        }
+        self._tools["send_message"] = {
+            "fn": self._send_message,
+            "description": (
+                "Envia mensagem diretamente a um chat de um canal vivo do gateway "
+                "(telegram, discord). Entrega IMEDIATA quando o gateway esta rodando; "
+                "senao enfileira no outbox. Suporta arquivo/imagem opcional via media_path."
+            ),
+            "args": {
+                "channel": "str — 'telegram' ou 'discord' (obrigatorio)",
+                "chat_id": "str — id do chat/usuario destino (obrigatorio)",
+                "text": "str — texto da mensagem",
+                "media_path": "str — caminho de arquivo local para anexar (opcional)",
+            },
+        }
+        self._tools["transcribe_audio"] = {
+            "fn": self._transcribe_audio,
+            "description": (
+                "Transcreve um arquivo de audio para texto (Whisper via Groq/OpenAI). "
+                "Formatos: ogg, mp3, m4a, wav, webm, flac. Max 25MB."
+            ),
+            "args": {
+                "path": "str — caminho do arquivo de audio (obrigatorio)",
+            },
         }
 
         if shell_runner is not None:
@@ -2799,6 +2827,65 @@ class ToolRouter:
             state = "on" if c.enabled else "off"
             lines.append(f"- {c.name} [{c.platform}] → {c.target} ({state})")
         return "\n".join(lines)
+
+    def _send_message(self, args: dict) -> str:
+        """Envia mensagem direto pelo bridge vivo do gateway (ou outbox).
+
+        Diferença para channel_send: aqui o destino é um chat_id REAL de um
+        canal inbound (telegram/discord). Com o gateway no mesmo processo a
+        entrega é imediata, incluindo mídia. Sem gateway vivo, enfileira no
+        outbox durável para o próximo `bauer gateway start`.
+        """
+        channel = str(args.get("channel", "")).strip().lower()
+        chat_id = str(args.get("chat_id", "")).strip()
+        text = str(args.get("text", "")).strip()
+        media_path = str(args.get("media_path", "")).strip()
+        if not channel:
+            raise ToolError("send_message requer 'channel' (telegram/discord).")
+        if not chat_id:
+            raise ToolError("send_message requer 'chat_id' (id do chat destino).")
+        if not text and not media_path:
+            raise ToolError("send_message requer 'text' e/ou 'media_path'.")
+
+        from . import live_bridges
+        bridge = live_bridges.get(channel)
+        if bridge is not None:
+            sent: list[str] = []
+            if text:
+                bridge.send_text(chat_id, text)
+                sent.append("texto")
+            if media_path:
+                send_media = getattr(bridge, "send_media", None)
+                if send_media is None:
+                    raise ToolError(f"Canal '{channel}' não suporta envio de mídia.")
+                if not send_media(chat_id, media_path):
+                    raise ToolError(f"Falha enviando mídia '{media_path}' via {channel}.")
+                sent.append("mídia")
+            return f"Mensagem ({' + '.join(sent)}) entregue em {channel}:{chat_id}."
+
+        # Gateway não está neste processo — outbox durável
+        from .gateway_outbox import GatewayOutbox
+        payload: dict = {"text": text, "source": "send_message"}
+        if media_path:
+            payload["media_path"] = media_path
+        message = GatewayOutbox(self.workspace).enqueue(
+            channel=channel, target=chat_id, payload=payload, metadata={},
+        )
+        return (
+            f"Gateway não está rodando neste processo — mensagem enfileirada "
+            f"(id={message.message_id}); será entregue quando `bauer gateway start` subir."
+        )
+
+    def _transcribe_audio(self, args: dict) -> str:
+        """Transcreve áudio para texto (Whisper Groq/OpenAI)."""
+        path = str(args.get("path", "")).strip()
+        if not path:
+            raise ToolError("transcribe_audio requer 'path'.")
+        from .transcription import transcribe_audio
+        result = transcribe_audio(path)
+        if not result.get("success"):
+            raise ToolError(f"Transcrição falhou: {result.get('error')}")
+        return f"[{result.get('provider')}] {result['transcript']}"
 
     # --- mcp_call --------------------------------------------------------------
 

@@ -773,10 +773,22 @@ def _collect_response(
         # optimisation.
         api_payload = payload
 
+    # Delta sink (gateway streaming): quando instalado, consome o stream
+    # token a token emitindo cada chunk — a mensagem do canal cresce ao vivo.
+    from .delta_stream import emit_delta as _emit_delta
+    from .delta_stream import emit_round_start as _emit_round
+    from .delta_stream import get_sink as _get_sink
+
     # Usa retry automático apenas no OpenAIClient (que tem implementação real).
     # Checar apenas hasattr() seria insuficiente pois MagicMock retorna True para tudo.
     from .openai_client import OpenAIClient as _OpenAIClientClass
-    if isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
+    if _get_sink() is not None:
+        _emit_round()
+        parts = []
+        for chunk in client.chat_stream(model_name, api_payload):
+            parts.append(chunk)
+            _emit_delta(chunk)
+    elif isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
         parts = client.chat_with_retry(model_name, api_payload)
     else:
         parts = list(client.chat_stream(model_name, api_payload))
@@ -1129,6 +1141,12 @@ def _run_native_tool_turn(
             if _replayed_n is not None:
                 result = _replayed_n
             else:
+                # Gateway streaming: mostra "🔧 executando: <tool>…" no canal
+                try:
+                    from .delta_stream import emit_tool as _emit_tool
+                    _emit_tool(name)
+                except Exception:
+                    pass
                 try:
                     result = router.execute_native_call(name, args)
                 except (ToolError, SandboxError) as exc:
@@ -1359,6 +1377,11 @@ def run_one_turn(
                 if _replayed is not None:
                     tool_result = _replayed
                 else:
+                    try:
+                        from .delta_stream import emit_tool as _emit_tool
+                        _emit_tool(action_name)
+                    except Exception:
+                        pass
                     try:
                         tool_result = router.execute(action_dict)
                     except (ToolError, SandboxError) as exc:

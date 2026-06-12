@@ -82,7 +82,9 @@ class BauerGatewayRuntime:
                 "(telegram.enabled / discord.enabled). Rode `bauer gateway init`."
             )
 
+        from . import live_bridges
         for bridge in self.bridges:
+            live_bridges.register(bridge.name, bridge)  # tool send_message
             t = threading.Thread(
                 target=self._run_bridge, args=(bridge,),
                 name=f"bridge-{bridge.name}", daemon=True,
@@ -149,7 +151,9 @@ class BauerGatewayRuntime:
 
     def stop(self) -> None:
         self._stop_event.set()
+        from . import live_bridges
         for bridge in self.bridges:
+            live_bridges.unregister(bridge.name)
             try:
                 bridge.stop()
             except Exception:  # noqa: BLE001

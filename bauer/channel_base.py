@@ -35,6 +35,9 @@ logger = logging.getLogger("bauer.channels")
 # Sessões com ContextManager vivo em memória (as demais ficam só no SQLite)
 _MAX_ACTIVE_SESSIONS = 50
 
+# Mensagens aguardando na fila de uma sessão ocupada (busy queue)
+_MAX_PENDING_PER_SESSION = 5
+
 HELP_TEXT = (
     "🤖 *Bauer Agent*\n\n"
     "Mande qualquer mensagem e eu respondo usando o modelo configurado.\n\n"
@@ -161,6 +164,10 @@ class AgentBackend:
         # Cache de modelos: provider_name -> (fetched_at, list[str])
         self._models_cache: tuple[float, list[str]] = (0.0, [])
         self._models_cache_by_provider: dict[str, tuple[float, list[str]]] = {}
+        # Fila de mensagens que chegaram com a sessão ocupada (busy queue):
+        # a thread ativa drena ao terminar o turno corrente.
+        self._pending: dict[str, deque] = {}
+        self._pending_lock = threading.Lock()
         self.msgs_processed = 0
         self.errors = 0
 
@@ -312,6 +319,8 @@ class AgentBackend:
             self._sessions.pop(key, None)
         self._model_overrides.pop(key, None)
         self._session_overrides.pop(key, None)
+        with self._pending_lock:
+            self._pending.pop(key, None)
         try:
             self._store.delete(key)
         except Exception:
@@ -319,11 +328,16 @@ class AgentBackend:
 
     # ── Processamento ──────────────────────────────────────────────────────
 
-    def process(self, msg: ChannelMessage) -> str:
+    def process(self, msg: ChannelMessage, on_delta: Any = None,
+                send_fn: Any = None) -> str:
         """Processa uma mensagem inbound e retorna o texto de resposta.
 
         Nunca propaga exceção — qualquer falha vira mensagem amigável
         (o bridge só precisa entregar a string ao usuário).
+
+        on_delta: sink de streaming opcional (protocolo bauer.delta_stream) —
+        o canal mostra a resposta crescendo / progresso de tools ao vivo.
+        send_fn(text): entrega respostas de mensagens drenadas da fila busy.
         """
         if not self.is_ready:
             try:
@@ -358,7 +372,7 @@ class AgentBackend:
             return "🧹 Conversa nova — histórico apagado."
 
         try:
-            return self._run_turn(msg, text)
+            return self._run_turn(msg, text, on_delta=on_delta, send_fn=send_fn)
         except Exception as exc:  # noqa: BLE001
             self.errors += 1
             logger.error("Erro processando msg de %s/%s: %s", msg.channel, msg.user_id, exc)
@@ -405,9 +419,8 @@ class AgentBackend:
             )
         return f"⚠️ Erro ao processar sua mensagem: {detail}"
 
-    def _run_turn(self, msg: ChannelMessage, text: str) -> str:
-        from .agent import run_one_turn
-
+    def _run_turn(self, msg: ChannelMessage, text: str, on_delta: Any = None,
+                  send_fn: Any = None) -> str:
         # Provider+model override de sessão (/model <provider> <modelo>) tem
         # prioridade; senão, usa model-only override ou o global.
         if msg.session_key in self._session_overrides:
@@ -416,16 +429,66 @@ class AgentBackend:
             client = self._client
             model = self._model_overrides.get(msg.session_key, self._model_name)
 
-        ctx, lock = self._get_session(msg.session_key)
-        with lock:
-            ctx.add_user(text)
-            response, _tool_log = run_one_turn(
-                ctx, self._router, client, model
-            )
+        key = msg.session_key
+        ctx, lock = self._get_session(key)
+
+        # Sessão ocupada: enfileira e dá feedback imediato — a thread ativa
+        # drena a fila ao terminar (sem perder mensagem, sem travar polling).
+        if not lock.acquire(blocking=False):
+            with self._pending_lock:
+                queue = self._pending.setdefault(key, deque())
+                if len(queue) >= _MAX_PENDING_PER_SESSION:
+                    return "🚦 Fila cheia — aguarde a resposta atual antes de mandar mais."
+                queue.append(text)
+            return "⏳ Ainda estou na sua mensagem anterior — esta entrou na fila."
+
+        try:
+            response = self._execute_turn(ctx, key, client, model, text, on_delta)
+            # Drena mensagens que chegaram enquanto este turno rodava
+            while True:
+                with self._pending_lock:
+                    queue = self._pending.get(key)
+                    queued_text = queue.popleft() if queue else None
+                if queued_text is None:
+                    break
+                extra = self._execute_turn(ctx, key, client, model, queued_text, on_delta)
+                if send_fn is not None:
+                    try:
+                        send_fn(extra)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("send_fn falhou entregando resposta da fila")
+                else:
+                    response = f"{response}\n\n{extra}"
+        finally:
+            lock.release()
+        return response
+
+    def _execute_turn(self, ctx: Any, key: str, client: Any, model: str,
+                      text: str, on_delta: Any = None) -> str:
+        """Um turno do agente com sink de streaming instalado (se houver)."""
+        from .agent import run_one_turn
+
+        token = None
+        if on_delta is not None:
             try:
-                self._store.save(msg.session_key, ctx.messages)
-            except Exception:
-                logger.warning("Falha ao persistir sessão %s", msg.session_key)
+                from .delta_stream import set_sink
+                token = set_sink(on_delta)
+            except Exception:  # noqa: BLE001
+                token = None
+        try:
+            ctx.add_user(text)
+            response, _tool_log = run_one_turn(ctx, self._router, client, model)
+        finally:
+            if token is not None:
+                try:
+                    from .delta_stream import reset_sink
+                    reset_sink(token)
+                except Exception:  # noqa: BLE001
+                    pass
+        try:
+            self._store.save(key, ctx.messages)
+        except Exception:
+            logger.warning("Falha ao persistir sessão %s", key)
         self.msgs_processed += 1
         return response.strip() or "🤔 O modelo não retornou resposta. Tente reformular."
 
@@ -740,8 +803,12 @@ class BaseBridge(ABC):
     def _is_authorized(self, msg: ChannelMessage) -> bool:
         """Allowlist do canal — vazio nega tudo, allow_all libera."""
 
-    def handle_message(self, msg: ChannelMessage) -> str | None:
-        """Pipeline comum: auth → rate limit → backend. None = não responder."""
+    def handle_message(self, msg: ChannelMessage, on_delta: Any = None) -> str | None:
+        """Pipeline comum: auth → rate limit → backend. None = não responder.
+
+        on_delta: sink de streaming opcional (ver bauer.delta_stream) — o
+        canal mostra a resposta/progresso ao vivo enquanto o agente trabalha.
+        """
         self.msgs_received += 1
         if not self._is_authorized(msg):
             self.msgs_dropped += 1
@@ -752,7 +819,8 @@ class BaseBridge(ABC):
             return None
         if not self.rate_limiter.allow(msg.user_id):
             return "⏳ Calma! Você atingiu o limite de mensagens por minuto."
-        return self.backend.process(msg)
+        send_fn = lambda text: self.send_text(msg.chat_id, text)  # noqa: E731
+        return self.backend.process(msg, on_delta=on_delta, send_fn=send_fn)
 
     def status(self) -> dict:
         return {
