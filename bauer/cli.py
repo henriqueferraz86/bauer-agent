@@ -491,14 +491,214 @@ def config_validate(
 @config_app.command("show")
 def config_show(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+    raw: bool = typer.Option(False, "--raw", help="Dump cru do dict validado"),
 ):
-    """Mostra a config validada (resumo)."""
+    """Dashboard da configuração: paths, providers, modelo, gateway, MCP."""
     try:
         cfg = load_config(config)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2)
-    console.print(cfg.model_dump())
+    if raw:
+        console.print(cfg.model_dump())
+        return
+
+    from bauer.config_admin import get_config_path, get_env_path, redact_secret
+    from bauer.provider_profile import env_var_status, get_profile
+
+    console.print(Panel.fit("⚙  Configuração do Bauer", style="cyan"))
+
+    # ── Paths ──
+    paths = Table(show_header=False, box=None, padding=(0, 1))
+    paths.add_row("config.yaml:", f"[dim]{get_config_path(config)}[/dim]")
+    paths.add_row(".env:", f"[dim]{get_env_path()}[/dim]")
+    paths.add_row("workspace:", f"[dim]{Path(cfg.agent.workspace).resolve()}[/dim]")
+    console.print(Panel(paths, title="◆ Paths", border_style="cyan", title_align="left"))
+
+    # ── Modelo ativo ──
+    model_tbl = Table(show_header=False, box=None, padding=(0, 1))
+    prof = get_profile(cfg.model.provider)
+    free = " 🆓" if prof and prof.is_free else ""
+    model_tbl.add_row("Provider:", f"[cyan]{cfg.model.provider}[/cyan]{free}")
+    model_tbl.add_row("Modelo:", f"[cyan]{cfg.model.name}[/cyan]")
+    model_tbl.add_row("Contexto solicitado:", str(cfg.model.requested_context))
+    model_tbl.add_row("Contexto mínimo:", str(cfg.model.minimum_context))
+    console.print(Panel(model_tbl, title="◆ Modelo", border_style="cyan", title_align="left"))
+
+    # ── Providers & API keys (✓/○ por env var) ──
+    prov_tbl = Table(box=None, padding=(0, 1))
+    prov_tbl.add_column("Provider", style="cyan")
+    prov_tbl.add_column("Env var")
+    prov_tbl.add_column("Status")
+    for row in env_var_status():
+        ok = row["set"]
+        mark = "[green]✓ configurado[/green]" if ok else "[dim]○ não definido[/dim]"
+        prov_tbl.add_row(row["display_name"], row["env_var"], mark)
+    console.print(Panel(prov_tbl, title="◆ Providers & API Keys", border_style="cyan", title_align="left"))
+
+    # ── Gateway / canais ──
+    gw = Table(show_header=False, box=None, padding=(0, 1))
+    gw.add_row("Telegram:", "[green]habilitado[/green]" if cfg.telegram.enabled else "[dim]desabilitado[/dim]")
+    gw.add_row("Discord:", "[green]habilitado[/green]" if cfg.discord.enabled else "[dim]desabilitado[/dim]")
+    gw.add_row("Outbox drain:", f"{cfg.gateway.outbox_drain_interval_s}s")
+    console.print(Panel(gw, title="◆ Gateway", border_style="cyan", title_align="left"))
+
+    # ── MCP servers ──
+    servers = getattr(cfg.mcp, "servers", []) or []
+    if servers:
+        mcp_tbl = Table(box=None, padding=(0, 1))
+        mcp_tbl.add_column("Nome", style="cyan")
+        mcp_tbl.add_column("Tipo/Alvo")
+        for s in servers:
+            target = getattr(s, "url", None) or getattr(s, "command", "?")
+            mcp_tbl.add_row(getattr(s, "name", "?"), str(target))
+        console.print(Panel(mcp_tbl, title="◆ MCP Servers", border_style="cyan", title_align="left"))
+
+    console.print(
+        "[dim]bauer config set <chave> <valor>   ·   bauer config check   ·   "
+        "bauer config edit[/dim]"
+    )
+
+
+@config_app.command("path", help="Mostra o caminho absoluto do config.yaml")
+def config_path_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    from bauer.config_admin import get_config_path
+    console.print(str(get_config_path(config)))
+
+
+@config_app.command("env-path", help="Mostra o caminho absoluto do .env")
+def config_env_path_cmd():
+    from bauer.config_admin import get_env_path
+    console.print(str(get_env_path()))
+
+
+@config_app.command("get", help="Lê um valor (chave pontilhada ou env var)")
+def config_get_cmd(
+    key: str = typer.Argument(..., help="Ex: model.name, runtime.safety_margin_mb, GROQ_API_KEY"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    from bauer.config_admin import get_config_value, is_env_key, redact_secret
+
+    value = get_config_value(key, config)
+    if value is None:
+        console.print(f"[dim](não definido: {key})[/dim]")
+        raise typer.Exit(code=1)
+    if is_env_key(key):
+        console.print(redact_secret(str(value)))
+    else:
+        console.print(str(value))
+
+
+@config_app.command("set", help="Define um valor — segredos vão pro .env, resto pro config.yaml")
+def config_set_cmd(
+    key: str = typer.Argument(..., help="Ex: model.name qwen2.5:7b  |  GROQ_API_KEY gsk_..."),
+    value: str = typer.Argument(..., help="Valor (bool/int/float são convertidos)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    from bauer.config_admin import set_config_value
+
+    try:
+        dest, path = set_config_value(key, value, config)
+    except KeyError as exc:
+        console.print(f"[red]Chave inválida:[/red] {exc}")
+        raise typer.Exit(code=2)
+    where = ".env" if dest == "env" else "config.yaml"
+    shown = "•••" if dest == "env" else value
+    console.print(f"[green]✓[/green] {key} = {shown} → [dim]{path}[/dim] ({where})")
+    if dest == "config":
+        ok, msg = validate_config_file(config)
+        if not ok:
+            console.print(f"[yellow]⚠ config.yaml agora não valida:[/yellow] {msg}")
+
+
+@config_app.command("unset", help="Remove um valor do config.yaml ou .env")
+def config_unset_cmd(
+    key: str = typer.Argument(...),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    from bauer.config_admin import unset_config_value
+
+    dest, removed = unset_config_value(key, config)
+    if removed:
+        console.print(f"[green]✓[/green] removido {key} ({'.env' if dest == 'env' else 'config.yaml'})")
+    else:
+        console.print(f"[dim]nada para remover: {key}[/dim]")
+
+
+@config_app.command("edit", help="Abre o config.yaml no editor ($EDITOR/$VISUAL)")
+def config_edit_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    import subprocess
+
+    from bauer.config_admin import find_editor
+
+    if not config.exists():
+        console.print(f"[red]config.yaml não existe:[/red] {config}")
+        raise typer.Exit(code=1)
+    editor = find_editor()
+    if not editor:
+        console.print(f"Nenhum editor encontrado. Edite manualmente: [dim]{config.resolve()}[/dim]")
+        raise typer.Exit(code=1)
+    console.print(f"Abrindo {config} em [cyan]{editor}[/cyan]…")
+    subprocess.run([editor, str(config)])
+    ok, msg = validate_config_file(config)
+    color = "green" if ok else "red"
+    console.print(f"[{color}]{msg}[/{color}]")
+
+
+@config_app.command("check", help="Verifica env vars de providers (configuradas/faltando)")
+def config_check_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    from bauer.config_admin import env_status_rows
+
+    # Carrega o .env primeiro para o status refletir o arquivo (não só o
+    # ambiente do shell) — uma invocação fresca da CLI não tem o .env no env.
+    try:
+        from bauer.env_loader import load_dotenv
+        load_dotenv()
+    except Exception:  # noqa: BLE001
+        pass
+
+    rows = env_status_rows()
+    if not rows:
+        console.print("[yellow]Não consegui ler os profiles de provider.[/yellow]")
+        raise typer.Exit(code=1)
+
+    configured = [r for r in rows if r["set"]]
+    missing = [r for r in rows if not r["set"]]
+
+    table = Table(title="📋 Status de configuração — providers", show_lines=False)
+    table.add_column("Provider", style="cyan")
+    table.add_column("Env var")
+    table.add_column("Status")
+    for r in configured:
+        table.add_row(r["display_name"], r["env_var"], "[green]✓ configurado[/green]")
+    for r in missing:
+        table.add_row(r["display_name"], r["env_var"], "[dim]○ não definido[/dim]")
+    console.print(table)
+    console.print(
+        f"\n[green]{len(configured)}[/green] configurada(s), "
+        f"[dim]{len(missing)} disponível(is) sem chave[/dim]. "
+        "Defina com: [bold]bauer config set <ENV_VAR> <valor>[/bold]"
+    )
+
+    # Higiene: secrets_scanner aponta chaves coladas no config.yaml
+    try:
+        from bauer.config_admin import get_config_path
+        from bauer.secrets_scanner import scan
+        cfg_text = get_config_path(config).read_text(encoding="utf-8")
+        result = scan(cfg_text, redact=False)
+        if result.found:
+            console.print(
+                f"\n[yellow]⚠ {len(result.matches)} possível segredo embutido no "
+                "config.yaml[/yellow] — mova para o .env com `bauer config set`."
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @models_app.command("test")
