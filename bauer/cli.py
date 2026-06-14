@@ -17,8 +17,10 @@ from pathlib import Path
 # Garante UTF-8 no stdout/stderr do Windows (evita UnicodeEncodeError
 # com caracteres fora do cp1252 — ex: emojis ou caixa do modelo).
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    if sys.stderr is not None:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 import typer
 from rich.console import Console
@@ -70,6 +72,25 @@ company_app = typer.Typer(help="Gestao multi-empresa — namespaces isolados por
 migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (Hermes, OpenClaw)")
 boards_app = typer.Typer(help="Multi-board kanban — cada projeto pode ter seu proprio store SQLite")
 daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que processam tasks do kanban")
+daemon_service_app = typer.Typer(
+    help="Daemon como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
+)
+daemon_app.add_typer(daemon_service_app, name="service")
+
+runtime_service_app = typer.Typer(
+    help="Runtime como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
+)
+runtime_app.add_typer(runtime_service_app, name="service")
+
+serve_app = typer.Typer(
+    invoke_without_command=True,
+    help="Bauer Agent como servidor HTTP (REST + SSE) — ou 'serve service' para servico do sistema",
+)
+serve_service_app = typer.Typer(
+    help="Serve como SERVICO do sistema (systemd/launchd/Task Scheduler) — sobe no boot, reinicia em crash"
+)
+serve_app.add_typer(serve_service_app, name="service")
+
 telegram_app = typer.Typer(help="Telegram Bridge — agente Bauer via Telegram")
 discord_app = typer.Typer(help="Discord Bridge — agente Bauer via Discord")
 gateway_app = typer.Typer(help="Bauer Gateway — todos os canais de chat + entrega do outbox")
@@ -98,6 +119,7 @@ app.add_typer(company_app, name="company")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(boards_app, name="boards")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(serve_app, name="serve")
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(discord_app, name="discord")
 app.add_typer(gateway_app, name="gateway")
@@ -4398,46 +4420,93 @@ def daemon_stop_cmd(
     import os as _os
     import signal as _signal
     import time as _time
+    import subprocess as _sp
+
+    def _kill_pid(pid: int, hard: bool = False) -> bool:
+        """Kill a PID. Returns True if the signal was sent."""
+        try:
+            if _os.name == "nt":
+                flags = ["/F"] if hard else []
+                _sp.call(["taskkill", *flags, "/PID", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            else:
+                sig = _signal.SIGKILL if hard else _signal.SIGTERM
+                _os.kill(pid, sig)
+            return True
+        except (ProcessLookupError, OSError):
+            return False
+
+    def _cleanup_stale_sessions(reason: str = "daemon_stopped") -> int:
+        """Mark running DB sessions as stopped; returns count of sessions cleaned."""
+        state_db_path = _daemon_state_dir() / "daemon_state.db"
+        if not state_db_path.exists():
+            return 0
+        from .daemon import DaemonStateDB
+        db = DaemonStateDB(state_db_path)
+        sessions = db.get_running()
+        count = 0
+        for s in sessions:
+            db.mark_stopped(s["id"], reason=reason)
+            count += 1
+        return count
+
+    def _kill_db_session_pids(hard: bool = False) -> list[int]:
+        """Kill PIDs of all running DB sessions. Returns list of killed PIDs."""
+        state_db_path = _daemon_state_dir() / "daemon_state.db"
+        if not state_db_path.exists():
+            return []
+        from .daemon import DaemonStateDB
+        db = DaemonStateDB(state_db_path)
+        killed = []
+        for s in db.get_running():
+            pid = s.get("pid")
+            if pid and _daemon_pid_alive(pid):
+                _kill_pid(pid, hard=hard)
+                killed.append(pid)
+        return killed
 
     pid = _read_daemon_pid()
+
+    # ── No daemon.pid: check DB for orphaned running sessions ─────────────────
     if pid is None:
-        console.print("[yellow]Nenhum daemon.pid encontrado. Daemon pode nao estar rodando.[/yellow]")
-        raise typer.Exit(code=0)
-
-    if not _daemon_pid_alive(pid):
-        console.print(f"[yellow]PID {pid} nao esta mais ativo. Removendo pid file.[/yellow]")
-        _daemon_pid_path().unlink(missing_ok=True)
-        raise typer.Exit(code=0)
-
-    console.print(f"[cyan]Enviando SIGTERM para pid={pid}...[/cyan]")
-    try:
-        if _os.name == "nt":
-            import subprocess as _sp
-            _sp.call(["taskkill", "/PID", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        orphan_pids = _kill_db_session_pids(hard=force)
+        cleaned = _cleanup_stale_sessions(reason="force_stop_orphan")
+        if cleaned:
+            console.print(
+                f"[yellow]daemon.pid nao encontrado, mas {cleaned} sessao(oes) ativa(s) no DB.[/yellow]"
+            )
+            if orphan_pids:
+                console.print(f"[green]PIDs encerrados: {orphan_pids}[/green]")
+            else:
+                console.print("[dim]PIDs ja estavam mortos — estado do DB corrigido.[/dim]")
+            _daemon_pid_path().unlink(missing_ok=True)
         else:
-            _os.kill(pid, _signal.SIGTERM)
-    except ProcessLookupError:
-        console.print("[green]Processo ja encerrado.[/green]")
+            console.print("[yellow]Nenhum daemon.pid encontrado. Daemon nao esta rodando.[/yellow]")
         raise typer.Exit(code=0)
 
-    # Wait for graceful shutdown
+    # ── daemon.pid exists but process is already dead ─────────────────────────
+    if not _daemon_pid_alive(pid):
+        console.print(f"[yellow]PID {pid} nao esta mais ativo. Limpando estado.[/yellow]")
+        _daemon_pid_path().unlink(missing_ok=True)
+        _cleanup_stale_sessions(reason="stale_pid_cleanup")
+        raise typer.Exit(code=0)
+
+    # ── Send SIGTERM and wait ─────────────────────────────────────────────────
+    console.print(f"[cyan]Enviando SIGTERM para pid={pid}...[/cyan]")
+    _kill_pid(pid, hard=False)
+
     deadline = _time.time() + timeout
     while _time.time() < deadline:
         if not _daemon_pid_alive(pid):
             console.print(f"[green]Daemon encerrado graciosamente[/green] pid={pid}")
+            _cleanup_stale_sessions(reason="graceful_stop")
             raise typer.Exit(code=0)
         _time.sleep(0.5)
 
+    # ── Timeout: force kill or warn ───────────────────────────────────────────
     if force:
         console.print(f"[yellow]Timeout — enviando SIGKILL para pid={pid}[/yellow]")
-        try:
-            if _os.name == "nt":
-                import subprocess as _sp
-                _sp.call(["taskkill", "/F", "/PID", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-            else:
-                _os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_pid(pid, hard=True)
+        _cleanup_stale_sessions(reason="force_kill")
         console.print("[green]Daemon encerrado forcosamente.[/green]")
     else:
         console.print(
@@ -5103,8 +5172,9 @@ def dispatch_worker_cmd(
 # --- serve ------------------------------------------------------------------
 
 
-@app.command()
+@serve_app.callback()
 def serve(
+    ctx: typer.Context,
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
@@ -5130,7 +5200,11 @@ def serve(
       GET  /stream        — resposta em tempo real (SSE)
       GET  /sessions      — lista sessoes (requer auth)
       GET  /docs          — documentacao interativa (Swagger)
+
+    Use 'bauer serve service install' para rodar como servico do sistema.
     """
+    if ctx.invoked_subcommand is not None:
+        return
     try:
         from .server import create_app, run_server
     except ImportError as exc:
@@ -5208,7 +5282,8 @@ def serve(
         )
 
     console.print()
-    run_server(fastapi_app, host=serve_host, port=serve_port)
+    pid_file = workspace / ".bauer_serve" / "serve.pid"
+    run_server(fastapi_app, host=serve_host, port=serve_port, pid_file=pid_file)
 
 
 # --- learning ---------------------------------------------------------------
@@ -6429,16 +6504,20 @@ def migrate_hermes(
     workspace: Path = typer.Option(Path("workspace"), "--workspace"),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Apenas mostra o que seria feito"),
-    no_config: bool = typer.Option(False, "--no-config", help="Pula migração de config.yaml"),
+    no_config: bool = typer.Option(False, "--no-config", help="Pula migração de config.yaml e API keys"),
     no_history: bool = typer.Option(False, "--no-history", help="Pula importação do histórico"),
     no_agents: bool = typer.Option(False, "--no-agents", help="Pula criação de agent"),
+    no_memory: bool = typer.Option(False, "--no-memory", help="Pula cópia de arquivos de memória (.md, sessões JSONL)"),
 ):
     """Importa configuracoes e historico do Hermes Agent para o Bauer.
 
     Migra:
       - config.yaml  (provider, modelo, host Ollama)
+      - API keys do config.yaml e .env do Hermes → .env do Bauer
       - Historico de conversas → memory/sessions/hermes-*.jsonl
       - Toolsets → agent 'hermes-default' em agents.yaml
+      - Arquivos de memória (MODEL_EXPERIENCE.md, SKILLS_LEARNED.md…)
+      - Sessões JSONL do memory/sessions/ do Hermes
     """
     from .migrate import HermesMigrator
 
@@ -6466,8 +6545,13 @@ def migrate_hermes(
     table.add_row("Modelo", summary.get("model", "?"))
     table.add_row("Toolsets", ", ".join(summary.get("toolsets", [])) or "—")
     table.add_row("Providers extras", str(summary.get("provider_count", 0)))
+    table.add_row("API key no config", "[green]sim[/green]" if summary.get("has_api_key") else "[dim]não[/dim]")
+    table.add_row(".env encontrado", "[green]sim[/green]" if summary.get("has_env") else "[dim]não[/dim]")
     table.add_row("Sessões de histórico", str(summary.get("session_count", 0)))
     table.add_row("Mensagens no histórico", str(summary.get("total_messages", 0)))
+    table.add_row("Sessões JSONL (memory/)", str(summary.get("jsonl_session_count", 0)))
+    memory_files = summary.get("memory_files", [])
+    table.add_row("Arquivos de memória", ", ".join(memory_files) or "—")
     console.print(table)
     console.print()
 
@@ -6481,6 +6565,7 @@ def migrate_hermes(
         import_config=not no_config,
         import_history=not no_history,
         import_agents=not no_agents,
+        import_memory=not no_memory,
     )
     _print_migration_result(result, console)
 
@@ -7650,6 +7735,333 @@ def gateway_service_logs(
 ):
     console.print(_service_manager().logs(lines=lines))
 
+
+# ── bauer daemon service — serviço do sistema ────────────────────────────────
+
+
+def _daemon_service_cfg(
+    board: str = "default",
+    workers: int = 2,
+    budget_usd: float = 5.0,
+    budget_hours: float = 24.0,
+) -> "ProcessServiceConfig":
+    from bauer.process_service import ProcessServiceConfig, pid_reader_from_file
+    return ProcessServiceConfig(
+        service_name="bauer-daemon",
+        task_name="BauerDaemon",
+        description="Bauer Daemon — pool de workers autônomos (kanban tasks)",
+        entry_args=[
+            "daemon", "_run",
+            "--board", board,
+            "--workers", str(workers),
+            "--budget-usd", str(budget_usd),
+            "--budget-hours", str(budget_hours),
+        ],
+        log_file=Path("logs") / "daemon.log",
+        pid_reader=pid_reader_from_file(
+            lambda _: _daemon_pid_path(),
+            keyword="daemon",
+        ),
+        cmdline_keyword="daemon",
+    )
+
+
+def _daemon_svc_manager(
+    board: str = "default",
+    workers: int = 2,
+    budget_usd: float = 5.0,
+    budget_hours: float = 24.0,
+) -> "ProcessServiceManager":
+    from bauer.process_service import ProcessServiceManager
+    return ProcessServiceManager(_daemon_service_cfg(board, workers, budget_usd, budget_hours))
+
+
+@daemon_service_app.command("install", help="Instala E inicia o daemon como serviço do sistema")
+def daemon_service_install(
+    board: str = typer.Option("default", "--board", "-b"),
+    workers: int = typer.Option(2, "--workers", "-w"),
+    budget_usd: float = typer.Option(5.0, "--budget-usd"),
+    budget_hours: float = typer.Option(24.0, "--budget-hours"),
+):
+    try:
+        msg = _daemon_svc_manager(board, workers, budget_usd, budget_hours).install()
+        console.print(f"[green]✓[/green] {msg}")
+        console.print("Acompanhe: [bold]bauer daemon service status[/bold] | [bold]bauer daemon service logs[/bold]")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@daemon_service_app.command("uninstall", help="Para e remove o serviço do daemon")
+def daemon_service_uninstall():
+    try:
+        console.print(f"[green]✓[/green] {_daemon_svc_manager().uninstall()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@daemon_service_app.command("start", help="Inicia o serviço instalado do daemon")
+def daemon_service_start():
+    try:
+        console.print(f"[green]✓[/green] {_daemon_svc_manager().start()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@daemon_service_app.command("stop", help="Para o serviço do daemon (mantém instalado)")
+def daemon_service_stop():
+    try:
+        console.print(f"[green]✓[/green] {_daemon_svc_manager().stop()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@daemon_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
+def daemon_service_status():
+    from bauer.process_service import format_uptime
+    st = _daemon_svc_manager().status()
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column(style="dim", width=14)
+    table.add_column()
+    table.add_row("Plataforma", st.platform)
+    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
+    table.add_row("Ativo", "[green]sim[/green]" if st.running else "[red]não[/red]")
+    if st.pid:
+        table.add_row("PID", str(st.pid))
+    if st.uptime_s is not None:
+        table.add_row("Uptime", format_uptime(st.uptime_s))
+    if st.memory_mb is not None:
+        table.add_row("Memória", f"{st.memory_mb:.0f} MB")
+    if st.detail:
+        table.add_row("Obs", st.detail)
+    console.print(Panel(table, title="bauer-daemon", border_style="cyan"))
+    if not st.installed:
+        console.print("Instale com: [bold]bauer daemon service install[/bold]")
+
+
+@daemon_service_app.command("logs", help="Últimas linhas de log do daemon")
+def daemon_service_logs(
+    lines: int = typer.Option(50, "--lines", "-n"),
+):
+    console.print(_daemon_svc_manager().logs(lines=lines))
+
+
+# ── bauer runtime service — serviço do sistema ───────────────────────────────
+
+
+def _runtime_service_cfg(workspace: "Path | None" = None) -> "ProcessServiceConfig":
+    from bauer.process_service import ProcessServiceConfig, pid_reader_from_supervisor_json
+    ws = workspace or _PROJECT_WORKSPACE
+
+    def _ws_fn(project_dir: "Path") -> "Path":
+        p = Path(ws)
+        return p if p.is_absolute() else project_dir / p
+
+    entry_args = ["runtime", "supervise", "--workspace", str(ws)]
+    return ProcessServiceConfig(
+        service_name="bauer-runtime",
+        task_name="BauerRuntime",
+        description="Bauer Runtime — supervisor always-on (dispatcher, cron, outbox)",
+        entry_args=entry_args,
+        log_file=Path(ws) / ".bauer_runtime" / "logs" / "supervisor.log",
+        pid_reader=pid_reader_from_supervisor_json(_ws_fn),
+        cmdline_keyword="supervise",
+    )
+
+
+def _runtime_svc_manager(workspace: "Path | None" = None) -> "ProcessServiceManager":
+    from bauer.process_service import ProcessServiceManager
+    return ProcessServiceManager(_runtime_service_cfg(workspace))
+
+
+@runtime_service_app.command("install", help="Instala E inicia o runtime como serviço do sistema")
+def runtime_service_install(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    try:
+        msg = _runtime_svc_manager(workspace).install()
+        console.print(f"[green]✓[/green] {msg}")
+        console.print("Acompanhe: [bold]bauer runtime service status[/bold] | [bold]bauer runtime service logs[/bold]")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@runtime_service_app.command("uninstall", help="Para e remove o serviço do runtime")
+def runtime_service_uninstall(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    try:
+        console.print(f"[green]✓[/green] {_runtime_svc_manager(workspace).uninstall()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@runtime_service_app.command("start", help="Inicia o serviço instalado do runtime")
+def runtime_service_start(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    try:
+        console.print(f"[green]✓[/green] {_runtime_svc_manager(workspace).start()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@runtime_service_app.command("stop", help="Para o serviço do runtime (mantém instalado)")
+def runtime_service_stop(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    try:
+        console.print(f"[green]✓[/green] {_runtime_svc_manager(workspace).stop()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@runtime_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
+def runtime_service_status(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    from bauer.process_service import format_uptime
+    st = _runtime_svc_manager(workspace).status()
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column(style="dim", width=14)
+    table.add_column()
+    table.add_row("Plataforma", st.platform)
+    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
+    table.add_row("Ativo", "[green]sim[/green]" if st.running else "[red]não[/red]")
+    if st.pid:
+        table.add_row("PID", str(st.pid))
+    if st.uptime_s is not None:
+        table.add_row("Uptime", format_uptime(st.uptime_s))
+    if st.memory_mb is not None:
+        table.add_row("Memória", f"{st.memory_mb:.0f} MB")
+    if st.detail:
+        table.add_row("Obs", st.detail)
+    console.print(Panel(table, title="bauer-runtime", border_style="blue"))
+    if not st.installed:
+        console.print("Instale com: [bold]bauer runtime service install[/bold]")
+
+
+@runtime_service_app.command("logs", help="Últimas linhas de log do runtime supervisor")
+def runtime_service_logs(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    lines: int = typer.Option(50, "--lines", "-n"),
+):
+    console.print(_runtime_svc_manager(workspace).logs(lines=lines))
+
+
+# ── bauer serve service — serviço do sistema ─────────────────────────────────
+
+
+def _serve_pid_path(project_dir: "Path") -> "Path":
+    """PID file do servidor HTTP — workspace/.bauer_serve/serve.pid."""
+    ws: "Path" = Path("workspace")
+    try:
+        from .config_loader import load_config
+        cfg = load_config(project_dir / "config.yaml")
+        loaded = Path(cfg.agent.workspace)
+        ws = loaded if loaded.is_absolute() else project_dir / loaded
+    except Exception:  # noqa: BLE001
+        pass
+    return ws / ".bauer_serve" / "serve.pid"
+
+
+def _serve_service_cfg() -> "ProcessServiceConfig":
+    from bauer.process_service import ProcessServiceConfig, pid_reader_from_file
+    return ProcessServiceConfig(
+        service_name="bauer-serve",
+        task_name="BauerServe",
+        description="Bauer Agent HTTP Server — REST API e interface web",
+        entry_args=["serve"],
+        log_file=Path("logs") / "serve.log",
+        pid_reader=pid_reader_from_file(_serve_pid_path, keyword="server"),
+        cmdline_keyword="serve",
+    )
+
+
+def _serve_svc_manager() -> "ProcessServiceManager":
+    from bauer.process_service import ProcessServiceManager
+    return ProcessServiceManager(_serve_service_cfg())
+
+
+@serve_service_app.command("install", help="Instala E inicia o servidor HTTP como serviço do sistema")
+def serve_service_install():
+    try:
+        msg = _serve_svc_manager().install()
+        console.print(f"[green]✓[/green] {msg}")
+        console.print(
+            "Acesse: [bold]http://localhost:8000[/bold]  |  "
+            "Acompanhe: [bold]bauer serve service status[/bold]"
+        )
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@serve_service_app.command("uninstall", help="Para e remove o serviço do servidor HTTP")
+def serve_service_uninstall():
+    try:
+        console.print(f"[green]✓[/green] {_serve_svc_manager().uninstall()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@serve_service_app.command("start", help="Inicia o serviço instalado do servidor HTTP")
+def serve_service_start():
+    try:
+        console.print(f"[green]✓[/green] {_serve_svc_manager().start()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@serve_service_app.command("stop", help="Para o servidor HTTP (mantém instalado)")
+def serve_service_stop():
+    try:
+        console.print(f"[green]✓[/green] {_serve_svc_manager().stop()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
+@serve_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
+def serve_service_status():
+    from bauer.process_service import format_uptime
+    st = _serve_svc_manager().status()
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column(style="dim", width=14)
+    table.add_column()
+    table.add_row("Plataforma", st.platform)
+    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
+    table.add_row("Ativo", "[green]sim[/green]" if st.running else "[red]não[/red]")
+    if st.pid:
+        table.add_row("PID", str(st.pid))
+    if st.uptime_s is not None:
+        table.add_row("Uptime", format_uptime(st.uptime_s))
+    if st.memory_mb is not None:
+        table.add_row("Memória", f"{st.memory_mb:.0f} MB")
+    if st.detail:
+        table.add_row("Obs", st.detail)
+    console.print(Panel(table, title="bauer-serve", border_style="yellow"))
+    if not st.installed:
+        console.print("Instale com: [bold]bauer serve service install[/bold]")
+
+
+@serve_service_app.command("logs", help="Últimas linhas de log do servidor HTTP")
+def serve_service_logs(
+    lines: int = typer.Option(50, "--lines", "-n"),
+):
+    console.print(_serve_svc_manager().logs(lines=lines))
+
+
+# ── bauer gateway init ────────────────────────────────────────────────────────
 
 @gateway_app.command("init", help="Wizard interativo: configura Telegram/Discord")
 def gateway_init(

@@ -588,7 +588,24 @@ def create_app(
     return app
 
 
-def run_server(app, host: str = "0.0.0.0", port: int = 8000) -> None:
+def run_server(
+    app,
+    host: str = "0.0.0.0",
+    port: int = 8000,
+    pid_file: "Path | None" = None,
+) -> None:
+    import os
+    from pathlib import Path as _Path
     _require_fastapi()
     import uvicorn
-    uvicorn.run(app, host=host, port=port)
+    if pid_file is not None:
+        _Path(pid_file).parent.mkdir(parents=True, exist_ok=True)
+        _Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        uvicorn.run(app, host=host, port=port)
+    finally:
+        if pid_file is not None:
+            try:
+                _Path(pid_file).unlink(missing_ok=True)
+            except OSError:
+                pass
