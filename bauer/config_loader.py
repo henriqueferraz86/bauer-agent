@@ -236,8 +236,12 @@ class ServeSection(_StrictSection):
     port: int = Field(ge=1, le=65535, default=8000)
     api_key: str = ""  # Bearer token para proteger o bauer serve (ou BAUER_SERVE_API_KEY no .env)
     workers: int = Field(ge=1, le=8, default=1)
-    rate_limit_requests: int = Field(ge=0, default=60)   # max requests por IP por janela; 0 = desativado
+    rate_limit_requests: int = Field(ge=0, default=60)   # max requests por IP/key por janela; 0 = desativado
     rate_limit_window_s: float = Field(ge=1.0, default=60.0)  # janela em segundos
+    rate_limit_per_key: bool = False   # True = limitar por API key em vez de por IP
+    cors_origins: list[str] = []       # origens CORS permitidas; vazio = CORS desativado; ["*"] = todas
+    enable_gzip: bool = True           # compressão GZip para respostas > 1 KB
+    enable_access_log: bool = False    # gravar JSON access log por request (método, path, status, latência)
 
 
 class RuntimeSection(_StrictSection):

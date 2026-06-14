@@ -98,26 +98,24 @@ _metrics = _Metrics()
 
 
 class _RateLimiter:
-    """Rate limiter em-memória baseado em sliding window por IP.
+    """Rate limiter em-memória baseado em sliding window por chave (IP ou API key).
 
     Thread-safe para uso com uvicorn (single-threaded async).
-    Cada IP tem uma deque de timestamps das últimas requisições.
+    Cada chave tem uma deque de timestamps das últimas requisições.
     """
 
     def __init__(self, max_requests: int = 60, window_s: float = 60.0):
         self.max_requests = max_requests
         self.window_s = window_s
-        # ip → deque de timestamps (float)
         self._windows: dict[str, deque] = defaultdict(deque)
 
-    def is_allowed(self, ip: str) -> bool:
-        """Verifica se o IP está dentro do limite. Registra a requisição se permitida."""
+    def is_allowed(self, key: str) -> bool:
+        """Verifica se a chave está dentro do limite. Registra a requisição se permitida."""
         if self.max_requests <= 0:
             return True  # desativado
         now = time.monotonic()
-        window = self._windows[ip]
+        window = self._windows[key]
         cutoff = now - self.window_s
-        # Remove entradas fora da janela deslizante
         while window and window[0] < cutoff:
             window.popleft()
         if len(window) >= self.max_requests:
@@ -125,9 +123,9 @@ class _RateLimiter:
         window.append(now)
         return True
 
-    def retry_after(self, ip: str) -> float:
-        """Segundos até a próxima requisição ser permitida para o IP."""
-        window = self._windows.get(ip)
+    def retry_after(self, key: str) -> float:
+        """Segundos até a próxima requisição ser permitida para a chave."""
+        window = self._windows.get(key)
         if not window:
             return 0.0
         oldest = window[0]
@@ -156,9 +154,16 @@ def create_app(
     api_key: str = "",
     rate_limit_requests: int = 60,
     rate_limit_window_s: float = 60.0,
+    rate_limit_per_key: bool = False,
+    cors_origins: list[str] | None = None,
+    enable_gzip: bool = True,
+    enable_access_log: bool = False,
 ):
     """Cria e retorna o app FastAPI configurado."""
     _require_fastapi()
+
+    import json
+    import logging
 
     from fastapi import Depends, FastAPI, HTTPException, Query, Request
     from fastapi.responses import FileResponse, StreamingResponse
@@ -168,6 +173,8 @@ def create_app(
     from .agent import _build_system_prompt, run_one_turn
     from .context_manager import ContextManager
     from .session_store import SessionStore
+
+    _access_logger = logging.getLogger("bauer.access")
 
     # --- schemas (definidas fora de qualquer função para Pydantic resolver corretamente) ---
 
@@ -190,6 +197,23 @@ def create_app(
         version="0.1.0",
         description="Bauer Agent como API REST. Modelos locais via Ollama.",
     )
+
+    # --- middleware setup (ordem importa: outer-first em FastAPI) ----------------
+
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    if enable_gzip:
+        from fastapi.middleware.gzip import GZipMiddleware
+        app.add_middleware(GZipMiddleware, minimum_size=1000)
+
     store = SessionStore(sessions_dir)
 
     # Estado mutável do modelo ativo (permite troca em runtime via /models/switch)
@@ -218,10 +242,22 @@ def create_app(
             return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
+    def _extract_incoming_key(request: Request) -> str:
+        return (
+            request.headers.get("X-API-Key")
+            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+
+    def _rate_limit_key(request: Request) -> str:
+        if rate_limit_per_key:
+            k = _extract_incoming_key(request)
+            return f"key:{k}" if k else _get_client_ip(request)
+        return _get_client_ip(request)
+
     def _check_rate_limit(request: Request) -> None:
-        ip = _get_client_ip(request)
-        if not _limiter.is_allowed(ip):
-            retry = _limiter.retry_after(ip)
+        key = _rate_limit_key(request)
+        if not _limiter.is_allowed(key):
+            retry = _limiter.retry_after(key)
             raise HTTPException(
                 status_code=429,
                 detail=f"Rate limit excedido. Tente novamente em {retry:.0f}s.",
@@ -232,10 +268,7 @@ def create_app(
         _check_rate_limit(request)
         if not api_key:
             return
-        incoming = (
-            request.headers.get("X-API-Key")
-            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        )
+        incoming = _extract_incoming_key(request)
         if incoming != api_key:
             raise HTTPException(status_code=401, detail="API key invalida ou ausente.")
 
@@ -253,11 +286,38 @@ def create_app(
     @app.middleware("http")
     async def _metrics_middleware(request, call_next):
         _metrics.requests_total += 1
+
+        # Global rate limit (applies to every route, even /health)
+        if _limiter.max_requests > 0:
+            from fastapi.responses import JSONResponse
+            key = _rate_limit_key(request)
+            if not _limiter.is_allowed(key):
+                retry = _limiter.retry_after(key)
+                _metrics.rate_limited_total += 1
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": f"Rate limit excedido. Tente novamente em {retry:.0f}s."},
+                    headers={"Retry-After": str(int(retry) + 1)},
+                )
+
+        t0 = time.monotonic()
         response = await call_next(request)
         if response.status_code >= 500:
             _metrics.requests_errors += 1
         if response.status_code == 429:
             _metrics.rate_limited_total += 1
+        if enable_access_log:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            record = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": round(elapsed_ms, 1),
+                "client_ip": _get_client_ip(request),
+                "user_agent": request.headers.get("User-Agent", ""),
+            }
+            _access_logger.info(json.dumps(record))
         return response
 
     @app.get("/health")

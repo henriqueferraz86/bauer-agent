@@ -308,6 +308,23 @@ def _doctor_check_providers() -> None:
     console.print(prov_table)
 
 
+@app.command("init")
+def init_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Caminho do config.yaml"),
+    env: Path = typer.Option(Path(".env"), "--env", help="Caminho do .env para gravar API keys"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Sobrescrever config existente sem confirmacao"),
+):
+    """Wizard de primeiro uso — configura provider, modelo e workspace interativamente."""
+    from .init_wizard import run_init_wizard
+    ok = run_init_wizard(
+        config_path=config,
+        env_path=env,
+        force=yes,
+    )
+    if not ok:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def status(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
@@ -1743,20 +1760,20 @@ def agent(
     # Resolucao do modelo: --model > --pick > auto (com RAM check so para Ollama)
     import logging as _logging
     _mlog = _logging.getLogger("bauer.model_selection")
-    _mlog.info("[model-selection] config.model.name=%s", cfg.model.name)
-    _mlog.info("[model-selection] config.model.provider=%s", cfg.model.provider)
-    _mlog.info("[model-selection] router.enabled=%s", cfg.router.enabled)
-    _mlog.info("[model-selection] requested_context=%s  applied_context=%s",
+    _mlog.debug("[model-selection] config.model.name=%s", cfg.model.name)
+    _mlog.debug("[model-selection] config.model.provider=%s", cfg.model.provider)
+    _mlog.debug("[model-selection] router.enabled=%s", cfg.router.enabled)
+    _mlog.debug("[model-selection] requested_context=%s  applied_context=%s",
                cfg.model.requested_context, applied_context)
     if is_ollama_provider:
-        _mlog.info("[model-selection] think=%s", cfg.model.think)
+        _mlog.debug("[model-selection] think=%s", cfg.model.think)
 
     if model:
         model_name = model
-        _mlog.info("[model-selection] source=--model flag  active=%s", model_name)
+        _mlog.debug("[model-selection] source=--model flag  active=%s", model_name)
     elif pick:
         model_name = _pick_model(client, state["configured_model"])
-        _mlog.info("[model-selection] source=--pick  active=%s", model_name)
+        _mlog.debug("[model-selection] source=--pick  active=%s", model_name)
     else:
         if is_ollama_provider:
             model_name = _resolve_model_with_ram_check(
@@ -1766,7 +1783,7 @@ def agent(
         else:
             # Providers cloud: usa o modelo configurado diretamente (sem RAM check local)
             model_name = cfg.model.name
-        _mlog.info("[model-selection] source=config.yaml  active=%s", model_name)
+        _mlog.debug("[model-selection] source=config.yaml  active=%s", model_name)
 
     # Verifica modelo no Ollama apenas quando provider=ollama
     if is_ollama_provider:
@@ -3308,6 +3325,37 @@ def project_board(
                 break
 
     console.print("\n[dim]Board encerrado.[/dim]")
+
+
+
+# --- bauer tui (TUI moderno) -------------------------------------------------
+
+
+@app.command("tui")
+def tui_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+):
+    """Abre a Terminal UI moderna do Bauer Agent.
+
+    Interface TUI superior ao Hermes Agent com:
+    - Painel dividido com chat + sidebar de agentes
+    - Seletor de agentes especializados
+    - Kanban embutido
+    - Multiplos temas (Dracula, Nord, Tokyo Night, Solarized, Cyberpunk)
+    - Comandos slash (/agent, /theme, /kanban, /help, /status)
+    - Streaming de output
+    """
+    try:
+        from .tui import BauerTUI
+        bauer_app = BauerTUI()
+        bauer_app.run()
+    except ImportError as exc:
+        from rich.console import Console as _C2
+        _c2 = _C2()
+        _c2.print("[red]X Erro ao carregar TUI.[/red]")
+        _c2.print(f"[dim]{exc}[/dim]")
+        _c2.print("[yellow]Dica: textual nao encontrado[/yellow]")
+        raise typer.Exit(1)
 
 
 # --- kanban (browser ao vivo) -----------------------------------------------
@@ -5256,6 +5304,10 @@ def serve(
         api_key=serve_key,
         rate_limit_requests=cfg.serve.rate_limit_requests,
         rate_limit_window_s=cfg.serve.rate_limit_window_s,
+        rate_limit_per_key=cfg.serve.rate_limit_per_key,
+        cors_origins=list(cfg.serve.cors_origins) or None,
+        enable_gzip=cfg.serve.enable_gzip,
+        enable_access_log=cfg.serve.enable_access_log,
     )
 
     auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"
