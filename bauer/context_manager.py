@@ -445,8 +445,8 @@ def _summarize_messages(messages: list[dict]) -> str:
     Extrai: quantidade de turnos, tópicos mencionados (palavras longas frequentes),
     tools chamadas, e últimas decisões visíveis.
     """
-    user_msgs = [m["content"] for m in messages if m.get("role") == "user"]
-    assistant_msgs = [m["content"] for m in messages if m.get("role") == "assistant"]
+    user_msgs = [m["content"] for m in messages if m.get("role") == "user" and m.get("content") is not None]
+    assistant_msgs = [m["content"] for m in messages if m.get("role") == "assistant" and m.get("content") is not None]
 
     # Conta tools usadas
     tools_used: list[str] = []
@@ -466,8 +466,8 @@ def _summarize_messages(messages: list[dict]) -> str:
     for msg in user_msgs:
         # Ignora linhas de resultado de tool
         clean = re.sub(r"\[Resultado de \w+\].*", "", msg, flags=re.DOTALL)
-        for word in re.findall(r"\b[a-zA-ZÀ-ú]{5,}\b", clean.lower()):
-            if word not in stopwords:
+        for word in re.findall(r"\b[a-zA-ZÀ-ú]{5,30}\b", clean.lower()):
+            if word not in stopwords and len(set(word)) > 1:
                 word_counter[word] = word_counter.get(word, 0) + 1
     top_words = sorted(word_counter, key=lambda w: -word_counter[w])[:8]
 

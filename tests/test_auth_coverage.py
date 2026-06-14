@@ -377,6 +377,16 @@ class TestObtainApiKey:
 # ─── AuthManager.login_interactive ───────────────────────────────────────────
 
 class TestLoginInteractive:
+    @pytest.fixture(autouse=True)
+    def _clean_provider_envs(self, monkeypatch):
+        """Remove provider API keys do env para evitar o prompt 'Usar esta chave?'."""
+        for key in (
+            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY",
+            "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "XAI_API_KEY",
+            "TOGETHER_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
+            "GITHUB_TOKEN", "COPILOT_TOKEN",
+        ):
+            monkeypatch.delenv(key, raising=False)
     def test_api_key_choice_via_number(self, tmp_path: Path):
         """Escolha '2' (openai-api) com API key."""
         mgr = _make_manager(tmp_path)

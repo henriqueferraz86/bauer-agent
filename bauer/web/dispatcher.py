@@ -69,9 +69,9 @@ class SearchResult:
 def _package_available(name: str) -> bool:
     """Retorna True se o pacote Python está instalado."""
     import sys
-    # Módulo já importado — conta como disponível (cobre fake modules em testes)
+    # sys.modules[name] = None indica "bloqueado" — tratar como não disponível
     if name in sys.modules:
-        return True
+        return sys.modules[name] is not None
     try:
         return importlib.util.find_spec(name) is not None
     except (ValueError, ModuleNotFoundError):

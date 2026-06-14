@@ -120,14 +120,9 @@ def test_search_ddgs_retorna_resultados():
 def test_search_ddgs_sem_modulo_levanta():
     d = WebDispatcher(_cfg(search_backend="ddgs"))
     import sys
-    # Remove ddgs do sys.modules para simular não instalado
-    ddgs_backup = sys.modules.pop("ddgs", None)
-    try:
+    with patch.dict(sys.modules, {"ddgs": None}):
         with pytest.raises(WebError, match="ddgs"):
             d._search_ddgs("query", 5)
-    finally:
-        if ddgs_backup:
-            sys.modules["ddgs"] = ddgs_backup
 
 
 # ---------------------------------------------------------------------------
@@ -322,20 +317,16 @@ def test_auto_detect_ddgs_se_pacote_disponivel():
 def test_auto_detect_sem_nenhum_backend_levanta():
     import sys, os
     d = WebDispatcher(_cfg(search_backend="auto"))
-    old_brave = os.environ.pop("BRAVE_API_KEY", None)
-    old_searxng = os.environ.pop("SEARXNG_URL", None)
-    # Remove ddgs do sys.modules para simular não instalado
-    ddgs_backup = sys.modules.pop("ddgs", None)
-    try:
+    env_patch = {}
+    if "BRAVE_API_KEY" in os.environ:
+        env_patch["BRAVE_API_KEY"] = ""
+    if "SEARXNG_URL" in os.environ:
+        env_patch["SEARXNG_URL"] = ""
+    with patch.dict(sys.modules, {"ddgs": None}), \
+         patch.dict(os.environ, env_patch, clear=False), \
+         patch("bauer.web.dispatcher._package_available", return_value=False):
         with pytest.raises(WebError, match="Nenhum backend"):
             _ = d.search_backend
-    finally:
-        if old_brave is not None:
-            os.environ["BRAVE_API_KEY"] = old_brave
-        if old_searxng is not None:
-            os.environ["SEARXNG_URL"] = old_searxng
-        if ddgs_backup is not None:
-            sys.modules["ddgs"] = ddgs_backup
 
 
 # ---------------------------------------------------------------------------
@@ -378,16 +369,8 @@ def test_detected_backends_com_backend_explicito():
 def test_detected_backends_sem_nenhum_search_retorna_none():
     import sys, os
     d = WebDispatcher(_cfg(search_backend="auto", extract_backend="httpx"))
-    old_brave = os.environ.pop("BRAVE_API_KEY", None)
-    old_searxng = os.environ.pop("SEARXNG_URL", None)
-    ddgs_backup = sys.modules.pop("ddgs", None)
-    try:
+    with patch.dict(sys.modules, {"ddgs": None}), \
+         patch("bauer.web.dispatcher._package_available", return_value=False), \
+         patch.dict(os.environ, {"BRAVE_API_KEY": "", "SEARXNG_URL": ""}):
         info = d.detected_backends()
         assert info["search"] == "none"
-    finally:
-        if old_brave is not None:
-            os.environ["BRAVE_API_KEY"] = old_brave
-        if old_searxng is not None:
-            os.environ["SEARXNG_URL"] = old_searxng
-        if ddgs_backup is not None:
-            sys.modules["ddgs"] = ddgs_backup

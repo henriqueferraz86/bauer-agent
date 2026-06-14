@@ -150,7 +150,7 @@ class TestOnDispatch:
             def is_ready(self):
                 return True
 
-            def process(self, msg):
+            def process(self, msg, **kwargs):
                 received.append(msg)
                 return "resposta do agent"
 
