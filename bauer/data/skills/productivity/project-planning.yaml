@@ -1,0 +1,31 @@
+name: Project Planning
+description: "Estruturar projetos de software: escopo, milestones, estimativas, riscos e comunicação."
+content: |
+  # Project Planning — Software
+
+  ## Definição de escopo
+  - **O que está IN**: lista explícita de entregáveis
+  - **O que está OUT**: lista explícita de exclusões (previne scope creep)
+  - **Definition of Done**: critérios mensuráveis de conclusão por entregável
+
+  ## Milestones
+  Organize em milestones com datas concretas:
+  - M1: Fundação (infra, CI, autenticação básica)
+  - M2: MVP (funcionalidade central funcionando)
+  - M3: Beta (completo, em teste com usuários reais)
+  - M4: GA (produção estável)
+
+  ## Estimativas
+  - Use pontos de story (Fibonacci: 1, 2, 3, 5, 8) — não horas
+  - Multiplique sua estimativa inicial por 1.5–2× para tarefas novas
+  - Identifique dependências externas (são o maior risco de prazo)
+
+  ## Risco
+  Para cada risco: probabilidade (A/M/B) × impacto (A/M/B) → prioridade
+  - Mitigue riscos altos ANTES de começar
+  - Tenha plano B documentado para os top 3
+
+  ## Comunicação
+  - Weekly update: o que foi feito, o que vem a seguir, bloqueios
+  - Bloqueio → escale imediatamente (não espere a próxima reunião)
+  - Decisões importantes → documento escrito (não só Slack)

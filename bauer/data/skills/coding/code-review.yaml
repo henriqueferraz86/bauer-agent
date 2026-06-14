@@ -1,0 +1,36 @@
+name: Code Review
+description: "Checklist e critérios para revisão de código — segurança, legibilidade, performance, testes."
+content: |
+  # Code Review — Checklist completo
+
+  ## 1. Correção
+  - A lógica está correta para todos os casos (happy path + edge cases)?
+  - Há tratamento de erros adequado nas boundaries (IO, rede, parsing)?
+  - Race conditions ou concorrência não-tratada?
+
+  ## 2. Segurança
+  - Input de usuário é sanitizado/validado antes de usar?
+  - Credenciais em variáveis de ambiente, nunca em código?
+  - SQL parametrizado (sem f-strings em queries)?
+  - Path traversal bloqueado ao lidar com caminhos de arquivo?
+
+  ## 3. Legibilidade
+  - Nomes de variáveis/funções descritivos sem abreviações obscuras?
+  - Funções fazem UMA coisa (SRP)?
+  - Comentários explicam o PORQUÊ, não o quê?
+  - Código morto removido?
+
+  ## 4. Performance
+  - N+1 queries em loops?
+  - Operações O(n²) onde O(n log n) é possível?
+  - Cache onde faz sentido?
+
+  ## 5. Testes
+  - Novo código tem testes unitários?
+  - Casos de erro testados (não só happy path)?
+  - Mocks usados apenas onde necessário?
+
+  ## Tom do feedback
+  - Prefira perguntas: "O que acontece se X?" em vez de "Está errado"
+  - Distingua bloqueador (must fix) de sugestão (consider)
+  - Elogie o que está bem feito

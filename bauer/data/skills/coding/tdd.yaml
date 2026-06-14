@@ -1,0 +1,31 @@
+name: Test-Driven Development
+description: "Fluxo Red-Green-Refactor, pirâmide de testes, mocking pragmático e estratégias de cobertura."
+content: |
+  # Test-Driven Development (TDD)
+
+  ## Ciclo Red-Green-Refactor
+  1. **Red** — escreva um teste que FALHA (descreve o comportamento desejado)
+  2. **Green** — implemente o mínimo para o teste passar
+  3. **Refactor** — melhore o código sem quebrar o teste
+
+  ## Pirâmide de testes
+  - **Unit** (base, maioria): testa uma função/classe isolada, sem IO
+  - **Integration** (meio): testa módulos juntos (ex: serviço + banco)
+  - **E2E** (topo, poucos): testa fluxos completos do ponto de vista do usuário
+
+  ## Boas práticas
+  - Um assert por teste (ou poucos, coesos)
+  - Nome do teste descreve COMPORTAMENTO: `test_soma_retorna_zero_para_lista_vazia`
+  - Arrange / Act / Assert — estrutura clara
+  - Fixtures para setup repetitivo
+  - Mocks apenas em boundaries reais (IO, rede, clock)
+
+  ## Quando NÃO mockar
+  - Lógica de negócio pura: não precisa de mock
+  - SQLite in-memory: mais rápido que mock e testa o real
+  - Funções determinísticas: sem side effects = sem mock
+
+  ## Estratégia de cobertura
+  - 80% é suficiente para a maioria dos projetos
+  - Priorize: caminhos de erro, lógica condicional complexa, código crítico
+  - Não persiga 100% — testes de getters/setters não agregam valor

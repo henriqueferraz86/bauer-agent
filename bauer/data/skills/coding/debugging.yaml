@@ -1,0 +1,36 @@
+name: Debugging
+description: "Estratégia sistemática para debugar bugs — bisect, rubber duck, hipóteses, ferramentas Python."
+content: |
+  # Debugging — Estratégia sistemática
+
+  ## Processo
+  1. **Reproduza** o bug de forma confiável (input mínimo que quebra)
+  2. **Isole** — onde exatamente o comportamento diverge do esperado?
+  3. **Hipótese** — qual a causa mais provável? (uma por vez)
+  4. **Teste** a hipótese (log, breakpoint, print temporário)
+  5. **Corrija** e valide que o teste original passa
+
+  ## Ferramentas Python
+  ```python
+  import pdb; pdb.set_trace()    # breakpoint interativo
+  breakpoint()                    # Python 3.7+ nativo
+
+  # Ver pilha sem parar:
+  import traceback; traceback.print_stack()
+
+  # Inspecionar objeto:
+  print(vars(obj))
+  print(type(x), repr(x))
+  ```
+
+  ## Técnicas
+  - **Git bisect**: `git bisect start / good <hash> / bad HEAD` — acha o commit culpado
+  - **Rubber duck**: explique o problema em voz alta (ou num comentário) — o ato revela a causa
+  - **Logging estruturado**: `logger.debug("valor=%r, tipo=%s", x, type(x))` > print
+  - **Reprodução mínima**: reduza o caso ao menor snippet possível
+
+  ## Erros comuns
+  - Alterar múltiplas coisas de uma vez (impossível isolar a causa)
+  - Confundir sintoma com causa (o erro aparece em outro lugar que quebrou)
+  - Off-by-one em range/slice — verifique `< len` vs `<= len`
+  - Estado mutável compartilhado entre testes

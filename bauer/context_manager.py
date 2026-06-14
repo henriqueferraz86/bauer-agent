@@ -124,6 +124,15 @@ class ContextManager:
     def add_assistant(self, text: str) -> None:
         self.messages.append({"role": "assistant", "content": text})
 
+    def add_ephemeral_system(self, text: str) -> None:
+        """Inject a temporary system note before the next user turn.
+
+        Unlike the permanent system_prompt, ephemeral notes are inserted as a
+        ``role=system`` message in the messages list and will be compressed or
+        trimmed as the context grows.  Used for per-turn memory context injection.
+        """
+        self.messages.append({"role": "system", "content": text})
+
     def get_payload(self) -> list[dict]:
         """Retorna lista de mensagens pronta para o /api/chat.
 

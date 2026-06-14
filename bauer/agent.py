@@ -2501,6 +2501,15 @@ def run_agent_session(
                 sys.stdout.flush()
             continue
 
+        # Prefetch memory context (decisões passadas + sessões similares)
+        try:
+            from .memory_context import prefetch_memory_context as _prefetch
+            _mem_ctx = _prefetch(user_input, workspace=active_workspace)
+            if _mem_ctx:
+                ctx.add_ephemeral_system(_mem_ctx)
+        except Exception:
+            pass  # nunca bloquear o chat por falha de memória
+
         ctx.add_user(user_input)
 
         # --- loop de tool turns (um turno do usuário pode ter N tool calls) ---
@@ -2700,6 +2709,18 @@ def run_agent_session(
                     session_store.save(session_id, ctx.messages)
                 except Exception:
                     pass  # nao interrompe o agente por falha de persistencia
+
+            # Sync memory: grava turno em DecisionMemory (background)
+            try:
+                from .memory_context import sync_memory_after_turn as _sync_mem
+                _sync_mem(
+                    user_input, display, cli_tool_log,
+                    workspace=active_workspace,
+                    session_id=session_id or "",
+                )
+            except Exception:
+                pass
+
             sys.stdout.write("\033[32mbauer>\033[0m ")
             sys.stdout.write(display)
             sys.stdout.write("\n\n")
