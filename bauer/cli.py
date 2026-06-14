@@ -1980,6 +1980,7 @@ def agent(
             session_store=store, session_id=sid,
             rebuild_client_fn=_rebuild_client_chat,
             fallback_clients=_fallback_clients or None,
+            tool_timeout_s=cfg.agent.tool_timeout_s,
         )
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):

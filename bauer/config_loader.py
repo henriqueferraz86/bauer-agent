@@ -46,6 +46,20 @@ class _StrictSection(BaseModel):
 class AgentSection(_StrictSection):
     name: str = "Bauer Agent"
     workspace: str = "./workspace"
+    tool_timeout_s: float = Field(ge=0.0, le=600.0, default=30.0)
+
+
+class ObservabilitySection(_StrictSection):
+    """Rastreamento distribuído opcional via Langfuse.
+
+    Requer: pip install langfuse
+    Env vars: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY (preferidos ao config.yaml).
+    Host padrão: https://cloud.langfuse.com — ou URL self-hosted.
+    """
+    langfuse_enabled: bool = False
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_public_key: str = ""   # ou LANGFUSE_PUBLIC_KEY no .env (preferido)
+    langfuse_secret_key: str = ""   # ou LANGFUSE_SECRET_KEY no .env (preferido)
 
 
 class OpenAICompatSection(_StrictSection):
@@ -434,6 +448,7 @@ class BauerConfig(_StrictSection):
     telegram: TelegramSection = TelegramSection()
     discord: DiscordSection = DiscordSection()
     gateway: GatewaySection = GatewaySection()
+    observability: ObservabilitySection = ObservabilitySection()
 
 
 def _valid_fields_for(section_name: str) -> str:

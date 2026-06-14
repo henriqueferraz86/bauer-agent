@@ -1065,6 +1065,9 @@ def _run_native_tool_turn(
     tool_log: list[dict],
     _guardrail=None,
     _deduper=None,
+    *,
+    tool_timeout_s: float = 0.0,
+    _trace=None,
 ) -> str | None:
     """Executa um turno usando native function calling (OpenAI format).
 
@@ -1147,11 +1150,23 @@ def _run_native_tool_turn(
                     _emit_tool(name)
                 except Exception:
                     pass
+                _tool_span = _trace.span(f"tool:{name}", input={"args": args}) if _trace is not None else None
                 try:
-                    result = router.execute_native_call(name, args)
+                    from .tool_timeout import call_with_timeout as _call_to
+                    result, _timed_out = _call_to(
+                        lambda: router.execute_native_call(name, args),
+                        tool_timeout_s,
+                        name,
+                    )
+                    if _timed_out:
+                        _native_failed = True
+                    if _tool_span is not None:
+                        _tool_span.end(output=str(result)[:500], level="WARNING" if _timed_out else "DEFAULT")
                 except (ToolError, SandboxError) as exc:
                     result = f"[Erro: {exc}]"
                     _native_failed = True
+                    if _tool_span is not None:
+                        _tool_span.end(output=result, level="ERROR")
                 if _deduper is not None:
                     _deduper.record(name, args, result, failed=_native_failed)
 
@@ -1258,6 +1273,9 @@ def run_one_turn(
     model_name: str,
     *,
     budget: "IterationBudget | None" = None,
+    tool_timeout_s: float = 30.0,
+    tracer: "Any | None" = None,
+    session_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Executa um turno completo do agente, incluindo tool calls encadeados.
 
@@ -1278,12 +1296,24 @@ def run_one_turn(
     Usado tanto pelo CLI quanto pelo bauer serve.
     """
     from .iteration_budget import IterationBudget as _IterBudget
+    from .tracing import _NoopTrace as _TraceNoop
 
     tool_log: list[dict] = []
     if budget is None:
         # `MAX_TOOL_TURNS + 1`: até MAX rodadas de tool call, +1 turno final para
         # o modelo emitir resposta de texto após a última tool.
         budget = _IterBudget(max_total=MAX_TOOL_TURNS + 1)
+
+    _trace: Any = _TraceNoop()
+    if tracer is not None:
+        try:
+            _trace = tracer.trace(
+                "run_one_turn",
+                session_id=session_id,
+                metadata={"model": model_name},
+            )
+        except Exception:
+            _trace = _TraceNoop()
 
     # Wave 4.5: per-turn guardrail controller (tracks cumulative failures /
     # no-progress across all tool calls in this turn).
@@ -1308,7 +1338,8 @@ def run_one_turn(
             budget.consume()
             try:
                 result = _run_native_tool_turn(ctx, router, client, model_name, tool_log,
-                                               _guardrail=_guardrail, _deduper=_deduper)
+                                               _guardrail=_guardrail, _deduper=_deduper,
+                                               tool_timeout_s=tool_timeout_s, _trace=_trace)
             except _NativeToolsUnsupported:
                 # Provider não aceita tools= — downgrade definitivo para o
                 # bridge (abaixo) sem queimar o restante do budget.
@@ -1382,11 +1413,24 @@ def run_one_turn(
                         _emit_tool(action_name)
                     except Exception:
                         pass
+                    _bridge_span = _trace.span(f"tool:{action_name}", input={"args": action_args})
                     try:
-                        tool_result = router.execute(action_dict)
+                        from .tool_timeout import call_with_timeout as _call_to
+                        tool_result, _timed_out = _call_to(
+                            lambda: router.execute(action_dict),
+                            tool_timeout_s,
+                            action_name,
+                        )
+                        if _timed_out:
+                            _tool_failed = True
+                        _bridge_span.end(
+                            output=str(tool_result)[:500],
+                            level="WARNING" if _timed_out else "DEFAULT",
+                        )
                     except (ToolError, SandboxError) as exc:
                         tool_result = f"[Erro: {exc}]"
                         _tool_failed = True
+                        _bridge_span.end(output=tool_result, level="ERROR")
                     _deduper.record(action_name, action_args, tool_result, failed=_tool_failed)
 
                 # Wave 4.5: post-call guardrail update
@@ -2259,6 +2303,7 @@ def run_agent_session(
     session_id: str | None = None,
     rebuild_client_fn: "Any | None" = None,
     fallback_clients: "list | None" = None,
+    tool_timeout_s: float = 30.0,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -2610,7 +2655,7 @@ def run_agent_session(
                     )
 
                 def _exec_action(action_dict: dict) -> tuple[str, str]:
-                    """Executa 1 action com dedup (replay de chamada idêntica)."""
+                    """Executa 1 action com dedup e timeout."""
                     _name = action_dict.get("action", "?")
                     _args = action_dict.get("args", {}) or {}
                     _cached = _cli_deduper.check(_name, _args)
@@ -2618,7 +2663,14 @@ def run_agent_session(
                         return _name, _cached
                     _failed = False
                     try:
-                        _result = router.execute(action_dict)
+                        from .tool_timeout import call_with_timeout as _call_to
+                        _result, _timed_out = _call_to(
+                            lambda: router.execute(action_dict),
+                            tool_timeout_s,
+                            _name,
+                        )
+                        if _timed_out:
+                            _failed = True
                     except (ToolError, SandboxError) as _exc:
                         _result = f"[Erro: {_exc}]"
                         _failed = True

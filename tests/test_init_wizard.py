@@ -16,6 +16,19 @@ from bauer.init_wizard import (
 )
 
 
+# Isola os testes de env vars que test_config_loader pode poluir ao carregar .env do projeto.
+_PROVIDER_ENV_KEYS = [
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY",
+]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    for key in _PROVIDER_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # _write_env
 # ---------------------------------------------------------------------------
