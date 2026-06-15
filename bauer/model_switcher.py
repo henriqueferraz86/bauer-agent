@@ -135,6 +135,8 @@ PROVIDERS: list[tuple[str, str, str]] = [
     ("opencode",    "OpenCode Zen",     "GRATIS | Modelos via opencode.ai — sem API key"),
     ("groq",        "Groq",             "GRATIS | Llama 3.3 70B ultra-rápido (console.groq.com)"),
     ("github",      "GitHub Models",    "GRATIS | GPT-4o, Llama via GitHub (requer GITHUB_TOKEN)"),
+    # --- Assinatura (usa conta ChatGPT, sem créditos de API) ---
+    ("openai",      "ChatGPT (browser)", "ASSINA | Login com conta ChatGPT Plus/Pro — sem API key (experimental)"),
     # --- Pagos (requerem billing/API key) ---
     ("openai-api",  "OpenAI API Key",   "PAGO   | ChatGPT com API key (sk-...) — platform.openai.com"),
     ("anthropic",   "Anthropic",        "PAGO   | Claude Haiku, Sonnet, Opus"),
@@ -325,19 +327,29 @@ def run_model_switcher(config_path: Path) -> None:
         internal_provider = "openrouter"
 
     elif provider_id == "openai":
-        # OAuth ChatGPT — dispara o login via browser agora mesmo
+        # Login via browser — usa a assinatura ChatGPT (backend Responses,
+        # igual ao Codex CLI). Billa na conta ChatGPT, sem créditos de API.
         console.print(
-            "\n[cyan]ChatGPT OAuth[/cyan] — abrirá o browser para você logar com sua conta ChatGPT.\n"
-            "[dim]Nenhuma API key necessária.[/dim]\n"
+            "\n[cyan]ChatGPT (login browser)[/cyan] — abrirá o browser para você logar com sua conta ChatGPT.\n"
+            "[dim]Usa sua assinatura ChatGPT Plus/Pro — sem API key (sk-...).[/dim]\n"
+            "[yellow]Experimental:[/yellow] [dim]depende do backend do ChatGPT; requer assinatura ativa.[/dim]\n"
         )
         try:
             from .auth import AuthManager
             auth = AuthManager()
-            token = auth.login_oauth("openai")   # vai direto ao browser, sem checar Codex
+            token = auth.login_oauth("openai")   # vai direto ao browser
             auth.close()
-            console.print(f"[green]✓ Autenticado como ChatGPT OAuth[/green]\n")
+            _acct = token.extra.get("chatgpt_account_id") if hasattr(token, "extra") else ""
+            console.print("[green]✓ Autenticado com conta ChatGPT[/green]")
+            if _acct:
+                console.print(f"[dim]  account_id: {_acct}[/dim]\n")
+            else:
+                console.print(
+                    "[yellow]  Aviso:[/yellow] [dim]account_id não encontrado no token — "
+                    "o backend pode recusar. Confirme assinatura ChatGPT ativa.[/dim]\n"
+                )
         except Exception as _auth_err:
-            console.print(f"[red]Erro na autenticação OAuth:[/red] {_auth_err}")
+            console.print(f"[red]Erro na autenticação:[/red] {_auth_err}")
             console.print("[dim]Tente manualmente: bauer auth login -p openai[/dim]")
             return
 
@@ -345,7 +357,7 @@ def run_model_switcher(config_path: Path) -> None:
         if not model_name:
             console.print("[dim]Cancelado.[/dim]")
             return
-        config_extra = {"openai": {"host": "https://api.openai.com"}}
+        internal_provider = "openai"
 
     elif provider_id == "openai-api":
         # API Key OpenAI — sk-...

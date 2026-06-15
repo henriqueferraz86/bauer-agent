@@ -228,6 +228,34 @@ def _decrypt_token(encrypted: str, key: str) -> str:
         return encrypted  # já estava em plaintext (sem encriptação)
 
 
+def _extract_chatgpt_account_id(id_token: str | None) -> str:
+    """Decodifica o JWT id_token (sem verificar assinatura) e extrai o
+    chatgpt_account_id do claim `https://api.openai.com/auth`.
+
+    Retorna "" se não encontrar — o backend pode aceitar sem o header em
+    algumas contas, e o erro fica explícito na primeira chamada.
+    """
+    if not id_token:
+        return ""
+    try:
+        import base64 as _b64
+        import json as _json
+        parts = id_token.split(".")
+        if len(parts) < 2:
+            return ""
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)  # padding base64url
+        payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+        auth_claim = payload.get("https://api.openai.com/auth", {})
+        return (
+            auth_claim.get("chatgpt_account_id")
+            or auth_claim.get("chatgpt_user_id")
+            or ""
+        )
+    except Exception:
+        return ""
+
+
 # ─── Token Storage ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -555,6 +583,10 @@ class AuthManager:
             code=code,
         )
 
+        # Extrai o chatgpt_account_id do id_token (JWT) — necessário para o
+        # backend ChatGPT (Responses API) billar na assinatura, igual ao Codex.
+        _account_id = _extract_chatgpt_account_id(token_data.get("id_token"))
+
         token = AuthToken(
             provider=provider,
             access_token=token_data["access_token"],
@@ -562,7 +594,10 @@ class AuthManager:
             expires_at=time.time() + token_data.get("expires_in", 3600),
             token_type=token_data.get("token_type", "Bearer"),
             api_base=config.get("api_base"),
-            extra={"id_token": token_data.get("id_token")},
+            extra={
+                "id_token": token_data.get("id_token"),
+                "chatgpt_account_id": _account_id,
+            },
         )
 
         self.store.save(token)

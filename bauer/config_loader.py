@@ -81,6 +81,9 @@ class OpenAICompatSection(_StrictSection):
     host: str = "https://api.openai.com"
     timeout_seconds: int = Field(ge=1, le=600, default=60)
     api_key: str = ""  # ou via OPENAI_API_KEY no .env
+    # Login via browser (ChatGPT Plus/Pro): backend Responses usado pelo Codex.
+    # Vazio = usa o padrão (https://chatgpt.com/backend-api/codex).
+    chatgpt_base_url: str = ""
 
 
 class OpenRouterSection(_StrictSection):

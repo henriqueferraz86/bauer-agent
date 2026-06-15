@@ -1207,6 +1207,23 @@ def _build_client(cfg):
                         "Execute: [bold]bauer auth login -p copilot[/bold]"
                     )
                     import sys; sys.exit(1)
+            # ChatGPT via browser (OAuth): token sem api_key → usa o backend
+            # ChatGPT (Responses API) billando na assinatura, igual ao Codex.
+            if (
+                provider == "openai"
+                and not token.api_key
+                and token.access_token
+                and not token.extra.get("type") == "jwt"
+            ):
+                from .chatgpt_backend import ChatGPTBackendClient, DEFAULT_CHATGPT_BASE
+                _base = getattr(cfg.openai, "chatgpt_base_url", "") or DEFAULT_CHATGPT_BASE
+                return ChatGPTBackendClient(
+                    access_token=token.access_token,
+                    account_id=token.extra.get("chatgpt_account_id") or "",
+                    base_url=_base,
+                    timeout_seconds=cfg.openai.timeout_seconds,
+                    model=cfg.model.name,
+                )
             if not token.extra.get("type") == "jwt":
                 from .openai_client import OpenAIClient
                 api_key = token.api_key or token.access_token

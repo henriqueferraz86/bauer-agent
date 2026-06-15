@@ -509,6 +509,20 @@ O gateway repassa a key automaticamente para o `bauer serve` em todas as requisi
 | ⚡ **Groq** | `GROQ_API_KEY` | Llama 3.3 70B ultra-rápido; tier gratuito generoso (`console.groq.com`) |
 | 🐙 **GitHub Models** | `GITHUB_TOKEN` | GPT-4o, Llama via GitHub Marketplace |
 
+### 🔐 Assinatura (usa conta ChatGPT, sem créditos de API)
+
+| Provider | Auth | Notas |
+|---|---|---|
+| 🟢 **ChatGPT (browser)** | Login OAuth | Usa sua assinatura **ChatGPT Plus/Pro** via backend Responses (igual ao Codex CLI). **Experimental.** |
+
+```bash
+bauer model           # escolha "ChatGPT (browser)" → abre o browser p/ login
+# ou:
+bauer auth login -p openai
+```
+
+> ⚠️ **Experimental**: depende do backend do ChatGPT (`chatgpt.com/backend-api/codex`), não da API pública. Requer assinatura ChatGPT ativa. Diferente da `OpenAI API Key` (abaixo), que usa créditos de API pagos. Se o backend recusar, use uma das opções gratuitas (Groq, OpenCode) ou a API key.
+
 ### 💳 Pagos (requerem billing / API key)
 
 | Provider | Variável de ambiente | Notas |
