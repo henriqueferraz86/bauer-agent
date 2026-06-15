@@ -125,24 +125,35 @@ Verifica: provider ativo, modelo disponível, RAM, contexto aplicado, tool mode.
 
 ---
 
-## 🧠 bauer agent
+## 🧠 Modos de uso
 
-O **bauer agent** é o modo interativo principal — um assistente com memória, tools e suporte a agents especializados.
+O Bauer tem três modos de interação. Escolha o certo para cada situação:
 
-### 💬 Chat básico
+| Comando | Tools | Memória | Agents | Quando usar |
+|---|---|---|---|---|
+| `bauer chat` | ❌ | ❌ | ❌ | Testar o modelo puro, sem nenhuma ferramenta |
+| `bauer agent` | ✅ | ✅ | padrão | **Uso diário** — assistente completo |
+| `bauer agent run <nome>` | ✅ | ✅ | especializado | Tarefa específica com perfil dedicado |
+
+### 💬 bauer chat — modo mínimo
+
+Chat direto com o modelo, **sem tools, sem workspace, sem memória persistente**. Útil para testar o modelo puro ou quando não precisa de ferramentas.
 
 ```bash
 bauer chat
+bauer chat --model qwen2.5-coder:7b   # força modelo específico
+bauer chat --resume                    # retoma última sessão
+bauer chat --no-intro                  # pula a tela de introdução
 ```
 
-Inicia sessão interativa com o modelo configurado. A sessão é salva automaticamente e retomada na próxima execução.
+### 🤖 bauer agent — uso diário (recomendado)
 
-**Opções:**
+**Chat completo** com tools, sessão persistente, workspace e slash commands. É o modo principal do Bauer.
 
 ```bash
-bauer chat --model qwen2.5-coder:7b   # força modelo específico
-bauer chat --resume                    # retoma última sessão explicitamente
-bauer chat --no-intro                  # pula a tela de introdução
+bauer agent                  # inicia com o model do config.yaml
+bauer agent --resume         # retoma última sessão
+bauer agent --model gpt-4o   # força modelo específico
 ```
 
 ### 🖥️ Terminal UI (TUI)
@@ -158,27 +169,24 @@ bauer tui --workspace ./meu-dir  # workspace personalizado
 
 Requer: `pip install prompt-toolkit` (incluído nos extras `gateway` e `all`).
 
-### 🤖 Agents especializados
+### 🎯 bauer agent run — agent especializado
 
-Agents são perfis com system prompt, ferramentas e modelo próprios, definidos em `agents.yaml`.
+Agent com **perfil dedicado**: system prompt próprio, tools específicas, modelo próprio e histórico separado. Definidos em `agents.yaml`.
 
 ```bash
-# Listar agents disponíveis
-bauer agent list
-
-# Criar novo agent (wizard interativo)
-bauer agent create
-
-# Iniciar agent
-bauer agent run <nome>
-
-# Exemplos:
-bauer agent run python
-bauer agent run data-analyst
-bauer agent run henrique-ferraz
+bauer agent list                  # lista agents disponíveis
+bauer agent create                # cria novo agent (wizard)
+bauer agent run python            # agent especialista em Python
+bauer agent run data-analyst      # agent analista de dados
+bauer agent run henrique-ferraz   # agent personalizado
 ```
 
-Cada agent tem seu próprio histórico de sessão (`agent-<nome>.jsonl`) — retoma automaticamente de onde parou. 🔄
+Cada agent retoma automaticamente de onde parou (histórico em `agent-<nome>.jsonl`).
+
+> **Resumo prático:**
+> - Quer só conversar → `bauer chat`
+> - Quer usar tools e memória → `bauer agent` ← **use este no dia a dia**
+> - Quer um perfil especializado → `bauer agent run <nome>`
 
 **Estrutura de um agent (`agents.yaml`):**
 
