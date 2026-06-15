@@ -130,21 +130,22 @@ GITHUB_MODELS: list[tuple[str, str]] = [
 
 PROVIDERS: list[tuple[str, str, str]] = [
     # (id, nome, descrição)
-    ("ollama",      "Ollama",           "Modelos locais gratuitos (requer Ollama rodando)"),
-    ("opencode",    "OpenCode Zen",     "Modelos gratuitos via opencode.ai — sem API key"),
-    ("openrouter",  "OpenRouter",       "200+ modelos: GPT, Claude, Gemini — 1 chave"),
-    ("openai",      "ChatGPT OAuth",    "Login com conta ChatGPT — sem API key (via browser)"),
-    ("openai-api",  "OpenAI API Key",   "ChatGPT com API key (sk-...) — platform.openai.com"),
-    ("anthropic",   "Anthropic",        "Claude Haiku, Sonnet, Opus"),
-    ("gemini",      "Google Gemini",    "Gemini Flash, Pro (GEMINI_API_KEY)"),
-    ("groq",        "Groq",             "Llama ultra-rápido, gratuito com limites"),
-    ("mistral",     "Mistral AI",       "Mistral Small/Medium/Large, Codestral"),
-    ("xai",         "xAI Grok",         "Grok 3 — modelos da xAI/Elon Musk"),
-    ("together",    "Together AI",      "Llama, Mistral, Qwen — hospedagem aberta"),
-    ("deepseek",    "DeepSeek",         "DeepSeek V3 e R1 — China, preço baixo"),
-    ("github",      "GitHub Models",    "GPT-4o, Llama via GitHub (requer GITHUB_TOKEN)"),
-    ("copilot",     "GitHub Copilot",   "Copilot API — requer 'bauer auth login -p copilot'"),
-    ("custom",      "Custom",           "Qualquer endpoint OpenAI-compatible (LM Studio, vLLM…)"),
+    # --- Gratuitos (sem billing) ---
+    ("ollama",      "Ollama",           "GRATIS | Modelos locais (requer Ollama rodando)"),
+    ("opencode",    "OpenCode Zen",     "GRATIS | Modelos via opencode.ai — sem API key"),
+    ("groq",        "Groq",             "GRATIS | Llama 3.3 70B ultra-rápido (console.groq.com)"),
+    ("github",      "GitHub Models",    "GRATIS | GPT-4o, Llama via GitHub (requer GITHUB_TOKEN)"),
+    # --- Pagos (requerem billing/API key) ---
+    ("openai-api",  "OpenAI API Key",   "PAGO   | ChatGPT com API key (sk-...) — platform.openai.com"),
+    ("anthropic",   "Anthropic",        "PAGO   | Claude Haiku, Sonnet, Opus"),
+    ("gemini",      "Google Gemini",    "PAGO   | Gemini Flash, Pro (GEMINI_API_KEY)"),
+    ("openrouter",  "OpenRouter",       "PAGO   | 200+ modelos: GPT, Claude, Gemini — 1 chave"),
+    ("mistral",     "Mistral AI",       "PAGO   | Mistral Small/Medium/Large, Codestral"),
+    ("xai",         "xAI Grok",         "PAGO   | Grok 3 — modelos da xAI/Elon Musk"),
+    ("together",    "Together AI",      "PAGO   | Llama, Mistral, Qwen — hospedagem aberta"),
+    ("deepseek",    "DeepSeek",         "PAGO   | DeepSeek V3 e R1 — China, preço baixo"),
+    ("copilot",     "GitHub Copilot",   "PAGO   | Copilot API — requer 'bauer auth login -p copilot'"),
+    ("custom",      "Custom",           "       | Qualquer endpoint OpenAI-compatible (LM Studio, vLLM…)"),
 ]
 
 
@@ -231,15 +232,6 @@ def _pick_from_list(items: list[tuple[str, str]], title: str) -> str | None:
 
     if not raw:
         return None
-
-    if title == "Escolha o provider":
-        legacy_numbers = {
-            "4": "openai-api",
-            "7": "groq",
-            "14": "custom",
-        }
-        if raw in legacy_numbers:
-            return legacy_numbers[raw]
 
     chosen: str | None = None
     try:

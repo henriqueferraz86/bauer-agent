@@ -1451,6 +1451,25 @@ class ToolRouter:
         except Exception:
             pass  # scanner nunca bloqueia execução
 
+        # Escanear output de tools por binários/shellcode suspeitos
+        try:
+            from .binary_scanner import scan as _scan_binary
+            _bin_result = _scan_binary(result)
+            if _bin_result.is_suspicious:
+                import warnings
+                warnings.warn(
+                    f"[binary_scanner] Conteúdo suspeito no output de '{name}': "
+                    f"{_bin_result.summary()}",
+                    stacklevel=2,
+                )
+                if _bin_result.is_binary:
+                    result = (
+                        f"[binary_scanner] AVISO: output de '{name}' parece ser um executável binário "
+                        f"({_bin_result.summary()}). Conteúdo suprimido por segurança."
+                    )
+        except Exception:
+            pass  # scanner nunca bloqueia execução
+
         # SEG-3: audit de sucesso
         if self._audit is not None:
             self._audit.log_tool_call(

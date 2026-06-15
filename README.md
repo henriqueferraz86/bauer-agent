@@ -24,46 +24,50 @@ Runtime adaptativo para LLMs locais e cloud.
 
 ## ⚡ Instalação
 
-### 🐧 Linux (Debian/Ubuntu)
+### 🐧 Linux / macOS — instalação automática
 
 ```bash
-# 1. Dependências do sistema
-sudo apt install python3-full python3-pip -y
-
-# 2. Clonar o repositório
-git clone https://github.com/henriqueferraz86/bauer-agent.git
-cd bauer-agent
-
-# 3. Criar e ativar o ambiente virtual
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 4. Instalar o Bauer (com servidor HTTP)
-pip install -e ".[server]"
-
-# 5. Verificar instalação
-bauer doctor
+curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash
 ```
 
-### 🪟 Windows
+Instala em `~/.local/share/bauer-agent`, cria o comando `bauer` em `~/.local/bin` e adiciona ao PATH automaticamente.
+
+```bash
+# Atualizar instalação existente
+curl -fsSL .../install.sh | bash -s -- --update
+
+# Remover completamente
+curl -fsSL .../install.sh | bash -s -- --uninstall
+```
+
+### 🪟 Windows — instalação automática
 
 ```powershell
-# 1. Clonar o repositório
-git clone https://github.com/henriqueferraz86/bauer-agent.git
-cd bauer-agent
+irm https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.ps1 | iex
+```
 
-# 2. Criar e ativar o ambiente virtual
-python -m venv .venv
-.venv\Scripts\activate
+Instala em `%LOCALAPPDATA%\BauerAgent`, cria `bauer.cmd` e adiciona ao PATH do usuário.
 
-# 3. Instalar o Bauer (com servidor HTTP)
-pip install -e ".[server]"
+```powershell
+# Atualizar
+.\install.ps1 -Update
 
-# 4. Verificar instalação
-bauer doctor
+# Remover
+.\install.ps1 -Uninstall
 ```
 
 > **🔒 Nota Windows**: ao digitar API keys no seletor de modelos, o campo está mascarado — o texto não aparece enquanto você digita (comportamento normal do `getpass`).
+
+### 🔧 Instalação manual (dev / contribuição)
+
+```bash
+git clone https://github.com/henriqueferraz86/bauer-agent.git
+cd bauer-agent
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e ".[gateway]"
+bauer doctor
+```
 
 ---
 
@@ -121,6 +125,19 @@ bauer chat --model qwen2.5-coder:7b   # força modelo específico
 bauer chat --resume                    # retoma última sessão explicitamente
 bauer chat --no-intro                  # pula a tela de introdução
 ```
+
+### 🖥️ Terminal UI (TUI)
+
+Interface gráfica dentro do terminal, com histórico navegável, temas e suporte a streaming:
+
+```bash
+bauer tui                        # tema padrão
+bauer tui --theme dark           # tema escuro
+bauer tui --theme mono           # tema monocromático
+bauer tui --workspace ./meu-dir  # workspace personalizado
+```
+
+Requer: `pip install prompt-toolkit` (incluído nos extras `gateway` e `all`).
 
 ### 🤖 Agents especializados
 
@@ -456,22 +473,32 @@ O gateway repassa a key automaticamente para o `bauer serve` em todas as requisi
 
 ## 🔗 Providers suportados
 
+### ✅ Gratuitos (sem billing)
+
 | Provider | Variável de ambiente | Notas |
 |---|---|---|
 | 🖥️ **Ollama** (local) | — | Modelos locais; sem custo; requer Ollama rodando |
-| ⚡ **Groq** | `GROQ_API_KEY` | Rápido; tier gratuito generoso |
-| 🟢 **OpenAI** | `OPENAI_API_KEY` | GPT-4o, o1, etc. |
-| 🟣 **Anthropic** | `ANTHROPIC_API_KEY` | Claude 3.5 Sonnet, Claude 3 Opus |
+| ☁️ **OpenCode Zen** | — | Modelos gratuitos via opencode.ai; sem API key |
+| ⚡ **Groq** | `GROQ_API_KEY` | Llama 3.3 70B ultra-rápido; tier gratuito generoso (`console.groq.com`) |
+| 🐙 **GitHub Models** | `GITHUB_TOKEN` | GPT-4o, Llama via GitHub Marketplace |
+
+### 💳 Pagos (requerem billing / API key)
+
+| Provider | Variável de ambiente | Notas |
+|---|---|---|
+| 🟢 **OpenAI** | `OPENAI_API_KEY` | GPT-4o, o1, etc. (`platform.openai.com`) |
+| 🟣 **Anthropic** | `ANTHROPIC_API_KEY` | Claude Haiku, Sonnet, Opus |
 | 🔵 **Google Gemini** | `GEMINI_API_KEY` | Gemini 1.5 Pro/Flash |
-| 🟠 **Mistral** | `MISTRAL_API_KEY` | Mistral Large, Codestral |
-| 🐋 **DeepSeek** | `DEEPSEEK_API_KEY` | DeepSeek-V3, R1 |
-| ✖️ **xAI** | `XAI_API_KEY` | Grok |
-| 🤝 **Together AI** | `TOGETHER_API_KEY` | Llama, Qwen e outros open-source |
 | 🔀 **OpenRouter** | `OPENROUTER_API_KEY` | Agregador — acesso a +200 modelos |
+| 🟠 **Mistral** | `MISTRAL_API_KEY` | Mistral Large, Codestral |
+| ✖️ **xAI** | `XAI_API_KEY` | Grok 3 |
+| 🤝 **Together AI** | `TOGETHER_API_KEY` | Llama, Qwen e outros open-source |
+| 🐋 **DeepSeek** | `DEEPSEEK_API_KEY` | DeepSeek-V3, R1 |
 | ☁️ **Azure OpenAI** | `AZURE_OPENAI_API_KEY` | GPT via Azure |
-| 🐙 **GitHub Models** | `GITHUB_TOKEN` | Modelos via GitHub Marketplace |
 | 🐙 **GitHub Copilot** | — | Auth via Device Flow do GitHub |
 | 🔧 **LM Studio / vLLM** | — | Qualquer endpoint OpenAI-compatible |
+
+> Use `bauer model` para selecionar provider e modelo interativamente. O menu exibe claramente quais são GRÁTIS e quais são PAGOS.
 
 ---
 

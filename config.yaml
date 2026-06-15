@@ -7,8 +7,8 @@ logging:
 model:
   auto_downgrade_context: true
   minimum_context: 4096
-  name: deepseek-v4-flash-free
-  provider: opencode
+  name: gpt-4.1-mini
+  provider: openai
   requested_context: 4096
   think: false
 ollama:
@@ -39,7 +39,11 @@ serve:
   workers: 1
 tools:
   max_output_kb: 50
-  safe_mode: true
+  safe_mode: false
   shell_enabled: true
   timeout_seconds: 300
   web_enabled: true
+telegram:
+  enabled: true
+  allowed_users:
+  - 602936016

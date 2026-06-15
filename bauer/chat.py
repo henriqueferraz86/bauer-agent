@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 
 from rich.console import Console
+from .indicators import show_header, show_step, spinning
+from .indicators import spinning
 from rich.rule import Rule
 
 from .context_manager import ContextManager
@@ -73,34 +75,32 @@ def run_chat_session(
 
         ctx.add_user(user_input)
 
-        # Prefixo da resposta — sem newline, o stream continua na mesma linha.
-        sys.stdout.write("\033[32mbauer>\033[0m ")
-        sys.stdout.flush()
-
         collected: list[str] = []
         error_occurred = False
 
         try:
-            for chunk in client.chat_stream(model_name, ctx.get_payload()):
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
-                collected.append(chunk)
+            # Spinner APENAS enquanto coleta — sem sys.stdout.write durante
+            with spinning(f"Consultando {model_name}...", console=console, transient=True) as sp:
+                for chunk in client.chat_stream(model_name, ctx.get_payload()):
+                    collected.append(chunk)
+                    sp.update(f"Recebendo resposta... [{len(''.join(collected))} chars]")
         except OllamaError as exc:
             error_occurred = True
-            sys.stdout.write("\n")
-            console.print(f"[red]Erro:[/red] {exc}")
+            console.print(f"\n[red]Erro Ollama:[/red] {exc}")
             console.print("[dim]Rode 'bauer doctor' para diagnostico completo.[/dim]")
-            # Remove a mensagem do usuario pois nao houve resposta.
             if ctx.messages and ctx.messages[-1]["role"] == "user":
                 ctx.messages.pop()
         except KeyboardInterrupt:
-            # Usuario interrompeu o stream — salva o que chegou ate aqui.
-            sys.stdout.write(" [interrompido]\n")
-        finally:
-            if not error_occurred:
-                sys.stdout.write("\n")
+            console.print("\n[dim]Interrompido pelo usuario.[/dim]")
+        else:
+            # Exibe resposta COMPLETA apos o spinner fechar (sem conflito)
+            full_response = "".join(collected)
+            sys.stdout.write("\033[32mbauer>\033[0m ")
+            sys.stdout.write(full_response)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
-        if collected:
+        if not error_occurred and collected:
             ctx.add_assistant("".join(collected))
 
         sys.stdout.flush()

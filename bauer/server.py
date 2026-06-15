@@ -265,7 +265,6 @@ def create_app(
             )
 
     def _verify_key(request: Request) -> None:
-        _check_rate_limit(request)
         if not api_key:
             return
         incoming = _extract_incoming_key(request)

@@ -16,7 +16,21 @@ Providers suportados:
   anthropic   — Anthropic Claude (claude-3-5-sonnet, haiku, opus)
   gemini      — Google Gemini (gemini-2.0-flash, 1.5-pro, 1.5-flash)
   azure       — Azure OpenAI (deployment personalizado)
+  github      — GitHub Models (inferência gratuita via Azure)
+  copilot     — GitHub Copilot API (via assinatura Copilot)
   custom      — Alias para openai com base_url personalizado
+  cohere      — Cohere Command (command-r-plus, command-a)
+  perplexity  — Perplexity AI com busca na web (sonar, sonar-pro)
+  fireworks   — Fireworks AI (llama, mixtral, qwen open-source)
+  huggingface — HuggingFace Inference API (300k+ modelos)
+  cerebras    — Cerebras (wafer-scale, velocidade máxima)
+  sambanova   — Sambanova Cloud (inferência empresarial)
+  nvidia      — NVIDIA NIM (A100/H100, modelos curados)
+  lmstudio    — LM Studio (alternativa local ao Ollama)
+  databricks  — Databricks Mosaic AI (serving endpoints)
+  moonshot    — Moonshot / Kimi (contexto longo, chinês)
+  alibaba     — Alibaba DashScope / Qwen (qwen-max, qwen-plus)
+  vertex      — Google Vertex AI (projetos GCP, modelos Gemini/tuned)
 """
 
 from __future__ import annotations
@@ -211,12 +225,152 @@ class CopilotSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
+class CohereSection(_StrictSection):
+    """Cohere — Command family com retrieval e tool use nativos.
+
+    Endpoint: https://api.cohere.com/compatibility/v1 (OpenAI-compatible)
+    Modelos:  command-a-03-2025, command-r-plus-08-2024, command-r7b-12-2024
+    Env var:  COHERE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class PerplexitySection(_StrictSection):
+    """Perplexity AI — modelos com busca na web integrada.
+
+    Endpoint: https://api.perplexity.ai (OpenAI-compatible)
+    Modelos:  sonar-pro, sonar, sonar-reasoning, r1-1776
+    Env var:  PERPLEXITY_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class FireworksSection(_StrictSection):
+    """Fireworks AI — inferência de alta velocidade para modelos open-source.
+
+    Endpoint: https://api.fireworks.ai/inference/v1 (OpenAI-compatible)
+    Modelos:  accounts/fireworks/models/llama-v3p3-70b-instruct
+    Env var:  FIREWORKS_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=30)
+
+
+class HuggingFaceSection(_StrictSection):
+    """HuggingFace Inference API — acesso a 300k+ modelos open-source.
+
+    Endpoint padrão: https://api-inference.huggingface.co/v1 (já inclui /v1)
+    Para Inference Endpoints dedicados, altere host para a URL do endpoint.
+    Env var:  HUGGINGFACE_API_KEY ou HF_TOKEN
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=120)
+    host: str = "https://api-inference.huggingface.co/v1"
+
+
+class CerebrasSection(_StrictSection):
+    """Cerebras — inferência mais rápida do mercado (wafer-scale).
+
+    Endpoint: https://api.cerebras.ai/v1 (OpenAI-compatible)
+    Modelos:  llama3.3-70b, llama3.1-8b, qwen-3-32b
+    Env var:  CEREBRAS_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=30)
+
+
+class SambanovaSection(_StrictSection):
+    """Sambanova Cloud — inferência empresarial de alta escala.
+
+    Endpoint: https://api.sambanova.ai/v1 (OpenAI-compatible)
+    Modelos:  Meta-Llama-3.3-70B-Instruct, DeepSeek-R1-Distill-Llama-70B
+    Env var:  SAMBANOVA_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class NvidiaSection(_StrictSection):
+    """NVIDIA NIM — inferência em A100/H100 via NVIDIA Cloud.
+
+    Endpoint: https://integrate.api.nvidia.com/v1 (OpenAI-compatible)
+    Modelos:  meta/llama-3.3-70b-instruct, nvidia/llama-3.3-nemotron-super-49b-v1
+    Env var:  NVIDIA_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class LMStudioSection(_StrictSection):
+    """LM Studio — alternativa local ao Ollama (endpoint OpenAI-compatible).
+
+    Endpoint padrão: http://localhost:1234/v1
+    Env var:  LMSTUDIO_HOST (para host customizado)
+    """
+    host: str = "http://localhost:1234"
+    timeout_seconds: int = Field(ge=1, le=600, default=120)
+    api_key: str = ""  # LM Studio local não requer API key
+
+
+class DatabricksSection(_StrictSection):
+    """Databricks Mosaic AI — modelos servidos via MLflow no Databricks workspace.
+
+    Endpoint: https://{host}/serving-endpoints (OpenAI-compatible)
+    Auth:     Personal Access Token (PAT) do Databricks
+    Env vars: DATABRICKS_TOKEN, DATABRICKS_HOST
+    """
+    host: str = ""           # ex: https://myworkspace.azuredatabricks.net
+    api_key: str = ""        # Databricks PAT (env DATABRICKS_TOKEN tem prioridade)
+    timeout_seconds: int = Field(ge=1, le=600, default=120)
+
+
+class MoonshotSection(_StrictSection):
+    """Moonshot / Kimi — LLM chinês com foco em contexto longo.
+
+    Endpoint: https://api.moonshot.cn/v1 (OpenAI-compatible)
+    Modelos:  moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k, kimi-latest
+    Env var:  MOONSHOT_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class AlibabaSection(_StrictSection):
+    """Alibaba DashScope / Qwen — LLMs da Alibaba Cloud.
+
+    Endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1 (OpenAI-compatible)
+    Modelos:  qwen-max, qwen-plus, qwen-turbo, qwen-long, qwen2.5-72b-instruct
+    Env vars: ALIBABA_API_KEY ou DASHSCOPE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class VertexSection(_StrictSection):
+    """Google Vertex AI — modelos Gemini/tuned em projetos GCP.
+
+    Endpoint: https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project}/
+              locations/{region}/endpoints/openapi (OpenAI-compatible)
+    Auth:     Bearer token (gcloud auth print-access-token ou service account)
+    Env vars: VERTEX_PROJECT_ID, VERTEX_REGION, VERTEX_ACCESS_TOKEN
+    """
+    project_id: str = ""          # GCP project ID (env VERTEX_PROJECT_ID)
+    region: str = "us-central1"   # GCP region (env VERTEX_REGION)
+    access_token: str = ""        # Bearer token (env VERTEX_ACCESS_TOKEN)
+    timeout_seconds: int = Field(ge=1, le=600, default=120)
+
+
 class ModelSection(_StrictSection):
     provider: Literal[
         "ollama", "openai", "openrouter", "opencode", "custom",
         "groq", "mistral", "xai", "together", "deepseek",
         "anthropic", "gemini", "azure",
         "github", "copilot",
+        "cohere", "perplexity", "fireworks", "huggingface",
+        "cerebras", "sambanova", "nvidia", "lmstudio",
+        "databricks", "moonshot", "alibaba", "vertex",
     ] = "ollama"
     name: str
     requested_context: int = Field(ge=512, le=1_000_000)
@@ -437,6 +591,18 @@ class BauerConfig(_StrictSection):
     azure: AzureSection = AzureSection()
     github: GithubSection = GithubSection()
     copilot: CopilotSection = CopilotSection()
+    cohere: CohereSection = CohereSection()
+    perplexity: PerplexitySection = PerplexitySection()
+    fireworks: FireworksSection = FireworksSection()
+    huggingface: HuggingFaceSection = HuggingFaceSection()
+    cerebras: CerebrasSection = CerebrasSection()
+    sambanova: SambanovaSection = SambanovaSection()
+    nvidia: NvidiaSection = NvidiaSection()
+    lmstudio: LMStudioSection = LMStudioSection()
+    databricks: DatabricksSection = DatabricksSection()
+    moonshot: MoonshotSection = MoonshotSection()
+    alibaba: AlibabaSection = AlibabaSection()
+    vertex: VertexSection = VertexSection()
     runtime: RuntimeSection = RuntimeSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()

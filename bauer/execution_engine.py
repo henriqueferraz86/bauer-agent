@@ -9,6 +9,8 @@ from typing import Any
 
 from .orchestration_store import OrchestrationRun, OrchestrationStore
 from .orchestrator import AgentOrchestrator, StepResult
+from .indicators import show_step, show_header
+from .indicators import show_header, show_step, spinning, progress_bar
 
 
 @dataclass
@@ -431,7 +433,9 @@ class DurableDAGExecutionEngine:
         succeeded = {step_id for step_id, node in nodes.items() if node.status == "succeeded"}
         queued: list[str] = []
 
-        for step in steps:
+        for step_idx, step in enumerate(steps, 1):
+            goal = step.get('goal', step.get('name', 'passo ' + str(step_idx)))
+            show_step('Passo ' + str(step_idx) + '/' + str(total_steps) + ': ' + goal[:60], 'running')
             step_id = int(step.get("id", 0))
             node = nodes.get(step_id)
             if node is None or node.status not in {"planned"}:

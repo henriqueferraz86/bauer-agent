@@ -303,12 +303,31 @@ class OpenAIClient:
                         "  - Ou troque de provider: bauer model"
                     )
             elif status == 401:
-                _hint = (
-                    "Falha de autenticacao.\n"
-                    "  - Verifique se a API key esta correta em config.yaml\n"
-                    "  - Rode: bauer model para configurar novamente\n"
-                    f"  - URL: {self.host}"
-                )
+                _code = ""
+                try:
+                    _code = json.loads(body).get("error", {}).get("code", "")
+                except Exception:
+                    pass
+                if _code == "missing_scope":
+                    _hint = (
+                        "Token OAuth do ChatGPT nao tem permissao para a API de modelos.\n\n"
+                        "  IMPORTANTE: O login 'ChatGPT OAuth' usa sua conta ChatGPT,\n"
+                        "  mas a API de completions exige creditos separados de API.\n"
+                        "  ChatGPT Plus (assinatura web) != acesso a API developer.\n\n"
+                        "  Para resolver — escolha uma opcao:\n"
+                        "  A) Usar API Key OpenAI: bauer model → OpenAI API Key (sk-...)\n"
+                        "     (requer billing em platform.openai.com/settings/billing)\n"
+                        "  B) Usar Groq gratis: bauer model → Groq → Llama 3.3 70B\n"
+                        "  C) Usar OpenCode gratis: bauer model → OpenCode Zen\n"
+                        "  D) Usar Ollama local: bauer model → Ollama"
+                    )
+                else:
+                    _hint = (
+                        "Falha de autenticacao.\n"
+                        "  - Verifique se a API key esta correta em config.yaml\n"
+                        "  - Rode: bauer model para configurar novamente\n"
+                        f"  - URL: {self.host}"
+                    )
             elif status == 403:
                 _hint = (
                     "Acesso negado.\n"

@@ -99,6 +99,9 @@ gateway_service_app = typer.Typer(
 )
 gateway_app.add_typer(gateway_service_app, name="service")
 
+plugin_app = typer.Typer(help="Plugin manager — instala e lista plugins Bauer")
+app.add_typer(plugin_app, name="plugin")
+
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
 app.add_typer(memory_app, name="memory")
@@ -1390,6 +1393,138 @@ def _build_client(cfg):
             },
         )
 
+    if provider == "cohere":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.cohere.com/compatibility",
+            timeout_seconds=cfg.cohere.timeout_seconds,
+            api_key=cfg.cohere.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "perplexity":
+        from .openai_client import OpenAIClient
+        # Perplexity não usa /v1/ prefix — POST direto em /chat/completions
+        return OpenAIClient(
+            host="https://api.perplexity.ai",
+            timeout_seconds=cfg.perplexity.timeout_seconds,
+            api_key=cfg.perplexity.api_key,
+            model=cfg.model.name,
+            chat_path="/chat/completions",
+        )
+
+    if provider == "fireworks":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.fireworks.ai/inference",
+            timeout_seconds=cfg.fireworks.timeout_seconds,
+            api_key=cfg.fireworks.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "huggingface":
+        from .openai_client import OpenAIClient
+        host = cfg.huggingface.host.rstrip("/")
+        # Host padrão já inclui /v1 — usar chat_path para não duplicar
+        if host.endswith("/v1"):
+            return OpenAIClient(
+                host=host,
+                timeout_seconds=cfg.huggingface.timeout_seconds,
+                api_key=cfg.huggingface.api_key,
+                model=cfg.model.name,
+                chat_path="/chat/completions",
+            )
+        return OpenAIClient(
+            host=host,
+            timeout_seconds=cfg.huggingface.timeout_seconds,
+            api_key=cfg.huggingface.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "cerebras":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.cerebras.ai",
+            timeout_seconds=cfg.cerebras.timeout_seconds,
+            api_key=cfg.cerebras.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "sambanova":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.sambanova.ai",
+            timeout_seconds=cfg.sambanova.timeout_seconds,
+            api_key=cfg.sambanova.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "nvidia":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://integrate.api.nvidia.com",
+            timeout_seconds=cfg.nvidia.timeout_seconds,
+            api_key=cfg.nvidia.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "lmstudio":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host=cfg.lmstudio.host,
+            timeout_seconds=cfg.lmstudio.timeout_seconds,
+            api_key=cfg.lmstudio.api_key or "lm-studio",
+            model=cfg.model.name,
+        )
+
+    if provider == "databricks":
+        from .openai_client import OpenAIClient
+        host = cfg.databricks.host.rstrip("/")
+        # Databricks serving-endpoints usa /chat/completions sem /v1
+        return OpenAIClient(
+            host=f"{host}/serving-endpoints",
+            timeout_seconds=cfg.databricks.timeout_seconds,
+            api_key=cfg.databricks.api_key,
+            model=cfg.model.name,
+            chat_path="/chat/completions",
+            extra_headers={"Authorization": f"Bearer {cfg.databricks.api_key}"},
+        )
+
+    if provider == "moonshot":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.moonshot.cn",
+            timeout_seconds=cfg.moonshot.timeout_seconds,
+            api_key=cfg.moonshot.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "alibaba":
+        from .openai_client import OpenAIClient
+        # DashScope endpoint já inclui /compatible-mode (sem /v1 adicional via host)
+        return OpenAIClient(
+            host="https://dashscope.aliyuncs.com/compatible-mode",
+            timeout_seconds=cfg.alibaba.timeout_seconds,
+            api_key=cfg.alibaba.api_key,
+            model=cfg.model.name,
+        )
+
+    if provider == "vertex":
+        from .openai_client import OpenAIClient
+        region = cfg.vertex.region or "us-central1"
+        project = cfg.vertex.project_id
+        vertex_host = (
+            f"https://{region}-aiplatform.googleapis.com/v1beta1"
+            f"/projects/{project}/locations/{region}/endpoints/openapi"
+        )
+        return OpenAIClient(
+            host=vertex_host,
+            timeout_seconds=cfg.vertex.timeout_seconds,
+            api_key=cfg.vertex.access_token,
+            model=cfg.model.name,
+            chat_path="/chat/completions",
+        )
+
     if provider in ("openai", "custom"):
         from .openai_client import OpenAIClient
         return OpenAIClient(
@@ -1485,6 +1620,123 @@ def tools_plugins(
             plugin.error,
         )
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# bauer plugin — plugin manager com suporte a plugin.yaml manifests
+# ---------------------------------------------------------------------------
+
+@plugin_app.command("list")
+def plugin_list(
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+):
+    """Lista plugins instalados (mostra versão e manifest quando disponível)."""
+    from .plugin_registry import PluginRegistry
+
+    plugins = PluginRegistry(workspace).list_plugins()
+    if not plugins:
+        console.print("[dim]Nenhum plugin encontrado em workspace/.bauer/plugins ou ~/.bauer/plugins.[/dim]")
+        console.print("[dim]Instale com: bauer plugin install <url>[/dim]")
+        return
+    table = Table(title="Plugins Bauer", show_lines=False)
+    table.add_column("Plugin", style="cyan")
+    table.add_column("Versão", style="dim")
+    table.add_column("Enabled")
+    table.add_column("Hooks")
+    table.add_column("Manifest")
+    table.add_column("Descrição")
+    for p in plugins:
+        table.add_row(
+            p.name,
+            p.version or "-",
+            "[green]sim[/green]" if p.enabled else "[red]não[/red]",
+            ", ".join(p.hooks) or "-",
+            "[green]✓[/green]" if p.has_manifest else "[dim]-[/dim]",
+            p.description or p.error or "-",
+        )
+    console.print(table)
+
+
+@plugin_app.command("install")
+def plugin_install(
+    url: str = typer.Argument(..., help="URL para o arquivo .py do plugin (http/https)"),
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+    force: bool = typer.Option(False, "--force", "-f", help="Sobrescreve se já instalado"),
+):
+    """Baixa e instala um plugin Bauer a partir de uma URL.
+
+    Exemplo:
+        bauer plugin install https://raw.githubusercontent.com/user/repo/main/my_plugin.py
+
+    O Bauer também tenta baixar plugin.yaml adjacente (mesmo diretório na URL),
+    que enriquece os metadados com versão, autor e hooks declarativos.
+    """
+    from .plugin_registry import PluginRegistry, install_plugin
+
+    reg = PluginRegistry(workspace)
+    dest_dir = reg.install_dir()
+    plugin_name = url.split("?")[0].rstrip("/").split("/")[-1].replace(".py", "")
+    dest_file = dest_dir / f"{plugin_name}.py"
+
+    if dest_file.exists() and not force:
+        console.print(f"[yellow]Plugin '{plugin_name}' já instalado.[/yellow]")
+        console.print("Use --force para sobrescrever.")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Instalando plugin de:[/dim] {url}")
+    try:
+        py_path, manifest_path = install_plugin(url, dest_dir)
+    except ValueError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        console.print(f"[red]Erro ao baixar:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]✓[/green] Plugin instalado: {py_path.name}")
+    if manifest_path:
+        console.print(f"[green]✓[/green] Manifest baixado: {manifest_path.name}")
+
+    # Inspeciona e exibe informações do plugin
+    info = reg._inspect(py_path)
+    if info.error:
+        console.print(f"[yellow]Aviso:[/yellow] plugin instalado mas com erro de parse: {info.error}")
+    else:
+        console.print(f"   Hooks:   {', '.join(info.hooks) or '(nenhum detectado)'}")
+        if info.version:
+            console.print(f"   Versão:  {info.version}")
+        if info.description:
+            console.print(f"   Descrição: {info.description}")
+
+
+@plugin_app.command("remove")
+def plugin_remove(
+    name: str = typer.Argument(..., help="Nome do plugin (sem extensão .py)"),
+    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Confirma sem perguntar"),
+):
+    """Remove um plugin instalado (apaga .py e plugin.yaml se existirem)."""
+    from .plugin_registry import PluginRegistry
+
+    reg = PluginRegistry(workspace)
+    dest_dir = reg.install_dir()
+    py_file = dest_dir / f"{name}.py"
+    yaml_file = dest_dir / f"{name}.yaml"
+
+    if not py_file.exists():
+        console.print(f"[red]Plugin '{name}' não encontrado em {dest_dir}[/red]")
+        raise typer.Exit(1)
+
+    if not yes:
+        confirm = typer.confirm(f"Remover plugin '{name}'?", default=False)
+        if not confirm:
+            console.print("[dim]Operação cancelada.[/dim]")
+            raise typer.Exit(0)
+
+    py_file.unlink()
+    if yaml_file.exists():
+        yaml_file.unlink()
+    console.print(f"[green]✓[/green] Plugin '{name}' removido.")
 
 
 @tools_app.command("run")
@@ -3335,28 +3587,70 @@ def project_board(
 @app.command("tui")
 def tui_cmd(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+    workspace: Path = typer.Option(Path("workspace"), "--workspace", help="Diretório workspace do agente"),
+    theme: str = typer.Option("default", "--theme", help="Tema visual: default, mono, dark"),
 ):
-    """Abre a Terminal UI moderna do Bauer Agent.
+    """Abre a Terminal UI moderna do Bauer Agent (prompt_toolkit).
 
-    Interface TUI superior ao Hermes Agent com:
-    - Painel dividido com chat + sidebar de agentes
-    - Seletor de agentes especializados
-    - Kanban embutido
-    - Multiplos temas (Dracula, Nord, Tokyo Night, Solarized, Cyberpunk)
-    - Comandos slash (/agent, /theme, /kanban, /help, /status)
-    - Streaming de output
+    Interface TUI com:
+    - Painel de histórico scrollável
+    - Input fixo no rodapé com autohistórico
+    - Streaming de output via append_token
+    - Temas: default (Catppuccin), mono, dark
+    - Atalhos: Enter=enviar, Ctrl+C=interromper, Ctrl+L=limpar, F1=ajuda, /exit=sair
     """
     try:
-        from .tui import BauerTUI
-        bauer_app = BauerTUI()
-        bauer_app.run()
+        from .tui import make_tui
     except ImportError as exc:
-        from rich.console import Console as _C2
-        _c2 = _C2()
-        _c2.print("[red]X Erro ao carregar TUI.[/red]")
-        _c2.print(f"[dim]{exc}[/dim]")
-        _c2.print("[yellow]Dica: textual nao encontrado[/yellow]")
+        console.print("[red]X Erro ao carregar TUI.[/red]")
+        console.print(f"[dim]{exc}[/dim]")
+        console.print("[yellow]Dica: pip install prompt-toolkit[/yellow]")
         raise typer.Exit(1)
+
+    try:
+        cfg = load_config(config)
+    except ConfigError as exc:
+        console.print(f"[red]Config inválido:[/red] {exc}")
+        raise typer.Exit(2)
+
+    from .agent import run_one_turn, _build_system_prompt
+    from .context_manager import ContextManager
+
+    client = _build_client(cfg)
+    if not workspace.exists():
+        workspace.mkdir(parents=True, exist_ok=True)
+    router = _build_router(cfg, workspace, llm_client=client)
+    model_name = cfg.model.name
+
+    _provider = getattr(client, "_provider", None) or (
+        "ollama" if hasattr(client, "host") and "ollama" in getattr(client, "host", "").lower()
+        else "openai"
+    )
+    ctx = ContextManager(
+        applied_context=cfg.model.requested_context or 8192,
+        system_prompt=_build_system_prompt(router),
+        provider=_provider,
+    )
+    ctx.set_llm(client, model_name)
+
+    history_path = Path.home() / ".bauer" / ".tui_history"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def handler(user_input: str) -> str:
+        ctx.add_user(user_input)
+        try:
+            response, _ = run_one_turn(ctx, router, client, model_name)
+            return response
+        except Exception as exc:  # noqa: BLE001
+            return f"[Erro: {exc}]"
+
+    tui = make_tui(
+        handler,
+        theme=theme,
+        history_file=str(history_path),
+        model_name=f"{model_name} ({cfg.model.provider})",
+    )
+    tui.run()
 
 
 # --- kanban (browser ao vivo) -----------------------------------------------

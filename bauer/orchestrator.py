@@ -29,6 +29,7 @@ from rich.console import Console
 
 from .agent import _build_system_prompt, run_one_turn
 from .context_manager import ContextManager
+from .indicators import show_header, show_step, spinning
 from .model_router import ModelRouter
 from .ollama_client import OllamaClient
 from .unicode_utils import safe_json_dumps as _safe_json_dumps
@@ -684,8 +685,18 @@ class AgentOrchestrator:
         all_results: list[StepResult] = list(done.values())
 
         # Executa ondas (cada onda = passos independentes entre si)
+        show_header('Bauer Orchestrator', self.console)
         for batch in self._topological_batches(steps):
             pending = [s for s in batch if s["id"] not in done]
+            if pending:
+                step_names = [s.get('goal', s.get('name', f'passo {s["id"]}'))[:50] for s in pending]
+                with spinning(f'Executando {len(pending)} passo(s)...', console=self.console) as ind:
+                    batch_results = self.execute_parallel_steps(pending, all_results)
+                for r in batch_results:
+                    done[r.id] = r
+                    show_step(step_names[[s['id'] for s in pending].index(r.id) if r.id in [s['id'] for s in pending] else 0], 'done' if 'error' not in r.model_used else 'failed', self.console)
+                self.save_progress(user_input, batch_results)
+                continue
             if not pending:
                 continue  # todos ja concluidos nesta onda
 
