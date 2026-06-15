@@ -34,10 +34,10 @@ Instala em `~/.local/share/bauer-agent`, cria o comando `bauer` em `~/.local/bin
 
 ```bash
 # Atualizar instalação existente
-curl -fsSL .../install.sh | bash -s -- --update
+curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash -s -- --update
 
 # Remover completamente
-curl -fsSL .../install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash -s -- --uninstall
 ```
 
 ### 🪟 Windows — instalação automática
@@ -59,6 +59,21 @@ Instala em `%LOCALAPPDATA%\BauerAgent`, cria `bauer.cmd` e adiciona ao PATH do u
 > **Dica**: Se já tiver o arquivo `install.ps1` localmente, use `.\install.ps1 -Update` ou `.\install.ps1 -Uninstall` diretamente.
 
 > **🔒 Nota Windows**: ao digitar API keys no seletor de modelos, o campo está mascarado — o texto não aparece enquanto você digita (comportamento normal do `getpass`).
+
+### 🚀 Primeiros passos após instalar
+
+```powershell
+# 1. Configurar provider e modelo (wizard interativo)
+bauer init
+
+# 2. Verificar saúde do ambiente
+bauer doctor
+
+# 3. Iniciar chat
+bauer chat
+```
+
+> **Dica**: use `bauer model` a qualquer momento para trocar de provider/modelo. O menu exibe claramente quais são **GRÁTIS** e quais são **PAGOS**.
 
 ### 🔧 Instalação manual (dev / contribuição)
 
