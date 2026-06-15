@@ -69,8 +69,10 @@ bauer init
 # 2. Verificar saúde do ambiente
 bauer doctor
 
-# 3. Iniciar chat
-bauer chat
+# 3. Iniciar — escolha o modo:
+bauer chat              # chat direto com o modelo
+bauer agent run <nome>  # agent especializado (com tools, system prompt próprio)
+bauer agent list        # ver agents disponíveis
 ```
 
 > **Dica**: use `bauer model` a qualquer momento para trocar de provider/modelo. O menu exibe claramente quais são **GRÁTIS** e quais são **PAGOS**.
