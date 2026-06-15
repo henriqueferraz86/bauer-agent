@@ -158,7 +158,7 @@ bauer agent --model gpt-4o   # força modelo específico
 
 ### 🖥️ Terminal UI (TUI)
 
-Interface gráfica dentro do terminal, com histórico navegável, temas e suporte a streaming:
+Interface app-like dentro do terminal: **cabeçalho fixo** (logo BAUER + modelo/provider/contexto) e uma área de mensagens que mantém as **conversas recentes** e descarta as antigas conforme você interage — nada de scroll infinito.
 
 ```bash
 bauer tui                        # tema padrão
@@ -166,6 +166,8 @@ bauer tui --theme dark           # tema escuro
 bauer tui --theme mono           # tema monocromático
 bauer tui --workspace ./meu-dir  # workspace personalizado
 ```
+
+Atalhos: `Enter` envia · `Ctrl+C` interrompe · `Ctrl+L` limpa · `F1` ajuda · `/exit` sai.
 
 Requer: `pip install prompt-toolkit` (incluído nos extras `gateway` e `all`).
 

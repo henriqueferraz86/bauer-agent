@@ -3679,7 +3679,9 @@ def tui_cmd(
         handler,
         theme=theme,
         history_file=str(history_path),
-        model_name=f"{model_name} ({cfg.model.provider})",
+        model_name=model_name,
+        provider=cfg.model.provider,
+        context_tokens=cfg.model.requested_context or 8192,
     )
     tui.run()
 
