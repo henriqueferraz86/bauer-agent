@@ -14,6 +14,7 @@ Nenhum tool call é silencioso — cada execução é exibida ao usuário.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -374,6 +375,46 @@ def _specs_section(specs_dir: str = "specs") -> str:
         return _SPEC_FORMAT_HINT
 
 
+# Enforcement universal: o agente DEVE executar, não narrar. Portado do
+# TOOL_USE_ENFORCEMENT do Hermes — fecha o sintoma "vou fazer X" sem fazer.
+TOOL_USE_ENFORCEMENT = (
+    "# EXECUTE, NAO NARRE\n"
+    "Voce DEVE usar suas ferramentas para AGIR — nunca apenas descreva o que 'vai fazer'.\n"
+    "Quando disser que vai fazer algo (rodar testes, criar/editar arquivo, checar algo),\n"
+    "faca a tool call correspondente NO MESMO turno. NUNCA termine o turno com uma promessa\n"
+    "de acao futura ('vou criar...', 'em seguida farei...') — execute AGORA.\n"
+    "Continue trabalhando ate a tarefa estar REALMENTE concluida (arquivo escrito, comando\n"
+    "rodado, resultado verificado), nao ate ter apenas um plano do que fazer.\n"
+    "Uma lista de 'proximos passos' NAO e entrega — a entrega e o artefato concreto.\n"
+)
+
+# Protocolo de execução de task — injetado SOMENTE quando o agent roda como
+# worker do kanban (env BAUER_KANBAN_TASK). Espelha o KANBAN_GUIDANCE do Hermes,
+# adaptado às tools reais do Bauer (kanban_show/complete/block/comment/create).
+KANBAN_WORKER_GUIDANCE = (
+    "# PROTOCOLO DE EXECUCAO DE TASK (KANBAN WORKER)\n"
+    "Voce foi spawnado como worker de UMA task do board. O ID esta em\n"
+    "$BAUER_KANBAN_TASK; seu workspace em $BAUER_KANBAN_WORKSPACE.\n"
+    "\n"
+    "1. ORIENTE-SE. Chame kanban_show (sua task) para ler titulo, corpo, os\n"
+    "   handoffs das tasks-pai (resumo + artefatos) e o thread de comentarios.\n"
+    "2. TRABALHE produzindo ARTEFATOS CONCRETOS dentro do workspace: arquivos\n"
+    "   escritos, codigo, um relatorio .md com o conteudo real. Um 'proximo\n"
+    "   passo' nao e entrega — a entrega e o arquivo/diff/relatorio em si.\n"
+    "3. CONCLUA com handoff util: kanban_complete(task_id, result=...) onde\n"
+    "   result NOMEIA os artefatos concretos (caminhos de arquivo, contagem de\n"
+    "   testes, decisoes tomadas). Quem pega a proxima task le esse resultado.\n"
+    "4. BLOQUEIE em ambiguidade real: kanban_block(task_id, reason=...). Voce\n"
+    "   roda headless — NAO use clarify (vai dar timeout sem ninguem responder).\n"
+    "   Comente o contexto antes com kanban_comment.\n"
+    "5. FOLLOW-UP: se surgir trabalho extra, CRIE, nao faca — kanban_create(\n"
+    "   title=..., parent_id=<sua task>) para o especialista certo. Nao estoure\n"
+    "   o escopo desta task.\n"
+    "\n"
+    "NUNCA marque como done uma task que voce nao terminou de verdade — bloqueie.\n"
+)
+
+
 def _build_system_prompt(router: ToolRouter) -> str:
     """Monta o system prompt com a lista de tools disponíveis."""
     from datetime import datetime, timezone
@@ -452,7 +493,9 @@ def _build_system_prompt(router: ToolRouter) -> str:
         "  Qualquer resposta: 'O que prefere?' / 'Se quiser posso...' / 'Deseja que eu...' <- ERRADO\n"
         "  Qualquer resposta: 'nao tenho acesso ao terminal' / 'sou apenas seu assistente' <- ERRADO, voce TEM run_command\n\n"
         "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
-        "Responda sempre em portugues."
+        "Responda sempre em portugues.\n\n"
+        + TOOL_USE_ENFORCEMENT
+        + (("\n" + KANBAN_WORKER_GUIDANCE) if os.environ.get("BAUER_KANBAN_TASK") else "")
         + _specs_section()
     )
 

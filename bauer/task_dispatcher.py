@@ -648,7 +648,13 @@ class TaskDispatcher:
         models: str | Path,
     ) -> WorkerResult:
         project_root = Path(__file__).resolve().parent.parent
-        cmd = _worker_command(task, self.workspace, config=config, models=models)
+
+        # Worktree por task: se o workspace for um repo git (e não desabilitado),
+        # o worker roda num worktree isolado e o resultado vira um diff commitado.
+        worktree = self._maybe_setup_worktree(task)
+        effective_ws = worktree.path if worktree else self.workspace
+
+        cmd = _worker_command(task, effective_ws, config=config, models=models)
         timeout = _to_int(task.metadata.get("max_runtime_seconds")) or None
         log_path = self._task_log_path(task)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -662,7 +668,7 @@ class TaskDispatcher:
                 errors="replace",
                 timeout=timeout,
                 cwd=str(project_root),
-                env=_worker_env(task, self.workspace),
+                env=_worker_env(task, effective_ws),
             )
         except subprocess.TimeoutExpired as exc:
             _write_log(log_path, cmd, exc.stdout or "", exc.stderr or "", returncode=-1)
@@ -678,9 +684,61 @@ class TaskDispatcher:
         _write_log(log_path, cmd, proc.stdout, proc.stderr, proc.returncode)
         if proc.returncode == 0:
             summary = (proc.stdout or "").strip()[-2000:]
+            artifact = self._finalize_worktree(task, worktree)
+            if artifact:
+                summary = (summary + "\n\n" + artifact).strip()
             return WorkerResult(True, summary=summary or "orchestrate run concluido")
         err = (proc.stderr or proc.stdout or "").strip()[-2000:]
         return WorkerResult(False, error=err or f"worker exit {proc.returncode}")
+
+    def _maybe_setup_worktree(self, task: Task):
+        """Cria um git worktree para a task se o workspace for repo git.
+
+        Desabilitável via env BAUER_TASK_WORKTREE=0. Retorna None (no-op) se
+        não for repo git ou se o git falhar — preserva o comportamento atual.
+        """
+        if os.environ.get("BAUER_TASK_WORKTREE", "1") == "0":
+            return None
+        try:
+            from . import task_worktree as _wt
+            if not _wt.is_git_repo(self.workspace):
+                return None
+            info = _wt.create_worktree(self.workspace, task.id)
+            if info:
+                self.store.append_event(
+                    task.id, "worker.worktree_created", actor=self.runner_name,
+                    run_id=task.metadata.get("run_id", ""),
+                    message=f"worktree {info.branch}",
+                    metadata={"branch": info.branch, "path": str(info.path)},
+                )
+            return info
+        except Exception:
+            return None
+
+    def _finalize_worktree(self, task: Task, worktree) -> str:
+        """Commita o trabalho do worker no worktree e devolve a linha de handoff."""
+        if worktree is None:
+            return ""
+        try:
+            from . import task_worktree as _wt
+            commit = _wt.commit_worktree(
+                worktree, f"bauer task {_public_id(task.id)}: {task.title}"[:200]
+            )
+            line = _wt.summarize_artifact(commit)
+            self.store.append_event(
+                task.id, "worker.worktree_committed", actor=self.runner_name,
+                run_id=task.metadata.get("run_id", ""),
+                message=line,
+                metadata={
+                    "branch": commit.branch,
+                    "commit": commit.commit,
+                    "changed_files": commit.changed_files[:50],
+                    "committed": commit.committed,
+                },
+            )
+            return line
+        except Exception:
+            return ""
 
     def _spawn_worker_process(
         self,
