@@ -42,7 +42,7 @@ class ChatGPTBackendClient(OpenAIClient):
         *,
         base_url: str = DEFAULT_CHATGPT_BASE,
         timeout_seconds: int = 60,
-        model: str = "gpt-5",
+        model: str = "gpt-5-codex",
     ):
         super().__init__(
             host=base_url,

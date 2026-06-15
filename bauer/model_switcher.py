@@ -61,6 +61,15 @@ OPENAI_MODELS: list[tuple[str, str]] = [
     # gpt-3.5-turbo removido: descontinuado em jan/2025
 ]
 
+# Modelos aceitos pelo backend Codex/ChatGPT (login via browser).
+# O backend NÃO aceita gpt-5/gpt-4o "puros" — só os modelos do Codex.
+CHATGPT_CODEX_MODELS: list[tuple[str, str]] = [
+    ("gpt-5-codex",     "GPT-5 Codex — modelo do Codex (recomendado)"),
+    ("gpt-5",           "GPT-5 — pode não ser aceito em todas as contas"),
+    ("codex-mini-latest", "Codex mini — leve"),
+    ("__custom__",      ">> outro modelo (digitar nome)"),
+]
+
 GROQ_MODELS: list[tuple[str, str]] = [
     ("llama-3.3-70b-versatile",     "Llama 3.3 70B — gratuito, muito rápido"),
     ("llama-3.1-8b-instant",        "Llama 3.1 8B — ultra rápido"),
@@ -353,7 +362,10 @@ def run_model_switcher(config_path: Path) -> None:
             console.print("[dim]Tente manualmente: bauer auth login -p openai[/dim]")
             return
 
-        model_name = _pick_from_list(OPENAI_MODELS, "Modelos ChatGPT")
+        console.print(
+            "[dim]Modelos do Codex (o backend ChatGPT não aceita gpt-5/gpt-4o puros).[/dim]"
+        )
+        model_name = _pick_from_list(CHATGPT_CODEX_MODELS, "Modelos ChatGPT (Codex)")
         if not model_name:
             console.print("[dim]Cancelado.[/dim]")
             return
