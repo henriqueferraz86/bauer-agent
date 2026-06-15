@@ -2356,10 +2356,21 @@ def run_agent_session(
     routing = model_router is not None and model_router.config.enabled
     orch_enabled = orchestrator is not None and routing
 
-    console.print(Rule(f"[bold]Bauer Agent[/bold] — {model_name}"))
-    console.print(
-        f"[dim]Contexto: {applied_context} tokens | Tokens usados: 0[/dim]\n"
-    )
+    from .ascii_intro import session_panel
+    console.print(session_panel(
+        "Bauer Agent",
+        model_name,
+        applied_context,
+        provider=_provider or None,
+        commands=[
+            ("/model", "trocar"),
+            ("/status", "stats"),
+            ("/clear", "limpar"),
+            ("/memory", "memoria"),
+            ("/exit", "sair"),
+        ],
+    ))
+    console.print()
 
     # Plugin hooks — session_start
     try:

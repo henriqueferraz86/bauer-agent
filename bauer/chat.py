@@ -40,12 +40,20 @@ def run_chat_session(
     """Loop REPL de chat. Encerra com /exit, /quit ou Ctrl-C."""
     ctx = ContextManager(applied_context=applied_context, system_prompt=_SYSTEM_PROMPT)
 
-    console.print(Rule(f"[bold]Bauer Chat[/bold] — {model_name}"))
-    console.print(
-        f"[dim]Contexto: {applied_context} tokens | "
-        f"Budget historico: {ctx.budget} tokens | "
-        f"/exit para sair | /clear para limpar | /status para stats[/dim]\n"
-    )
+    from .ascii_intro import play_intro, session_panel
+    play_intro(console)
+    console.print(session_panel(
+        "Bauer Chat",
+        model_name,
+        applied_context,
+        commands=[
+            ("/status", "stats"),
+            ("/clear", "limpar"),
+            ("/exit", "sair"),
+        ],
+        extra_rows=[("Budget", f"{ctx.budget} tokens")],
+    ))
+    console.print()
 
     while True:
         try:
