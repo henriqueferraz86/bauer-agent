@@ -1215,6 +1215,18 @@ def _build_client(cfg):
                 and token.access_token
                 and not token.extra.get("type") == "jwt"
             ):
+                # Renova automaticamente se expirado (sem novo login no browser).
+                if token.is_expired and token.refresh_token:
+                    console.print("[dim]Token ChatGPT expirado. Renovando...[/dim]")
+                    refreshed = auth.refresh("openai")
+                    if refreshed:
+                        token = refreshed
+                        console.print("[green]✓ Token ChatGPT renovado.[/green]")
+                    else:
+                        console.print(
+                            "[yellow]Nao foi possivel renovar.[/yellow] "
+                            "[dim]Refaca o login: bauer auth login -p openai[/dim]"
+                        )
                 from .chatgpt_backend import ChatGPTBackendClient, DEFAULT_CHATGPT_BASE
                 _base = getattr(cfg.openai, "chatgpt_base_url", "") or DEFAULT_CHATGPT_BASE
                 return ChatGPTBackendClient(

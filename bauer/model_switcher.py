@@ -338,29 +338,50 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "openai":
         # Login via browser — usa a assinatura ChatGPT (backend Responses,
         # igual ao Codex CLI). Billa na conta ChatGPT, sem créditos de API.
-        console.print(
-            "\n[cyan]ChatGPT (login browser)[/cyan] — abrirá o browser para você logar com sua conta ChatGPT.\n"
-            "[dim]Usa sua assinatura ChatGPT Plus/Pro — sem API key (sk-...).[/dim]\n"
-            "[yellow]Experimental:[/yellow] [dim]depende do backend do ChatGPT; requer assinatura ativa.[/dim]\n"
-        )
-        try:
-            from .auth import AuthManager
-            auth = AuthManager()
-            token = auth.login_oauth("openai")   # vai direto ao browser
+        from .auth import AuthManager
+        auth = AuthManager()
+        # Reusa token salvo se ainda válido — só reautentica se faltar ou expirar.
+        existing = auth.store.load("openai")
+        token = None
+        if existing and not existing.is_expired and existing.access_token:
+            console.print(
+                "\n[green]✓ Já autenticado com conta ChatGPT[/green] "
+                "[dim](token salvo, sem novo login)[/dim]"
+            )
+            token = existing
             auth.close()
-            _acct = token.extra.get("chatgpt_account_id") if hasattr(token, "extra") else ""
-            console.print("[green]✓ Autenticado com conta ChatGPT[/green]")
-            if _acct:
-                console.print(f"[dim]  account_id: {_acct}[/dim]\n")
+        elif existing and existing.refresh_token:
+            # Token expirado mas renovável — refresca sem abrir o browser.
+            console.print("\n[dim]Token ChatGPT expirado. Renovando...[/dim]")
+            refreshed = auth.refresh("openai")
+            if refreshed:
+                console.print("[green]✓ Token ChatGPT renovado[/green] [dim](sem novo login)[/dim]")
+                token = refreshed
+                auth.close()
             else:
-                console.print(
-                    "[yellow]  Aviso:[/yellow] [dim]account_id não encontrado no token — "
-                    "o backend pode recusar. Confirme assinatura ChatGPT ativa.[/dim]\n"
-                )
-        except Exception as _auth_err:
-            console.print(f"[red]Erro na autenticação:[/red] {_auth_err}")
-            console.print("[dim]Tente manualmente: bauer auth login -p openai[/dim]")
-            return
+                console.print("[yellow]Não foi possível renovar — fazendo login novo.[/yellow]")
+        if token is None:
+            console.print(
+                "\n[cyan]ChatGPT (login browser)[/cyan] — abrirá o browser para você logar com sua conta ChatGPT.\n"
+                "[dim]Usa sua assinatura ChatGPT Plus/Pro — sem API key (sk-...).[/dim]\n"
+                "[yellow]Experimental:[/yellow] [dim]depende do backend do ChatGPT; requer assinatura ativa.[/dim]\n"
+            )
+            try:
+                token = auth.login_oauth("openai")   # vai direto ao browser
+                auth.close()
+                _acct = token.extra.get("chatgpt_account_id") if hasattr(token, "extra") else ""
+                console.print("[green]✓ Autenticado com conta ChatGPT[/green]")
+                if _acct:
+                    console.print(f"[dim]  account_id: {_acct}[/dim]\n")
+                else:
+                    console.print(
+                        "[yellow]  Aviso:[/yellow] [dim]account_id não encontrado no token — "
+                        "o backend pode recusar. Confirme assinatura ChatGPT ativa.[/dim]\n"
+                    )
+            except Exception as _auth_err:
+                console.print(f"[red]Erro na autenticação:[/red] {_auth_err}")
+                console.print("[dim]Tente manualmente: bauer auth login -p openai[/dim]")
+                return
 
         console.print(
             "[dim]Modelos do Codex (o backend ChatGPT não aceita gpt-5/gpt-4o puros).[/dim]"

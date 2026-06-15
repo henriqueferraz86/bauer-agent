@@ -1094,6 +1094,16 @@ class AuthManager:
             resp.raise_for_status()
             token_data = resp.json()
 
+            # Preserva extra (id_token, chatgpt_account_id); re-extrai o
+            # account_id se o refresh trouxer um id_token novo.
+            new_extra = dict(token.extra or {})
+            new_id_token = token_data.get("id_token")
+            if new_id_token:
+                new_extra["id_token"] = new_id_token
+                _acct = _extract_chatgpt_account_id(new_id_token)
+                if _acct:
+                    new_extra["chatgpt_account_id"] = _acct
+
             new_token = AuthToken(
                 provider=provider,
                 access_token=token_data["access_token"],
@@ -1101,6 +1111,8 @@ class AuthManager:
                 expires_at=time.time() + token_data.get("expires_in", 3600),
                 token_type=token_data.get("token_type", "Bearer"),
                 api_base=token.api_base,
+                api_key=token.api_key,
+                extra=new_extra,
             )
             self.store.save(new_token)
             return new_token
