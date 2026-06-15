@@ -50,11 +50,13 @@ Instala em `%LOCALAPPDATA%\BauerAgent`, cria `bauer.cmd` e adiciona ao PATH do u
 
 ```powershell
 # Atualizar
-.\install.ps1 -Update
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.ps1))) -Update
 
 # Remover
-.\install.ps1 -Uninstall
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.ps1))) -Uninstall
 ```
+
+> **Dica**: Se já tiver o arquivo `install.ps1` localmente, use `.\install.ps1 -Update` ou `.\install.ps1 -Uninstall` diretamente.
 
 > **🔒 Nota Windows**: ao digitar API keys no seletor de modelos, o campo está mascarado — o texto não aparece enquanto você digita (comportamento normal do `getpass`).
 
