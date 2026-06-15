@@ -122,6 +122,7 @@ try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import CompleteEvent, Completer, Completion
     from prompt_toolkit.completion import ThreadedCompleter
+    from prompt_toolkit.cursor_shapes import CursorShape
     from prompt_toolkit.document import Document as PtDocument
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory, InMemoryHistory
@@ -203,6 +204,7 @@ try:
             mouse_support=False,
             key_bindings=_make_slash_kb(),
             output=_output,
+            cursor=CursorShape.BLINKING_UNDERLINE,
         )
 
     _PT_AVAILABLE = True
@@ -211,6 +213,20 @@ except ImportError:
     _PT_AVAILABLE = False
     _make_prompt_session = None  # type: ignore[assignment]
     _PT_STYLE = None             # type: ignore[assignment]
+
+
+def _set_blink_underline() -> None:
+    """Pede ao terminal um cursor sublinhado piscante (DECSCUSR `ESC[3 q`).
+
+    Usado no fallback console.input (sem prompt_toolkit). Silencioso se o
+    terminal não suportar a sequência.
+    """
+    try:
+        sys.stdout.write("\x1b[3 q")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
 
 MAX_TOOL_TURNS = 150
 
@@ -2406,16 +2422,17 @@ def run_agent_session(
         try:
             if _pt_session is not None:
                 try:
-                    user_input = _pt_session.prompt(
-                        HTML("<bold><ansicyan>voce></ansicyan></bold> "),
-                    ).strip()
+                    # Sem label — só o cursor sublinhado piscante (CursorShape acima).
+                    user_input = _pt_session.prompt("").strip()
                 except Exception:
                     # Falha em runtime (ex: terminal redimensionado abruptamente)
                     # — tenta uma vez com console.input fallback
                     _pt_session = None
-                    user_input = console.input("[bold cyan]voce>[/bold cyan] ").strip()
+                    _set_blink_underline()
+                    user_input = console.input("").strip()
             else:
-                user_input = console.input("[bold cyan]voce>[/bold cyan] ").strip()
+                _set_blink_underline()
+                user_input = console.input("").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Sessao encerrada.[/dim]")
             try:

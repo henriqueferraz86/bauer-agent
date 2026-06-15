@@ -57,7 +57,13 @@ def run_chat_session(
 
     while True:
         try:
-            user_input = console.input("[bold cyan]voce>[/bold cyan] ").strip()
+            # Cursor sublinhado piscante (DECSCUSR), sem label "voce>".
+            try:
+                sys.stdout.write("\x1b[3 q")
+                sys.stdout.flush()
+            except Exception:
+                pass
+            user_input = console.input("").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Encerrando sessao.[/dim]")
             break
