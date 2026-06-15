@@ -40,10 +40,13 @@ class ModelRegistry(BaseModel):
 def load_registry(path: str | Path = "models.yaml") -> ModelRegistry:
     p = Path(path)
     if not p.exists():
-        raise ModelRegistryError(
-            f"Arquivo models.yaml não encontrado: {p}\n"
-            f"Crie um models.yaml na raiz do projeto."
-        )
+        # Tenta localizar models.yaml no diretório de instalação do pacote
+        _pkg_models = Path(__file__).parent.parent / "models.yaml"
+        if _pkg_models.exists():
+            p = _pkg_models
+        else:
+            # Sem models.yaml — registry vazio; preflight auto-detecta via Ollama API
+            return ModelRegistry(models={})
     try:
         raw = yaml.safe_load(p.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
