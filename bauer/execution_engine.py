@@ -433,6 +433,7 @@ class DurableDAGExecutionEngine:
         succeeded = {step_id for step_id, node in nodes.items() if node.status == "succeeded"}
         queued: list[str] = []
 
+        total_steps = len(steps)
         for step_idx, step in enumerate(steps, 1):
             goal = step.get('goal', step.get('name', 'passo ' + str(step_idx)))
             show_step('Passo ' + str(step_idx) + '/' + str(total_steps) + ': ' + goal[:60], 'running')

@@ -165,6 +165,18 @@ class TestGzip:
 # ---------------------------------------------------------------------------
 
 class TestAccessLog:
+    @pytest.fixture(autouse=True)
+    def _ensure_bauer_propagation(self):
+        # setup_logging() (chamado por outros testes de CLI) seta
+        # logger 'bauer'.propagate=False, impedindo que records de
+        # 'bauer.access' cheguem ao caplog (que escuta na raiz). Garante
+        # propagação durante estes testes, independente da ordem de execução.
+        lg = logging.getLogger("bauer")
+        prev = lg.propagate
+        lg.propagate = True
+        yield
+        lg.propagate = prev
+
     def test_access_log_disabled_by_default(self, tmp_path, caplog):
         app = _make_app(tmp_path, enable_access_log=False)
         with caplog.at_level(logging.INFO, logger="bauer.access"):

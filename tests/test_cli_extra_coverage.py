@@ -120,7 +120,12 @@ class TestLoadOrDie:
     def test_config_error_raises_exit(self, tmp_path: Path):
         import typer
         bad_cfg = tmp_path / "bad.yaml"
-        bad_cfg.write_text("model:\n  name: phi4-mini\n", encoding="utf-8")  # Missing required fields
+        # provider inválido (fora do Literal) → ConfigError → typer.Exit.
+        # (campos ausentes não bastam: provider e requested_context têm default)
+        bad_cfg.write_text(
+            "model:\n  name: phi4-mini\n  provider: not_a_real_provider\n",
+            encoding="utf-8",
+        )
         mdl_file = _make_models_file(tmp_path)
         # ConfigError should cause typer.Exit
         with pytest.raises((typer.Exit, SystemExit)):

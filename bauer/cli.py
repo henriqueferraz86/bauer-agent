@@ -140,12 +140,13 @@ def _load_or_die(config_path: Path, models_path: Path):
     except ConfigError as exc:
         console.print(f"[red]Erro de config:[/red]\n{exc}")
         raise typer.Exit(code=2)
+    # models.yaml ausente → load_registry retorna registry vazio (fresh install);
+    # models.yaml inválido → ModelRegistryError vira typer.Exit (erro real do usuário).
     try:
         reg = load_registry(models_path)
     except ModelRegistryError as exc:
-        console.print(f"[yellow]Aviso:[/yellow] models.yaml não carregado — {exc}")
-        from .model_registry import ModelRegistry
-        reg = ModelRegistry(models={})
+        console.print(f"[red]Erro em models.yaml:[/red]\n{exc}")
+        raise typer.Exit(code=2)
     return cfg, reg
 
 

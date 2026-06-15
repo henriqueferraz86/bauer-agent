@@ -202,10 +202,14 @@ def create_app(
 
     if cors_origins:
         from fastapi.middleware.cors import CORSMiddleware
+        # Wildcard "*" e allow_credentials=True são incompatíveis pela spec CORS:
+        # o navegador rejeita e o Starlette ecoa a origin em vez de "*".
+        # Com wildcard, desabilita credentials para retornar "*" corretamente.
+        _wildcard = "*" in cors_origins
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
-            allow_credentials=True,
+            allow_credentials=not _wildcard,
             allow_methods=["*"],
             allow_headers=["*"],
         )

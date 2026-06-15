@@ -725,8 +725,8 @@ class TestRunModelSwitcher:
 
     def test_custom_no_key(self, tmp_path):
         cfg = _write_config(tmp_path)
-        # provider "14"=custom, host, model, no API key
-        with patch("rich.prompt.Prompt.ask", side_effect=["14", "http://localhost:1234", "local-llm"]), \
+        # Seleciona por NOME ("custom") — robusto a reordenação do menu.
+        with patch("rich.prompt.Prompt.ask", side_effect=["custom", "http://localhost:1234", "local-llm"]), \
              patch("rich.prompt.Confirm.ask", return_value=False):
             run_model_switcher(cfg)
         raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
@@ -734,7 +734,7 @@ class TestRunModelSwitcher:
 
     def test_custom_with_key(self, tmp_path):
         cfg = _write_config(tmp_path)
-        with patch("rich.prompt.Prompt.ask", side_effect=["14", "http://srv:8080", "custom-llm", "secret-key"]), \
+        with patch("rich.prompt.Prompt.ask", side_effect=["custom", "http://srv:8080", "custom-llm", "secret-key"]), \
              patch("rich.prompt.Confirm.ask", return_value=True):
             run_model_switcher(cfg)
         raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
@@ -746,7 +746,7 @@ class TestRunModelSwitcher:
         cfg = _write_config(tmp_path)
         original = cfg.read_text(encoding="utf-8")
         # host ok but empty model → return early
-        with patch("rich.prompt.Prompt.ask", side_effect=["14", "http://localhost:1234", ""]), \
+        with patch("rich.prompt.Prompt.ask", side_effect=["custom", "http://localhost:1234", ""]), \
              patch("rich.prompt.Confirm.ask", return_value=False):
             run_model_switcher(cfg)
         assert cfg.read_text(encoding="utf-8") == original
@@ -764,8 +764,8 @@ class TestRunModelSwitcher:
         cfg = _write_config(tmp_path)
         env_file = cfg.parent / ".env"
         env_file.write_text("OPENROUTER_API_KEY=sk-or-test\n", encoding="utf-8")
-        # provider "3"=openrouter, model "1"=openai/gpt-4o-mini
-        with patch("rich.prompt.Prompt.ask", side_effect=["3", "1"]):
+        # Seleciona por NOME ("openrouter"), model "1"=openai/gpt-4o-mini
+        with patch("rich.prompt.Prompt.ask", side_effect=["openrouter", "1"]):
             run_model_switcher(cfg)
         raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
         assert raw["model"]["provider"] == "openrouter"
@@ -774,8 +774,8 @@ class TestRunModelSwitcher:
         cfg = _write_config(tmp_path)
         env_file = cfg.parent / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-existing\n", encoding="utf-8")
-        # provider "4"=openai, model "1"=gpt-4o-mini
-        with patch("rich.prompt.Prompt.ask", side_effect=["4", "1"]):
+        # "openai-api" (fluxo de API key) mapeia para provider interno "openai"
+        with patch("rich.prompt.Prompt.ask", side_effect=["openai-api", "1"]):
             run_model_switcher(cfg)
         raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
         assert raw["model"]["provider"] == "openai"
@@ -784,8 +784,8 @@ class TestRunModelSwitcher:
         cfg = _write_config(tmp_path)
         env_file = cfg.parent / ".env"
         env_file.write_text("GROQ_API_KEY=groq-key\n", encoding="utf-8")
-        # provider "7"=groq, model "1"=llama-3.3-70b-versatile
-        with patch("rich.prompt.Prompt.ask", side_effect=["7", "1"]):
+        # Seleciona por NOME ("groq"), model "1"=llama-3.3-70b-versatile
+        with patch("rich.prompt.Prompt.ask", side_effect=["groq", "1"]):
             run_model_switcher(cfg)
         raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
         assert raw["model"]["provider"] == "groq"

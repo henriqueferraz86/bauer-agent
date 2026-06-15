@@ -688,22 +688,22 @@ class AgentOrchestrator:
         show_header('Bauer Orchestrator', self.console)
         for batch in self._topological_batches(steps):
             pending = [s for s in batch if s["id"] not in done]
-            if pending:
-                step_names = [s.get('goal', s.get('name', f'passo {s["id"]}'))[:50] for s in pending]
-                with spinning(f'Executando {len(pending)} passo(s)...', console=self.console) as ind:
-                    batch_results = self.execute_parallel_steps(pending, all_results)
-                for r in batch_results:
-                    done[r.id] = r
-                    show_step(step_names[[s['id'] for s in pending].index(r.id) if r.id in [s['id'] for s in pending] else 0], 'done' if 'error' not in r.model_used else 'failed', self.console)
-                self.save_progress(user_input, batch_results)
-                continue
             if not pending:
                 continue  # todos ja concluidos nesta onda
 
-            batch_results = self.execute_parallel_steps(pending, all_results)
+            pending_ids = [s["id"] for s in pending]
+            step_names = [s.get('goal', s.get('name', f'passo {s["id"]}'))[:50] for s in pending]
+            with spinning(f'Executando {len(pending)} passo(s)...', console=self.console):
+                batch_results = self.execute_parallel_steps(pending, all_results)
             all_results.extend(batch_results)
             for r in batch_results:
                 done[r.id] = r
+                idx = pending_ids.index(r.id) if r.id in pending_ids else 0
+                show_step(
+                    step_names[idx],
+                    'done' if 'error' not in r.model_used else 'failed',
+                    self.console,
+                )
             self.save_progress(user_input, batch_results)
 
         if not steps:
