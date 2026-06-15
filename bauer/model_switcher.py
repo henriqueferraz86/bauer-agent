@@ -234,14 +234,18 @@ def _pick_from_list(items: list[tuple[str, str]], title: str) -> str | None:
         table.add_row(str(i), display_id, desc)
 
     console.print(table)
-    console.print("[dim]Dica: digite o numero, ou o nome do modelo direto (ex: 'gpt-5.5').[/dim]")
+    console.print(
+        "[dim]Dica: digite o numero, ou o nome do modelo direto (ex: 'gpt-5.5'). "
+        "[/dim][yellow]0[/yellow][dim] ou [/dim][yellow]voltar[/yellow][dim] para voltar.[/dim]"
+    )
 
     raw = Prompt.ask(
-        "[bold]Escolha[/bold] (Enter para cancelar)",
+        "[bold]Escolha[/bold] ([yellow]0[/yellow]=voltar, Enter cancela)",
         default="",
     ).strip()
 
-    if not raw:
+    # Cancela / volta: Enter vazio, "0", ou palavras-chave de navegação.
+    if not raw or raw.lower() in {"voltar", "v", "back", "sair", "cancelar", "q"} or raw == "0":
         return None
 
     chosen: str | None = None
@@ -300,7 +304,7 @@ def run_model_switcher(config_path: Path) -> None:
         "Escolha o provider",
     )
     if not provider_id:
-        console.print("[dim]Cancelado.[/dim]")
+        console.print("[dim]Cancelado — voltando ao chat.[/dim]")
         return
 
     # Normaliza: "groq" é "openai" internamente com host do Groq
@@ -322,15 +326,15 @@ def run_model_switcher(config_path: Path) -> None:
         )
         model_name = _pick_from_list(OPENCODE_MODELS, "Modelos OpenCode Zen (gratuitos)")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         internal_provider = "opencode"
 
     elif provider_id == "openrouter":
         model_name = _pick_from_list(OPENROUTER_MODELS, "Modelos OpenRouter")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_key, env_label, link = "OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "https://openrouter.ai/keys"
         env_vars, config_extra = _ask_api_key(env_path, env_key, env_label, link)
         internal_provider = "openrouter"
@@ -388,16 +392,16 @@ def run_model_switcher(config_path: Path) -> None:
         )
         model_name = _pick_from_list(CHATGPT_CODEX_MODELS, "Modelos ChatGPT (Codex)")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         internal_provider = "openai"
 
     elif provider_id == "openai-api":
         # API Key OpenAI — sk-...
         model_name = _pick_from_list(OPENAI_MODELS, "Modelos OpenAI (API Key)")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_key, env_label, link = "OPENAI_API_KEY", "OPENAI_API_KEY", "https://platform.openai.com/api-keys"
         env_vars, config_extra = _ask_api_key(env_path, env_key, env_label, link)
         config_extra = config_extra or {}
@@ -407,8 +411,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "anthropic":
         model_name = _pick_from_list(ANTHROPIC_MODELS, "Modelos Anthropic (Claude)")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY",
             "https://console.anthropic.com/settings/keys",
@@ -418,8 +422,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "gemini":
         model_name = _pick_from_list(GEMINI_MODELS, "Modelos Google Gemini")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "GEMINI_API_KEY", "GEMINI_API_KEY (ou GOOGLE_API_KEY)",
             "https://aistudio.google.com/app/apikey",
@@ -429,8 +433,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "groq":
         model_name = _pick_from_list(GROQ_MODELS, "Modelos Groq")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "GROQ_API_KEY", "GROQ_API_KEY",
             "https://console.groq.com/keys",
@@ -440,8 +444,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "mistral":
         model_name = _pick_from_list(MISTRAL_MODELS, "Modelos Mistral AI")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "MISTRAL_API_KEY", "MISTRAL_API_KEY",
             "https://console.mistral.ai/api-keys",
@@ -451,8 +455,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "xai":
         model_name = _pick_from_list(XAI_MODELS, "Modelos xAI (Grok)")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "XAI_API_KEY", "XAI_API_KEY",
             "https://console.x.ai",
@@ -462,8 +466,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "together":
         model_name = _pick_from_list(TOGETHER_MODELS, "Modelos Together AI")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "TOGETHER_API_KEY", "TOGETHER_API_KEY",
             "https://api.together.xyz/settings/api-keys",
@@ -473,8 +477,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "deepseek":
         model_name = _pick_from_list(DEEPSEEK_MODELS, "Modelos DeepSeek")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         env_vars, config_extra = _ask_api_key(
             env_path, "DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY",
             "https://platform.deepseek.com/api-keys",
@@ -484,8 +488,8 @@ def run_model_switcher(config_path: Path) -> None:
     elif provider_id == "github":
         model_name = _pick_from_list(GITHUB_MODELS, "Modelos GitHub Models")
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         console.print(
             "\n[dim]GitHub Models usa seu GITHUB_TOKEN (Personal Access Token).[/dim]\n"
             "[dim]Crie em: https://github.com/settings/tokens[/dim]\n"
@@ -507,16 +511,16 @@ def run_model_switcher(config_path: Path) -> None:
             default="gpt-4o",
         ).strip()
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         internal_provider = "copilot"
 
     elif provider_id == "custom":
         host = Prompt.ask("[bold]Host do servidor[/bold]", default="http://localhost:1234").strip()
         model_name = Prompt.ask("[bold]Nome do modelo[/bold]").strip()
         if not model_name:
-            console.print("[dim]Cancelado.[/dim]")
-            return
+            console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+            return run_model_switcher(config_path)
         use_key = Confirm.ask("O servidor requer API key?", default=False)
         if use_key:
             key = Prompt.ask("[bold]API key[/bold]", password=True).strip()
@@ -526,8 +530,8 @@ def run_model_switcher(config_path: Path) -> None:
         config_extra = {"openai": {"host": host}}
 
     if not model_name:
-        console.print("[dim]Cancelado.[/dim]")
-        return
+        console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
+        return run_model_switcher(config_path)
 
     # --- salva .env ---
     for k, v in env_vars.items():

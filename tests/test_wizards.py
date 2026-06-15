@@ -716,10 +716,11 @@ class TestRunModelSwitcher:
         assert raw["model"]["name"] == "deepseek-v4-flash-free"
 
     def test_opencode_cancel_model(self, tmp_path):
-        """Cancel at model selection → no file change."""
+        """Cancelar modelo volta à lista de providers; cancelar de novo sai."""
         cfg = _write_config(tmp_path)
         original = cfg.read_text(encoding="utf-8")
-        with patch("rich.prompt.Prompt.ask", side_effect=["2", ""]):
+        # opencode → "" (volta à lista) → "" (sai); config inalterado
+        with patch("rich.prompt.Prompt.ask", side_effect=["opencode", "", ""]):
             run_model_switcher(cfg)
         assert cfg.read_text(encoding="utf-8") == original
 
@@ -745,8 +746,8 @@ class TestRunModelSwitcher:
     def test_custom_empty_model_cancels(self, tmp_path):
         cfg = _write_config(tmp_path)
         original = cfg.read_text(encoding="utf-8")
-        # host ok but empty model → return early
-        with patch("rich.prompt.Prompt.ask", side_effect=["custom", "http://localhost:1234", ""]), \
+        # custom → host → modelo vazio (volta à lista) → "" (sai); inalterado
+        with patch("rich.prompt.Prompt.ask", side_effect=["custom", "http://localhost:1234", "", ""]), \
              patch("rich.prompt.Confirm.ask", return_value=False):
             run_model_switcher(cfg)
         assert cfg.read_text(encoding="utf-8") == original
@@ -794,7 +795,7 @@ class TestRunModelSwitcher:
     def test_openrouter_cancel_model(self, tmp_path):
         cfg = _write_config(tmp_path)
         original = cfg.read_text(encoding="utf-8")
-        # provider "3"=openrouter, cancel model selection ""
-        with patch("rich.prompt.Prompt.ask", side_effect=["3", ""]):
+        # openrouter → "" (volta à lista) → "" (sai); config inalterado
+        with patch("rich.prompt.Prompt.ask", side_effect=["openrouter", "", ""]):
             run_model_switcher(cfg)
         assert cfg.read_text(encoding="utf-8") == original
