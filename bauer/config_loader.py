@@ -373,7 +373,7 @@ class ModelSection(_StrictSection):
         "databricks", "moonshot", "alibaba", "vertex",
     ] = "ollama"
     name: str
-    requested_context: int = Field(ge=512, le=1_000_000)
+    requested_context: int = Field(ge=512, le=1_000_000, default=8192)
     minimum_context: int = Field(ge=512, le=1_000_000, default=8192)
     auto_downgrade_context: bool = True
     think: bool | None = None  # Ollama only: desativa thinking mode (gemma4, qwq, etc.)

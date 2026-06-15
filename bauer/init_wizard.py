@@ -159,6 +159,7 @@ def _update_config_yaml(config_path: Path, provider: str, model: str, workspace:
 
     raw.setdefault("model", {})["provider"] = provider
     raw.setdefault("model", {})["name"] = model
+    raw["model"].setdefault("requested_context", 8192)
     raw.setdefault("agent", {})["workspace"] = workspace
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
