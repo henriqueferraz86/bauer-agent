@@ -118,7 +118,7 @@ class WorkspaceManager:
         title: str,
         description: str = "",
         spec_id: str = "",
-        status: str = "TODO",
+        status: str = "READY",
         priority: str = "medium",
         assignee: str = "",
         parent_id: str = "",

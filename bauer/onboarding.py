@@ -201,7 +201,16 @@ _TOUR: list[tuple[str, str]] = [
         "Você conversa com o Bauer pelo chat, com sessão por usuário.",
     ),
     (
-        "5) Diagnóstico — bauer doctor / status",
+        "5) Rodar como serviço",
+        "Mantenha o gateway ativo mesmo depois de fechar o terminal:\n\n"
+        "  • bauer gateway start -b          inicia em background (terminal livre)\n"
+        "  • bauer gateway service install   registra como serviço do sistema\n"
+        "    (systemd no Linux · Task Scheduler no Windows)\n"
+        "  • bauer gateway service logs      acompanha os logs em tempo real\n\n"
+        "Com o serviço instalado o gateway sobe automaticamente no boot.",
+    ),
+    (
+        "6) Diagnóstico — bauer doctor / status",
         "`bauer doctor` checa provider, modelo, RAM e conectividade.\n"
         "`bauer status` mostra um dashboard do estado atual.",
     ),

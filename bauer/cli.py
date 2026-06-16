@@ -2098,6 +2098,8 @@ def agent(
         console.print(f"[yellow]Workspace '{workspace}' nao existe — criando.[/yellow]")
         workspace.mkdir(parents=True, exist_ok=True)
 
+    _ensure_dispatcher_running(workspace, config, models)
+
     client = _build_client(cfg)
     applied_context = state["context"]["applied"]
     # Propaga num_ctx ao OllamaClient — sem isso o Ollama usa o default do modelo (geralmente 2048)
@@ -8007,6 +8009,56 @@ def bundle_show_cmd(
 
 def _gateway_pid_file(workspace: Path) -> Path:
     return workspace / ".bauer_gateway" / "gateway.pid"
+
+
+def _ensure_dispatcher_running(workspace: Path, config: Path, models: Path) -> None:
+    """Inicia o dispatcher em background se ainda não estiver rodando."""
+    import os as _os
+    import subprocess as _sp
+
+    pid_file = workspace / ".bauer_dispatch" / "daemon.pid"
+    if pid_file.exists():
+        try:
+            import psutil
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            if psutil.pid_exists(pid):
+                return  # já rodando
+        except Exception:
+            pass  # PID stale — sobe um novo
+
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    log_path = pid_file.parent / "daemon.log"
+    log_handle = log_path.open("ab")
+
+    cmd = [
+        sys.executable, "-m", "bauer.cli", "dispatch", "daemon",
+        "--workspace", str(workspace.resolve()),
+        "--config", str(Path(config).resolve()),
+        "--models", str(Path(models).resolve()),
+    ]
+    popen_kwargs: dict = {
+        "stdout": log_handle,
+        "stderr": _sp.STDOUT,
+        "stdin": _sp.DEVNULL,
+        "close_fds": True,
+        "cwd": str(Path(__file__).resolve().parent.parent),
+    }
+    if _os.name == "nt":
+        popen_kwargs["creationflags"] = (
+            getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(_sp, "DETACHED_PROCESS", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    try:
+        proc = _sp.Popen(cmd, **popen_kwargs)
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        console.print(f"[dim]Dispatcher ativo (pid={proc.pid})[/dim]")
+    except Exception:
+        pass  # silencioso — dispatcher é opcional
+    finally:
+        log_handle.close()
 
 
 def _gateway_workspace(config: Path) -> Path:
