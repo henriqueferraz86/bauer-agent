@@ -201,13 +201,21 @@ _TOUR: list[tuple[str, str]] = [
         "Você conversa com o Bauer pelo chat, com sessão por usuário.",
     ),
     (
-        "5) Rodar como serviço",
-        "Mantenha o gateway ativo mesmo depois de fechar o terminal:\n\n"
-        "  • bauer gateway start -b          inicia em background (terminal livre)\n"
-        "  • bauer gateway service install   registra como serviço do sistema\n"
-        "    (systemd no Linux · Task Scheduler no Windows)\n"
-        "  • bauer gateway service logs      acompanha os logs em tempo real\n\n"
-        "Com o serviço instalado o gateway sobe automaticamente no boot.",
+        "5) Serviços — deixar tudo rodando",
+        "Instale os serviços do sistema para que o Bauer suba automaticamente no boot.\n"
+        "Cada um tem responsabilidade própria — instale os que você vai usar:\n\n"
+        "  ① bauer runtime service install\n"
+        "      Supervisor essencial: dispatcher de tasks, cron, outbox e kanban.\n"
+        "      → INSTALE SEMPRE. Sem ele as tasks não executam automaticamente.\n\n"
+        "  ② bauer gateway service install\n"
+        "      Canais Telegram/Discord — só se você configurou o gateway.\n"
+        "      → bauer gateway init  (wizard de configuração)\n\n"
+        "  ③ bauer serve service install\n"
+        "      API HTTP REST + SSE — se precisar de acesso externo ao agente.\n\n"
+        "  ④ bauer daemon service install\n"
+        "      Pool de workers autônomos — para cargas pesadas de tasks paralelas.\n\n"
+        "Verificar o que está rodando:  bauer runtime status\n"
+        "Ver logs de qualquer serviço:  bauer runtime logs",
     ),
     (
         "6) Diagnóstico — bauer doctor / status",
