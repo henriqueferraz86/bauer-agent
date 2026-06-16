@@ -46,7 +46,12 @@ from .workspace_manager import WorkspaceError, WorkspaceManager
 
 app = typer.Typer(
     add_completion=False,
-    help="Bauer Agent — runtime adaptativo para LLMs locais.",
+    help="Bauer Agent — runtime adaptativo para LLMs locais e cloud.",
+    epilog=(
+        "COMECE AQUI:  bauer start (boas-vindas)  ·  bauer init (configurar)  ·  "
+        "bauer agent (usar)  ·  bauer model (trocar modelo)  ·  bauer doctor (checar)  ·  "
+        "bauer guide (tour).  Os demais comandos sao avancados."
+    ),
 )
 
 config_app = typer.Typer(help="Operacoes com config.yaml")
@@ -129,6 +134,41 @@ app.add_typer(gateway_app, name="gateway")
 
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
+
+
+# --- onboarding: entrada amigável para quem está começando -------------------
+
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context):
+    """Bauer Agent — runtime adaptativo para LLMs locais e cloud.
+
+    Sem subcomando: mostra a tela de boas-vindas (orienta por onde começar).
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    # `bauer` puro → tela de boas-vindas inteligente em vez da parede de help.
+    try:
+        from .onboarding import welcome_screen
+        welcome_screen(console)
+    except Exception:
+        console.print("[cyan]Bauer Agent[/cyan] — comece com [bold]bauer init[/bold].")
+
+
+@app.command("start")
+def start_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+):
+    """Tela de boas-vindas — mostra por onde começar conforme seu estado."""
+    from .onboarding import welcome_screen
+    welcome_screen(console, config_path=config)
+
+
+@app.command("guide")
+def guide_cmd():
+    """Tour rápido pelos modos do Bauer (chat, agent, model, gateway)."""
+    from .onboarding import guide_tour
+    guide_tour(console)
 
 
 # --- helpers ----------------------------------------------------------------
@@ -328,6 +368,33 @@ def init_cmd(
     )
     if not ok:
         raise typer.Exit(code=1)
+
+    # Leva o iniciante do zero ao primeiro chat sem precisar digitar mais nada.
+    if not yes and sys.stdin.isatty():
+        try:
+            go = console.input(
+                "\n[bold]Checar o ambiente e abrir o agente agora?[/bold] [dim](S/n)[/dim] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            go = "n"
+        if go in ("", "s", "sim", "y", "yes"):
+            import subprocess as _sp
+            _base = [sys.executable, "-m", "bauer.cli"]
+            console.print("\n[dim]› bauer doctor[/dim]")
+            try:
+                _sp.run([*_base, "doctor", "--config", str(config)])
+            except Exception:
+                pass
+            console.print("\n[dim]› bauer agent  (digite /exit para sair)[/dim]\n")
+            try:
+                _sp.run([*_base, "agent", "--config", str(config)])
+            except Exception:
+                pass
+        else:
+            console.print(
+                "\n[dim]Quando quiser: [/dim][bold]bauer agent[/bold]"
+                "[dim] (usar) · [/dim][bold]bauer guide[/bold][dim] (tour).[/dim]\n"
+            )
 
 
 @app.command()

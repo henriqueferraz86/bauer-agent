@@ -77,6 +77,16 @@ bauer agent list        # ver agents disponíveis
 
 > **Dica**: use `bauer model` a qualquer momento para trocar de provider/modelo. O menu exibe claramente quais são **GRÁTIS** e quais são **PAGOS**.
 
+### 🧭 Perdido? Comece por aqui
+
+Digite só **`bauer`** (sem nada): a tela de boas-vindas detecta seu estado e mostra o próximo passo certo — *sem config* → `bauer init`; *falta chave* → `bauer model`; *pronto* → `bauer agent`. E o próprio `bauer init` se oferece para abrir o agente na hora.
+
+```bash
+bauer          # tela de boas-vindas inteligente (por onde começar)
+bauer start    # mesma tela, a qualquer momento
+bauer guide    # tour rápido pelos modos (chat / agent / model / gateway)
+```
+
 ### 🔧 Instalação manual (dev / contribuição)
 
 ```bash
