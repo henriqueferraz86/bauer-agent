@@ -8009,6 +8009,86 @@ def _gateway_pid_file(workspace: Path) -> Path:
     return workspace / ".bauer_gateway" / "gateway.pid"
 
 
+def _gateway_workspace(config: Path) -> Path:
+    try:
+        from bauer.config_loader import load_config as _load_cfg
+        return Path(_load_cfg(config).agent.workspace)
+    except Exception:
+        return Path("workspace")
+
+
+def _gateway_start_background(config: Path) -> None:
+    """Sobe o gateway destacado (detach) e libera o terminal. Log em arquivo."""
+    import os as _os
+    import subprocess as _sp
+
+    workspace = _gateway_workspace(config)
+    pid_file = _gateway_pid_file(workspace)
+
+    # Já rodando? Não sobe outro.
+    if pid_file.exists():
+        try:
+            import psutil
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            if psutil.pid_exists(pid):
+                console.print(
+                    f"[yellow]Gateway já rodando[/yellow] pid={pid}. "
+                    f"Use [bold]bauer gateway status[/bold] ou [bold]bauer gateway stop[/bold]."
+                )
+                return
+        except Exception:
+            pass  # PID stale — segue e sobe um novo
+
+    log_path = workspace / ".bauer_gateway" / "gateway.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = log_path.open("ab")
+
+    # O filho roda a versão FOREGROUND (sem --background) e escreve o próprio PID.
+    cmd = [
+        sys.executable, "-m", "bauer.cli", "gateway", "start",
+        "--config", str(Path(config).resolve()),
+    ]
+    popen_kwargs: dict = {
+        "stdout": log_handle,
+        "stderr": _sp.STDOUT,
+        "stdin": _sp.DEVNULL,
+        "close_fds": True,
+        "cwd": str(Path(__file__).resolve().parent.parent),
+    }
+    if _os.name == "nt":
+        popen_kwargs["creationflags"] = (
+            getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(_sp, "DETACHED_PROCESS", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    try:
+        proc = _sp.Popen(cmd, **popen_kwargs)
+    finally:
+        log_handle.close()
+
+    # O filho grava o próprio pid no pid_file; aguarda um instante e lê o real.
+    import time as _time
+    real_pid = proc.pid
+    for _ in range(20):
+        _time.sleep(0.1)
+        try:
+            real_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            break
+        except Exception:
+            continue
+
+    console.print(
+        f"[green]✓ Bauer Gateway iniciado em background[/green] pid={real_pid}"
+    )
+    console.print(f"[dim]Log:[/dim] {log_path}")
+    console.print(
+        "[dim]Monitorar: [/dim][bold]bauer gateway status[/bold]"
+        "[dim]  ·  Parar: [/dim][bold]bauer gateway stop[/bold]"
+    )
+
+
 @telegram_app.command("start", help="Inicia o canal Telegram (foreground)")
 def telegram_start(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
@@ -8132,8 +8212,20 @@ def discord_start(
 @gateway_app.command("start", help="Inicia todos os canais habilitados + outbox pump")
 def gateway_start(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+    background: bool = typer.Option(
+        False, "--background", "-b",
+        help="Roda em background (detach) e libera o terminal",
+    ),
 ):
-    """Bauer Gateway: canais do config.yaml (telegram/discord) + entrega do outbox."""
+    """Bauer Gateway: canais do config.yaml (telegram/discord) + entrega do outbox.
+
+    Use --background / -b para rodar destacado (log em workspace/.bauer_gateway/
+    gateway.log). Pare com `bauer gateway stop`.
+    """
+    if background:
+        _gateway_start_background(config)
+        return
+
     import logging
     import os
 

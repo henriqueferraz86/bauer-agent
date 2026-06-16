@@ -371,11 +371,14 @@ enviar notificações a canais via tool `channel_send`.
 ### 🚀 Setup em 3 passos
 
 ```bash
-bauer gateway init     # wizard: token, validação live, allowlist, .env
-bauer gateway start    # sobe todos os canais habilitados + entrega do outbox
-bauer gateway status   # canais, tokens, allowlists, outbox
-bauer gateway stop     # encerra o gateway (e bridges antigos órfãos)
+bauer gateway init            # wizard: token, validação live, allowlist, .env
+bauer gateway start           # sobe os canais habilitados + outbox (foreground)
+bauer gateway start -b        # mesmo, mas em BACKGROUND (libera o terminal)
+bauer gateway status          # canais, tokens, allowlists, outbox
+bauer gateway stop            # encerra o gateway (e bridges antigos órfãos)
 ```
+
+> `bauer gateway start -b` roda destacado, com log em `workspace/.bauer_gateway/gateway.log`. Para rodar como serviço do sistema (auto-start no boot), use `bauer gateway service install`.
 
 > Se o bot responder com um menu antigo ou der erro 409, há um bridge órfão
 > de versão anterior rodando — `bauer telegram stop` resolve.
