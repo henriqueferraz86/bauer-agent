@@ -70,6 +70,7 @@ VALID_SLOTS: frozenset[str] = frozenset({
     "triage_specifier",
     "compression_model",
     "background_reviewer",  # G10
+    "approval_model",       # G4 — revisao LLM de tools de alto risco
 })
 
 

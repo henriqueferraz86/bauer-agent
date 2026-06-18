@@ -610,17 +610,21 @@ class AuxiliarySection(_StrictSection):
     """Auxiliary LLM slots — cheap/fast models for routine subtasks.
 
     Each slot is consumed by a specific Bauer subsystem:
-      - `kanban_decomposer` — kanban_decompose.decompose_task() (Wave 3)
-      - `triage_specifier`  — kanban_specify.specify_task() (Wave 3)
-      - `compression_model` — context compression (future)
+      - `kanban_decomposer`  — kanban_decompose.decompose_task() (Wave 3)
+      - `triage_specifier`   — kanban_specify.specify_task() (Wave 3)
+      - `compression_model`  — context compression
+      - `background_reviewer`— background_review (G10)
+      - `approval_model`     — llm_approval de tools de alto risco (G4)
 
     All slots default to empty → the main `model.name` is used. This keeps
     the system working out of the box; users opt-in to per-slot routing as
     they tune for cost.
     """
-    kanban_decomposer: AuxiliarySlot = AuxiliarySlot()
-    triage_specifier:  AuxiliarySlot = AuxiliarySlot()
-    compression_model: AuxiliarySlot = AuxiliarySlot()
+    kanban_decomposer:  AuxiliarySlot = AuxiliarySlot()
+    triage_specifier:   AuxiliarySlot = AuxiliarySlot()
+    compression_model:  AuxiliarySlot = AuxiliarySlot()
+    background_reviewer: AuxiliarySlot = AuxiliarySlot()
+    approval_model:     AuxiliarySlot = AuxiliarySlot()
 
 
 class WebSection(_StrictSection):

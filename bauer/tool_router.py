@@ -54,11 +54,14 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import logging
 import os
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .shell_runner import ShellError
 from .tool_policy import load_tool_policy
@@ -1610,12 +1613,11 @@ class ToolRouter:
             from .secrets_scanner import scan as _scan_secrets
             scan_result = _scan_secrets(result, redact=True)
             if scan_result.found:
-                import warnings
                 secrets_found = [m["name"] for m in scan_result.matches]
-                warnings.warn(
-                    f"[secrets_scanner] Segredos detectados no output de '{name}': "
-                    f"{', '.join(set(secrets_found))}. Redagidos automaticamente.",
-                    stacklevel=2,
+                logger.info(
+                    "[secrets_scanner] Segredos detectados no output de '%s': %s. "
+                    "Redagidos automaticamente.",
+                    name, ", ".join(sorted(set(secrets_found))),
                 )
                 result = scan_result.redacted_text
         except Exception:
@@ -1626,11 +1628,9 @@ class ToolRouter:
             from .binary_scanner import scan as _scan_binary
             _bin_result = _scan_binary(result)
             if _bin_result.is_suspicious:
-                import warnings
-                warnings.warn(
-                    f"[binary_scanner] Conteúdo suspeito no output de '{name}': "
-                    f"{_bin_result.summary()}",
-                    stacklevel=2,
+                logger.warning(
+                    "[binary_scanner] Conteúdo suspeito no output de '%s': %s",
+                    name, _bin_result.summary(),
                 )
                 if _bin_result.is_binary:
                     result = (
