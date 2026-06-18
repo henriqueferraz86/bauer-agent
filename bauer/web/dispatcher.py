@@ -102,6 +102,9 @@ class WebDispatcher:
 
     def __init__(self, web_config: "WebSection | None" = None):
         self._cfg = web_config
+        # Cache TTL de resultados (busca/extração) — repetições viram instantâneas.
+        self._cache: dict = {}              # key -> (timestamp, value)
+        self._http_client = None            # httpx.Client persistente (reuso de conexão)
 
     # --- Propriedades de config -----------------------------------------------
 
@@ -143,6 +146,57 @@ class WebDispatcher:
     def _wikipedia_lang(self) -> str:
         """Idioma da Wikipedia (default 'en' — mais completa)."""
         return (getattr(self._cfg, "wikipedia_lang", "") if self._cfg else "") or "en"
+
+    @property
+    def cache_ttl(self) -> int:
+        """TTL do cache de busca/extração em segundos (0 = desabilitado)."""
+        v = getattr(self._cfg, "cache_ttl_seconds", None) if self._cfg else None
+        return 300 if v is None else int(v)
+
+    # --- HTTP client persistente (reuso de conexão / keep-alive) -------------
+
+    @property
+    def _http(self):
+        """httpx.Client persistente — reusa conexão TLS entre chamadas.
+
+        follow_redirects fica como default (False), igual ao httpx.get antigo —
+        a extração passa follow_redirects=True por chamada quando precisa.
+        """
+        import httpx
+        if self._http_client is None:
+            self._http_client = httpx.Client(timeout=self.timeout)
+        return self._http_client
+
+    def close(self) -> None:
+        """Fecha o client HTTP persistente (chamar no fim da sessão)."""
+        if self._http_client is not None:
+            try:
+                self._http_client.close()
+            except Exception:
+                pass
+            self._http_client = None
+
+    # --- Cache TTL -----------------------------------------------------------
+
+    def _cache_get(self, key: tuple):
+        """Retorna valor cacheado se dentro do TTL, senão None."""
+        if self.cache_ttl <= 0:
+            return None
+        import time as _t
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        ts, value = entry
+        if _t.monotonic() - ts < self.cache_ttl:
+            return value
+        self._cache.pop(key, None)  # expirado
+        return None
+
+    def _cache_put(self, key: tuple, value) -> None:
+        if self.cache_ttl <= 0:
+            return
+        import time as _t
+        self._cache[key] = (_t.monotonic(), value)
 
     # --- Auto-detecção --------------------------------------------------------
 
@@ -243,10 +297,20 @@ class WebDispatcher:
     # --- Search ---------------------------------------------------------------
 
     def search(self, query: str, max_results: int | None = None) -> list[SearchResult]:
-        """Executa busca usando o backend detectado/configurado."""
+        """Executa busca usando o backend detectado/configurado (com cache TTL)."""
         n = max_results or self.max_results
         backend = self.search_backend  # pode levantar WebError se "auto" e sem backend
 
+        _ckey = ("search", backend, query, n)
+        _cached = self._cache_get(_ckey)
+        if _cached is not None:
+            return _cached
+
+        results = self._search_dispatch(backend, query, n)
+        self._cache_put(_ckey, results)
+        return results
+
+    def _search_dispatch(self, backend: str, query: str, n: int) -> list[SearchResult]:
         if backend == "ddgs":
             return self._search_ddgs(query, n)
         elif backend == "searxng":
@@ -276,20 +340,27 @@ class WebDispatcher:
     # --- Extract --------------------------------------------------------------
 
     def extract(self, url: str, max_chars: int | None = None) -> str:
-        """Extrai conteúdo de URL usando o backend detectado/configurado."""
+        """Extrai conteúdo de URL usando o backend detectado/configurado (com cache TTL)."""
         n = max_chars or self.max_chars
         self._validate_url(url)
         backend = self.extract_backend
 
+        _ckey = ("extract", backend, url, n)
+        _cached = self._cache_get(_ckey)
+        if _cached is not None:
+            return _cached
+
         if backend == "httpx":
-            return self._extract_httpx(url, n)
+            out = self._extract_httpx(url, n)
         elif backend == "crawl4ai":
-            return self._extract_crawl4ai(url, n)
+            out = self._extract_crawl4ai(url, n)
         else:
             raise WebError(
                 f"Backend de extração '{backend}' desconhecido. "
                 "Opções: auto, httpx, crawl4ai"
             )
+        self._cache_put(_ckey, out)
+        return out
 
     # --- Backends de busca ----------------------------------------------------
 
@@ -322,7 +393,7 @@ class WebDispatcher:
         import httpx
         base_url = self._searxng_url.rstrip("/")
         try:
-            resp = httpx.get(
+            resp = self._http.get(
                 f"{base_url}/search",
                 params={"q": query, "format": "json",
                         "engines": "google,bing,duckduckgo", "safesearch": "1"},
@@ -363,7 +434,7 @@ class WebDispatcher:
                 "Ou use outro backend: web.search_backend: ddgs"
             )
         try:
-            resp = httpx.get(
+            resp = self._http.get(
                 "https://api.search.brave.com/res/v1/web/search",
                 params={"q": query, "count": max_results, "safesearch": "moderate"},
                 headers={"Accept": "application/json", "X-Subscription-Token": api_key},
@@ -399,7 +470,7 @@ class WebDispatcher:
         lang = self._wikipedia_lang
         base = f"https://{lang}.wikipedia.org/w/api.php"
         try:
-            resp = httpx.get(
+            resp = self._http.get(
                 base,
                 params={
                     "action": "query",
@@ -443,7 +514,7 @@ class WebDispatcher:
         """httpx + BeautifulSoup (padrão, leve, zero config)."""
         import httpx
         try:
-            resp = httpx.get(
+            resp = self._http.get(
                 url, timeout=self.timeout, follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; BauerAgent/1.0)"},
             )

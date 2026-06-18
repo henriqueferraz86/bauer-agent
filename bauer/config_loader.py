@@ -654,6 +654,7 @@ class WebSection(_StrictSection):
     max_results: int = Field(ge=1, le=20, default=5)
     max_chars: int = Field(ge=100, le=50_000, default=5000)
     timeout_seconds: int = Field(ge=1, le=60, default=15)
+    cache_ttl_seconds: int = Field(ge=0, le=86_400, default=300)  # cache de busca/extração (0 = off)
 
 
 class TelegramSection(_StrictSection):

@@ -134,7 +134,7 @@ class TestToolRouterWebSearch:
         wiki_resp.raise_for_status = MagicMock()
         with patch("bauer.web.dispatcher._package_available", return_value=False), \
              patch.dict(os.environ, {"BRAVE_API_KEY": "", "SEARXNG_URL": ""}), \
-             patch("httpx.get", return_value=wiki_resp):
+             patch("httpx.Client.get", return_value=wiki_resp):
             out = router._web_search({"query": "python testing"})
         assert "wikipedia" in out.lower()
 
@@ -183,7 +183,7 @@ class TestToolRouterWebFetch:
     def test_web_fetch_timeout_raises(self, tmp_path: Path):
         import httpx
         router = ToolRouter(workspace=tmp_path, web_enabled=True)
-        with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
+        with patch("httpx.Client.get", side_effect=httpx.TimeoutException("timeout")):
             with pytest.raises(ToolError, match="Timeout"):
                 router._web_fetch({"url": "https://example.com"})
 
@@ -193,13 +193,13 @@ class TestToolRouterWebFetch:
         mock_resp = MagicMock()
         mock_resp.status_code = 404
         error = httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)
-        with patch("httpx.get", side_effect=error):
+        with patch("httpx.Client.get", side_effect=error):
             with pytest.raises(ToolError, match="HTTP"):
                 router._web_fetch({"url": "https://example.com"})
 
     def test_web_fetch_generic_exception_raises(self, tmp_path: Path):
         router = ToolRouter(workspace=tmp_path, web_enabled=True)
-        with patch("httpx.get", side_effect=Exception("connection error")):
+        with patch("httpx.Client.get", side_effect=Exception("connection error")):
             with pytest.raises(ToolError, match="Erro ao acessar"):
                 router._web_fetch({"url": "https://example.com"})
 
@@ -209,7 +209,7 @@ class TestToolRouterWebFetch:
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "image/png"}
         mock_resp.text = b"binary data"
-        with patch("httpx.get", return_value=mock_resp):
+        with patch("httpx.Client.get", return_value=mock_resp):
             result = router._web_fetch({"url": "https://example.com/image.png"})
         # Result is "[Conteúdo binário — content-type: image/png]" — check ASCII-safe substrings
         assert "content-type" in result or "bin" in result.lower() or "image" in result
@@ -221,7 +221,7 @@ class TestToolRouterWebFetch:
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.text = "   \n   \n   "  # Only whitespace
-        with patch("httpx.get", return_value=mock_resp), \
+        with patch("httpx.Client.get", return_value=mock_resp), \
              patch.dict("sys.modules", {"bs4": None}):
             result = router._web_fetch({"url": "https://example.com"})
         assert isinstance(result, str) and len(result) > 0
@@ -232,7 +232,7 @@ class TestToolRouterWebFetch:
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.text = "<html><body>Hello World</body></html>"
-        with patch("httpx.get", return_value=mock_resp), \
+        with patch("httpx.Client.get", return_value=mock_resp), \
              patch.dict("sys.modules", {"bs4": None}):
             result = router._web_fetch({"url": "https://example.com"})
         assert "Hello" in result or len(result) > 0
@@ -248,7 +248,7 @@ class TestToolRouterWebFetch:
 
         mock_bs4 = MagicMock()
         mock_bs4.BeautifulSoup.side_effect = Exception("bs4 error")
-        with patch("httpx.get", return_value=mock_resp), \
+        with patch("httpx.Client.get", return_value=mock_resp), \
              patch.dict("sys.modules", {"bs4": mock_bs4}):
             result = router._web_fetch({"url": "https://example.com"})
         assert isinstance(result, str)
@@ -259,7 +259,7 @@ class TestToolRouterWebFetch:
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-type": "text/plain"}
         mock_resp.text = "A" * 10000  # > default 5000 max_chars
-        with patch("httpx.get", return_value=mock_resp), \
+        with patch("httpx.Client.get", return_value=mock_resp), \
              patch.dict("sys.modules", {"bs4": None}):
             result = router._web_fetch({"url": "https://example.com", "max_chars": 100})
         assert "truncado" in result
