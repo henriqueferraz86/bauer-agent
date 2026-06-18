@@ -191,17 +191,34 @@ def test_browser_tools_share_single_thread(router):
         seen.append(threading.current_thread().name)
         return "ok"
 
-    # Substitui as fns reais (que exigem Playwright) por gravadores de thread.
-    # browser_snapshot e browser_click ambos tem timeout -> path do executor.
+    # browser_snapshot TEM timeout; browser_scroll NAO tem timeout configurado.
+    # Ambos devem rodar na MESMA thread dedicada — o caso browser_scroll era
+    # exatamente o que caía inline (greenlet.error: Cannot switch thread).
     router._tools["browser_snapshot"]["fn"] = _record
-    router._tools["browser_click"]["fn"] = _record
+    router._tools["browser_scroll"]["fn"] = _record
 
     router.execute({"action": "browser_snapshot", "args": {}})
-    router.execute({"action": "browser_click", "args": {"selector": "#x"}})
+    router.execute({"action": "browser_scroll", "args": {}})
 
     assert len(seen) == 2
     assert seen[0] == seen[1], "browser tools rodaram em threads diferentes"
     assert "bauer-browser" in seen[0]
+
+
+def test_browser_tool_without_timeout_uses_dedicated_thread(router):
+    # Regressao G18.1: browser_scroll (sem timeout) NAO pode rodar inline.
+    import threading
+    main_thread = threading.current_thread().name
+    seen = {}
+
+    def _record(args):
+        seen["thread"] = threading.current_thread().name
+        return "ok"
+
+    router._tools["browser_scroll"]["fn"] = _record
+    router.execute({"action": "browser_scroll", "args": {}})
+    assert seen["thread"] != main_thread
+    assert "bauer-browser" in seen["thread"]
 
 
 def test_non_browser_tool_not_on_browser_thread(router_shell):

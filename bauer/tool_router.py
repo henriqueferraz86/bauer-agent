@@ -1545,14 +1545,28 @@ class ToolRouter:
         try:
             # Per-tool timeout enforcement (Wave E)
             _timeout_sec = _TOOL_TIMEOUTS.get(name, 0)
-            if _timeout_sec > 0:
+            _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
+            if name.startswith("browser_"):
+                # G18: TODA browser tool roda na MESMA thread dedicada e persistente.
+                # Playwright sync e thread-affine (greenlet): a pagina criada num
+                # browser_navigate so pode ser dirigida pela thread que a criou.
+                # Tools sem timeout configurado (browser_scroll/back/console/...)
+                # NAO podem rodar inline na thread chamadora — senao da
+                # "greenlet.error: Cannot switch to a different thread".
                 import concurrent.futures as _cf
-                _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
-                if name.startswith("browser_"):
-                    # G18: browser tools compartilham UMA thread persistente
-                    # (afinidade do Playwright sync). Nao usa `with` — o pool
-                    # vive na sessao inteira para a pagina nao morrer entre calls.
-                    _pool = self._get_browser_executor()
+                _pool = self._get_browser_executor()
+                _future = _pool.submit(_fn, args)
+                _eff_timeout = _timeout_sec if _timeout_sec > 0 else 60
+                try:
+                    result = _future.result(timeout=_eff_timeout)
+                except _cf.TimeoutError as _te:
+                    raise ToolError(
+                        f"Tool '{name}' excedeu o timeout de {_eff_timeout}s. "
+                        "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                    ) from _te
+            elif _timeout_sec > 0:
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
                     _future = _pool.submit(_fn, args)
                     try:
                         result = _future.result(timeout=_timeout_sec)
@@ -1561,16 +1575,6 @@ class ToolRouter:
                             f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
                             "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
                         ) from _te
-                else:
-                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                        _future = _pool.submit(_fn, args)
-                        try:
-                            result = _future.result(timeout=_timeout_sec)
-                        except _cf.TimeoutError as _te:
-                            raise ToolError(
-                                f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
-                                "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
-                            ) from _te
             else:
                 # Tool externa (ToolRegistry) tem prioridade sobre built-in
                 if _ext_fn is not None:
