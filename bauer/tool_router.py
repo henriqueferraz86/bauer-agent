@@ -972,9 +972,14 @@ class ToolRouter:
         self._browser_page = None   # playwright page ativa
         self._browser_ctx = None    # playwright browser context
         self._browser_pw = None     # playwright instance
+        # G18: Playwright sync e thread-affine. Todas as browser tools rodam
+        # SEMPRE nesta unica thread persistente — senao a pagina criada num
+        # browser_navigate fica presa numa thread morta na call seguinte
+        # (erro "cannot switch to a different thread which happens to have exited").
+        self._browser_executor = None
         self._tools["browser_navigate"] = {
             "fn": self._browser_navigate,
-            "description": "Navega para URL no browser controlado. Requer: pip install playwright && playwright install chromium.",
+            "description": "Abre uma URL num browser real (Playwright) — PESADO e lento. Use SO quando precisar interagir com a pagina (clicar, preencher, JS). Para apenas LER ou BUSCAR informacao, prefira web_search/web_fetch. Requer: pip install playwright && playwright install chromium.",
             "args": {
                 "url": "str — URL completa com https:// (obrigatorio)",
                 "wait_until": "str — load | domcontentloaded | networkidle (default: load)",
@@ -1139,7 +1144,7 @@ class ToolRouter:
 
             self._tools["web_search"] = {
                 "fn": self._web_search,
-                "description": "Pesquisa na web e retorna resultados com titulos, links e snippets.",
+                "description": "PRIMEIRA ESCOLHA para buscar qualquer informacao/fato na web (noticias, datas, precos, documentacao). Rapido e leve — uma chamada resolve. Use web_fetch para ler uma URL especifica. NAO use browser_navigate para buscar fatos.",
                 "args": {
                     "query": "str — termo de pesquisa (obrigatorio)",
                     "max_results": "int — maximo de resultados (default: 5, max: 10)",
@@ -1338,6 +1343,29 @@ class ToolRouter:
         """G4: Store recent conversation for LLM approval context."""
         self._recent_messages = messages[-max_messages:] if len(messages) > max_messages else list(messages)
 
+    def _get_browser_executor(self):
+        """Executor de thread única e persistente para as browser tools (G18).
+
+        Playwright sync é thread-affine: a página/contexto criados num
+        browser_navigate só podem ser dirigidos pela MESMA thread. Como o
+        execute() roda tools com timeout em threads descartáveis, cada call
+        de browser caía numa thread diferente → 'cannot switch to a different
+        thread'. Aqui mantemos um único worker (max_workers=1) vivo pela
+        sessão inteira para que todas as browser tools rodem na mesma thread.
+        """
+        import concurrent.futures as _cf
+        if self._browser_executor is None:
+            self._browser_executor = _cf.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="bauer-browser"
+            )
+        return self._browser_executor
+
+    def close_browser_executor(self) -> None:
+        """Encerra a thread dedicada do browser (chamar no fim da sessão)."""
+        if self._browser_executor is not None:
+            self._browser_executor.shutdown(wait=False)
+            self._browser_executor = None
+
     def get_tool_schemas(self) -> list[dict]:
         """Retorna schemas de tools no formato OpenAI function calling.
 
@@ -1520,7 +1548,11 @@ class ToolRouter:
             if _timeout_sec > 0:
                 import concurrent.futures as _cf
                 _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
-                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                if name.startswith("browser_"):
+                    # G18: browser tools compartilham UMA thread persistente
+                    # (afinidade do Playwright sync). Nao usa `with` — o pool
+                    # vive na sessao inteira para a pagina nao morrer entre calls.
+                    _pool = self._get_browser_executor()
                     _future = _pool.submit(_fn, args)
                     try:
                         result = _future.result(timeout=_timeout_sec)
@@ -1529,6 +1561,16 @@ class ToolRouter:
                             f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
                             "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
                         ) from _te
+                else:
+                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                        _future = _pool.submit(_fn, args)
+                        try:
+                            result = _future.result(timeout=_timeout_sec)
+                        except _cf.TimeoutError as _te:
+                            raise ToolError(
+                                f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
+                                "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                            ) from _te
             else:
                 # Tool externa (ToolRegistry) tem prioridade sobre built-in
                 if _ext_fn is not None:

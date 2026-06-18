@@ -164,3 +164,48 @@ def test_run_command_background_invalid_flag(router_shell):
             "action": "run_command",
             "args": {"command": 'python -c "print(1)"', "background": "yes"},
         })
+
+
+# ---------------------------------------------------------------------------
+# G18 — browser tools rodam todas na MESMA thread persistente (afinidade Playwright)
+# ---------------------------------------------------------------------------
+
+def test_browser_executor_is_persistent(router):
+    e1 = router._get_browser_executor()
+    e2 = router._get_browser_executor()
+    assert e1 is e2
+
+
+def test_close_browser_executor_resets(router):
+    e1 = router._get_browser_executor()
+    router.close_browser_executor()
+    e2 = router._get_browser_executor()
+    assert e1 is not e2
+
+
+def test_browser_tools_share_single_thread(router):
+    import threading
+    seen: list[str] = []
+
+    def _record(args):
+        seen.append(threading.current_thread().name)
+        return "ok"
+
+    # Substitui as fns reais (que exigem Playwright) por gravadores de thread.
+    # browser_snapshot e browser_click ambos tem timeout -> path do executor.
+    router._tools["browser_snapshot"]["fn"] = _record
+    router._tools["browser_click"]["fn"] = _record
+
+    router.execute({"action": "browser_snapshot", "args": {}})
+    router.execute({"action": "browser_click", "args": {"selector": "#x"}})
+
+    assert len(seen) == 2
+    assert seen[0] == seen[1], "browser tools rodaram em threads diferentes"
+    assert "bauer-browser" in seen[0]
+
+
+def test_non_browser_tool_not_on_browser_thread(router_shell):
+    # run_command (timeout) NAO deve usar a thread do browser.
+    import threading
+    out = router_shell.execute({"action": "run_command", "args": {"command": 'python -c "import threading; print(threading.current_thread().name)"'}})
+    assert "bauer-browser" not in out
