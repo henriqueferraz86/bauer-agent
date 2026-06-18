@@ -41,10 +41,16 @@ gateway = [
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
 ]
+web = [
+    "ddgs>=6.0",             # DuckDuckGo (MIT) — busca web geral open-source
+    "beautifulsoup4>=4.12",  # extração de conteúdo limpo no web_fetch
+]
 all = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
+    "ddgs>=6.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.scripts]

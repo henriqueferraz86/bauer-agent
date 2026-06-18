@@ -98,6 +98,20 @@ pip install -e ".[gateway]"
 bauer doctor
 ```
 
+**Extras opcionais:**
+
+| Extra | Instala | Para quê |
+|-------|---------|----------|
+| `[web]` | `ddgs`, `beautifulsoup4` | busca web geral (DuckDuckGo) + extração de conteúdo |
+| `[server]` | `fastapi`, `uvicorn` | `bauer serve` (API HTTP) |
+| `[gateway]` | + `websockets` | canais Telegram/Discord + `bauer shell` |
+| `[keychain]` | `keyring` | guardar credenciais no keychain do SO |
+| `[all]` | tudo acima | — |
+
+> Busca web **sem nenhum extra**: o backend **Wikipedia** (open-source, sem chave)
+> funciona só com as dependências core e é o fallback automático do `web_search`.
+> Para busca geral, `pip install -e ".[web]"`.
+
 ---
 
 ## ⚙️ Configuração
