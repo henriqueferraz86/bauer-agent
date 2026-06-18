@@ -284,6 +284,23 @@ def doctor(
 
     console.print(Panel(table, title="Bauer Doctor", border_style=color))
 
+    # --- Web search (G18) --------------------------------------------------------
+    try:
+        from .web.dispatcher import WebDispatcher
+        _web = WebDispatcher(getattr(cfg, "web", None))
+        _wb = _web.detected_backends()
+        _wt = Table(show_header=False, box=None, padding=(0, 1))
+        _wt.add_row("Busca:", f"{_wb['search']}  [dim]({_wb['search_reason']})[/dim]")
+        _wt.add_row("Extração:", f"{_wb['extract']}  [dim]({_wb['extract_reason']})[/dim]")
+        console.print(Panel(_wt, title="Web search", border_style="cyan"))
+        if _wb["search"] == "wikipedia":
+            console.print(
+                "  [dim]Só Wikipedia (fatos, open-source). Para busca web geral: "
+                "pip install 'bauer-agent[web]' (ddgs) ou suba um SearXNG.[/dim]"
+            )
+    except Exception as _web_exc:
+        console.print(f"[dim]Web search: não foi possível detectar ({_web_exc})[/dim]")
+
     if report.findings:
         console.print("\n[bold]Notas:[/bold]")
         for line in report.findings:
@@ -1763,7 +1780,32 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
 
 
 def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
-    """Cria ToolRouter com shell_runner, web e llm_client a partir da config."""
+    """Cria ToolRouter com shell_runner, web e llm_client a partir da config.
+
+    Se llm_client não for passado, constrói um a partir da config (best-effort).
+    Isso garante que as tools que dependem do modelo — vision_analyze,
+    video_analyze, browser_vision, mixture_of_agents, delegate_task — tenham
+    'cérebro' em TODOS os fluxos da CLI, não só no chat/agent. Sem isso, esses
+    comandos caíam com 'llm_client não configurado'. Construir o client não faz
+    rede (só instancia o objeto); falha silenciosa → degrada para None.
+    """
+    if llm_client is None and cfg is not None:
+        try:
+            llm_client = _build_client(cfg)
+        except Exception:
+            llm_client = None  # best-effort: tools de modelo degradam com erro claro
+    # G18.4: cliente multimodal dedicado SÓ quando auxiliary.vision_model foi
+    # configurado explicitamente (provider ou model não-vazio). Senão fica None
+    # e o router cai no llm_client principal (com check de capability).
+    vision_client = None
+    if cfg is not None:
+        try:
+            _vm = getattr(getattr(cfg, "auxiliary", None), "vision_model", None)
+            if _vm is not None and (getattr(_vm, "provider", "") or getattr(_vm, "model", "")):
+                from .auxiliary_client import get_text_auxiliary_client
+                vision_client, _ = get_text_auxiliary_client("vision_model", cfg)
+        except Exception:
+            vision_client = None
     shell_runner = _build_shell_runner(cfg, workspace)
     web_enabled = cfg.tools.web_enabled if cfg is not None else False
     web_config = cfg.web if cfg is not None else None
@@ -1773,6 +1815,7 @@ def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
         web_enabled=web_enabled,
         web_config=web_config,
         llm_client=llm_client,
+        vision_client=vision_client,
     )
 
 

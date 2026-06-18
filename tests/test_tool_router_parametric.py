@@ -221,6 +221,55 @@ def test_browser_tool_without_timeout_uses_dedicated_thread(router):
     assert "bauer-browser" in seen["thread"]
 
 
+# ---------------------------------------------------------------------------
+# G18.4 — vision client resolution + capability check
+# ---------------------------------------------------------------------------
+
+def test_vision_no_client_raises_clear_error(router):
+    with pytest.raises(ToolError, match="vision_model"):
+        router._resolve_vision_client("browser_vision")
+
+
+def test_vision_text_only_model_raises(tmp_path):
+    from unittest.mock import MagicMock
+    client = MagicMock()
+    client.model = "deepseek-v4-flash-free"  # text-only
+    r = ToolRouter(workspace=tmp_path, llm_client=client)
+    with pytest.raises(ToolError, match="parece"):
+        r._resolve_vision_client("vision_analyze")
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "claude-3-5-sonnet", "gemini-1.5-pro", "llava:13b", "qwen2.5-vl"])
+def test_vision_multimodal_model_passes(tmp_path, model):
+    from unittest.mock import MagicMock
+    client = MagicMock()
+    client.model = model
+    r = ToolRouter(workspace=tmp_path, llm_client=client)
+    assert r._resolve_vision_client("browser_vision") is client
+
+
+def test_vision_dedicated_client_overrides_text_main(tmp_path):
+    from unittest.mock import MagicMock
+    text_main = MagicMock(); text_main.model = "deepseek-v4-flash-free"
+    vision = MagicMock(); vision.model = "llava"
+    r = ToolRouter(workspace=tmp_path, llm_client=text_main, vision_client=vision)
+    # client dedicado é usado mesmo com principal text-only (sem capability gate)
+    assert r._resolve_vision_client("browser_vision") is vision
+
+
+def test_looks_multimodal_heuristic():
+    from bauer.tool_router import _looks_multimodal
+    assert _looks_multimodal("gpt-4o")
+    assert _looks_multimodal("ollama/llava:latest")
+    assert not _looks_multimodal("qwen2.5-coder:3b")
+    assert not _looks_multimodal("")
+
+
+def test_vision_model_slot_registered():
+    from bauer.auxiliary_client import VALID_SLOTS
+    assert "vision_model" in VALID_SLOTS
+
+
 def test_non_browser_tool_not_on_browser_thread(router_shell):
     # run_command (timeout) NAO deve usar a thread do browser.
     import threading

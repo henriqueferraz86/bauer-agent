@@ -615,6 +615,8 @@ class AuxiliarySection(_StrictSection):
       - `compression_model`  — context compression
       - `background_reviewer`— background_review (G10)
       - `approval_model`     — llm_approval de tools de alto risco (G4)
+      - `vision_model`       — tools de visão: browser_vision/vision_analyze/
+                               video_analyze (G18.4; ex: ollama 'llava')
 
     All slots default to empty → the main `model.name` is used. This keeps
     the system working out of the box; users opt-in to per-slot routing as
@@ -625,6 +627,7 @@ class AuxiliarySection(_StrictSection):
     compression_model:  AuxiliarySlot = AuxiliarySlot()
     background_reviewer: AuxiliarySlot = AuxiliarySlot()
     approval_model:     AuxiliarySlot = AuxiliarySlot()
+    vision_model:       AuxiliarySlot = AuxiliarySlot()
 
 
 class WebSection(_StrictSection):

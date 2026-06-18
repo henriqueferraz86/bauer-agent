@@ -470,6 +470,23 @@ _DEFAULT_READ_LINES = 2000
 # Limite de resultados de busca.
 _MAX_SEARCH_RESULTS = 50
 
+# G18.4: padrões de nomes de modelos multimodais conhecidos (capability check
+# das tools de visão). Lista generosa; é só um HINT — configurar
+# auxiliary.vision_model sempre bypassa a checagem.
+_MULTIMODAL_PATTERNS = (
+    "gpt-4o", "gpt-4-vision", "gpt-4-turbo", "o1", "o3", "o4",
+    "claude-3", "claude-4", "claude-opus", "claude-sonnet", "claude-haiku",
+    "gemini", "llava", "bakllava", "moondream", "pixtral", "llama-3.2-vision",
+    "llama3.2-vision", "qwen2-vl", "qwen2.5-vl", "qwen-vl", "minicpm-v",
+    "internvl", "phi-3-vision", "phi-3.5-vision", "vision",
+)
+
+
+def _looks_multimodal(model_name: str) -> bool:
+    """Heurística: o nome do modelo parece suportar visão? (G18.4)"""
+    m = (model_name or "").lower()
+    return any(p in m for p in _MULTIMODAL_PATTERNS)
+
 
 def _normalize_tool_context(value: str | None) -> str:
     raw = (value if value is not None else os.environ.get("BAUER_TOOL_CONTEXT", "supervisor"))
@@ -492,6 +509,7 @@ class ToolRouter:
         web_enabled: bool = False,
         web_config=None,
         llm_client=None,
+        vision_client=None,
         dry_run: bool = False,
         max_tool_calls: int = 500,
         max_retries: int = 3,
@@ -502,6 +520,9 @@ class ToolRouter:
     ):
         self.workspace = Path(workspace).resolve()
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
+        # G18.4: cliente multimodal dedicado (auxiliary.vision_model). As tools de
+        # visão usam ele se presente; senão caem no _llm_client principal.
+        self._vision_client = vision_client
         self._dry_run = dry_run          # SAFETY-002: simula execução sem side effects
         self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
         self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
@@ -1368,6 +1389,34 @@ class ToolRouter:
         if self._browser_executor is not None:
             self._browser_executor.shutdown(wait=False)
             self._browser_executor = None
+
+    def _resolve_vision_client(self, tool: str):
+        """Resolve o cliente para tools de visão (G18.4).
+
+        Preferência: vision_client dedicado (auxiliary.vision_model) → confia
+        na escolha explícita. Senão, usa o llm_client principal, mas só se o
+        modelo parecer multimodal. Levanta ToolError claro e acionável quando
+        não há cliente ou o modelo é text-only — em vez de mandar imagem pra um
+        modelo de texto e receber lixo.
+        """
+        if self._vision_client is not None:
+            return self._vision_client
+        if self._llm_client is None:
+            raise ToolError(
+                f"{tool}: nenhum modelo de visao configurado.\n"
+                "Configure auxiliary.vision_model no config.yaml "
+                "(ex: ollama 'llava', ou gpt-4o/claude/gemini), ou rode num "
+                "fluxo com llm_client."
+            )
+        model = getattr(self._llm_client, "model", "") or ""
+        if not _looks_multimodal(model):
+            raise ToolError(
+                f"{tool}: o modelo ativo ('{model or 'desconhecido'}') nao parece "
+                "suportar visao.\n"
+                "Configure auxiliary.vision_model com um modelo multimodal "
+                "(ex: ollama pull llava; ou gpt-4o/claude/gemini)."
+            )
+        return self._llm_client
 
     def get_tool_schemas(self) -> list[dict]:
         """Retorna schemas de tools no formato OpenAI function calling.
@@ -3111,21 +3160,16 @@ class ToolRouter:
             ],
         }
 
-        # Usa llm_client se disponível
-        if self._llm_client is not None:
-            try:
-                from .agent import run_one_turn
-                response = run_one_turn(self._llm_client, [message], tools=None)
-                return response
-            except Exception as exc:
-                raise ToolError(f"vision_analyze: erro ao chamar modelo: {exc}")
-
-        raise ToolError(
-            "vision_analyze requer um cliente LLM configurado com suporte a visao.\n"
-            "Providers suportados: OpenAI (gpt-4o), Anthropic (claude-3-*), "
-            "Google (gemini-*), OpenRouter.\n"
-            "Configure no config.yaml e reinicie o agente."
-        )
+        # G18.4: usa o cliente de visão resolvido (vision_model dedicado ou
+        # llm_client principal se multimodal). Erro claro e acionável se nenhum.
+        vision_client = self._resolve_vision_client("vision_analyze")
+        try:
+            from .agent import run_one_turn
+            return run_one_turn(vision_client, [message], tools=None)
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"vision_analyze: erro ao chamar modelo: {exc}")
 
     # --- channel_send / channel_list — Bauer Gateway ----------------------------
 
@@ -4058,11 +4102,10 @@ class ToolRouter:
             raise ToolError("video_analyze requer 'video' (URL ou path).")
         if not query:
             raise ToolError("video_analyze requer 'query'.")
-        if self._llm_client is None:
-            raise ToolError(
-                "video_analyze requer llm_client configurado com suporte a visao.\n"
-                "Providers suportados: Gemini (gemini-*), OpenAI (gpt-4o)."
-            )
+        # G18.4: o gate de visão (modelo dedicado ou principal multimodal) é
+        # aplicado nos helpers, no ponto da chamada ao modelo — depois da
+        # validação de formato/dependências, para que erros de input venham
+        # antes do erro de capability.
 
         # ── Estratégia 1: URL → provider nativo ─────────────────────────────
         if video.startswith(("http://", "https://")):
@@ -4109,7 +4152,7 @@ class ToolRouter:
         }
         try:
             from .agent import run_one_turn
-            result = run_one_turn(self._llm_client, [message], tools=None)
+            result = run_one_turn(self._resolve_vision_client("video_analyze"), [message], tools=None)
             return f"[video_analyze — URL]\n{result}"
         except Exception as exc:
             raise ToolError(
@@ -4164,7 +4207,7 @@ class ToolRouter:
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-                resp = run_one_turn(self._llm_client, [msg], tools=None)
+                resp = run_one_turn(self._resolve_vision_client("video_analyze"), [msg], tools=None)
                 frame_analyses.append(f"[{timestamp_s:.1f}s] {str(resp)[:300]}")
             except Exception as exc:
                 frame_analyses.append(f"[{timestamp_s:.1f}s] [erro: {exc}]")
@@ -4194,7 +4237,7 @@ class ToolRouter:
                         "Sintetize uma resposta final coerente sobre o vídeo completo."
                     ),
                 }
-                synthesis = run_one_turn(self._llm_client, [synth_msg], tools=None)
+                synthesis = run_one_turn(self._resolve_vision_client("video_analyze"), [synth_msg], tools=None)
                 lines.append("\nSíntese:")
                 lines.append(str(synthesis)[:600])
             except Exception:
@@ -4230,7 +4273,7 @@ class ToolRouter:
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-                resp = run_one_turn(self._llm_client, [msg], tools=None)
+                resp = run_one_turn(self._resolve_vision_client("video_analyze"), [msg], tools=None)
                 frame_analyses.append(f"[frame {idx}] {str(resp)[:300]}")
             except Exception as exc:
                 frame_analyses.append(f"[frame {idx}] [erro: {exc}]")
@@ -5350,8 +5393,7 @@ class ToolRouter:
         query = str(args.get("query", "")).strip()
         if not query:
             raise ToolError("browser_vision: 'query' é obrigatório.")
-        if self._llm_client is None:
-            raise ToolError("browser_vision: llm_client não configurado.")
+        vision_client = self._resolve_vision_client("browser_vision")  # G18.4
         page = self._ensure_browser()
         try:
             screenshot_bytes = page.screenshot(full_page=False)
@@ -5370,7 +5412,7 @@ class ToolRouter:
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }
-            return str(run_one_turn(self._llm_client, [msg], tools=None))
+            return str(run_one_turn(vision_client, [msg], tools=None))
         except Exception as exc:
             raise ToolError(f"browser_vision: falha na análise — {exc}") from exc
 

@@ -35,6 +35,7 @@ def mock_client():
     client = MagicMock()
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "test-key"
+    client.model = "gpt-4o"  # G18.4: multimodal p/ tools de visão
     return client
 
 

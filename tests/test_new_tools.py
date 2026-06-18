@@ -383,7 +383,8 @@ class TestVisionAnalyze:
             router._vision_analyze({"image": "https://example.com/img.jpg"})
 
     def test_sem_client_levanta_instrucao(self, router):
-        with pytest.raises(ToolError, match="cliente LLM"):
+        # G18.4: erro agora aponta para auxiliary.vision_model
+        with pytest.raises(ToolError, match="vision_model"):
             router._vision_analyze({
                 "image": "https://example.com/img.jpg",
                 "query": "Descreva",
@@ -391,6 +392,7 @@ class TestVisionAnalyze:
 
     def test_com_client_e_url(self, ws):
         mock_client = MagicMock()
+        mock_client.model = "gpt-4o"  # G18.4: modelo multimodal p/ passar no gate
         router = ToolRouter(workspace=ws, llm_client=mock_client)
         with patch("bauer.agent.run_one_turn", return_value="Um gato sentado."):
             result = router._vision_analyze({
@@ -404,6 +406,7 @@ class TestVisionAnalyze:
         img = ws / "test.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
         mock_client = MagicMock()
+        mock_client.model = "gpt-4o"
         router = ToolRouter(workspace=ws, llm_client=mock_client)
         with patch("bauer.agent.run_one_turn", return_value="Imagem analisada."):
             result = router._vision_analyze({
@@ -423,6 +426,7 @@ class TestVisionAnalyze:
 
     def test_mensagem_inclui_image_url(self, ws):
         mock_client = MagicMock()
+        mock_client.model = "gpt-4o"
         router = ToolRouter(workspace=ws, llm_client=mock_client)
         captured = {}
         def fake_run(client, messages, tools):
