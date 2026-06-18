@@ -16,7 +16,9 @@ derrubar o turno.
 
 from __future__ import annotations
 
+import time
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any
 
 _sink: ContextVar[Any] = ContextVar("bauer_delta_sink", default=None)
@@ -60,6 +62,85 @@ def emit_round_start() -> None:
             handler()
     except Exception:  # noqa: BLE001
         pass
+
+
+# ── G6: per-token stream diagnostics ─────────────────────────────────────────
+
+@dataclass
+class TokenEvent:
+    """Metadata emitted alongside each streamed token."""
+    text: str
+    token_index: int
+    elapsed_ms: float
+    is_first: bool = False
+
+
+class StreamDiag:
+    """Accumulates per-token timing metrics for a single streaming turn.
+
+    Usage:
+        diag = StreamDiag()
+        diag.start()
+        for chunk in client.chat_stream(...):
+            diag.on_delta(chunk)
+        print(diag.summary_line())
+    """
+
+    def __init__(self) -> None:
+        self._t0: float | None = None
+        self.token_count: int = 0
+        self.ttft_ms: float | None = None
+        self.elapsed_total_ms: float = 0.0
+
+    def start(self) -> "StreamDiag":
+        """Mark stream start. Call immediately before the first token arrives."""
+        self._t0 = time.monotonic()
+        return self
+
+    def on_delta(self, chunk: str, **_meta: Any) -> None:
+        """Record a text chunk. Safe to call with empty strings."""
+        if not chunk:
+            return
+        now = time.monotonic()
+        if self._t0 is None:
+            self._t0 = now
+        elapsed = (now - self._t0) * 1000.0
+        if self.ttft_ms is None and chunk.strip():
+            self.ttft_ms = elapsed
+        self.elapsed_total_ms = elapsed
+        self.token_count += 1
+
+    def on_round(self) -> None:
+        """Called when a new LLM round starts — reset timing."""
+        self._t0 = time.monotonic()
+        self.token_count = 0
+        self.ttft_ms = None
+        self.elapsed_total_ms = 0.0
+
+    def on_tool(self, name: str) -> None:
+        pass
+
+    @property
+    def tokens_per_second(self) -> float:
+        if self.elapsed_total_ms <= 0 or self.token_count == 0:
+            return 0.0
+        return self.token_count / (self.elapsed_total_ms / 1000.0)
+
+    def summary_line(self) -> str:
+        """Return a one-line dim summary string suitable for terminal display.
+
+        Example: "  ↳ 234 tok | 45.2 tok/s | TTFT 1.23s"
+        """
+        parts: list[str] = [f"{self.token_count} tok"]
+        tps = self.tokens_per_second
+        if tps > 0:
+            parts.append(f"{tps:.1f} tok/s")
+        if self.ttft_ms is not None:
+            parts.append(f"TTFT {self.ttft_ms / 1000:.2f}s")
+        return "  ↳ " + " | ".join(parts)
+
+    def has_data(self) -> bool:
+        return self.token_count > 0
 
 
 def emit_tool(name: str) -> None:

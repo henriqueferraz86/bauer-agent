@@ -1,0 +1,27 @@
+name: Write Blog Post
+description: Estrutura e processo para escrever um post de blog tecnico claro e envolvente.
+content: '# Escrever um post de blog
+
+
+  ## Estrutura
+
+  1. Hook (1-2 frases): o problema ou a pergunta que o leitor tem.
+
+  2. Contexto: por que isso importa agora.
+
+  3. Corpo: 3-5 secoes, uma ideia por secao, com exemplos concretos.
+
+  4. Conclusao: o que o leitor leva + proximo passo (CTA).
+
+
+  ## Boas praticas
+
+  - Titulo promete um beneficio especifico.
+
+  - Paragrafos curtos. Use listas e codigo.
+
+  - Voz ativa, segunda pessoa.
+
+  - Mostre, nao conte: codigo real, numeros, antes/depois.
+
+  - Revise cortando 10% das palavras.'

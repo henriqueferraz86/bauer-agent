@@ -1,0 +1,18 @@
+name: Action Items
+description: Como extrair e formatar itens de acao acionaveis a partir de uma discussao.
+content: '# Itens de acao
+
+
+  ## Formato
+
+  - O que (verbo+objeto), Quem (dono unico), Quando (data), Definicao de pronto.
+
+
+  ## Extracao
+
+  - Separe decisoes de discussoes; remova itens vagos e duplicados.
+
+
+  ## Regra
+
+  - Sem dono e prazo nao e action item, e um desejo.'

@@ -3,11 +3,14 @@ Prometheus metrics, bauer status/doctor, tool schemas."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 
 # ─── MemoryManager.search (TF-IDF) ───────────────────────────────────────────
@@ -335,6 +338,7 @@ class TestServerMetrics:
 
 # ─── bauer status / doctor CLI ───────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestStatusDoctorCLI:
     def test_status_command_runs(self, tmp_path):
         from typer.testing import CliRunner

@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+keychain = [
+    "keyring>=24.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -50,6 +53,9 @@ bauer = "bauer.cli:app"
 [tool.setuptools.packages.find]
 include = ["bauer*"]
 exclude = ["tests*", "memory*", "workspace*", "logs*"]
+
+[tool.setuptools.package-data]
+bauer = ["*.yaml", "*.json", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

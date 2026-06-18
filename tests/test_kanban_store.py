@@ -20,7 +20,7 @@ def test_workspace_manager_records_task_events(tmp_path: Path):
     store = KanbanStore(workspace)
 
     task = wm.add_task("Track me", priority="high")
-    wm.update_task_status(task.id, "READY")
+    wm.update_task_status(task.id, "IN_PROGRESS")
     wm.update_task_metadata(task.id, metadata={"dispatch": "true"})
     wm.add_task_comment(task.id, "Ready for dispatch", author="tester")
 

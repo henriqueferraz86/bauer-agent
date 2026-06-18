@@ -1,0 +1,28 @@
+name: Runbook Generator
+description: Estrutura de runbook operacional para um alerta ou procedimento.
+content: '# Runbook
+
+
+  ## Cabecalho
+
+  - Nome, o que significa, severidade, SLO.
+
+
+  ## Diagnostico
+
+  - Comandos/queries de confirmacao; dashboards; arvore de decisao.
+
+
+  ## Mitigacao
+
+  - Passos numerados copy-paste; efeito esperado; rollback.
+
+
+  ## Escalonamento
+
+  - Quando e para quem escalar.
+
+
+  ## Pos
+
+  - Como confirmar resolucao e fechar o alerta.'

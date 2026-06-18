@@ -1,0 +1,23 @@
+name: Compare Options
+description: Framework para comparar alternativas de forma estruturada e decidir.
+content: '# Comparar opcoes
+
+
+  ## 1. Criterios
+
+  - Liste e pondere (must-have vs nice-to-have).
+
+
+  ## 2. Matriz
+
+  - Opcoes x criterios; avalie com evidencia.
+
+
+  ## 3. Trade-offs
+
+  - Melhor/pior cenario; quando NAO usar; custo de reverter.
+
+
+  ## 4. Recomendacao
+
+  - Uma escolha clara + por que + condicoes que a mudariam.'

@@ -1,10 +1,13 @@
 """Testes para novos providers e tools expandidos."""
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 # ─── Providers — config sections ─────────────────────────────────────────────
 
@@ -138,6 +141,7 @@ class TestEnvLoaderNewProviders:
 
 # ─── _build_client — novos providers ─────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestBuildClientNewProviders:
     """Verifica que _build_client retorna o client correto para cada provider."""
 
@@ -780,6 +784,7 @@ class TestHttpRequest:
 
 # ─── GitHub providers ────────────────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestGithubProviders:
     def _make_cfg(self, provider: str):
         from bauer.config_loader import BauerConfig

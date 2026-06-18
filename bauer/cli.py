@@ -1249,6 +1249,18 @@ def _build_client(cfg):
     """
     provider = cfg.model.provider
 
+    # G11: credential pool overlay — keychain → encrypted file → config/env fallback
+    try:
+        from .credential_pool import _cpool as _get_cpool
+        _pool = _get_cpool()
+    except Exception:
+        _pool = None
+
+    def _key(provider_name: str, raw: str) -> str:
+        if _pool is None:
+            return raw
+        return _pool.get(provider_name, fallback=raw)
+
     # Verifica se há token autenticado via bauer auth
     try:
         from .auth import AuthManager
@@ -1368,7 +1380,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://openrouter.ai/api",
             timeout_seconds=cfg.openrouter.timeout_seconds,
-            api_key=cfg.openrouter.api_key,
+            api_key=_key("openrouter", cfg.openrouter.api_key),
             model=cfg.model.name,
             extra_headers=extra_headers,
         )
@@ -1378,7 +1390,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.groq.com/openai",
             timeout_seconds=cfg.groq.timeout_seconds,
-            api_key=cfg.groq.api_key,
+            api_key=_key("groq", cfg.groq.api_key),
             model=cfg.model.name,
         )
 
@@ -1387,7 +1399,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.mistral.ai",
             timeout_seconds=cfg.mistral.timeout_seconds,
-            api_key=cfg.mistral.api_key,
+            api_key=_key("mistral", cfg.mistral.api_key),
             model=cfg.model.name,
         )
 
@@ -1396,7 +1408,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.x.ai",
             timeout_seconds=cfg.xai.timeout_seconds,
-            api_key=cfg.xai.api_key,
+            api_key=_key("xai", cfg.xai.api_key),
             model=cfg.model.name,
         )
 
@@ -1405,7 +1417,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.together.xyz",
             timeout_seconds=cfg.together.timeout_seconds,
-            api_key=cfg.together.api_key,
+            api_key=_key("together", cfg.together.api_key),
             model=cfg.model.name,
         )
 
@@ -1414,7 +1426,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.deepseek.com",
             timeout_seconds=cfg.deepseek.timeout_seconds,
-            api_key=cfg.deepseek.api_key,
+            api_key=_key("deepseek", cfg.deepseek.api_key),
             model=cfg.model.name,
         )
 
@@ -1425,7 +1437,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://generativelanguage.googleapis.com/v1beta/openai",
             timeout_seconds=cfg.gemini.timeout_seconds,
-            api_key=cfg.gemini.api_key,
+            api_key=_key("gemini", cfg.gemini.api_key),
             model=cfg.model.name,
             chat_path="/chat/completions",
         )
@@ -1433,7 +1445,7 @@ def _build_client(cfg):
     if provider == "anthropic":
         from .anthropic_client import AnthropicClient
         return AnthropicClient(
-            api_key=cfg.anthropic.api_key,
+            api_key=_key("anthropic", cfg.anthropic.api_key),
             timeout_seconds=cfg.anthropic.timeout_seconds,
             api_version=cfg.anthropic.api_version,
             model=cfg.model.name,
@@ -1448,7 +1460,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host=base_url,
             timeout_seconds=cfg.azure.timeout_seconds,
-            api_key=cfg.azure.api_key,
+            api_key=_key("azure", cfg.azure.api_key),
             model=deployment,
             extra_headers={
                 "api-key": cfg.azure.api_key,
@@ -1464,7 +1476,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://models.inference.ai.azure.com",
             timeout_seconds=cfg.github.timeout_seconds,
-            api_key=cfg.github.token,
+            api_key=_key("github", cfg.github.token),
             model=cfg.model.name,
             chat_path="/chat/completions",
             extra_headers={
@@ -1479,7 +1491,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.githubcopilot.com",
             timeout_seconds=cfg.copilot.timeout_seconds,
-            api_key=cfg.copilot.token,
+            api_key=_key("copilot", cfg.copilot.token),
             model=cfg.model.name,
             chat_path="/chat/completions",
             extra_headers={
@@ -1496,7 +1508,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.cohere.com/compatibility",
             timeout_seconds=cfg.cohere.timeout_seconds,
-            api_key=cfg.cohere.api_key,
+            api_key=_key("cohere", cfg.cohere.api_key),
             model=cfg.model.name,
         )
 
@@ -1506,7 +1518,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.perplexity.ai",
             timeout_seconds=cfg.perplexity.timeout_seconds,
-            api_key=cfg.perplexity.api_key,
+            api_key=_key("perplexity", cfg.perplexity.api_key),
             model=cfg.model.name,
             chat_path="/chat/completions",
         )
@@ -1516,7 +1528,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.fireworks.ai/inference",
             timeout_seconds=cfg.fireworks.timeout_seconds,
-            api_key=cfg.fireworks.api_key,
+            api_key=_key("fireworks", cfg.fireworks.api_key),
             model=cfg.model.name,
         )
 
@@ -1528,14 +1540,14 @@ def _build_client(cfg):
             return OpenAIClient(
                 host=host,
                 timeout_seconds=cfg.huggingface.timeout_seconds,
-                api_key=cfg.huggingface.api_key,
+                api_key=_key("huggingface", cfg.huggingface.api_key),
                 model=cfg.model.name,
                 chat_path="/chat/completions",
             )
         return OpenAIClient(
             host=host,
             timeout_seconds=cfg.huggingface.timeout_seconds,
-            api_key=cfg.huggingface.api_key,
+            api_key=_key("huggingface", cfg.huggingface.api_key),
             model=cfg.model.name,
         )
 
@@ -1544,7 +1556,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.cerebras.ai",
             timeout_seconds=cfg.cerebras.timeout_seconds,
-            api_key=cfg.cerebras.api_key,
+            api_key=_key("cerebras", cfg.cerebras.api_key),
             model=cfg.model.name,
         )
 
@@ -1553,7 +1565,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.sambanova.ai",
             timeout_seconds=cfg.sambanova.timeout_seconds,
-            api_key=cfg.sambanova.api_key,
+            api_key=_key("sambanova", cfg.sambanova.api_key),
             model=cfg.model.name,
         )
 
@@ -1562,7 +1574,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://integrate.api.nvidia.com",
             timeout_seconds=cfg.nvidia.timeout_seconds,
-            api_key=cfg.nvidia.api_key,
+            api_key=_key("nvidia", cfg.nvidia.api_key),
             model=cfg.model.name,
         )
 
@@ -1571,7 +1583,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host=cfg.lmstudio.host,
             timeout_seconds=cfg.lmstudio.timeout_seconds,
-            api_key=cfg.lmstudio.api_key or "lm-studio",
+            api_key=_key("lmstudio", cfg.lmstudio.api_key) or "lm-studio",
             model=cfg.model.name,
         )
 
@@ -1582,7 +1594,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host=f"{host}/serving-endpoints",
             timeout_seconds=cfg.databricks.timeout_seconds,
-            api_key=cfg.databricks.api_key,
+            api_key=_key("databricks", cfg.databricks.api_key),
             model=cfg.model.name,
             chat_path="/chat/completions",
             extra_headers={"Authorization": f"Bearer {cfg.databricks.api_key}"},
@@ -1593,7 +1605,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://api.moonshot.cn",
             timeout_seconds=cfg.moonshot.timeout_seconds,
-            api_key=cfg.moonshot.api_key,
+            api_key=_key("moonshot", cfg.moonshot.api_key),
             model=cfg.model.name,
         )
 
@@ -1603,7 +1615,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host="https://dashscope.aliyuncs.com/compatible-mode",
             timeout_seconds=cfg.alibaba.timeout_seconds,
-            api_key=cfg.alibaba.api_key,
+            api_key=_key("alibaba", cfg.alibaba.api_key),
             model=cfg.model.name,
         )
 
@@ -1618,7 +1630,7 @@ def _build_client(cfg):
         return OpenAIClient(
             host=vertex_host,
             timeout_seconds=cfg.vertex.timeout_seconds,
-            api_key=cfg.vertex.access_token,
+            api_key=_key("vertex", cfg.vertex.access_token),
             model=cfg.model.name,
             chat_path="/chat/completions",
         )
@@ -1628,8 +1640,110 @@ def _build_client(cfg):
         return OpenAIClient(
             host=cfg.openai.host,
             timeout_seconds=cfg.openai.timeout_seconds,
-            api_key=cfg.openai.api_key,
+            api_key=_key("openai", cfg.openai.api_key),
             model=cfg.model.name,
+        )
+
+    # ── G16a: new providers ────────────────────────────────────────────────
+    if provider == "replicate":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.replicate.com",
+            timeout_seconds=cfg.replicate.timeout_seconds,
+            api_key=_key("replicate", cfg.replicate.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "novita":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.novita.ai/v3/openai",
+            timeout_seconds=cfg.novita.timeout_seconds,
+            api_key=_key("novita", cfg.novita.api_key),
+            model=cfg.model.name,
+            chat_path="/chat/completions",
+        )
+
+    if provider == "ai21":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.ai21.com/studio",
+            timeout_seconds=cfg.ai21.timeout_seconds,
+            api_key=_key("ai21", cfg.ai21.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "anyscale":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.endpoints.anyscale.com",
+            timeout_seconds=cfg.anyscale.timeout_seconds,
+            api_key=_key("anyscale", cfg.anyscale.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "featherless":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.featherless.ai",
+            timeout_seconds=cfg.featherless.timeout_seconds,
+            api_key=_key("featherless", cfg.featherless.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "hyperbolic":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.hyperbolic.xyz",
+            timeout_seconds=cfg.hyperbolic.timeout_seconds,
+            api_key=_key("hyperbolic", cfg.hyperbolic.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "inference":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.inference.net",
+            timeout_seconds=cfg.inference.timeout_seconds,
+            api_key=_key("inference", cfg.inference.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "ncompass":
+        from .openai_client import OpenAIClient
+        return OpenAIClient(
+            host="https://api.ncompass.tech",
+            timeout_seconds=cfg.ncompass.timeout_seconds,
+            api_key=_key("ncompass", cfg.ncompass.api_key),
+            model=cfg.model.name,
+        )
+
+    if provider == "cloudflare":
+        from .openai_client import OpenAIClient
+        account_id = cfg.cloudflare.account_id
+        cf_host = (
+            f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+            if account_id
+            else "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1"
+        )
+        return OpenAIClient(
+            host=cf_host,
+            timeout_seconds=cfg.cloudflare.timeout_seconds,
+            api_key=_key("cloudflare", cfg.cloudflare.api_key),
+            model=cfg.model.name,
+            chat_path="/chat/completions",
+        )
+
+    if provider == "lepton":
+        from .openai_client import OpenAIClient
+        subdomain = cfg.lepton.subdomain or cfg.model.name.replace("/", "-").replace(".", "-")
+        lepton_host = f"https://{subdomain}.lepton.run/api/v1"
+        return OpenAIClient(
+            host=lepton_host,
+            timeout_seconds=cfg.lepton.timeout_seconds,
+            api_key=_key("lepton", cfg.lepton.api_key),
+            model=cfg.model.name,
+            chat_path="/chat/completions",
         )
 
     # padrão: ollama
@@ -6575,6 +6689,39 @@ def gateway_cmd(
         console.print("\n[dim]Gateway encerrado.[/dim]")
 
 
+@app.command("shell")
+def shell_cmd(
+    port: int = typer.Option(7782, "--port", "-p", help="Porta do shell WebSocket"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface de escuta"),
+    shell: str = typer.Option(None, "--shell", help="Shell a usar (default: cmd.exe no Windows, bash no Unix)"),
+):
+    """Inicia um shell interativo sobre WebSocket (G14 — PTY bridge).
+
+    Sobe um servidor FastAPI que expoe ws://<host>:<port>/ws/shell, fazendo
+    bridge entre o WebSocket e um processo shell real (cmd.exe / bash).
+    Compatível com Windows (usa asyncio subprocess, sem pty POSIX).
+
+    Protocolo JSON:
+      client → {"type": "input",  "data": "ls\\n"}
+      server → {"type": "output", "data": "..."}  /  {"type": "exit", "code": 0}
+    """
+    try:
+        from .shell_server import main as shell_main
+    except ImportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    argv = ["--port", str(port), "--host", host]
+    if shell:
+        argv += ["--shell", shell]
+    console.print(f"\n[bold]Bauer Shell[/bold] → ws://{host}:{port}/ws/shell")
+    console.print("[dim]  Ctrl+C para encerrar.[/dim]\n")
+    try:
+        shell_main(argv)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Shell encerrado.[/dim]")
+
+
 # ── migrate ──────────────────────────────────────────────────────────────────
 
 
@@ -8912,6 +9059,66 @@ def gateway_init(
     )
     console.print(f"[green]✓ Seções atualizadas no {config}[/green]")
     console.print("\nPróximo passo: [bold]bauer gateway start[/bold]")
+
+
+# ── G11: bauer credential ────────────────────────────────────────────────────
+
+credential_app = typer.Typer(help="Gerenciador seguro de credenciais (keychain → Fernet → config).")
+app.add_typer(credential_app, name="credential")
+
+
+@credential_app.command("set")
+def credential_set(
+    provider: str = typer.Argument(..., help="Nome do provider (ex: groq, openai)"),
+) -> None:
+    """Salva uma credencial no keychain ou arquivo encriptado."""
+    import getpass
+    secret = getpass.getpass(f"API key para '{provider}': ")
+    if not secret:
+        console.print("[red]Nenhum valor fornecido.[/red]")
+        raise typer.Exit(1)
+    from .credential_pool import _cpool
+    _cpool().set(provider, secret)
+    console.print(f"[green]✓ Credencial de '{provider}' salva.[/green]")
+
+
+@credential_app.command("get")
+def credential_get(
+    provider: str = typer.Argument(..., help="Nome do provider"),
+) -> None:
+    """Mostra os últimos 4 caracteres da credencial armazenada."""
+    from .credential_pool import _cpool
+    val = _cpool().get(provider)
+    if not val:
+        console.print(f"[yellow]Nenhuma credencial armazenada para '{provider}'.[/yellow]")
+    else:
+        masked = "*" * (len(val) - 4) + val[-4:]
+        console.print(f"[dim]{provider}:[/dim] {masked}")
+
+
+@credential_app.command("list")
+def credential_list() -> None:
+    """Lista providers com credencial armazenada."""
+    from .credential_pool import _cpool
+    providers = _cpool().list_providers()
+    if not providers:
+        console.print("[dim]Nenhuma credencial armazenada.[/dim]")
+    else:
+        for p in providers:
+            console.print(f"  [cyan]•[/cyan] {p}")
+
+
+@credential_app.command("delete")
+def credential_delete(
+    provider: str = typer.Argument(..., help="Nome do provider"),
+) -> None:
+    """Remove credencial do keychain e/ou arquivo encriptado."""
+    from .credential_pool import _cpool
+    removed = _cpool().delete(provider)
+    if removed:
+        console.print(f"[green]✓ Credencial de '{provider}' removida.[/green]")
+    else:
+        console.print(f"[yellow]Nenhuma credencial encontrada para '{provider}'.[/yellow]")
 
 
 if __name__ == "__main__":

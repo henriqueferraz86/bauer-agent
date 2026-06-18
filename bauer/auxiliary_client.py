@@ -69,6 +69,7 @@ VALID_SLOTS: frozenset[str] = frozenset({
     "kanban_decomposer",
     "triage_specifier",
     "compression_model",
+    "background_reviewer",  # G10
 })
 
 

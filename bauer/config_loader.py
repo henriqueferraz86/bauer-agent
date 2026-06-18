@@ -365,6 +365,108 @@ class VertexSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=600, default=120)
 
 
+class ReplicateSection(_StrictSection):
+    """Replicate — run open-source models in the cloud.
+
+    Endpoint: https://api.replicate.com/v1 (OpenAI-compatible)
+    Env var:  REPLICATE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class NovitaSection(_StrictSection):
+    """Novita AI — cost-effective inference for open-source LLMs.
+
+    Endpoint: https://api.novita.ai/v3/openai (OpenAI-compatible)
+    Env var:  NOVITA_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class AI21Section(_StrictSection):
+    """AI21 Labs — Jamba and Jurassic models.
+
+    Endpoint: https://api.ai21.com/studio/v1 (OpenAI-compatible)
+    Env var:  AI21_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class AnyscaleSection(_StrictSection):
+    """Anyscale Endpoints — open-source LLMs via Ray infrastructure.
+
+    Endpoint: https://api.endpoints.anyscale.com/v1 (OpenAI-compatible)
+    Env var:  ANYSCALE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class FeatherlessSection(_StrictSection):
+    """Featherless AI — lightweight serverless inference.
+
+    Endpoint: https://api.featherless.ai/v1 (OpenAI-compatible)
+    Env var:  FEATHERLESS_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class HyperbolicSection(_StrictSection):
+    """Hyperbolic — GPU-efficient inference at scale.
+
+    Endpoint: https://api.hyperbolic.xyz/v1 (OpenAI-compatible)
+    Env var:  HYPERBOLIC_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class InferenceSection(_StrictSection):
+    """Inference.net — fast and affordable LLM inference.
+
+    Endpoint: https://api.inference.net/v1 (OpenAI-compatible)
+    Env var:  INFERENCE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class NcompassSection(_StrictSection):
+    """Ncompass — enterprise-grade LLM serving.
+
+    Endpoint: https://api.ncompass.tech/v1 (OpenAI-compatible)
+    Env var:  NCOMPASS_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class CloudflareSection(_StrictSection):
+    """Cloudflare Workers AI — run AI at the edge globally.
+
+    Endpoint: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
+    Env vars: CLOUDFLARE_API_KEY, CLOUDFLARE_ACCOUNT_ID
+    """
+    api_key: str = ""
+    account_id: str = ""    # Cloudflare Account ID (or CLOUDFLARE_ACCOUNT_ID)
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class LeptonSection(_StrictSection):
+    """Lepton AI — model serving with simple Python API.
+
+    Endpoint: https://llama3-1-8b.lepton.run/api/v1 (model-specific subdomain)
+    Env var:  LEPTON_API_KEY
+    """
+    api_key: str = ""
+    subdomain: str = ""     # model-specific subdomain (e.g. "llama3-1-8b")
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
 class ModelSection(_StrictSection):
     provider: Literal[
         "ollama", "openai", "openrouter", "opencode", "custom",
@@ -374,6 +476,10 @@ class ModelSection(_StrictSection):
         "cohere", "perplexity", "fireworks", "huggingface",
         "cerebras", "sambanova", "nvidia", "lmstudio",
         "databricks", "moonshot", "alibaba", "vertex",
+        # G16a — new providers
+        "replicate", "novita", "ai21", "anyscale",
+        "featherless", "hyperbolic", "inference", "ncompass",
+        "cloudflare", "lepton",
     ] = "ollama"
     name: str
     requested_context: int = Field(ge=512, le=1_000_000, default=8192)
@@ -606,6 +712,17 @@ class BauerConfig(_StrictSection):
     moonshot: MoonshotSection = MoonshotSection()
     alibaba: AlibabaSection = AlibabaSection()
     vertex: VertexSection = VertexSection()
+    # G16a — new providers
+    replicate: ReplicateSection = ReplicateSection()
+    novita: NovitaSection = NovitaSection()
+    ai21: AI21Section = AI21Section()
+    anyscale: AnyscaleSection = AnyscaleSection()
+    featherless: FeatherlessSection = FeatherlessSection()
+    hyperbolic: HyperbolicSection = HyperbolicSection()
+    inference: InferenceSection = InferenceSection()
+    ncompass: NcompassSection = NcompassSection()
+    cloudflare: CloudflareSection = CloudflareSection()
+    lepton: LeptonSection = LeptonSection()
     runtime: RuntimeSection = RuntimeSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()

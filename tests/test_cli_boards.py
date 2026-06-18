@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+pytest.importorskip("typer")
 from typer.testing import CliRunner
 
 from bauer import kanban_db as kb

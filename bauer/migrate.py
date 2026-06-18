@@ -808,7 +808,7 @@ class OpenClawMigrator:
             if not dry_run:
                 try:
                     task = wm.add_task(title, description=str(description))
-                    if bauer_status != "TODO":
+                    if bauer_status != "READY":  # READY is the add_task default
                         wm.update_task_status(task.id, bauer_status)
                     result.add(f"{prefix}task importada [{bauer_status}]: {title[:60]}")
                     imported += 1

@@ -1,0 +1,29 @@
+name: Meeting Notes
+description: 'Estrutura de notas de reuniao: decisoes, acoes e contexto, sem transcrever
+  tudo.'
+content: '# Notas de reuniao
+
+
+  ## Cabecalho
+
+  - Data, participantes, objetivo.
+
+
+  ## Decisoes
+
+  - O que foi decidido e por que (uma linha cada).
+
+
+  ## Itens de acao
+
+  - O que / quem / quando.
+
+
+  ## Discussao
+
+  - Resumo dos pontos-chave e questoes em aberto.
+
+
+  ## Regras
+
+  - Capture decisoes e acoes; nao transcreva; envie no mesmo dia.'

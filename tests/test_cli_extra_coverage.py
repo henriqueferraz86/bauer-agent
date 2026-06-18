@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch, call
 import json
 
 import pytest
+pytest.importorskip("typer")
 import yaml
 from typer.testing import CliRunner
 

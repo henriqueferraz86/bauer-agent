@@ -1,0 +1,22 @@
+name: Model Evaluation
+description: 'Como avaliar modelos: metricas certas, validacao honesta e baselines.'
+content: '# Avaliacao de modelo
+
+
+  ## Metrica
+
+  - Desbalanceada: F1/PR-AUC, nao accuracy.
+
+  - Regressao: MAE/RMSE/R2.
+
+
+  ## Validacao honesta
+
+  - Teste so no final; CV; split temporal p/ series.
+
+  - Sempre compare com baseline.
+
+
+  ## Alem da metrica
+
+  - Matriz de confusao, calibracao, gap treino/val, custo do erro.'

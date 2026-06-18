@@ -100,7 +100,7 @@ def test_auto_summarize_triggered_above_threshold():
     ctx._auto_summarize()
 
     # Deve ter reduzido o número de mensagens (comprimiu as antigas)
-    has_summary = any("[Resumo" in m.get("content", "") for m in ctx.messages)
+    has_summary = any("CONTEXT COMPACTION" in m.get("content", "") for m in ctx.messages)
     assert has_summary, "Esperava uma mensagem de resumo após auto_summarize"
 
 

@@ -1,0 +1,25 @@
+name: Generate Tests
+description: 'Estrategia para gerar testes: happy path, edge cases, erros e regressao.'
+content: '# Gerar testes
+
+
+  ## Cobertura
+
+  - Happy path: entrada valida -> saida esperada.
+
+  - Edge cases: vazio, zero, negativo, limite, unicode, grande.
+
+  - Erros: entrada invalida -> excecao correta.
+
+  - Estado: rodar 2x, estado pre-existente.
+
+
+  ## Boas praticas
+
+  - Um conceito por teste; nome descreve cenario e esperado.
+
+  - Arrange-Act-Assert.
+
+  - Mocke apenas boundaries.
+
+  - Teste comportamento, nao implementacao.'

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 from bauer.tool_router import ToolRouter, ToolError, SandboxError
 
@@ -421,6 +424,7 @@ class TestSelfTunerMissingLines:
 
 # ─── CLI utility functions ────────────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestCliUtilities:
     def _make_config_file(self, tmp_path: Path) -> Path:
         config = {
@@ -523,6 +527,7 @@ class TestCliUtilities:
 
 # ─── CLI commands via Typer runner ───────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestCliCommands:
     def _make_files(self, tmp_path: Path) -> tuple[Path, Path]:
         config = {

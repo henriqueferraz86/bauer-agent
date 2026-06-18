@@ -1,13 +1,11 @@
 """Gerenciador de histórico de conversa com corte conservador de contexto.
 
-Fase 2: histórico em memória apenas — sem persistência (isso é Fase 3).
-Garante que o histórico nunca ultrapasse o budget derivado do applied_context
-do .runtime_state.json, reservando 25% para o output do modelo.
-
 Suporta:
 - Context budget por provider (mapeia janelas reais de contexto)
 - Estimativa de tokens via heurística (chars/4)
 - Compressão semântica via LLM quando disponível, rule-based como fallback
+- Template estruturado de compressão com SUMMARY_PREFIX (handoff claro)
+- Updates iterativos: segunda compressão atualiza o sumário anterior
 - Tail protection dinâmica por tokens (não contagem fixa de mensagens)
 - Anti-thrashing: evita compressões inúteis que economizam < 10%
 - Tool result pruning: simplifica resultados duplicados/longos antes de comprimir
@@ -15,6 +13,7 @@ Suporta:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -57,6 +56,28 @@ THRASH_DECAY_STEP  = 0.05      # quanto cai o boost quando compressão é boa
 # Resultados mais longos viram 1 linha de resumo.
 PRUNE_RESULT_MAX_CHARS = 400
 
+# ─── Context compaction handoff ────────────────────────────────────────────────
+# Prefixo injetado no sumário para que o modelo não trate o sumário como
+# instruções ativas — pattern portado do Hermes/KiloCode.
+SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION — REFERÊNCIA APENAS] Turnos anteriores foram compactados "
+    "no sumário abaixo. Trate como contexto de fundo, NÃO como instruções ativas. "
+    "Responda APENAS à última mensagem do usuário que aparece APÓS este sumário. "
+    "Se a última mensagem contradiz ou muda de assunto em relação ao '## Tarefa Ativa', "
+    "a mensagem mais recente PREVALECE — descarte itens obsoletos e não os retome. "
+    "Sua memória persistente (MEMORY.md, USER.md) no system prompt é SEMPRE autoritativa. "
+    "O estado atual do sistema (arquivos, config) pode refletir o trabalho descrito aqui:"
+)
+
+# Token budget mínimo para o sumário gerado pelo LLM
+_MIN_SUMMARY_TOKENS = 1500
+# Proporção do conteúdo comprimido alocada ao sumário
+_SUMMARY_RATIO = 0.20
+# Teto absoluto em tokens para o sumário
+_SUMMARY_TOKENS_CEILING = 8000
+# Chars por token (estimativa conservadora)
+_CHARS_PER_TOKEN = 4
+
 
 @dataclass
 class ContextManager:
@@ -72,6 +93,10 @@ class ContextManager:
     _threshold_boost: float = field(default=0.0, repr=False)
     _compress_count: int = field(default=0, repr=False)
     _last_savings_pct: float = field(default=1.0, repr=False)
+
+    # ── Iterative summary state ─────────────────────────────────────────────
+    _previous_summary: str | None = field(default=None, repr=False)
+    _summary_failure_cooldown_until: float = field(default=0.0, repr=False)
 
     def __post_init__(self) -> None:
         # Determina budget real:
@@ -148,6 +173,8 @@ class ContextManager:
 
     def clear(self) -> None:
         self.messages.clear()
+        self._previous_summary = None
+        self._summary_failure_cooldown_until = 0.0
 
     def compression_stats(self) -> dict:
         """Retorna estatísticas de compressão para diagnóstico/logs."""
@@ -159,6 +186,7 @@ class ContextManager:
             "used_tokens": self.used_tokens,
             "budget": self._budget,
             "usage_pct": round(self.usage_pct, 3),
+            "has_previous_summary": self._previous_summary is not None,
         }
 
     def _auto_summarize(self) -> None:
@@ -184,14 +212,33 @@ class ContextManager:
         to_compress = _prune_tool_results(to_compress)
 
         # ── 3. Compressão semântica ou rule-based ──────────────────────────
-        _client, _model = self._compression_client()
-        if _client and _model:
-            summary = _summarize_llm(_client, _model, to_compress)
+        now = time.monotonic()
+        if now < self._summary_failure_cooldown_until:
+            # Em cooldown após falha — usa rule-based para não bloquear
+            summary_text = _summarize_messages(to_compress)
+            self._previous_summary = None
         else:
-            summary = _summarize_messages(to_compress)
+            _client, _model = self._compression_client()
+            if _client and _model:
+                summary_text, ok = _summarize_llm_structured(
+                    _client, _model, to_compress,
+                    previous_summary=self._previous_summary,
+                )
+                if ok:
+                    self._previous_summary = summary_text
+                    self._summary_failure_cooldown_until = 0.0
+                else:
+                    # LLM falhou — cooldown 60s, usa rule-based
+                    self._summary_failure_cooldown_until = time.monotonic() + 60.0
+                    if not summary_text:
+                        summary_text = _summarize_messages(to_compress)
+            else:
+                summary_text = _summarize_messages(to_compress)
 
+        # Wrap com SUMMARY_PREFIX para o modelo não tratar como instruções
+        compaction_content = f"{SUMMARY_PREFIX}\n{summary_text}"
         self.messages = [
-            {"role": "system", "content": f"[Resumo de contexto anterior]\n{summary}"}
+            {"role": "system", "content": compaction_content}
         ] + tail
 
         # ── 4. Anti-thrashing ──────────────────────────────────────────────
@@ -245,11 +292,19 @@ class ContextManager:
         to_compress = _prune_tool_results(to_compress)
         _client, _model = self._compression_client()
         if _client and _model:
-            summary = _summarize_llm(_client, _model, to_compress)
+            summary_text, ok = _summarize_llm_structured(
+                _client, _model, to_compress,
+                previous_summary=self._previous_summary,
+            )
+            if ok:
+                self._previous_summary = summary_text
+            elif not summary_text:
+                summary_text = _summarize_messages(to_compress)
         else:
-            summary = _summarize_messages(to_compress)
+            summary_text = _summarize_messages(to_compress)
+        compaction_content = f"{SUMMARY_PREFIX}\n{summary_text}"
         self.messages = [
-            {"role": "system", "content": f"[Resumo de contexto anterior]\n{summary}"}
+            {"role": "system", "content": compaction_content}
         ] + tail
         self._compress_count += 1
         return True
@@ -427,25 +482,159 @@ def _prune_tool_results(messages: list[dict]) -> list[dict]:
     return pruned
 
 
-def _summarize_llm(client: Any, model: str, messages: list[dict]) -> str:
-    """Compressão semântica via LLM — pede ao modelo para resumir o histórico."""
-    transcript = "\n".join(
-        f"{m['role'].upper()}: {(m.get('content') or '')[:400]}"
-        for m in messages
+def _serialize_for_summary(messages: list[dict]) -> str:
+    """Serializa mensagens para o summarizer incluindo tool calls/results."""
+    _CONTENT_MAX = 3000
+    _CONTENT_HEAD = 2000
+    _CONTENT_TAIL = 800
+    _TOOL_ARGS_MAX = 800
+
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content") or ""
+        if isinstance(content, list):
+            content = " ".join(
+                p.get("text", "") for p in content if isinstance(p, dict) and p.get("text")
+            )
+
+        if role == "tool":
+            tool_id = msg.get("tool_call_id", "")
+            if len(content) > _CONTENT_MAX:
+                content = content[:_CONTENT_HEAD] + "\n...[truncado]...\n" + content[-_CONTENT_TAIL:]
+            parts.append(f"[TOOL RESULT {tool_id}]: {content}")
+            continue
+
+        if role == "assistant":
+            if len(content) > _CONTENT_MAX:
+                content = content[:_CONTENT_HEAD] + "\n...[truncado]...\n" + content[-_CONTENT_TAIL:]
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                tc_parts: list[str] = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                        if len(args) > _TOOL_ARGS_MAX:
+                            args = args[:_TOOL_ARGS_MAX] + "..."
+                        tc_parts.append(f"  {name}({args})")
+                content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
+            parts.append(f"[ASSISTANT]: {content}")
+            continue
+
+        if len(content) > _CONTENT_MAX:
+            content = content[:_CONTENT_HEAD] + "\n...[truncado]...\n" + content[-_CONTENT_TAIL:]
+        parts.append(f"[{role.upper()}]: {content}")
+
+    return "\n\n".join(parts)
+
+
+def _summarize_llm_structured(
+    client: Any,
+    model: str,
+    messages: list[dict],
+    *,
+    previous_summary: str | None = None,
+) -> tuple[str, bool]:
+    """Compressão semântica estruturada via LLM. Retorna (summary_text, success)."""
+    content_tokens = sum(len(m.get("content") or "") for m in messages) // _CHARS_PER_TOKEN
+    budget = max(_MIN_SUMMARY_TOKENS, min(int(content_tokens * _SUMMARY_RATIO), _SUMMARY_TOKENS_CEILING))
+
+    serialized = _serialize_for_summary(messages)
+
+    _preamble = (
+        "Você é um agente de sumarização criando um checkpoint de contexto. "
+        "Trate os turnos de conversa abaixo como material-fonte para um registro compacto. "
+        "Produza apenas o sumário estruturado; não adicione saudações ou prefixo. "
+        "Escreva no mesmo idioma do usuário. "
+        "NUNCA inclua API keys, tokens, passwords ou secrets no sumário."
     )
-    prompt = (
-        "Resuma o histórico de conversa abaixo em no máximo 300 palavras. "
-        "Preserve: decisões tomadas, arquivos modificados, tools usadas, erros encontrados, "
-        "e contexto necessário para continuar a tarefa. Seja objetivo.\n\n"
-        f"HISTÓRICO:\n{transcript}"
-    )
+
+    _template = f"""## Tarefa Ativa
+[O campo mais importante. Capture a entrada mais recente NÃO respondida do usuário de forma exata.
+Inclui perguntas, decisões pendentes e tarefas em aberto. Reserve "Nenhuma." apenas para o raro caso
+em que o último turno foi totalmente resolvido.]
+
+## Objetivo
+[O que o usuário está tentando alcançar no geral]
+
+## Restrições e Preferências
+[Preferências de código, estilo, decisões importantes, constraints]
+
+## Ações Concluídas
+[Lista numerada: AÇÃO no alvo — resultado [tool: nome]
+Ex: 1. LEIA config.py:45 — encontrou bug na linha 45 [tool: read_file]
+    2. PATCH config.py:45 — corrigiu `==` para `!=` [tool: patch]
+Seja específico com paths, comandos, linha e resultado.]
+
+## Estado Atual
+[Estado atual: diretório, branch, arquivos modificados, testes, processos rodando]
+
+## Em Progresso
+[Trabalho em andamento quando a compressão disparou]
+
+## Bloqueadores
+[Erros não resolvidos com mensagens exatas]
+
+## Decisões Chave
+[Decisões técnicas importantes e POR QUÊ foram tomadas]
+
+## Perguntas Resolvidas
+[Perguntas já respondidas com a resposta — para não repetir]
+
+## Arquivos Relevantes
+[Arquivos lidos, modificados ou criados com breve nota]
+
+## Trabalho Restante
+[O que ainda precisa ser feito — como contexto, não instruções]
+
+## Contexto Crítico
+[Valores específicos, mensagens de erro, detalhes de config que seriam perdidos sem preservação explícita. NUNCA inclua credenciais — use [REDACTED].]
+
+Meta ~{budget} tokens. Seja CONCRETO — paths, saídas de comandos, números de linha. Evite descrições vagas.
+Escreva apenas o corpo do sumário, sem prefixo."""
+
+    if previous_summary:
+        prompt = f"""{_preamble}
+
+Você está atualizando um sumário de compressão de contexto. Uma compressão anterior produziu o sumário abaixo.
+Novos turnos precisam ser incorporados.
+
+SUMÁRIO ANTERIOR:
+{previous_summary}
+
+NOVOS TURNOS A INCORPORAR:
+{serialized}
+
+Atualize o sumário usando a mesma estrutura. PRESERVE informações existentes ainda relevantes.
+ADICIONE novas ações concluídas à lista numerada. Mova itens de "Em Progresso" para "Ações Concluídas" quando feito.
+ATUALIZE "Estado Atual". REMOVA informações apenas se claramente obsoletas.
+ATUALIZE "## Tarefa Ativa" para refletir a entrada mais recente não respondida.
+
+{_template}"""
+    else:
+        prompt = f"""{_preamble}
+
+Crie um checkpoint estruturado do sumário para a conversa após turnos anteriores serem compactados.
+
+TURNOS A SUMARIZAR:
+{serialized}
+
+Use esta estrutura exata:
+
+{_template}"""
+
     try:
         parts: list[str] = []
         for chunk in client.chat_stream(model, [{"role": "user", "content": prompt}]):
             parts.append(chunk)
-        return "".join(parts).strip() or _summarize_messages(messages)
+        result = "".join(parts).strip()
+        if result:
+            return result, True
+        return _summarize_messages(messages), False
     except Exception:
-        return _summarize_messages(messages)
+        return "", False
 
 
 def _summarize_messages(messages: list[dict]) -> str:

@@ -2363,6 +2363,7 @@ def run_agent_session(
     rebuild_client_fn: "Any | None" = None,
     fallback_clients: "list | None" = None,
     tool_timeout_s: float = 30.0,
+    memory_provider: "Any | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -2394,6 +2395,26 @@ def run_agent_session(
     )
     # Habilita compressão semântica via LLM quando o cliente está disponível
     ctx.set_llm(client, model_name)
+
+    # MemoryProvider — inicializa e injeta bloco de contexto no system prompt
+    _mem_workspace = getattr(router, "workspace", "workspace")
+    _memprov = memory_provider
+    if _memprov is None:
+        try:
+            from .memory_provider import get_memory_provider as _gmp
+            _memprov = _gmp()
+        except Exception:
+            _memprov = None
+    if _memprov is not None:
+        try:
+            _memprov.initialize(_mem_workspace)
+            _memprov.prefetch()
+            _mem_block = _memprov.system_prompt_block()
+            if _mem_block:
+                ctx.add_ephemeral_system(_mem_block)
+        except Exception:
+            pass
+    _mem_turn_idx = 0
 
     # Carrega historico da sessao se existir
     if session_store is not None and session_id is not None:
@@ -2483,6 +2504,11 @@ def run_agent_session(
                 _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
             except Exception:
                 pass
+            if _memprov is not None:
+                try:
+                    _memprov.on_session_end(ctx.messages)
+                except Exception:
+                    pass
             return
 
         if not user_input:
@@ -2498,6 +2524,11 @@ def run_agent_session(
                 _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
             except Exception:
                 pass
+            if _memprov is not None:
+                try:
+                    _memprov.on_session_end(ctx.messages)
+                except Exception:
+                    pass
             return
         if user_input.lower() in _CLEAR_CMDS:
             ctx.clear()
@@ -2530,6 +2561,11 @@ def run_agent_session(
                     client = _new_client
                     model_name = _new_model
                     ctx.set_llm(client, model_name)
+                    # Fix 2 & 3: atualiza stats e provider após switch
+                    stats.model = model_name
+                    _provider = getattr(_new_client, "_provider", None) or "openai"
+                    stats.provider = _provider
+                    ctx._provider = _provider
                     console.print(
                         f"[green]✓ Modelo trocado para [cyan]{model_name}[/cyan] — "
                         f"próxima mensagem já usa o novo modelo.[/green]"
@@ -2699,7 +2735,7 @@ def run_agent_session(
             if not response.strip():
                 console.print("[dim][recovery] resposta vazia — tentando recuperar...[/dim]")
                 response, diagnostico = _recover_empty_response(
-                    client, model_name, ctx, console=console
+                    client, active_model, ctx, console=console
                 )
                 if not response:
                     console.print(f"[yellow]{diagnostico}[/yellow]")
@@ -2843,6 +2879,33 @@ def run_agent_session(
                 )
             except Exception:
                 pass
+
+            # G10: background quality review — daemon thread, never blocks
+            try:
+                from .background_review import review_turn as _bg_review
+                _bg_review(
+                    user_input, display, cli_tool_log,
+                    workspace=active_workspace,
+                    session_id=session_id or "",
+                )
+            except Exception:
+                pass
+
+            # G4: feed recent messages to ToolRouter for LLM approval context
+            try:
+                router.set_context(ctx.messages)
+            except Exception:
+                pass
+
+            # MemoryProvider hooks: sync_turn + nudge
+            _mem_turn_idx += 1
+            if _memprov is not None:
+                try:
+                    _memprov.sync_turn(_mem_turn_idx, ctx.messages)
+                    if _memprov.should_nudge(_mem_turn_idx):
+                        ctx.add_ephemeral_system(_memprov.nudge_message())
+                except Exception:
+                    pass
 
             sys.stdout.write("\033[32mbauer>\033[0m ")
             sys.stdout.write(display)

@@ -222,10 +222,41 @@ def test_read_file_on_dir_raises(router: ToolRouter):
 
 
 def test_read_file_too_large_raises(router: ToolRouter, ws: Path):
-    big = ws / "big.txt"
-    big.write_bytes(b"x" * 200_000)
+    # G17.1: arquivo acima do ceiling absoluto (5 MB) e recusado de vez.
+    huge = ws / "huge.txt"
+    huge.write_bytes(b"x" * 6_000_000)
     with pytest.raises(ToolError, match="grande"):
+        router.execute({"action": "read_file", "args": {"path": "huge.txt"}})
+
+
+def test_read_file_output_char_cap_raises(router: ToolRouter, ws: Path):
+    # G17.1: arquivo abaixo do ceiling mas cuja JANELA estoura o cap de chars
+    # do output (linha unica gigante) → erro pedindo reduzir limit/offset.
+    big = ws / "big.txt"
+    big.write_bytes(b"x" * 200_000)  # 1 linha, 200K chars > cap de 100K
+    with pytest.raises(ToolError, match="produziu"):
         router.execute({"action": "read_file", "args": {"path": "big.txt"}})
+
+
+def test_read_file_pagination_and_line_numbers(router: ToolRouter, ws: Path):
+    # G17.1: offset/limit + numeracao de linha no output.
+    (ws / "multi.txt").write_text("a\nb\nc\nd\ne\n", encoding="utf-8")
+    out = router.execute({"action": "read_file", "args": {"path": "multi.txt", "offset": 2, "limit": 2}})
+    assert "2\tb" in out
+    assert "3\tc" in out
+    assert "1\ta" not in out  # offset pulou a linha 1
+    assert "linhas 2-3 de 5" in out
+
+
+def test_read_file_dedup_blocks_reread(router: ToolRouter, ws: Path):
+    # G17.1: reler a mesma janela de arquivo inalterado vira stub e depois bloqueia.
+    (ws / "stable.txt").write_text("conteudo\n", encoding="utf-8")
+    first = router.execute({"action": "read_file", "args": {"path": "stable.txt"}})
+    assert "conteudo" in first
+    second = router.execute({"action": "read_file", "args": {"path": "stable.txt"}})
+    assert "inalterado" in second
+    with pytest.raises(ToolError, match="BLOQUEADO"):
+        router.execute({"action": "read_file", "args": {"path": "stable.txt"}})
 
 
 # === write_file =============================================================
@@ -237,8 +268,16 @@ def test_write_file_creates_new(router: ToolRouter, ws: Path):
 
 
 def test_write_file_with_overwrite_true(router: ToolRouter, ws: Path):
+    # G17.2: sobrescrever arquivo existente exige leitura previa.
+    router.execute({"action": "read_file", "args": {"path": "hello.txt"}})
     router.execute({"action": "write_file", "args": {"path": "hello.txt", "content": "novo", "overwrite": True}})
     assert (ws / "hello.txt").read_text(encoding="utf-8") == "novo"
+
+
+def test_write_file_overwrite_without_read_raises(router: ToolRouter, ws: Path):
+    # G17.2: overwrite as cegas (sem read_file antes) e bloqueado.
+    with pytest.raises(ToolError, match="nao foi lido"):
+        router.execute({"action": "write_file", "args": {"path": "hello.txt", "content": "x", "overwrite": True}})
 
 
 def test_write_file_creates_subdirs(router: ToolRouter, ws: Path):

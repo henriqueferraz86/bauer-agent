@@ -1,0 +1,28 @@
+name: Optimize Performance
+description: 'Metodo para otimizar performance: medir, achar gargalo, corrigir, validar.'
+content: '# Otimizar performance
+
+
+  ## Metodo
+
+  1. Medir (profiler) antes de mudar.
+
+  2. Localizar o gargalo real.
+
+  3. Corrigir.
+
+  4. Medir de novo e validar.
+
+
+  ## Suspeitos
+
+  - N+1 / IO em loop -> batch.
+
+  - O(n^2) onde dict/set resolve.
+
+  - Recalculo do que daria pra cachear.
+
+
+  ## Regra
+
+  - Legibilidade > microsegundos, exceto em hot path comprovado.'

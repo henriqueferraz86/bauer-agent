@@ -126,9 +126,10 @@ class ProviderProfile:
 
         Returns an empty list on any error (graceful degradation).
         Uses a short timeout so the caller isn't blocked.
+        Falls back to models.dev catalog when the live API returns nothing.
         """
         if not self.models_url:
-            return []
+            return self._fetch_models_from_catalog()
         key = api_key or self.get_api_key() or ""
         try:
             import httpx
@@ -142,24 +143,48 @@ class ProviderProfile:
                 follow_redirects=True,
             )
             if resp.status_code != 200:
-                return []
+                return self._fetch_models_from_catalog()
             data = resp.json()
+            result: list[str] = []
             # OpenAI-compat: {"data": [{"id": "..."}]}
             if "data" in data:
-                return [m.get("id", "") for m in data["data"] if m.get("id")]
+                result = [m.get("id", "") for m in data["data"] if m.get("id")]
             # Anthropic: {"models": [{"id": ...}]} | Ollama: {"models": [{"name": ...}]}
-            if "models" in data:
-                return [
+            elif "models" in data:
+                result = [
                     m.get("id") or m.get("name", "")
                     for m in data["models"]
                     if isinstance(m, dict) and (m.get("id") or m.get("name"))
                 ]
-            # Ollama: {"models": [{"name": "..."}]}
-            if isinstance(data, list):
-                return [m.get("id") or m.get("name", "") for m in data if isinstance(m, dict)]
+            elif isinstance(data, list):
+                result = [m.get("id") or m.get("name", "") for m in data if isinstance(m, dict)]
+            return result or self._fetch_models_from_catalog()
         except Exception:
             pass
-        return []
+        return self._fetch_models_from_catalog()
+
+    def _fetch_models_from_catalog(self) -> list[str]:
+        """Busca modelos do catálogo models.dev (offline-first). Fallback silencioso."""
+        try:
+            from .models_dev import list_provider_models
+            return list_provider_models(self.name)
+        except Exception:
+            return []
+
+    def get_agentic_models(self) -> list[str]:
+        """Retorna modelos aptos para uso agêntico via catálogo models.dev.
+
+        Filtra tool_call=True e exclui ruído (TTS, embedding, preview com timestamp).
+        Fallback para fetch_models() se models.dev não tiver dados.
+        """
+        try:
+            from .models_dev import list_agentic_models
+            result = list_agentic_models(self.name)
+            if result:
+                return result
+        except Exception:
+            pass
+        return self.fetch_models()
 
     def probe(self, api_key: str | None = None) -> bool:
         """Return True if the provider is reachable and credentials are valid."""

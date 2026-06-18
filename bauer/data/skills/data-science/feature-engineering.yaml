@@ -1,0 +1,23 @@
+name: Feature Engineering
+description: Tecnicas e cuidados para criar features uteis sem vazamento de dados.
+content: '# Feature Engineering
+
+
+  ## Tecnicas
+
+  - Numericas: binning, log, normalizacao, razoes.
+
+  - Categoricas: one-hot, target/frequency encoding.
+
+  - Temporais: lag, janelas moveis, tempo desde evento.
+
+  - Texto: TF-IDF, embeddings.
+
+
+  ## Cuidados
+
+  - Vazamento: nada do futuro/teste.
+
+  - Fit de encoders SO no treino.
+
+  - Documente origem e logica de cada feature.'

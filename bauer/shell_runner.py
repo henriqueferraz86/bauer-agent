@@ -138,12 +138,23 @@ class ShellRunner:
             CommandTimeoutError: Excedeu timeout.
             ShellError: Outros erros de execução.
         """
+        args = self.validate(command, confirm=confirm)
+        return self._execute(args)
+
+    def validate(self, command: str, confirm: bool = False) -> list[str]:
+        """Roda as verificações de segurança e devolve os args parseados,
+        SEM executar. Usado pelo modo background do run_command (G17.3), que
+        lança o processo via Popen mas precisa do mesmo gate de segurança.
+
+        Raises:
+            BlockedCommandError, SafeModeError, ShellError — iguais ao run().
+        """
         self._check_denylist(command)
         args = self._parse_command(command)
         self._check_allowlist(args)
         if self.safe_mode and not confirm:
             self._check_medium_risk(command)
-        return self._execute(args)
+        return args
 
     # --- verificações de segurança -------------------------------------------
 
