@@ -139,6 +139,11 @@ class WebDispatcher:
         """API key Brave — prioriza BRAVE_API_KEY do env."""
         return _env("BRAVE_API_KEY", self._cfg.brave_api_key if self._cfg else "")
 
+    @property
+    def _wikipedia_lang(self) -> str:
+        """Idioma da Wikipedia (default 'en' — mais completa)."""
+        return (getattr(self._cfg, "wikipedia_lang", "") if self._cfg else "") or "en"
+
     # --- Auto-detecção --------------------------------------------------------
 
     @property
@@ -160,11 +165,13 @@ class WebDispatcher:
     def _detect_search_backend(self) -> str:
         """Detecta o melhor backend de busca disponível.
 
-        Ordem (igual ao Hermes Agent):
-          1. brave    — se BRAVE_API_KEY presente no env
-          2. searxng  — se SEARXNG_URL no env ou searxng_url não é o default
-          3. ddgs     — se pacote instalado
-          4. WebError — nenhum disponível
+        Ordem (inspirada no Hermes Agent, com fallback open-source garantido):
+          1. brave     — se BRAVE_API_KEY presente no env
+          2. searxng   — se SEARXNG_URL no env ou searxng_url não é o default
+          3. ddgs      — se pacote instalado
+          4. wikipedia — fallback SEMPRE disponível (open/CC BY-SA, sem chave,
+                         sem dependência). Garante que web_search nunca falhe
+                         por falta de setup — preciso para fatos/entidades.
         """
         if self._brave_key:
             return "brave"
@@ -179,15 +186,8 @@ class WebDispatcher:
         if _package_available("ddgs"):
             return "ddgs"
 
-        raise WebError(
-            "Nenhum backend de busca disponível.\n"
-            "Opções (escolha uma):\n"
-            "  1. pip install ddgs                          # DuckDuckGo, grátis\n"
-            "  2. docker run -p 8080:8080 searxng/searxng  # self-hosted\n"
-            "     + SEARXNG_URL=http://localhost:8080 no .env\n"
-            "  3. BRAVE_API_KEY=sua-chave no .env          # Brave Search API\n"
-            "Ou configure explicitamente: web.search_backend: ddgs"
-        )
+        # Fallback open-source de último recurso: Wikipedia (zero setup).
+        return "wikipedia"
 
     def _detect_extract_backend(self) -> str:
         """Detecta o melhor backend de extração disponível.
@@ -231,7 +231,7 @@ class WebDispatcher:
             return f"SEARXNG_URL detectado: {self._searxng_url}"
         if _package_available("ddgs"):
             return "pacote ddgs instalado"
-        return "nenhum backend disponível"
+        return f"wikipedia ({self._wikipedia_lang}) — fallback open-source"
 
     def _detection_reason_extract(self) -> str:
         if self._raw_extract_backend != "auto":
@@ -253,10 +253,12 @@ class WebDispatcher:
             return self._search_searxng(query, n)
         elif backend == "brave":
             return self._search_brave(query, n)
+        elif backend == "wikipedia":
+            return self._search_wikipedia(query, n)
         else:
             raise WebError(
                 f"Backend de busca '{backend}' desconhecido. "
-                "Opções: auto, ddgs, searxng, brave"
+                "Opções: auto, ddgs, searxng, brave, wikipedia"
             )
 
     def search_as_text(self, query: str, max_results: int | None = None) -> str:
@@ -381,6 +383,57 @@ class WebDispatcher:
                 url=r.get("url", "").strip(),
                 snippet=r.get("description", "").strip(),
                 engine="brave",
+            ))
+        return results
+
+    def _search_wikipedia(self, query: str, max_results: int) -> list[SearchResult]:
+        """Wikipedia via MediaWiki API (open/CC BY-SA, sem chave, sem dependência).
+
+        Preciso para fatos, entidades e definições. Usa list=search e monta a
+        URL canônica do artigo. É o fallback open-source garantido do 'auto'.
+        """
+        import html
+        import re as _re
+        import httpx
+
+        lang = self._wikipedia_lang
+        base = f"https://{lang}.wikipedia.org/w/api.php"
+        try:
+            resp = httpx.get(
+                base,
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": max_results,
+                    "format": "json",
+                    "srprop": "snippet",
+                },
+                timeout=self.timeout,
+                headers={"User-Agent": "BauerAgent/1.0 (open-source agent)"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            raise WebError(f"Erro Wikipedia (HTTP {exc.response.status_code}): {exc}") from exc
+        except Exception as exc:
+            raise WebError(f"Erro na busca Wikipedia: {exc}") from exc
+
+        def _clean(snippet: str) -> str:
+            # remove tags HTML (<span class="searchmatch">…</span>) e desescapa entidades
+            return html.unescape(_re.sub(r"<[^>]+>", "", snippet or "")).strip()
+
+        results = []
+        for r in data.get("query", {}).get("search", [])[:max_results]:
+            title = r.get("title", "").strip()
+            if not title:
+                continue
+            url = f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
+            results.append(SearchResult(
+                title=title,
+                url=url,
+                snippet=_clean(r.get("snippet", "")),
+                engine="wikipedia",
             ))
         return results
 

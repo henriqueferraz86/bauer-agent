@@ -631,10 +631,12 @@ class WebSection(_StrictSection):
     """Configuração de backends web para web_search e web_fetch.
 
     Backends de busca (search_backend):
-      auto     — auto-detecção: brave → searxng → ddgs  (padrão)
-      ddgs     — DuckDuckGo via biblioteca ddgs (sem config)
-      searxng  — SearXNG self-hosted (requer searxng_url)
-      brave    — Brave Search API (requer brave_api_key ou BRAVE_API_KEY no .env)
+      auto      — auto-detecção: brave → searxng → ddgs → wikipedia  (padrão)
+      ddgs      — DuckDuckGo via biblioteca ddgs (open, sem chave; requer pip install ddgs)
+      searxng   — SearXNG self-hosted (open-source/AGPL, metabusca; requer searxng_url)
+      wikipedia — Wikipedia MediaWiki API (open/CC BY-SA, sem chave, sem dependência;
+                  preciso para fatos/entidades; é o fallback garantido do auto)
+      brave     — Brave Search API (requer brave_api_key ou BRAVE_API_KEY no .env)
 
     Backends de extração (extract_backend):
       auto     — auto-detecção: crawl4ai → httpx  (padrão)
@@ -645,6 +647,7 @@ class WebSection(_StrictSection):
     extract_backend: str = "auto"
     searxng_url: str = "http://localhost:8080"
     brave_api_key: str = ""          # ou BRAVE_API_KEY no .env
+    wikipedia_lang: str = "en"       # idioma da Wikipedia (en = mais completa; pt, es, ...)
     max_results: int = Field(ge=1, le=20, default=5)
     max_chars: int = Field(ge=100, le=50_000, default=5000)
     timeout_seconds: int = Field(ge=1, le=60, default=15)

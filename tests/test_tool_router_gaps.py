@@ -206,16 +206,26 @@ def test_web_search_no_query_raises(ws: Path):
         router.execute({"action": "web_search", "args": {}})
 
 
-def test_web_search_ddgs_not_installed(ws: Path):
-    """Garante ToolError quando nenhum backend de busca está disponível."""
+def test_web_search_sem_ddgs_cai_em_wikipedia(ws: Path):
+    """Novo contrato (G18.3): sem ddgs/brave/searxng, web_search NAO falha —
+    cai no fallback open-source Wikipedia (zero setup, sem chave)."""
+    from unittest.mock import MagicMock
     router = ToolRouter(workspace=ws, web_enabled=True)
     import os
     old_brave = os.environ.pop("BRAVE_API_KEY", None)
     old_searxng = os.environ.pop("SEARXNG_URL", None)
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"query": {"search": [
+        {"title": "Python (programming language)", "snippet": "linguagem"}
+    ]}}
+    mock_response.raise_for_status = MagicMock()
     try:
-        with patch("bauer.web.dispatcher._package_available", return_value=False):
-            with pytest.raises(ToolError):
-                router._web_search({"query": "python", "max_results": 3})
+        with patch("bauer.web.dispatcher._package_available", return_value=False), \
+             patch("httpx.get", return_value=mock_response):
+            out = router._web_search({"query": "python", "max_results": 3})
+        assert "wikipedia" in out.lower()
+        assert "Python" in out
     finally:
         if old_brave is not None:
             os.environ["BRAVE_API_KEY"] = old_brave

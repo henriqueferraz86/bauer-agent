@@ -20,6 +20,7 @@ def _cfg(search_backend="ddgs", extract_backend="httpx", **kwargs):
     cfg.extract_backend = extract_backend
     cfg.searxng_url = kwargs.get("searxng_url", "http://localhost:8080")
     cfg.brave_api_key = kwargs.get("brave_api_key", "")
+    cfg.wikipedia_lang = kwargs.get("wikipedia_lang", "en")
     cfg.max_results = kwargs.get("max_results", 5)
     cfg.max_chars = kwargs.get("max_chars", 5000)
     cfg.timeout_seconds = kwargs.get("timeout_seconds", 15)
@@ -183,6 +184,65 @@ def test_search_brave_com_key_retorna():
 
 
 # ---------------------------------------------------------------------------
+# Backend Wikipedia — open-source, sem chave, fallback garantido
+# ---------------------------------------------------------------------------
+
+def test_search_wikipedia_retorna_resultados():
+    d = WebDispatcher(_cfg(search_backend="wikipedia", wikipedia_lang="en"))
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "query": {"search": [
+            {"title": "Brazil national football team",
+             "snippet": 'The <span class="searchmatch">Brazil</span> team is...'},
+            {"title": "2026 FIFA World Cup", "snippet": "held in 2026"},
+        ]}
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("httpx.get", return_value=mock_response):
+        results = d._search_wikipedia("brazil football", 5)
+
+    assert len(results) == 2
+    assert results[0].engine == "wikipedia"
+    # URL canônica montada a partir do título
+    assert results[0].url == "https://en.wikipedia.org/wiki/Brazil_national_football_team"
+    # HTML do snippet foi removido
+    assert "<span" not in results[0].snippet
+    assert "Brazil" in results[0].snippet
+
+
+def test_search_wikipedia_respeita_idioma():
+    d = WebDispatcher(_cfg(search_backend="wikipedia", wikipedia_lang="pt"))
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"query": {"search": [{"title": "Brasil", "snippet": "país"}]}}
+    mock_response.raise_for_status = MagicMock()
+    with patch("httpx.get", return_value=mock_response):
+        results = d._search_wikipedia("brasil", 3)
+    assert results[0].url.startswith("https://pt.wikipedia.org/wiki/")
+
+
+def test_search_via_dispatch_wikipedia():
+    # search() roteia backend "wikipedia" corretamente
+    d = WebDispatcher(_cfg(search_backend="wikipedia"))
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"query": {"search": [{"title": "X", "snippet": "y"}]}}
+    mock_response.raise_for_status = MagicMock()
+    with patch("httpx.get", return_value=mock_response):
+        results = d.search("q")
+    assert results and results[0].engine == "wikipedia"
+
+
+def test_auto_detect_wikipedia_fallback():
+    # Sem brave key, sem searxng, sem ddgs → cai em wikipedia (nunca falha).
+    import bauer.web.dispatcher as _disp
+    d = WebDispatcher(_cfg(search_backend="auto", brave_api_key=""))
+    with patch.object(_disp, "_package_available", return_value=False), \
+         patch.dict("os.environ", {}, clear=True):
+        assert d.search_backend == "wikipedia"
+
+
+# ---------------------------------------------------------------------------
 # Backend httpx extract — mock
 # ---------------------------------------------------------------------------
 
@@ -314,7 +374,9 @@ def test_auto_detect_ddgs_se_pacote_disponivel():
             os.environ["SEARXNG_URL"] = old_searxng
 
 
-def test_auto_detect_sem_nenhum_backend_levanta():
+def test_auto_detect_sem_setup_cai_em_wikipedia():
+    # Novo contrato: sem brave/searxng/ddgs, o auto cai em wikipedia (open,
+    # zero setup) em vez de levantar WebError. web_search nunca falha por setup.
     import sys, os
     d = WebDispatcher(_cfg(search_backend="auto"))
     env_patch = {}
@@ -325,8 +387,7 @@ def test_auto_detect_sem_nenhum_backend_levanta():
     with patch.dict(sys.modules, {"ddgs": None}), \
          patch.dict(os.environ, env_patch, clear=False), \
          patch("bauer.web.dispatcher._package_available", return_value=False):
-        with pytest.raises(WebError, match="Nenhum backend"):
-            _ = d.search_backend
+        assert d.search_backend == "wikipedia"
 
 
 # ---------------------------------------------------------------------------
@@ -366,11 +427,12 @@ def test_detected_backends_com_backend_explicito():
     assert "manual" in info["extract_reason"]
 
 
-def test_detected_backends_sem_nenhum_search_retorna_none():
+def test_detected_backends_sem_setup_cai_em_wikipedia():
     import sys, os
     d = WebDispatcher(_cfg(search_backend="auto", extract_backend="httpx"))
     with patch.dict(sys.modules, {"ddgs": None}), \
          patch("bauer.web.dispatcher._package_available", return_value=False), \
          patch.dict(os.environ, {"BRAVE_API_KEY": "", "SEARXNG_URL": ""}):
         info = d.detected_backends()
-        assert info["search"] == "none"
+        assert info["search"] == "wikipedia"
+        assert "wikipedia" in info["search_reason"]
