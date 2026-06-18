@@ -222,7 +222,7 @@ def test_web_search_sem_ddgs_cai_em_wikipedia(ws: Path):
     mock_response.raise_for_status = MagicMock()
     try:
         with patch("bauer.web.dispatcher._package_available", return_value=False), \
-             patch("httpx.get", return_value=mock_response):
+             patch("httpx.Client.get", return_value=mock_response):
             out = router._web_search({"query": "python", "max_results": 3})
         assert "wikipedia" in out.lower()
         assert "Python" in out
@@ -248,7 +248,7 @@ def test_web_fetch_invalid_scheme_raises(ws: Path):
 def test_web_fetch_timeout(ws: Path):
     import httpx
     router = ToolRouter(workspace=ws, web_enabled=True)
-    with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
+    with patch("httpx.Client.get", side_effect=httpx.TimeoutException("timeout")):
         with pytest.raises(ToolError, match="Timeout"):
             router._web_fetch({"url": "https://example.com"})
 
@@ -258,14 +258,14 @@ def test_web_fetch_http_status_error(ws: Path):
     router = ToolRouter(workspace=ws, web_enabled=True)
     mock_resp = MagicMock()
     mock_resp.status_code = 404
-    with patch("httpx.get", side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)):
+    with patch("httpx.Client.get", side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)):
         with pytest.raises(ToolError, match="404"):
             router._web_fetch({"url": "https://example.com"})
 
 
 def test_web_fetch_generic_exception(ws: Path):
     router = ToolRouter(workspace=ws, web_enabled=True)
-    with patch("httpx.get", side_effect=RuntimeError("rede falhou")):
+    with patch("httpx.Client.get", side_effect=RuntimeError("rede falhou")):
         with pytest.raises(ToolError, match="rede falhou"):
             router._web_fetch({"url": "https://example.com"})
 
@@ -275,7 +275,7 @@ def test_web_fetch_binary_content_type(ws: Path):
     mock_resp = MagicMock()
     mock_resp.raise_for_status.return_value = None
     mock_resp.headers = {"content-type": "application/octet-stream"}
-    with patch("httpx.get", return_value=mock_resp):
+    with patch("httpx.Client.get", return_value=mock_resp):
         result = router._web_fetch({"url": "https://example.com"})
     assert "content-type" in result.lower() or "bin" in result.lower() or "ignorado" in result.lower()
 
@@ -287,7 +287,7 @@ def test_web_fetch_returns_text(ws: Path):
     mock_resp.headers = {"content-type": "text/html"}
     mock_resp.text = "Hello World linha 1\nHello World linha 2"
     # Simula falha ao importar bs4 dentro do _web_fetch
-    with patch("httpx.get", return_value=mock_resp):
+    with patch("httpx.Client.get", return_value=mock_resp):
         # Faz o except Exception do BeautifulSoup cair no fallback resp.text
         with patch("bauer.tool_router.ToolRouter._web_fetch", wraps=router._web_fetch) as _:
             # Injeta exceção no import de bs4 via builtins
@@ -308,6 +308,6 @@ def test_web_fetch_truncates_long_content(ws: Path):
     mock_resp.raise_for_status.return_value = None
     mock_resp.headers = {"content-type": "text/plain"}
     mock_resp.text = "x" * 10000
-    with patch("httpx.get", return_value=mock_resp):
+    with patch("httpx.Client.get", return_value=mock_resp):
         result = router._web_fetch({"url": "https://example.com", "max_chars": 100})
     assert "truncado" in result

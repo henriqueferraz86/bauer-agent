@@ -21,6 +21,7 @@ def _cfg(search_backend="ddgs", extract_backend="httpx", **kwargs):
     cfg.searxng_url = kwargs.get("searxng_url", "http://localhost:8080")
     cfg.brave_api_key = kwargs.get("brave_api_key", "")
     cfg.wikipedia_lang = kwargs.get("wikipedia_lang", "en")
+    cfg.cache_ttl_seconds = kwargs.get("cache_ttl_seconds", 300)
     cfg.max_results = kwargs.get("max_results", 5)
     cfg.max_chars = kwargs.get("max_chars", 5000)
     cfg.timeout_seconds = kwargs.get("timeout_seconds", 15)
@@ -141,7 +142,7 @@ def test_search_searxng_retorna_resultados():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         results = d._search_searxng("python", 5)
 
     assert len(results) == 1
@@ -152,7 +153,7 @@ def test_search_searxng_retorna_resultados():
 def test_search_searxng_offline_levanta():
     import httpx
     d = WebDispatcher(_cfg(search_backend="searxng"))
-    with patch("httpx.get", side_effect=httpx.ConnectError("offline")):
+    with patch("httpx.Client.get", side_effect=httpx.ConnectError("offline")):
         with pytest.raises(WebError, match="SearXNG"):
             d._search_searxng("query", 5)
 
@@ -176,7 +177,7 @@ def test_search_brave_com_key_retorna():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         results = d._search_brave("query", 5)
 
     assert len(results) == 1
@@ -200,7 +201,7 @@ def test_search_wikipedia_retorna_resultados():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         results = d._search_wikipedia("brazil football", 5)
 
     assert len(results) == 2
@@ -217,7 +218,7 @@ def test_search_wikipedia_respeita_idioma():
     mock_response = MagicMock()
     mock_response.json.return_value = {"query": {"search": [{"title": "Brasil", "snippet": "país"}]}}
     mock_response.raise_for_status = MagicMock()
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         results = d._search_wikipedia("brasil", 3)
     assert results[0].url.startswith("https://pt.wikipedia.org/wiki/")
 
@@ -228,7 +229,7 @@ def test_search_via_dispatch_wikipedia():
     mock_response = MagicMock()
     mock_response.json.return_value = {"query": {"search": [{"title": "X", "snippet": "y"}]}}
     mock_response.raise_for_status = MagicMock()
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         results = d.search("q")
     assert results and results[0].engine == "wikipedia"
 
@@ -254,7 +255,7 @@ def test_extract_httpx_retorna_texto():
     mock_response.headers = {"content-type": "text/html"}
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         result = d._extract_httpx("https://example.com", 5000)
 
     assert "Hello world" in result
@@ -268,7 +269,7 @@ def test_extract_httpx_trunca_texto_longo():
     mock_response.headers = {"content-type": "text/plain"}
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         result = d._extract_httpx("https://example.com", 100)
 
     assert len(result) < 10000
@@ -282,7 +283,7 @@ def test_extract_binario_retorna_aviso():
     mock_response.headers = {"content-type": "application/octet-stream"}
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=mock_response):
+    with patch("httpx.Client.get", return_value=mock_response):
         result = d._extract_httpx("https://example.com/file.bin", 5000)
 
     assert "binário" in result or "binario" in result
@@ -436,3 +437,47 @@ def test_detected_backends_sem_setup_cai_em_wikipedia():
         info = d.detected_backends()
         assert info["search"] == "wikipedia"
         assert "wikipedia" in info["search_reason"]
+
+
+# ---------------------------------------------------------------------------
+# G18.5 — cache TTL + reuso de conexão
+# ---------------------------------------------------------------------------
+
+def _wiki_resp():
+    r = MagicMock()
+    r.json.return_value = {"query": {"search": [{"title": "X", "snippet": "y"}]}}
+    r.raise_for_status = MagicMock()
+    return r
+
+
+def test_search_caches_repeated_query():
+    d = WebDispatcher(_cfg(search_backend="wikipedia", cache_ttl_seconds=300))
+    with patch("httpx.Client.get", return_value=_wiki_resp()) as mock_get:
+        r1 = d.search("python")
+        r2 = d.search("python")  # deve vir do cache
+    assert r1 == r2
+    assert mock_get.call_count == 1  # rede chamada uma unica vez
+
+
+def test_cache_ttl_zero_disables():
+    d = WebDispatcher(_cfg(search_backend="wikipedia", cache_ttl_seconds=0))
+    with patch("httpx.Client.get", return_value=_wiki_resp()) as mock_get:
+        d.search("q")
+        d.search("q")
+    assert mock_get.call_count == 2  # sem cache, 2 chamadas
+
+
+def test_cache_distinct_queries_not_shared():
+    d = WebDispatcher(_cfg(search_backend="wikipedia", cache_ttl_seconds=300))
+    with patch("httpx.Client.get", return_value=_wiki_resp()) as mock_get:
+        d.search("a")
+        d.search("b")
+    assert mock_get.call_count == 2
+
+
+def test_close_resets_http_client():
+    d = WebDispatcher(_cfg(search_backend="wikipedia"))
+    _ = d._http  # cria o client persistente
+    assert d._http_client is not None
+    d.close()
+    assert d._http_client is None
