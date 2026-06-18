@@ -1,0 +1,24 @@
+name: Fact Check
+description: 'Metodo para verificar afirmacoes: fonte primaria, corroboracao e contexto.'
+content: '# Verificacao de fatos
+
+
+  ## Passos
+
+  1. Isole a afirmacao verificavel.
+
+  2. Ache a fonte primaria.
+
+  3. Corrobore com 2+ fontes independentes.
+
+  4. Verifique a data.
+
+
+  ## Sinais de alerta
+
+  - Fonte circular; numero preciso sem metodologia; citacao fora de contexto.
+
+
+  ## Veredito
+
+  - Verdadeiro / Parcial / Falso / Sem evidencia. Mostre a evidencia.'

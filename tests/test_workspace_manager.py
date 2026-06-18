@@ -69,7 +69,7 @@ def test_add_task_creates_entry(wm: WorkspaceManager, ws: Path):
     wm.init_project("P")
     task = wm.add_task("Implementar login")
     assert task.id == "001"
-    assert task.status == "TODO"
+    assert task.status == "READY"
     assert task.title == "Implementar login"
     content = (ws / "TASKS.md").read_text(encoding="utf-8")
     assert "Implementar login" in content
@@ -217,7 +217,7 @@ def test_update_second_task_does_not_affect_first(wm: WorkspaceManager, ws: Path
     wm.add_task("Task B")
     wm.update_task_status("002", "DONE")
     tasks = wm.list_tasks()
-    assert tasks[0].status == "TODO"  # Task A unchanged
+    assert tasks[0].status == "READY"  # Task A unchanged (default status)
     assert tasks[1].status == "DONE"  # Task B updated
 
 

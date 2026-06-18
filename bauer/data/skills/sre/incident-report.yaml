@@ -1,0 +1,23 @@
+name: Incident Report
+description: Template de relatorio de incidente durante a resposta (real-time).
+content: '# Relatorio de incidente (durante)
+
+
+  ## Cabecalho
+
+  - ID, severidade (SEV1-4), inicio, status, comandante.
+
+
+  ## Impacto
+
+  - O que quebrou, para quem, desde quando; SLOs afetados.
+
+
+  ## Timeline (append-only, UTC)
+
+  - HH:MM deteccao / acao -> efeito / mitigacao.
+
+
+  ## Comunicacao
+
+  - Atualize stakeholders a cada X min; uma fonte de verdade.'

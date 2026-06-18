@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+pytest.importorskip("typer")
 from typer.testing import CliRunner
 
 from bauer.automation_scheduler import AutomationScheduler

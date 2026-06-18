@@ -1,0 +1,29 @@
+name: Weekly Summary
+description: 'Template de resumo semanal: entregas, bloqueios, metricas e proximos
+  passos.'
+content: '# Resumo semanal
+
+
+  ## Entregas
+
+  - Concluido + impacto (resultado, nao tarefa).
+
+
+  ## Em andamento
+
+  - Status e ETA realista.
+
+
+  ## Bloqueios
+
+  - O que travou, por que, o que destravaria.
+
+
+  ## Metricas
+
+  - Numeros que importam (antes -> agora).
+
+
+  ## Proxima semana
+
+  - 3 prioridades em ordem; riscos.'

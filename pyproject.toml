@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+keychain = [
+    "keyring>=24.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -38,10 +41,16 @@ gateway = [
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
 ]
+web = [
+    "ddgs>=6.0",             # DuckDuckGo (MIT) — busca web geral open-source
+    "beautifulsoup4>=4.12",  # extração de conteúdo limpo no web_fetch
+]
 all = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
+    "ddgs>=6.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.scripts]
@@ -50,6 +59,9 @@ bauer = "bauer.cli:app"
 [tool.setuptools.packages.find]
 include = ["bauer*"]
 exclude = ["tests*", "memory*", "workspace*", "logs*"]
+
+[tool.setuptools.package-data]
+bauer = ["*.yaml", "*.json", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

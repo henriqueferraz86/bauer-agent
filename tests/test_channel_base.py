@@ -331,7 +331,7 @@ class TestComandosNovosETasks:
         wm.add_task("Revisar relatório de vendas")
         resp = backend.process(_msg("/tasks"))
         assert "Revisar relatório" in resp
-        assert "TODO" in resp
+        assert "READY" in resp
 
     def test_help_menciona_novos_comandos(self, tmp_path):
         backend = _make_backend(tmp_path)

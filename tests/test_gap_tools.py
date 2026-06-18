@@ -33,6 +33,7 @@ def router(ws: Path) -> ToolRouter:
 @pytest.fixture
 def router_with_client(ws: Path) -> ToolRouter:
     mock_client = MagicMock()
+    mock_client.model = "gpt-4o"  # G18.4: modelo multimodal p/ passar no gate de visão
     return ToolRouter(workspace=ws, llm_client=mock_client)
 
 

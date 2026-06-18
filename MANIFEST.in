@@ -1,0 +1,4 @@
+include README.md
+include .env.example
+include LICENSE*
+recursive-include bauer *.yaml *.json *.md py.typed

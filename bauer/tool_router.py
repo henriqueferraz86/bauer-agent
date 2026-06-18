@@ -54,11 +54,14 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import logging
 import os
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .shell_runner import ShellError
 from .tool_policy import load_tool_policy
@@ -261,6 +264,15 @@ _TOOL_SECURITY: dict[str, dict] = {
     "kanban_list":    {"permission": "read",    "risk": "low",    "approval": False},
     "kanban_show":    {"permission": "read",    "risk": "low",    "approval": False},
     "process":        {"permission": "read",    "risk": "low",    "approval": False},
+    "code_symbols":   {"permission": "read",    "risk": "low",    "approval": False},
+    "find_definition":{"permission": "read",    "risk": "low",    "approval": False},
+    "get_imports":    {"permission": "read",    "risk": "low",    "approval": False},
+    "find_usages":    {"permission": "read",    "risk": "low",    "approval": False},
+    # G15: LSP tools
+    "lsp_hover":      {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_definitions":{"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_references": {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_diagnostics":{"permission": "read",    "risk": "low",    "approval": False},
     # Escrita local — workspace-scoped
     "write_file":     {"permission": "write",   "risk": "medium", "approval": False},
     "append_file":    {"permission": "write",   "risk": "medium", "approval": False},
@@ -422,6 +434,14 @@ _WORKER_CONTEXT_ALLOWLIST = frozenset({
     "kanban_list",
     "kanban_show",
     "process",
+    "code_symbols",
+    "find_definition",
+    "get_imports",
+    "find_usages",
+    "lsp_hover",
+    "lsp_definitions",
+    "lsp_references",
+    "lsp_diagnostics",
     # Mutate only the local workspace needed to complete the claimed task.
     "write_file",
     "append_file",
@@ -439,10 +459,33 @@ _WORKER_CONTEXT_ALLOWLIST = frozenset({
     "kanban_block",
 })
 
-# Limite de leitura de arquivo para evitar output enorme.
+# Limite de chars no OUTPUT de read_file (após paginação + numeração de linha).
+# Caracteres são proxy de tokens; ~100K chars ≈ 25-35K tokens.
 _MAX_READ_BYTES = 100_000
+# Ceiling absoluto de tamanho de arquivo que read_file abre (G17.1).
+# Acima disso, mesmo leitura paginada é recusada → use search_text/grep.
+_MAX_FILE_BYTES = 5_000_000
+# Número de linhas lidas por padrão quando 'limit' não é informado (G17.1).
+_DEFAULT_READ_LINES = 2000
 # Limite de resultados de busca.
 _MAX_SEARCH_RESULTS = 50
+
+# G18.4: padrões de nomes de modelos multimodais conhecidos (capability check
+# das tools de visão). Lista generosa; é só um HINT — configurar
+# auxiliary.vision_model sempre bypassa a checagem.
+_MULTIMODAL_PATTERNS = (
+    "gpt-4o", "gpt-4-vision", "gpt-4-turbo", "o1", "o3", "o4",
+    "claude-3", "claude-4", "claude-opus", "claude-sonnet", "claude-haiku",
+    "gemini", "llava", "bakllava", "moondream", "pixtral", "llama-3.2-vision",
+    "llama3.2-vision", "qwen2-vl", "qwen2.5-vl", "qwen-vl", "minicpm-v",
+    "internvl", "phi-3-vision", "phi-3.5-vision", "vision",
+)
+
+
+def _looks_multimodal(model_name: str) -> bool:
+    """Heurística: o nome do modelo parece suportar visão? (G18.4)"""
+    m = (model_name or "").lower()
+    return any(p in m for p in _MULTIMODAL_PATTERNS)
 
 
 def _normalize_tool_context(value: str | None) -> str:
@@ -466,6 +509,7 @@ class ToolRouter:
         web_enabled: bool = False,
         web_config=None,
         llm_client=None,
+        vision_client=None,
         dry_run: bool = False,
         max_tool_calls: int = 500,
         max_retries: int = 3,
@@ -476,6 +520,9 @@ class ToolRouter:
     ):
         self.workspace = Path(workspace).resolve()
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
+        # G18.4: cliente multimodal dedicado (auxiliary.vision_model). As tools de
+        # visão usam ele se presente; senão caem no _llm_client principal.
+        self._vision_client = vision_client
         self._dry_run = dry_run          # SAFETY-002: simula execução sem side effects
         self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
         self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
@@ -489,6 +536,11 @@ class ToolRouter:
             self._audit: "AuditLogger | None" = AuditLogger(logs_dir, session_id)
         else:
             self._audit = None
+        self._recent_messages: list[dict] = []  # G4: context for LLM approval
+        # G17.1: dedup anti-loop de read_file — resolved_path → {key, mtime, hits}
+        self._read_tracker: dict[str, dict] = {}
+        # G17.2: read-before-write — paths (resolvidos) já lidos nesta sessão
+        self._read_paths: set[str] = set()
         self._tools: dict[str, dict] = {
             "list_dir": {
                 "fn": self._list_dir,
@@ -497,8 +549,15 @@ class ToolRouter:
             },
             "read_file": {
                 "fn": self._read_file,
-                "description": f"Le arquivo de texto (limite {_MAX_READ_BYTES // 1024} KB).",
-                "args": {"path": "str — caminho relativo ao workspace (obrigatorio)"},
+                "description": (
+                    "Le arquivo de texto com numeracao de linha e paginacao. "
+                    "Use offset+limit para ler trechos de arquivos grandes."
+                ),
+                "args": {
+                    "path": "str — caminho relativo ao workspace (obrigatorio)",
+                    "offset": f"int — linha inicial 1-indexed (default: 1)",
+                    "limit": f"int — numero de linhas a ler (default: {_DEFAULT_READ_LINES})",
+                },
             },
             "write_file": {
                 "fn": self._write_file,
@@ -937,9 +996,14 @@ class ToolRouter:
         self._browser_page = None   # playwright page ativa
         self._browser_ctx = None    # playwright browser context
         self._browser_pw = None     # playwright instance
+        # G18: Playwright sync e thread-affine. Todas as browser tools rodam
+        # SEMPRE nesta unica thread persistente — senao a pagina criada num
+        # browser_navigate fica presa numa thread morta na call seguinte
+        # (erro "cannot switch to a different thread which happens to have exited").
+        self._browser_executor = None
         self._tools["browser_navigate"] = {
             "fn": self._browser_navigate,
-            "description": "Navega para URL no browser controlado. Requer: pip install playwright && playwright install chromium.",
+            "description": "Abre uma URL num browser real (Playwright) — PESADO e lento. Use SO quando precisar interagir com a pagina (clicar, preencher, JS). Para apenas LER ou BUSCAR informacao, prefira web_search/web_fetch. Requer: pip install playwright && playwright install chromium.",
             "args": {
                 "url": "str — URL completa com https:// (obrigatorio)",
                 "wait_until": "str — load | domcontentloaded | networkidle (default: load)",
@@ -1090,10 +1154,11 @@ class ToolRouter:
         if shell_runner is not None:
             self._tools["run_command"] = {
                 "fn": self._make_run_command(shell_runner),
-                "description": "Executa comando shell controlado (allowlist + denylist + safe_mode).",
+                "description": "Executa comando shell controlado (allowlist + denylist + safe_mode). Use background=true para processos longos (servidores, watch).",
                 "args": {
                     "command": "str — linha de comando (obrigatorio)",
                     "confirm": "bool — bypass safe_mode para risco medio (default: false)",
+                    "background": "bool — roda destacado e retorna PID; acompanhe via tool process (default: false)",
                 },
             }
 
@@ -1103,7 +1168,7 @@ class ToolRouter:
 
             self._tools["web_search"] = {
                 "fn": self._web_search,
-                "description": "Pesquisa na web e retorna resultados com titulos, links e snippets.",
+                "description": "PRIMEIRA ESCOLHA para buscar qualquer informacao/fato na web (noticias, datas, precos, documentacao). Rapido e leve — uma chamada resolve. Use web_fetch para ler uma URL especifica. NAO use browser_navigate para buscar fatos.",
                 "args": {
                     "query": "str — termo de pesquisa (obrigatorio)",
                     "max_results": "int — maximo de resultados (default: 5, max: 10)",
@@ -1128,6 +1193,75 @@ class ToolRouter:
                     "max_chars": "int — limite do corpo da resposta (default: 5000)",
                 },
             }
+
+        # ── G7: Code Intelligence Light ────────────────────────────────────────
+        self._tools["code_symbols"] = {
+            "fn": self._code_symbols,
+            "description": "Lista simbolos (funcoes, classes, variaveis top-level) de um arquivo Python via AST.",
+            "args": {
+                "file": "str — caminho do arquivo .py relativo ao workspace (obrigatorio)",
+            },
+        }
+        self._tools["find_definition"] = {
+            "fn": self._find_definition,
+            "description": "Encontra onde uma funcao ou classe e definida no workspace (busca AST/grep).",
+            "args": {
+                "symbol": "str — nome da funcao ou classe (obrigatorio)",
+                "workspace": "str — diretorio de busca (default: '.')",
+            },
+        }
+        self._tools["get_imports"] = {
+            "fn": self._get_imports,
+            "description": "Lista todos os imports de um arquivo Python.",
+            "args": {
+                "file": "str — caminho do arquivo .py relativo ao workspace (obrigatorio)",
+            },
+        }
+        self._tools["find_usages"] = {
+            "fn": self._find_usages,
+            "description": "Encontra onde um simbolo e usado no workspace (busca grep, multi-linguagem).",
+            "args": {
+                "symbol": "str — nome do simbolo (obrigatorio)",
+                "workspace": "str — diretorio de busca (default: '.')",
+                "file_pattern": "str — glob de extensoes (default: '*.py')",
+            },
+        }
+
+        # ── G15: LSP Tools ─────────────────────────────────────────────────────
+        self._tools["lsp_hover"] = {
+            "fn": self._lsp_hover,
+            "description": "Retorna informacao hover (tipo, doc) para o simbolo na posicao linha:coluna via LSP.",
+            "args": {
+                "file": "str — caminho do arquivo (relativo ao workspace)",
+                "line": "int — numero da linha (0-indexed)",
+                "character": "int — numero da coluna (0-indexed)",
+            },
+        }
+        self._tools["lsp_definitions"] = {
+            "fn": self._lsp_definitions,
+            "description": "Encontra onde um simbolo e definido via LSP (go-to-definition).",
+            "args": {
+                "file": "str — caminho do arquivo",
+                "line": "int — linha do simbolo (0-indexed)",
+                "character": "int — coluna do simbolo (0-indexed)",
+            },
+        }
+        self._tools["lsp_references"] = {
+            "fn": self._lsp_references,
+            "description": "Lista todas as referencias ao simbolo na posicao dada via LSP.",
+            "args": {
+                "file": "str — caminho do arquivo",
+                "line": "int — linha (0-indexed)",
+                "character": "int — coluna (0-indexed)",
+            },
+        }
+        self._tools["lsp_diagnostics"] = {
+            "fn": self._lsp_diagnostics,
+            "description": "Retorna erros e warnings do arquivo via LSP (type checking, lint).",
+            "args": {
+                "file": "str — caminho do arquivo para inspecionar",
+            },
+        }
 
     # --- API pública -----------------------------------------------------------
 
@@ -1228,6 +1362,61 @@ class ToolRouter:
     def reset_call_count(self) -> None:
         """Reseta o contador de chamadas (use no inicio de cada sessão de agent)."""
         self._tool_call_count = 0
+
+    def set_context(self, messages: list[dict], max_messages: int = 6) -> None:
+        """G4: Store recent conversation for LLM approval context."""
+        self._recent_messages = messages[-max_messages:] if len(messages) > max_messages else list(messages)
+
+    def _get_browser_executor(self):
+        """Executor de thread única e persistente para as browser tools (G18).
+
+        Playwright sync é thread-affine: a página/contexto criados num
+        browser_navigate só podem ser dirigidos pela MESMA thread. Como o
+        execute() roda tools com timeout em threads descartáveis, cada call
+        de browser caía numa thread diferente → 'cannot switch to a different
+        thread'. Aqui mantemos um único worker (max_workers=1) vivo pela
+        sessão inteira para que todas as browser tools rodem na mesma thread.
+        """
+        import concurrent.futures as _cf
+        if self._browser_executor is None:
+            self._browser_executor = _cf.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="bauer-browser"
+            )
+        return self._browser_executor
+
+    def close_browser_executor(self) -> None:
+        """Encerra a thread dedicada do browser (chamar no fim da sessão)."""
+        if self._browser_executor is not None:
+            self._browser_executor.shutdown(wait=False)
+            self._browser_executor = None
+
+    def _resolve_vision_client(self, tool: str):
+        """Resolve o cliente para tools de visão (G18.4).
+
+        Preferência: vision_client dedicado (auxiliary.vision_model) → confia
+        na escolha explícita. Senão, usa o llm_client principal, mas só se o
+        modelo parecer multimodal. Levanta ToolError claro e acionável quando
+        não há cliente ou o modelo é text-only — em vez de mandar imagem pra um
+        modelo de texto e receber lixo.
+        """
+        if self._vision_client is not None:
+            return self._vision_client
+        if self._llm_client is None:
+            raise ToolError(
+                f"{tool}: nenhum modelo de visao configurado.\n"
+                "Configure auxiliary.vision_model no config.yaml "
+                "(ex: ollama 'llava', ou gpt-4o/claude/gemini), ou rode num "
+                "fluxo com llm_client."
+            )
+        model = getattr(self._llm_client, "model", "") or ""
+        if not _looks_multimodal(model):
+            raise ToolError(
+                f"{tool}: o modelo ativo ('{model or 'desconhecido'}') nao parece "
+                "suportar visao.\n"
+                "Configure auxiliary.vision_model com um modelo multimodal "
+                "(ex: ollama pull llava; ou gpt-4o/claude/gemini)."
+            )
+        return self._llm_client
 
     def get_tool_schemas(self) -> list[dict]:
         """Retorna schemas de tools no formato OpenAI function calling.
@@ -1376,6 +1565,21 @@ class ToolRouter:
                 ),
             ))
 
+        # G4: LLM approval for high-risk tools (fail-open if aux unavailable)
+        _sec = _TOOL_SECURITY.get(name, {})
+        if _sec.get("approval") and not self._dry_run:
+            try:
+                from .llm_approval import llm_evaluate_tool
+                _approval = llm_evaluate_tool(name, args, self._recent_messages)
+                if not _approval.approved:
+                    return (
+                        f"[LLM Approval Negado] A tool '{name}' foi rejeitada. "
+                        f"Motivo: {_approval.reason}. "
+                        + (f"Sugestão: {_approval.suggestion}" if _approval.suggestion else "")
+                    )
+            except Exception:
+                pass  # approval nunca bloqueia por erro técnico
+
         # Plugin hooks — pre_tool_call
         try:
             from .plugin_hooks import hooks as _hooks
@@ -1393,9 +1597,27 @@ class ToolRouter:
         try:
             # Per-tool timeout enforcement (Wave E)
             _timeout_sec = _TOOL_TIMEOUTS.get(name, 0)
-            if _timeout_sec > 0:
+            _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
+            if name.startswith("browser_"):
+                # G18: TODA browser tool roda na MESMA thread dedicada e persistente.
+                # Playwright sync e thread-affine (greenlet): a pagina criada num
+                # browser_navigate so pode ser dirigida pela thread que a criou.
+                # Tools sem timeout configurado (browser_scroll/back/console/...)
+                # NAO podem rodar inline na thread chamadora — senao da
+                # "greenlet.error: Cannot switch to a different thread".
                 import concurrent.futures as _cf
-                _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
+                _pool = self._get_browser_executor()
+                _future = _pool.submit(_fn, args)
+                _eff_timeout = _timeout_sec if _timeout_sec > 0 else 60
+                try:
+                    result = _future.result(timeout=_eff_timeout)
+                except _cf.TimeoutError as _te:
+                    raise ToolError(
+                        f"Tool '{name}' excedeu o timeout de {_eff_timeout}s. "
+                        "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                    ) from _te
+            elif _timeout_sec > 0:
+                import concurrent.futures as _cf
                 with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
                     _future = _pool.submit(_fn, args)
                     try:
@@ -1440,12 +1662,11 @@ class ToolRouter:
             from .secrets_scanner import scan as _scan_secrets
             scan_result = _scan_secrets(result, redact=True)
             if scan_result.found:
-                import warnings
                 secrets_found = [m["name"] for m in scan_result.matches]
-                warnings.warn(
-                    f"[secrets_scanner] Segredos detectados no output de '{name}': "
-                    f"{', '.join(set(secrets_found))}. Redagidos automaticamente.",
-                    stacklevel=2,
+                logger.info(
+                    "[secrets_scanner] Segredos detectados no output de '%s': %s. "
+                    "Redagidos automaticamente.",
+                    name, ", ".join(sorted(set(secrets_found))),
                 )
                 result = scan_result.redacted_text
         except Exception:
@@ -1456,11 +1677,9 @@ class ToolRouter:
             from .binary_scanner import scan as _scan_binary
             _bin_result = _scan_binary(result)
             if _bin_result.is_suspicious:
-                import warnings
-                warnings.warn(
-                    f"[binary_scanner] Conteúdo suspeito no output de '{name}': "
-                    f"{_bin_result.summary()}",
-                    stacklevel=2,
+                logger.warning(
+                    "[binary_scanner] Conteúdo suspeito no output de '%s': %s",
+                    name, _bin_result.summary(),
                 )
                 if _bin_result.is_binary:
                     result = (
@@ -1599,6 +1818,9 @@ class ToolRouter:
             confirm = args.get("confirm", False)
             if not isinstance(confirm, bool):
                 raise ToolError("run_command: 'confirm' deve ser true ou false.")
+            background = args.get("background", False)
+            if not isinstance(background, bool):
+                raise ToolError("run_command: 'background' deve ser true ou false.")
 
             # Transparência: `bauer <sub>` ou `python -m bauer <sub>`
             #   → `<venv_python> -m bauer.cli <sub> --config <root>/config.yaml`
@@ -1675,6 +1897,55 @@ class ToolRouter:
                         f"Para ler arquivos, prefira a tool 'read_file' com path='{target}'."
                     )
 
+            # ── Modo background (G17.3) ────────────────────────────────────
+            # Lança destacado e registra no mesmo registry da tool 'process'
+            # (start/poll/log/kill). Mantem o gate de seguranca via validate().
+            if background:
+                import subprocess as _sp
+                import threading as _th
+                try:
+                    cmd_args = shell_runner.validate(cmd_str, confirm=confirm)
+                except ShellError as exc:
+                    raise ToolError(str(exc)) from exc
+                try:
+                    proc = _sp.Popen(
+                        cmd_args,
+                        cwd=str(shell_runner.workspace),
+                        stdout=_sp.PIPE, stderr=_sp.PIPE, stdin=_sp.PIPE,
+                        text=True, encoding="utf-8", errors="replace",
+                        shell=False,
+                    )
+                except FileNotFoundError:
+                    raise ToolError(f"Comando nao encontrado: '{cmd_args[0]}'.")
+                except OSError as exc:
+                    raise ToolError(f"Erro ao iniciar background: {exc}") from exc
+
+                pid_str = str(proc.pid)
+                stdout_buf: list[str] = []
+                stderr_buf: list[str] = []
+
+                def _reader(stream, buf):
+                    try:
+                        for line in stream:
+                            buf.append(line)
+                    except Exception:
+                        pass
+
+                _th.Thread(target=_reader, args=(proc.stdout, stdout_buf), daemon=True).start()
+                _th.Thread(target=_reader, args=(proc.stderr, stderr_buf), daemon=True).start()
+                self._processes[pid_str] = {
+                    "proc": proc,
+                    "label": cmd_str[:40],
+                    "command": cmd_str,
+                    "stdout_buf": stdout_buf,
+                    "stderr_buf": stderr_buf,
+                }
+                return (
+                    f"[run_command background] PID {pid_str}: {cmd_str}\n"
+                    f"Acompanhe com process(action='poll'|'log', pid='{pid_str}'); "
+                    f"encerre com process(action='kill', pid='{pid_str}')."
+                )
+
             try:
                 result = shell_runner.run(cmd_str, confirm=confirm)
             except ShellError as exc:
@@ -1716,27 +1987,135 @@ class ToolRouter:
             lines.append(f"  {e.name}{suffix}{size}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _coerce_int(value, default: int, minimum: int) -> int:
+        """Coage value para int >= minimum; default em falha. (G17.1)"""
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return default
+        return n if n >= minimum else default
+
     def _read_file(self, args: dict) -> str:
+        """Le arquivo com paginacao (offset/limit) + numeracao de linha + dedup. (G17.1)
+
+        Espelha o read_file do Hermes/Claude Code:
+          - offset (1-indexed) e limit selecionam uma janela de linhas
+          - cada linha sai prefixada com seu numero (facilita patch/edit)
+          - ceiling de tamanho de arquivo + cap de chars no output
+          - dedup anti-loop: re-leitura identica de arquivo inalterado e bloqueada
+        """
         path = args.get("path")
         if not path:
             raise ToolError("read_file requer 'path'.")
-        p = self._sandbox(str(path))
+        offset = self._coerce_int(args.get("offset", 1), default=1, minimum=1)
+        limit = self._coerce_int(args.get("limit", _DEFAULT_READ_LINES),
+                                 default=_DEFAULT_READ_LINES, minimum=1)
 
+        p = self._sandbox(str(path))
         if not p.exists():
             raise ToolError(f"Arquivo nao encontrado: '{path}'")
         if p.is_dir():
             raise ToolError(f"'{path}' e um diretorio — use list_dir.")
 
-        raw = p.read_bytes()
-        if len(raw) > _MAX_READ_BYTES:
+        size = p.stat().st_size
+        if size > _MAX_FILE_BYTES:
             raise ToolError(
-                f"Arquivo muito grande: {len(raw)} bytes (limite: {_MAX_READ_BYTES}).\n"
-                f"Use search_text para encontrar partes especificas."
+                f"Arquivo muito grande: {size} bytes (limite: {_MAX_FILE_BYTES}).\n"
+                f"Use search_text/regex_search para localizar trechos, "
+                f"ou read_file com offset+limit menores."
             )
+
+        # ── Dedup anti-loop (G17.1) ───────────────────────────────────────
+        # Se o modelo re-le a MESMA janela de um arquivo inalterado, devolve
+        # stub; apos 2 hits, bloqueia para nao queimar o budget de iteracoes.
+        resolved = str(p)
         try:
-            return raw.decode("utf-8")
+            mtime = p.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        key = (offset, limit)
+        tracked = self._read_tracker.get(resolved)
+        if tracked and tracked["key"] == key and tracked["mtime"] == mtime:
+            hits = tracked["hits"] + 1
+            tracked["hits"] = hits
+            if hits >= 2:
+                raise ToolError(
+                    f"BLOQUEADO: read_file('{path}', offset={offset}, limit={limit}) "
+                    f"foi chamado {hits + 1}x e o arquivo NAO mudou. "
+                    "Use o conteudo que voce ja leu — pare de reler o mesmo trecho."
+                )
+            return (
+                f"[read_file] '{path}' inalterado desde a ultima leitura "
+                f"(offset={offset}, limit={limit}). Reaproveite o resultado anterior."
+            )
+
+        raw = p.read_bytes()
+        try:
+            text = raw.decode("utf-8")
         except UnicodeDecodeError:
             raise ToolError(f"'{path}' parece ser binario — read_file so aceita texto UTF-8.")
+
+        lines = text.splitlines()
+        total = len(lines)
+        start = offset - 1
+        if total and start >= total:
+            raise ToolError(
+                f"offset {offset} esta alem do fim do arquivo "
+                f"('{path}' tem {total} linha(s))."
+            )
+        window = lines[start:start + limit]
+        end = start + len(window)  # exclusivo, 0-indexed
+
+        width = max(len(str(end)), 1)
+        body = "\n".join(f"{start + i + 1:>{width}}\t{ln}" for i, ln in enumerate(window))
+
+        if len(body) > _MAX_READ_BYTES:
+            raise ToolError(
+                f"Leitura produziu {len(body)} chars (limite: {_MAX_READ_BYTES}).\n"
+                f"Reduza 'limit' (atual: {limit}) ou avance 'offset' para ler menos linhas."
+            )
+
+        # Registra dedup + read-before-write (G17.2)
+        self._read_tracker[resolved] = {"key": key, "mtime": mtime, "hits": 0}
+        self._read_paths.add(resolved)
+
+        header = f"# {path} — linhas {start + 1}-{end} de {total}"
+        footer = ""
+        if end < total:
+            footer = (
+                f"\n[... +{total - end} linha(s). Continue com "
+                f"read_file('{path}', offset={end + 1}).]"
+            )
+        if not window:
+            return f"{header}\n(arquivo vazio)"
+        return f"{header}\n{body}{footer}"
+
+    # --- read-before-write tracking (G17.2) ------------------------------------
+
+    def _require_prior_read(self, p: Path, path: str, op: str) -> None:
+        """Exige que um arquivo existente tenha sido lido antes de ser editado.
+
+        Evita edicao/sobrescrita cega — o modelo precisa ter visto o conteudo
+        atual (via read_file) nesta sessao. Arquivos novos sao isentos.
+        """
+        if str(p) not in self._read_paths:
+            raise ToolError(
+                f"{op}: '{path}' existe mas nao foi lido nesta sessao.\n"
+                f"Leia com read_file('{path}') antes de edita-lo — "
+                "editar as cegas corrompe arquivos."
+            )
+
+    def _mark_written(self, p: Path) -> None:
+        """Apos escrever, o arquivo conta como 'lido' para o gate de
+        read-before-write (o modelo conhece o conteudo que acabou de gravar).
+
+        Limpa qualquer estado de dedup do arquivo: o conteudo mudou, entao a
+        proxima read_file deve retornar conteudo real (nao um stub 'inalterado').
+        """
+        resolved = str(p)
+        self._read_paths.add(resolved)
+        self._read_tracker.pop(resolved, None)
 
     def _write_file(self, args: dict) -> str:
         path = args.get("path")
@@ -1758,10 +2137,14 @@ class ToolRouter:
                 f"Leia o arquivo com read_file antes de sobrescrever.\n"
                 f"Para sobrescrever: adicione \"overwrite\": true nos args."
             )
+        # G17.2: sobrescrever arquivo existente exige leitura previa.
+        if p.exists() and overwrite:
+            self._require_prior_read(p, str(path), "write_file (overwrite)")
 
         p.parent.mkdir(parents=True, exist_ok=True)
         text = str(content)
         p.write_text(text, encoding="utf-8")
+        self._mark_written(p)
         result = f"Gravado: '{path}' ({len(text)} chars)"
         # Verificação pós-write: o modelo recebe o erro de sintaxe IMEDIATAMENTE
         # em vez de descobrir 3 tool calls depois ao tentar executar o arquivo.
@@ -2294,6 +2677,10 @@ class ToolRouter:
         if p.is_dir():
             raise ToolError(f"'{path}' e um diretorio — use em arquivos.")
 
+        # Nota (G17.2): patch NAO exige read_file previo — o match exato e unico
+        # de old_string ja e o gate (nao da pra editar as cegas: se nao bater,
+        # falha). Read-before-write fica so no write_file overwrite (sem gate).
+
         try:
             original = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -2313,6 +2700,7 @@ class ToolRouter:
 
         updated = original.replace(old_string, new_string, 1)
         p.write_text(updated, encoding="utf-8")
+        self._mark_written(p)  # G17.2: conteudo mudou, modelo viu o diff
 
         # Diff compacto para rastreabilidade
         diff_lines = list(difflib.unified_diff(
@@ -2772,21 +3160,16 @@ class ToolRouter:
             ],
         }
 
-        # Usa llm_client se disponível
-        if self._llm_client is not None:
-            try:
-                from .agent import run_one_turn
-                response = run_one_turn(self._llm_client, [message], tools=None)
-                return response
-            except Exception as exc:
-                raise ToolError(f"vision_analyze: erro ao chamar modelo: {exc}")
-
-        raise ToolError(
-            "vision_analyze requer um cliente LLM configurado com suporte a visao.\n"
-            "Providers suportados: OpenAI (gpt-4o), Anthropic (claude-3-*), "
-            "Google (gemini-*), OpenRouter.\n"
-            "Configure no config.yaml e reinicie o agente."
-        )
+        # G18.4: usa o cliente de visão resolvido (vision_model dedicado ou
+        # llm_client principal se multimodal). Erro claro e acionável se nenhum.
+        vision_client = self._resolve_vision_client("vision_analyze")
+        try:
+            from .agent import run_one_turn
+            return run_one_turn(vision_client, [message], tools=None)
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"vision_analyze: erro ao chamar modelo: {exc}")
 
     # --- channel_send / channel_list — Bauer Gateway ----------------------------
 
@@ -2905,6 +3288,162 @@ class ToolRouter:
         if not result.get("success"):
             raise ToolError(f"Transcrição falhou: {result.get('error')}")
         return f"[{result.get('provider')}] {result['transcript']}"
+
+    # --- G7: Code Intelligence Light ------------------------------------------
+
+    def _code_symbols(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        if not file_rel:
+            raise ToolError("code_symbols requer 'file'.")
+        from .code_intelligence import get_python_symbols
+        path = self._sandbox(file_rel)
+        if not path.exists():
+            raise ToolError(f"Arquivo nao encontrado: '{file_rel}'")
+        result = get_python_symbols(str(path))
+        if "error" in result:
+            return f"[Erro de parse] {result['error']}"
+        lines: list[str] = []
+        for fn in result.get("functions", []):
+            async_prefix = "async " if fn.get("is_async") else ""
+            args_str = ", ".join(fn.get("args", []))
+            lines.append(f"  func  L{fn['line']:4d}  {async_prefix}{fn['name']}({args_str})")
+        for cls in result.get("classes", []):
+            bases = ", ".join(cls.get("bases", []))
+            base_str = f"({bases})" if bases else ""
+            lines.append(f"  class L{cls['line']:4d}  {cls['name']}{base_str}")
+        for var in result.get("variables", []):
+            lines.append(f"  var   L{var['line']:4d}  {var['name']}")
+        if not lines:
+            return f"Nenhum simbolo encontrado em '{file_rel}'"
+        return f"[Simbolos de {file_rel}]\n" + "\n".join(lines)
+
+    def _find_definition(self, args: dict) -> str:
+        symbol = str(args.get("symbol", "")).strip()
+        workspace = str(args.get("workspace", ".")).strip() or "."
+        if not symbol:
+            raise ToolError("find_definition requer 'symbol'.")
+        from .code_intelligence import find_symbol_definitions
+        root = self._sandbox(workspace)
+        results = find_symbol_definitions(symbol, str(root))
+        if not results:
+            return f"Definicao de '{symbol}' nao encontrada em '{workspace}'"
+        lines = [f"  {r['type']:8s} L{r['line']:4d}  {r['file']}\n            {r['signature']}"
+                 for r in results]
+        return f"[Definicoes de '{symbol}']\n" + "\n".join(lines)
+
+    def _get_imports(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        if not file_rel:
+            raise ToolError("get_imports requer 'file'.")
+        from .code_intelligence import get_imports
+        path = self._sandbox(file_rel)
+        if not path.exists():
+            raise ToolError(f"Arquivo nao encontrado: '{file_rel}'")
+        imports = get_imports(str(path))
+        if not imports:
+            return f"Nenhum import encontrado em '{file_rel}'"
+        return f"[Imports de {file_rel}]\n" + "\n".join(f"  {imp}" for imp in imports)
+
+    def _find_usages(self, args: dict) -> str:
+        symbol = str(args.get("symbol", "")).strip()
+        workspace = str(args.get("workspace", ".")).strip() or "."
+        file_pattern = str(args.get("file_pattern", "*.py")).strip() or "*.py"
+        if not symbol:
+            raise ToolError("find_usages requer 'symbol'.")
+        from .code_intelligence import get_call_sites
+        root = self._sandbox(workspace)
+        results = get_call_sites(symbol, str(root), file_pattern=file_pattern)
+        if not results:
+            return f"Nenhum uso de '{symbol}' encontrado em '{workspace}'"
+        lines = [f"  {r['file']}:{r['line']}: {r['context']}" for r in results]
+        return f"[Usos de '{symbol}']\n" + "\n".join(lines)
+
+    # --- G15: LSP Tools --------------------------------------------------------
+
+    def _lsp_call(self, method: str, file_rel: str, line: int, char: int) -> dict | list | None:
+        """Helper: run an LSP async call synchronously using asyncio."""
+        import asyncio
+        from pathlib import Path
+        from .lsp.servers import server_for_file
+        from .lsp.manager import get_or_start
+
+        file_abs = self._sandbox(file_rel)
+        server_cfg = server_for_file(str(file_abs))
+        if server_cfg is None:
+            return None
+
+        workspace = str(self.workspace)
+        file_uri = file_abs.as_uri()
+
+        async def _run():
+            mgr = await get_or_start(server_cfg, workspace)
+            if mgr is None:
+                return None
+            client = mgr.client()
+            if method == "hover":
+                return await client.hover(file_uri, line, char)
+            if method == "definitions":
+                return await client.definitions(file_uri, line, char)
+            if method == "references":
+                return await client.references(file_uri, line, char)
+            if method == "diagnostics":
+                return await client.diagnostics(file_uri)
+            return None
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            return loop.run_until_complete(_run())
+        except RuntimeError:
+            # Already in async context — can't run_until_complete
+            return None
+        except Exception:
+            return None
+
+    def _lsp_hover(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        line = int(args.get("line", 0))
+        char = int(args.get("character", 0))
+        if not file_rel:
+            raise ToolError("lsp_hover requer 'file'.")
+        result = self._lsp_call("hover", file_rel, line, char)
+        if result is None:
+            server_hint = "pyright" if file_rel.endswith(".py") else "typescript-language-server"
+            return json.dumps({"error": "LSP server not running", "hint": f"pip/npm install {server_hint}"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_definitions(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        line = int(args.get("line", 0))
+        char = int(args.get("character", 0))
+        if not file_rel:
+            raise ToolError("lsp_definitions requer 'file'.")
+        result = self._lsp_call("definitions", file_rel, line, char)
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_references(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        line = int(args.get("line", 0))
+        char = int(args.get("character", 0))
+        if not file_rel:
+            raise ToolError("lsp_references requer 'file'.")
+        result = self._lsp_call("references", file_rel, line, char)
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_diagnostics(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        if not file_rel:
+            raise ToolError("lsp_diagnostics requer 'file'.")
+        result = self._lsp_call("diagnostics", file_rel, 0, 0)
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
 
     # --- mcp_call --------------------------------------------------------------
 
@@ -3563,11 +4102,10 @@ class ToolRouter:
             raise ToolError("video_analyze requer 'video' (URL ou path).")
         if not query:
             raise ToolError("video_analyze requer 'query'.")
-        if self._llm_client is None:
-            raise ToolError(
-                "video_analyze requer llm_client configurado com suporte a visao.\n"
-                "Providers suportados: Gemini (gemini-*), OpenAI (gpt-4o)."
-            )
+        # G18.4: o gate de visão (modelo dedicado ou principal multimodal) é
+        # aplicado nos helpers, no ponto da chamada ao modelo — depois da
+        # validação de formato/dependências, para que erros de input venham
+        # antes do erro de capability.
 
         # ── Estratégia 1: URL → provider nativo ─────────────────────────────
         if video.startswith(("http://", "https://")):
@@ -3614,7 +4152,7 @@ class ToolRouter:
         }
         try:
             from .agent import run_one_turn
-            result = run_one_turn(self._llm_client, [message], tools=None)
+            result = run_one_turn(self._resolve_vision_client("video_analyze"), [message], tools=None)
             return f"[video_analyze — URL]\n{result}"
         except Exception as exc:
             raise ToolError(
@@ -3669,7 +4207,7 @@ class ToolRouter:
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-                resp = run_one_turn(self._llm_client, [msg], tools=None)
+                resp = run_one_turn(self._resolve_vision_client("video_analyze"), [msg], tools=None)
                 frame_analyses.append(f"[{timestamp_s:.1f}s] {str(resp)[:300]}")
             except Exception as exc:
                 frame_analyses.append(f"[{timestamp_s:.1f}s] [erro: {exc}]")
@@ -3699,7 +4237,7 @@ class ToolRouter:
                         "Sintetize uma resposta final coerente sobre o vídeo completo."
                     ),
                 }
-                synthesis = run_one_turn(self._llm_client, [synth_msg], tools=None)
+                synthesis = run_one_turn(self._resolve_vision_client("video_analyze"), [synth_msg], tools=None)
                 lines.append("\nSíntese:")
                 lines.append(str(synthesis)[:600])
             except Exception:
@@ -3735,7 +4273,7 @@ class ToolRouter:
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-                resp = run_one_turn(self._llm_client, [msg], tools=None)
+                resp = run_one_turn(self._resolve_vision_client("video_analyze"), [msg], tools=None)
                 frame_analyses.append(f"[frame {idx}] {str(resp)[:300]}")
             except Exception as exc:
                 frame_analyses.append(f"[frame {idx}] [erro: {exc}]")
@@ -4855,8 +5393,7 @@ class ToolRouter:
         query = str(args.get("query", "")).strip()
         if not query:
             raise ToolError("browser_vision: 'query' é obrigatório.")
-        if self._llm_client is None:
-            raise ToolError("browser_vision: llm_client não configurado.")
+        vision_client = self._resolve_vision_client("browser_vision")  # G18.4
         page = self._ensure_browser()
         try:
             screenshot_bytes = page.screenshot(full_page=False)
@@ -4875,7 +5412,7 @@ class ToolRouter:
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }
-            return str(run_one_turn(self._llm_client, [msg], tools=None))
+            return str(run_one_turn(vision_client, [msg], tools=None))
         except Exception as exc:
             raise ToolError(f"browser_vision: falha na análise — {exc}") from exc
 

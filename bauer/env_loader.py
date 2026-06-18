@@ -204,3 +204,36 @@ def apply_env_to_config(cfg) -> None:
         cfg.vertex.project_id = project
     if region := os.environ.get("VERTEX_REGION"):
         cfg.vertex.region = region
+
+    # --- G16a: new providers ---
+    if key := os.environ.get("REPLICATE_API_KEY"):
+        cfg.replicate.api_key = key
+
+    if key := os.environ.get("NOVITA_API_KEY"):
+        cfg.novita.api_key = key
+
+    if key := os.environ.get("AI21_API_KEY"):
+        cfg.ai21.api_key = key
+
+    if key := os.environ.get("ANYSCALE_API_KEY"):
+        cfg.anyscale.api_key = key
+
+    if key := os.environ.get("FEATHERLESS_API_KEY"):
+        cfg.featherless.api_key = key
+
+    if key := os.environ.get("HYPERBOLIC_API_KEY"):
+        cfg.hyperbolic.api_key = key
+
+    if key := os.environ.get("INFERENCE_API_KEY"):
+        cfg.inference.api_key = key
+
+    if key := os.environ.get("NCOMPASS_API_KEY"):
+        cfg.ncompass.api_key = key
+
+    if key := os.environ.get("CLOUDFLARE_API_KEY"):
+        cfg.cloudflare.api_key = key
+    if account_id := os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+        cfg.cloudflare.account_id = account_id
+
+    if key := os.environ.get("LEPTON_API_KEY"):
+        cfg.lepton.api_key = key

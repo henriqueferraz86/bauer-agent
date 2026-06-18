@@ -365,6 +365,108 @@ class VertexSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=600, default=120)
 
 
+class ReplicateSection(_StrictSection):
+    """Replicate — run open-source models in the cloud.
+
+    Endpoint: https://api.replicate.com/v1 (OpenAI-compatible)
+    Env var:  REPLICATE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class NovitaSection(_StrictSection):
+    """Novita AI — cost-effective inference for open-source LLMs.
+
+    Endpoint: https://api.novita.ai/v3/openai (OpenAI-compatible)
+    Env var:  NOVITA_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class AI21Section(_StrictSection):
+    """AI21 Labs — Jamba and Jurassic models.
+
+    Endpoint: https://api.ai21.com/studio/v1 (OpenAI-compatible)
+    Env var:  AI21_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class AnyscaleSection(_StrictSection):
+    """Anyscale Endpoints — open-source LLMs via Ray infrastructure.
+
+    Endpoint: https://api.endpoints.anyscale.com/v1 (OpenAI-compatible)
+    Env var:  ANYSCALE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class FeatherlessSection(_StrictSection):
+    """Featherless AI — lightweight serverless inference.
+
+    Endpoint: https://api.featherless.ai/v1 (OpenAI-compatible)
+    Env var:  FEATHERLESS_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class HyperbolicSection(_StrictSection):
+    """Hyperbolic — GPU-efficient inference at scale.
+
+    Endpoint: https://api.hyperbolic.xyz/v1 (OpenAI-compatible)
+    Env var:  HYPERBOLIC_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class InferenceSection(_StrictSection):
+    """Inference.net — fast and affordable LLM inference.
+
+    Endpoint: https://api.inference.net/v1 (OpenAI-compatible)
+    Env var:  INFERENCE_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class NcompassSection(_StrictSection):
+    """Ncompass — enterprise-grade LLM serving.
+
+    Endpoint: https://api.ncompass.tech/v1 (OpenAI-compatible)
+    Env var:  NCOMPASS_API_KEY
+    """
+    api_key: str = ""
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class CloudflareSection(_StrictSection):
+    """Cloudflare Workers AI — run AI at the edge globally.
+
+    Endpoint: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
+    Env vars: CLOUDFLARE_API_KEY, CLOUDFLARE_ACCOUNT_ID
+    """
+    api_key: str = ""
+    account_id: str = ""    # Cloudflare Account ID (or CLOUDFLARE_ACCOUNT_ID)
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
+class LeptonSection(_StrictSection):
+    """Lepton AI — model serving with simple Python API.
+
+    Endpoint: https://llama3-1-8b.lepton.run/api/v1 (model-specific subdomain)
+    Env var:  LEPTON_API_KEY
+    """
+    api_key: str = ""
+    subdomain: str = ""     # model-specific subdomain (e.g. "llama3-1-8b")
+    timeout_seconds: int = Field(ge=1, le=600, default=60)
+
+
 class ModelSection(_StrictSection):
     provider: Literal[
         "ollama", "openai", "openrouter", "opencode", "custom",
@@ -374,6 +476,10 @@ class ModelSection(_StrictSection):
         "cohere", "perplexity", "fireworks", "huggingface",
         "cerebras", "sambanova", "nvidia", "lmstudio",
         "databricks", "moonshot", "alibaba", "vertex",
+        # G16a — new providers
+        "replicate", "novita", "ai21", "anyscale",
+        "featherless", "hyperbolic", "inference", "ncompass",
+        "cloudflare", "lepton",
     ] = "ollama"
     name: str
     requested_context: int = Field(ge=512, le=1_000_000, default=8192)
@@ -504,27 +610,36 @@ class AuxiliarySection(_StrictSection):
     """Auxiliary LLM slots — cheap/fast models for routine subtasks.
 
     Each slot is consumed by a specific Bauer subsystem:
-      - `kanban_decomposer` — kanban_decompose.decompose_task() (Wave 3)
-      - `triage_specifier`  — kanban_specify.specify_task() (Wave 3)
-      - `compression_model` — context compression (future)
+      - `kanban_decomposer`  — kanban_decompose.decompose_task() (Wave 3)
+      - `triage_specifier`   — kanban_specify.specify_task() (Wave 3)
+      - `compression_model`  — context compression
+      - `background_reviewer`— background_review (G10)
+      - `approval_model`     — llm_approval de tools de alto risco (G4)
+      - `vision_model`       — tools de visão: browser_vision/vision_analyze/
+                               video_analyze (G18.4; ex: ollama 'llava')
 
     All slots default to empty → the main `model.name` is used. This keeps
     the system working out of the box; users opt-in to per-slot routing as
     they tune for cost.
     """
-    kanban_decomposer: AuxiliarySlot = AuxiliarySlot()
-    triage_specifier:  AuxiliarySlot = AuxiliarySlot()
-    compression_model: AuxiliarySlot = AuxiliarySlot()
+    kanban_decomposer:  AuxiliarySlot = AuxiliarySlot()
+    triage_specifier:   AuxiliarySlot = AuxiliarySlot()
+    compression_model:  AuxiliarySlot = AuxiliarySlot()
+    background_reviewer: AuxiliarySlot = AuxiliarySlot()
+    approval_model:     AuxiliarySlot = AuxiliarySlot()
+    vision_model:       AuxiliarySlot = AuxiliarySlot()
 
 
 class WebSection(_StrictSection):
     """Configuração de backends web para web_search e web_fetch.
 
     Backends de busca (search_backend):
-      auto     — auto-detecção: brave → searxng → ddgs  (padrão)
-      ddgs     — DuckDuckGo via biblioteca ddgs (sem config)
-      searxng  — SearXNG self-hosted (requer searxng_url)
-      brave    — Brave Search API (requer brave_api_key ou BRAVE_API_KEY no .env)
+      auto      — auto-detecção: brave → searxng → ddgs → wikipedia  (padrão)
+      ddgs      — DuckDuckGo via biblioteca ddgs (open, sem chave; requer pip install ddgs)
+      searxng   — SearXNG self-hosted (open-source/AGPL, metabusca; requer searxng_url)
+      wikipedia — Wikipedia MediaWiki API (open/CC BY-SA, sem chave, sem dependência;
+                  preciso para fatos/entidades; é o fallback garantido do auto)
+      brave     — Brave Search API (requer brave_api_key ou BRAVE_API_KEY no .env)
 
     Backends de extração (extract_backend):
       auto     — auto-detecção: crawl4ai → httpx  (padrão)
@@ -535,6 +650,7 @@ class WebSection(_StrictSection):
     extract_backend: str = "auto"
     searxng_url: str = "http://localhost:8080"
     brave_api_key: str = ""          # ou BRAVE_API_KEY no .env
+    wikipedia_lang: str = "en"       # idioma da Wikipedia (en = mais completa; pt, es, ...)
     max_results: int = Field(ge=1, le=20, default=5)
     max_chars: int = Field(ge=100, le=50_000, default=5000)
     timeout_seconds: int = Field(ge=1, le=60, default=15)
@@ -606,6 +722,17 @@ class BauerConfig(_StrictSection):
     moonshot: MoonshotSection = MoonshotSection()
     alibaba: AlibabaSection = AlibabaSection()
     vertex: VertexSection = VertexSection()
+    # G16a — new providers
+    replicate: ReplicateSection = ReplicateSection()
+    novita: NovitaSection = NovitaSection()
+    ai21: AI21Section = AI21Section()
+    anyscale: AnyscaleSection = AnyscaleSection()
+    featherless: FeatherlessSection = FeatherlessSection()
+    hyperbolic: HyperbolicSection = HyperbolicSection()
+    inference: InferenceSection = InferenceSection()
+    ncompass: NcompassSection = NcompassSection()
+    cloudflare: CloudflareSection = CloudflareSection()
+    lepton: LeptonSection = LeptonSection()
     runtime: RuntimeSection = RuntimeSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()

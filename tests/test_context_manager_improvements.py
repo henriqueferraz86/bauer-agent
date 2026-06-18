@@ -304,7 +304,7 @@ class TestAutoSummarizeIntegration:
             f"usage_pct={ctx.usage_pct:.2f} deve ser >= threshold={ctx.effective_threshold:.2f}"
         )
         ctx._auto_summarize()
-        has_summary = any("[Resumo" in m.get("content", "") for m in ctx.messages)
+        has_summary = any("CONTEXT COMPACTION" in m.get("content", "") for m in ctx.messages)
         assert has_summary
 
     def test_trim_never_removes_last_message(self):

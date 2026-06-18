@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import importlib.util
+
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 
 # ─── AgentRegistry.match / auto_select ───────────────────────────────────────
@@ -120,6 +124,7 @@ class TestAgentRegistryMatch:
 
 # ─── Orchestrator list_saved_progress ────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestOrchestratorListProgress:
     def _make_orch(self, tmp_path: Path):
         from bauer.orchestrator import AgentOrchestrator, OrchestratorConfig

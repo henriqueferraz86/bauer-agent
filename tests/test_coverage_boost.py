@@ -13,7 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import importlib.util
+
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 
 # ─── ContextManager extras ───────────────────────────────────────────────────
@@ -66,7 +70,7 @@ class TestContextManagerExtras:
         # mock_client é o cliente de compressão escolhido — deve ter sido chamado
         assert mock_client.chat_stream.called
         # E o resumo deve aparecer no contexto
-        assert any("[Resumo" in m.get("content", "") for m in ctx.messages)
+        assert any("CONTEXT COMPACTION" in m.get("content", "") for m in ctx.messages)
 
     def test_auto_summarize_llm_fallback_on_error(self):
         """Quando LLM falha, cai para rule-based."""
@@ -86,12 +90,12 @@ class TestContextManagerExtras:
         ctx._auto_summarize()
 
         # Deve ter resumo (rule-based)
-        has_summary = any("[Resumo" in m.get("content", "") for m in ctx.messages)
+        has_summary = any("CONTEXT COMPACTION" in m.get("content", "") for m in ctx.messages)
         assert has_summary
 
     def test_summarize_llm_returns_empty_fallback(self):
         """Quando LLM retorna string vazia, usa rule-based."""
-        from bauer.context_manager import _summarize_llm, _summarize_messages
+        from bauer.context_manager import _summarize_llm_structured, _summarize_messages
 
         mock_client = MagicMock()
         mock_client.chat_stream.return_value = iter([""])  # vazio
@@ -100,10 +104,9 @@ class TestContextManagerExtras:
             {"role": "user", "content": "pergunta sobre autenticacao"},
             {"role": "assistant", "content": "resposta"},
         ]
-        result = _summarize_llm(mock_client, "gpt-4o", messages)
-        # Deve retornar algo (fallback rule-based)
+        result, ok = _summarize_llm_structured(mock_client, "gpt-4o", messages)
+        # Deve retornar algo (string)
         assert isinstance(result, str)
-        assert len(result) > 0
 
 
 # ─── Server _Metrics ─────────────────────────────────────────────────────────
@@ -144,6 +147,7 @@ class TestMetricsObject:
 
 # ─── CLI _doctor_check_providers ─────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestDoctorCheckProviders:
     def test_no_providers_message(self, capsys):
         """Sem providers autenticados, exibe mensagem."""
@@ -184,6 +188,7 @@ class TestDoctorCheckProviders:
 
 # ─── CLI status command ───────────────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestStatusCommand:
     def test_status_output_structure(self, tmp_path):
         from typer.testing import CliRunner

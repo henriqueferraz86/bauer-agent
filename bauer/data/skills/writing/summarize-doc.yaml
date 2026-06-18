@@ -1,0 +1,22 @@
+name: Summarize Document
+description: Como resumir documentos longos preservando os pontos essenciais.
+content: '# Resumir documento
+
+
+  ## Processo
+
+  1. Leia o documento inteiro antes de resumir.
+
+  2. Identifique a tese e os 3-5 pontos de apoio.
+
+  3. Descarte exemplos e repeticoes.
+
+
+  ## Formatos
+
+  - TL;DR (1 frase). Bullets (3-7). Resumo executivo (1 paragrafo).
+
+
+  ## Regras
+
+  - Substancialmente menor e diferente do original. Preserve numeros e decisoes.'

@@ -1,0 +1,23 @@
+name: Proofread
+description: 'Checklist de revisao de texto: gramatica, clareza, consistencia e tom.'
+content: '# Revisao de texto
+
+
+  ## Gramatica
+
+  - Concordancia, pontuacao, acentuacao e crase.
+
+
+  ## Clareza
+
+  - Uma ideia por frase. Remova redundancias. Frases > 25 palavras: quebre.
+
+
+  ## Consistencia
+
+  - Terminologia uniforme, tempo verbal, formatos de numero/data.
+
+
+  ## Tom
+
+  - Adequado ao publico. Voz ativa predomina.'

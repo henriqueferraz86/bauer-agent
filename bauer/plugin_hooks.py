@@ -160,3 +160,64 @@ class HookRegistry:
 
 # Singleton global — importado por qualquer módulo que queira disparar eventos
 hooks = HookRegistry()
+
+
+# ── G5: Plugin-based MemoryProvider discovery ─────────────────────────────────
+
+def load_memory_providers(plugin_dir: Path | None = None) -> list:
+    """Discover MemoryProvider subclasses from ~/.bauer/plugins/*.py.
+
+    Loads each plugin file, scans for concrete MemoryProvider subclasses
+    (not abstract, not MemoryProvider itself), instantiates them, and returns
+    the list. Errors per-file are logged and skipped — never fatal.
+
+    Returns:
+        List of instantiated MemoryProvider objects from plugins.
+    """
+    from .memory_provider import MemoryProvider
+
+    if plugin_dir is None:
+        plugin_dir = Path.home() / ".bauer" / "plugins"
+
+    if not plugin_dir.exists():
+        return []
+
+    providers: list[MemoryProvider] = []
+    for plugin_path in sorted(plugin_dir.glob("*.py")):
+        plugin_name = plugin_path.stem
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"bauer_plugin_{plugin_name}", plugin_path
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"bauer_plugin_{plugin_name}"] = module
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+
+            for attr_name in dir(module):
+                obj = getattr(module, attr_name, None)
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, MemoryProvider)
+                    and obj is not MemoryProvider
+                    and not getattr(obj, "__abstractmethods__", None)
+                ):
+                    try:
+                        providers.append(obj())
+                        log.info(
+                            "plugin_hooks: MemoryProvider '%s' from '%s' loaded.",
+                            attr_name, plugin_name,
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "plugin_hooks: failed to instantiate '%s': %s",
+                            attr_name, exc,
+                        )
+        except Exception as exc:
+            log.warning(
+                "plugin_hooks: failed to load plugin '%s': %s",
+                plugin_name, exc,
+            )
+
+    return providers

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 from bauer.tool_router import ToolRouter, ToolError, SandboxError
 
@@ -120,11 +123,20 @@ class TestToolRouterWebSearch:
         with pytest.raises(ToolError, match="query"):
             router._web_search({})
 
-    def test_web_search_ddgs_not_installed(self, tmp_path: Path):
+    def test_web_search_sem_ddgs_cai_em_wikipedia(self, tmp_path: Path):
+        # G18.3: sem ddgs/brave/searxng, web_search cai no fallback Wikipedia.
+        import os
         router = ToolRouter(workspace=tmp_path, web_enabled=True)
-        with patch.dict("sys.modules", {"ddgs": None}):
-            with pytest.raises(ToolError, match="ddgs"):
-                router._web_search({"query": "python testing"})
+        wiki_resp = MagicMock()
+        wiki_resp.json.return_value = {"query": {"search": [
+            {"title": "Software testing", "snippet": "testing"}
+        ]}}
+        wiki_resp.raise_for_status = MagicMock()
+        with patch("bauer.web.dispatcher._package_available", return_value=False), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "", "SEARXNG_URL": ""}), \
+             patch("httpx.get", return_value=wiki_resp):
+            out = router._web_search({"query": "python testing"})
+        assert "wikipedia" in out.lower()
 
     def test_web_search_ddgs_exception(self, tmp_path: Path):
         router = ToolRouter(workspace=tmp_path, web_enabled=True)
@@ -421,6 +433,7 @@ class TestSelfTunerMissingLines:
 
 # ─── CLI utility functions ────────────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestCliUtilities:
     def _make_config_file(self, tmp_path: Path) -> Path:
         config = {
@@ -523,6 +536,7 @@ class TestCliUtilities:
 
 # ─── CLI commands via Typer runner ───────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestCliCommands:
     def _make_files(self, tmp_path: Path) -> tuple[Path, Path]:
         config = {

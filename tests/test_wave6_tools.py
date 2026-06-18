@@ -35,6 +35,7 @@ def mock_client():
     client = MagicMock()
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "test-key"
+    client.model = "gpt-4o"  # G18.4: multimodal p/ tools de visão
     return client
 
 
@@ -906,7 +907,9 @@ class TestRegistro57Tools:
 
     def test_total_61_tools(self, ws):
         router = ToolRouter(workspace=ws, web_enabled=True)
-        assert len(router._tools) == 61
+        # Lower-bound: o conjunto cresceu (G7 code-intel, G15 LSP, etc.).
+        # >= em vez de == para nao quebrar a cada nova tool registrada.
+        assert len(router._tools) >= 61
 
     def test_skills_registradas(self, ws):
         router = ToolRouter(workspace=ws)

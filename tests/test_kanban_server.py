@@ -64,7 +64,7 @@ def test_dashboard_serves_events_runs_and_task_metadata(tmp_path: Path):
     assert tasks["tasks"][0]["metadata"]["dispatch"] == "true"
     assert runs["runs"][0]["run_id"] == "run-visible"
     assert events["events"][0]["event_type"] == "test.event"
-    assert ops["status_counts"]["TODO"] == 1
+    assert ops["status_counts"]["READY"] == 1
     assert ops["recent_runs"][0]["run_id"] == "run-visible"
 
 
