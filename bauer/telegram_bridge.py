@@ -391,6 +391,7 @@ class TelegramBridge(BaseBridge):
         poll_interval: float = 2.0,
         max_msgs_per_minute: int = 20,
         state_dir: str | Path = "workspace/.bauer_gateway",
+        model_allowlist: list[str] | None = None,
     ) -> None:
         super().__init__(backend, RateLimiter(max_msgs_per_minute))
         self.token = token
@@ -407,6 +408,8 @@ class TelegramBridge(BaseBridge):
         )
         # Estado do model picker por chat: {"providers": [...], "models": {...}}
         self._picker_state: dict[str, dict] = {}
+        # Filtro de modelos visíveis no /model — lista vazia = sem filtro
+        self._model_allowlist: list[str] = list(model_allowlist or [])
 
     # ── API Telegram ───────────────────────────────────────────────────────
 
@@ -679,6 +682,10 @@ class TelegramBridge(BaseBridge):
         models = state.setdefault("models", {}).get(provider)
         if models is None:
             models = self.backend._models_for_provider(provider)
+            if self._model_allowlist:
+                models = [m for m in models if m in self._model_allowlist]
+                if not models:
+                    models = [m for m in self._model_allowlist]
             state["models"][provider] = models
         try:
             from .provider_profile import get_profile
@@ -969,6 +976,7 @@ def build_bridge_from_config(cfg, backend: AgentBackend | None = None) -> Telegr
         poll_interval=cfg.telegram.poll_interval,
         max_msgs_per_minute=cfg.telegram.max_msgs_per_minute,
         state_dir=workspace / ".bauer_gateway",
+        model_allowlist=cfg.telegram.model_allowlist or [],
     )
 
 

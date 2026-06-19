@@ -670,6 +670,7 @@ class TelegramSection(_StrictSection):
     allow_all: bool = False              # true = responde qualquer usuário (cuidado)
     poll_interval: float = Field(ge=0.5, le=60.0, default=2.0)
     max_msgs_per_minute: int = Field(ge=1, le=600, default=20)
+    model_allowlist: list[str] = Field(default_factory=list)  # se preenchida, só esses modelos aparecem no /model
 
 
 class DiscordSection(_StrictSection):
