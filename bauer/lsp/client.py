@@ -129,6 +129,82 @@ class LspClient:
             logger.debug("LSP diagnostics failed: %s", exc)
             return []
 
+    async def did_open(self, file_uri: str, language_id: str, text: str) -> None:
+        """Notify server that a document was opened (textDocument/didOpen)."""
+        await self._notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": language_id,
+                "version": 1,
+                "text": text,
+            }
+        })
+
+    async def did_close(self, file_uri: str) -> None:
+        """Notify server that a document was closed."""
+        await self._notify("textDocument/didClose", {
+            "textDocument": {"uri": file_uri}
+        })
+
+    async def workspace_symbols(self, query: str) -> list[dict]:
+        """Search all symbols in the workspace matching query."""
+        try:
+            result = await self._send("workspace/symbol", {"query": query})
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as exc:
+            logger.debug("LSP workspace/symbol failed: %s", exc)
+            return []
+
+    async def completion(
+        self, file_uri: str, line: int, character: int
+    ) -> list[dict]:
+        """Request completion items at the given position."""
+        try:
+            result = await self._send("textDocument/completion", {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line, "character": character},
+                "context": {"triggerKind": 1},
+            })
+            if result is None:
+                return []
+            if isinstance(result, list):
+                return result
+            # CompletionList format
+            return result.get("items", []) if isinstance(result, dict) else []
+        except Exception as exc:
+            logger.debug("LSP completion failed: %s", exc)
+            return []
+
+    async def code_actions(
+        self,
+        file_uri: str,
+        start_line: int,
+        start_char: int,
+        end_line: int,
+        end_char: int,
+        diagnostics: list[dict] | None = None,
+    ) -> list[dict]:
+        """Request code actions (quick-fixes, refactors) for a range."""
+        try:
+            result = await self._send("textDocument/codeAction", {
+                "textDocument": {"uri": file_uri},
+                "range": {
+                    "start": {"line": start_line, "character": start_char},
+                    "end": {"line": end_line, "character": end_char},
+                },
+                "context": {
+                    "diagnostics": diagnostics or [],
+                    "only": None,
+                    "triggerKind": 1,
+                },
+            })
+            return result if isinstance(result, list) else []
+        except Exception as exc:
+            logger.debug("LSP codeAction failed: %s", exc)
+            return []
+
     # ------------------------------------------------------------------
     # JSON-RPC internals
     # ------------------------------------------------------------------

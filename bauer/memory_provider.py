@@ -73,6 +73,40 @@ class MemoryProvider(ABC):
         """Schemas JSON de tools adicionais fornecidas por este provider."""
         return []
 
+    def get_config_schema(self) -> dict:
+        """Retorna JSON Schema das opções de configuração deste provider.
+
+        Permite que UIs de configuração (CLI, Telegram /config) apresentem
+        campos editáveis sem hardcode. Retorna dict vazio se sem config.
+        """
+        return {}
+
+    # ------------------------------------------------------------------
+    # Hooks de evento avançados
+    # ------------------------------------------------------------------
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        """Chamado após o agent delegar uma subtarefa a um sub-agente.
+
+        Args:
+            sub_task: descrição da tarefa delegada.
+            result: resposta retornada pelo sub-agente.
+        """
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        """Chamado após cada execução de tool pelo agent loop.
+
+        Permite que o provider observe (e opcionalmente indexe) o resultado
+        de qualquer tool call — útil para extrair fatos ou rastrear ações.
+
+        Args:
+            tool_name: nome da tool executada.
+            tool_args: argumentos passados à tool.
+            tool_result: resultado retornado (string serializada).
+        """
+
     # ------------------------------------------------------------------
     # Nudge
     # ------------------------------------------------------------------
@@ -197,6 +231,35 @@ class LocalMemoryProvider(MemoryProvider):
 
     def get_tool_schemas(self) -> list[dict]:
         return []
+
+    def get_config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Diretório de trabalho onde os arquivos de memória são armazenados.",
+                }
+            },
+        }
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        if not self._initialized or self._manager is None:
+            return
+        try:
+            summary = result[:300].replace("\n", " ")
+            self._manager.add_note(
+                "Delegação registrada",
+                f"Subtarefa: {sub_task[:120]}\nResultado: {summary}",
+            )
+        except Exception:
+            pass
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        if tool_name in ("memory", "memory_search"):
+            self._nudge_state.last_write_turn = _current_turn_marker()
 
     # ------------------------------------------------------------------
     # Nudge
@@ -576,6 +639,32 @@ class MultiMemoryProvider(MemoryProvider):
                 pass
         return schemas
 
+    def get_config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                p.__class__.__name__: p.get_config_schema()
+                for p in self._providers
+                if p.get_config_schema()
+            },
+        }
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        for p in self._providers:
+            try:
+                p.on_delegation(sub_task, result)
+            except Exception:
+                pass
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        for p in self._providers:
+            try:
+                p.handle_tool_call(tool_name, tool_args, tool_result)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Nudge — fires if any provider fires
     # ------------------------------------------------------------------
@@ -848,6 +937,53 @@ class HindsightProvider(MemoryProvider):
             f"- {f['subject']} {f['predicate']} {f['object']}" for f in top5
         )
         return f"## Hindsight (fatos)\n\n{lines}"
+
+    def get_config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "base_dir": {
+                    "type": "string",
+                    "description": "Diretório base onde hindsight.json é armazenado (padrão: ~/.bauer).",
+                },
+                "max_facts": {
+                    "type": "integer",
+                    "description": "Limite máximo de fatos no buffer circular.",
+                    "default": 200,
+                },
+            },
+        }
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        facts = self._load()
+        facts.append({
+            "subject": "delegação",
+            "predicate": "resultou",
+            "object": result[:60],
+            "ts": time.time(),
+        })
+        facts = facts[-self._MAX_FACTS:]
+        self._facts = facts
+        self._save(facts)
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        if tool_name not in ("write_file", "patch", "memory"):
+            return
+        snippet = tool_result[:80].replace("\n", " ")
+        if not snippet:
+            return
+        facts = self._load()
+        facts.append({
+            "subject": tool_name,
+            "predicate": "retornou",
+            "object": snippet,
+            "ts": time.time(),
+        })
+        facts = facts[-self._MAX_FACTS:]
+        self._facts = facts
+        self._save(facts)
 
 
 # ---------------------------------------------------------------------------

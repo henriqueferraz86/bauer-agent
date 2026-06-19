@@ -1335,6 +1335,7 @@ def run_one_turn(
     tool_timeout_s: float = 30.0,
     tracer: "Any | None" = None,
     session_id: str | None = None,
+    memory_provider: "Any | None" = None,
 ) -> tuple[str, list[dict]]:
     """Executa um turno completo do agente, incluindo tool calls encadeados.
 
@@ -1357,6 +1358,7 @@ def run_one_turn(
     from .iteration_budget import IterationBudget as _IterBudget
     from .tracing import _NoopTrace as _TraceNoop
 
+    _memprov = memory_provider  # G25: lifecycle hooks
     tool_log: list[dict] = []
     if budget is None:
         # `MAX_TOOL_TURNS + 1`: até MAX rodadas de tool call, +1 turno final para
@@ -1491,6 +1493,16 @@ def run_one_turn(
                         _tool_failed = True
                         _bridge_span.end(output=tool_result, level="ERROR")
                     _deduper.record(action_name, action_args, tool_result, failed=_tool_failed)
+
+                # G25: memory lifecycle — handle_tool_call + on_delegation
+                if _memprov is not None and not _tool_failed:
+                    try:
+                        _memprov.handle_tool_call(action_name, action_args, str(tool_result))
+                        if action_name == "delegate_task":
+                            sub = action_args.get("task", "") or action_args.get("context", "")
+                            _memprov.on_delegation(str(sub), str(tool_result))
+                    except Exception:
+                        pass
 
                 # Wave 4.5: post-call guardrail update
                 if _guardrail is not None:

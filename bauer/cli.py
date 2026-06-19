@@ -924,6 +924,55 @@ def models_list(
     console.print(table)
 
 
+@models_app.command("catalog")
+def models_catalog(
+    provider: str = typer.Option("", "--provider", "-p", help="Filtrar por provider (ex: openai, anthropic)"),
+    capability: str = typer.Option("", "--capability", "-c", help="Filtrar por capability (tools, vision, reasoning)"),
+    max_cost: float = typer.Option(0.0, "--max-cost", help="Custo máximo USD/M tokens de input (0 = sem filtro)"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Número máximo de modelos a exibir"),
+):
+    """Lista modelos do catálogo dinâmico models.dev com filtros."""
+    try:
+        from .models_dev import catalog_models
+    except ImportError:
+        console.print("[red]models_dev não disponível.[/red]")
+        raise typer.Exit(code=1)
+
+    prov_filter = provider.strip() or None
+    cap_filter = capability.strip() or None
+    cost_filter = max_cost if max_cost > 0 else None
+
+    results = catalog_models(
+        provider=prov_filter,
+        capability=cap_filter,
+        max_cost_per_m=cost_filter,
+    )
+
+    if not results:
+        console.print("[yellow]Nenhum modelo encontrado com os filtros aplicados.[/yellow]")
+        console.print("[dim]Dica: tente sem filtros ou com filtros menos restritivos.[/dim]")
+        return
+
+    results = results[:limit]
+
+    table = Table(title=f"Catálogo models.dev ({len(results)} modelos)")
+    table.add_column("provider", style="cyan", no_wrap=True)
+    table.add_column("modelo", style="bold")
+    table.add_column("ctx", justify="right")
+    table.add_column("$in/M", justify="right")
+    table.add_column("capabilities")
+
+    for m in results:
+        ctx = f"{m['context_window']:,}" if m["context_window"] else "—"
+        cost_in = f"${m['cost_in']:.2f}" if m["cost_in"] else "—"
+        caps = " ".join(f"[green]{c}[/green]" for c in m["capabilities"]) or "[dim]—[/dim]"
+        table.add_row(m["provider"], m["id"], ctx, cost_in, caps)
+
+    console.print(table)
+    if len(results) == limit:
+        console.print(f"[dim]Mostrando {limit} de muitos resultados. Use --limit N para mais.[/dim]")
+
+
 # --- memory -----------------------------------------------------------------
 
 _MEMORY_DIR = Path("memory")

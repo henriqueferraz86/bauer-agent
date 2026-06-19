@@ -276,6 +276,143 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Auto-refresh daemon (background thread, 60-min TTL)
+# ---------------------------------------------------------------------------
+
+_refresh_thread: Optional[Any] = None
+_refresh_stop = False
+
+
+def start_background_refresh(interval_sec: int = 3600) -> None:
+    """Inicia um daemon thread que re-fetcha models.dev a cada `interval_sec` segundos.
+
+    Idempotent: só inicia um thread. Seguro chamar múltiplas vezes.
+    """
+    import threading
+
+    global _refresh_thread, _refresh_stop
+
+    if _refresh_thread is not None and _refresh_thread.is_alive():
+        return
+
+    _refresh_stop = False
+
+    def _loop() -> None:
+        import time as _time
+
+        while not _refresh_stop:
+            _time.sleep(interval_sec)
+            if _refresh_stop:
+                break
+            try:
+                old_len = len(_models_dev_cache)
+                fresh = fetch_models_dev(force_refresh=True)
+                new_len = len(fresh)
+                if new_len != old_len:
+                    logger.info(
+                        "models_dev: catálogo atualizado — %d providers (era %d)",
+                        new_len, old_len,
+                    )
+                else:
+                    logger.debug("models_dev: refresh automático completo (%d providers)", new_len)
+            except Exception as exc:
+                logger.debug("models_dev: falha no refresh automático: %s", exc)
+
+    _refresh_thread = threading.Thread(target=_loop, name="models_dev_refresh", daemon=True)
+    _refresh_thread.start()
+    logger.debug("models_dev: daemon de refresh iniciado (intervalo=%ds)", interval_sec)
+
+
+def stop_background_refresh() -> None:
+    """Para o daemon de refresh (útil em testes)."""
+    global _refresh_stop
+    _refresh_stop = True
+
+
+def catalog_models(
+    provider: Optional[str] = None,
+    capability: Optional[str] = None,
+    max_cost_per_m: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Retorna lista de modelos do catálogo models.dev com filtros opcionais.
+
+    Args:
+        provider: filtrar por provider ID (ex: "openai", "anthropic").
+        capability: filtrar por capability (ex: "tools", "vision", "reasoning").
+        max_cost_per_m: filtrar por custo máximo em USD/M tokens (input).
+
+    Returns:
+        Lista de dicts com keys: id, provider, context_window, cost_in, cost_out,
+        capabilities, description.
+    """
+    data = fetch_models_dev()
+    results: List[Dict[str, Any]] = []
+
+    for prov_id, pdata in data.items():
+        if not isinstance(pdata, dict):
+            continue
+        if provider and prov_id.lower() != provider.lower():
+            continue
+
+        models = pdata.get("models", {})
+        if not isinstance(models, dict):
+            continue
+
+        for model_id, mdata in models.items():
+            if not isinstance(mdata, dict):
+                continue
+
+            # Extract context window
+            limit = mdata.get("limit", {})
+            context_window = limit.get("context") if isinstance(limit, dict) else None
+
+            # Extract costs
+            pricing = mdata.get("pricing", {})
+            cost_in: Optional[float] = None
+            cost_out: Optional[float] = None
+            if isinstance(pricing, dict):
+                cost_in = pricing.get("input") or pricing.get("input_per_token")
+                cost_out = pricing.get("output") or pricing.get("output_per_token")
+
+            # Extract capabilities
+            caps: list = []
+            if isinstance(mdata.get("supports_tools"), bool) and mdata["supports_tools"]:
+                caps.append("tools")
+            if isinstance(mdata.get("supports_vision"), bool) and mdata["supports_vision"]:
+                caps.append("vision")
+            if isinstance(mdata.get("supports_reasoning"), bool) and mdata["supports_reasoning"]:
+                caps.append("reasoning")
+            # also check modalities list
+            for modal in mdata.get("modalities", []):
+                if isinstance(modal, str) and modal not in caps:
+                    caps.append(modal)
+
+            # Capability filter
+            if capability and capability.lower() not in [c.lower() for c in caps]:
+                continue
+
+            # Cost filter
+            if max_cost_per_m is not None and cost_in is not None:
+                # cost_in might be in per-token (multiply by 1M) or already per-M
+                effective = cost_in * 1_000_000 if cost_in < 0.01 else cost_in
+                if effective > max_cost_per_m:
+                    continue
+
+            results.append({
+                "id": model_id,
+                "provider": prov_id,
+                "context_window": context_window,
+                "cost_in": cost_in,
+                "cost_out": cost_out,
+                "capabilities": caps,
+                "description": mdata.get("description", ""),
+            })
+
+    results.sort(key=lambda r: (r["provider"], r["id"]))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Helpers internos de lookup
 # ---------------------------------------------------------------------------
 
