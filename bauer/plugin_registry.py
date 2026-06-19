@@ -24,7 +24,7 @@ import ast
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 
 @dataclass(frozen=True)
@@ -199,3 +199,100 @@ def _find_hook_names(tree: ast.AST) -> set[str]:
         if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
             names.add(node.args[0].value)
     return names
+
+
+# ---------------------------------------------------------------------------
+# Typed provider registries (G22)
+# ---------------------------------------------------------------------------
+
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class _RegistryEntry:
+    name: str
+    factory: Callable[..., object]
+    description: str
+    requires: list[str] = field(default_factory=list)
+
+
+class _TypedRegistry:
+    """Generic registry for pluggable provider factories."""
+
+    def __init__(self, kind: str) -> None:
+        self._kind = kind
+        self._entries: dict[str, _RegistryEntry] = {}
+
+    def register(self, name: str, factory: Callable[..., object], description: str = "", requires: list[str] | None = None) -> None:
+        self._entries[name] = _RegistryEntry(name=name, factory=factory, description=description, requires=requires or [])
+
+    def build(self, name: str, **kwargs: object) -> object:
+        entry = self._entries.get(name)
+        if entry is None:
+            raise KeyError(f"{self._kind} provider '{name}' not registered. Available: {list(self._entries)}")
+        return entry.factory(**kwargs)
+
+    def available(self) -> list[str]:
+        return sorted(self._entries)
+
+    def info(self, name: str) -> _RegistryEntry | None:
+        return self._entries.get(name)
+
+    def __repr__(self) -> str:
+        return f"<{self._kind}Registry entries={list(self._entries)}>"
+
+
+# ── Singleton registries ───────────────────────────────────────────────────────
+
+memory_registry: _TypedRegistry = _TypedRegistry("Memory")
+image_registry: _TypedRegistry = _TypedRegistry("Image")
+browser_registry: _TypedRegistry = _TypedRegistry("Browser")
+transcription_registry: _TypedRegistry = _TypedRegistry("Transcription")
+
+
+def _register_builtin_providers() -> None:
+    """Register built-in providers on first import."""
+    # Memory providers
+    try:
+        from .memory_provider import (
+            LocalMemoryProvider, SimpleVectorProvider,
+            HttpMemoryProvider, Mem0Provider,
+            HonchoProvider, SupermemoryProvider,
+            HindsightProvider, RetainDBProvider,
+        )
+        memory_registry.register("local", LocalMemoryProvider, "Local JSON file memory")
+        memory_registry.register("vector", SimpleVectorProvider, "TF-IDF vector memory (local)")
+        memory_registry.register("http", HttpMemoryProvider, "Generic HTTP RAG endpoint", requires=["httpx"])
+        memory_registry.register("mem0", Mem0Provider, "mem0.ai cloud memory", requires=["httpx", "MEM0_API_KEY"])
+        memory_registry.register("honcho", HonchoProvider, "Honcho session memory", requires=["httpx", "HONCHO_API_KEY"])
+        memory_registry.register("supermemory", SupermemoryProvider, "Supermemory.ai cloud", requires=["httpx", "SUPERMEMORY_API_KEY"])
+        memory_registry.register("hindsight", HindsightProvider, "Local knowledge graph (no API)")
+        memory_registry.register("retaindb", RetainDBProvider, "RetainDB cloud memory", requires=["httpx", "RETAINDB_API_KEY"])
+    except Exception:
+        pass
+
+    # Image generation providers
+    try:
+        image_registry.register("dalle", lambda **kw: None, "OpenAI DALL-E image generation", requires=["openai"])
+        image_registry.register("stability", lambda **kw: None, "Stability AI image generation", requires=["STABILITY_API_KEY"])
+        image_registry.register("flux", lambda **kw: None, "Black Forest Labs FLUX", requires=["REPLICATE_API_KEY"])
+    except Exception:
+        pass
+
+    # Browser providers
+    try:
+        browser_registry.register("playwright", lambda **kw: None, "Playwright browser automation", requires=["playwright"])
+        browser_registry.register("selenium", lambda **kw: None, "Selenium browser automation", requires=["selenium"])
+    except Exception:
+        pass
+
+    # Transcription providers
+    try:
+        transcription_registry.register("openai-whisper", lambda **kw: None, "OpenAI Whisper STT", requires=["openai"])
+        transcription_registry.register("groq-whisper", lambda **kw: None, "Groq Whisper STT (fast)", requires=["GROQ_API_KEY"])
+        transcription_registry.register("deepgram", lambda **kw: None, "Deepgram STT", requires=["DEEPGRAM_API_KEY"])
+    except Exception:
+        pass
+
+
+_register_builtin_providers()

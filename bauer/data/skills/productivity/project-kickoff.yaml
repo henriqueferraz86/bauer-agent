@@ -1,0 +1,27 @@
+name: project-kickoff
+version: "1.0"
+description: Estrutura o kickoff de um projeto — objetivos, escopo, riscos, timeline e responsáveis
+tags: [productivity, project-management, planning]
+content: |
+  Estruture o kickoff do projeto:
+  1. **Objetivo SMART**: Específico, Mensurável, Atingível, Relevante, Temporal
+  2. **Escopo**: O que está IN e o que está OUT
+  3. **Stakeholders**: Quem decide, quem executa, quem é informado (RACI simplificado)
+  4. **Riscos top-3**: probabilidade × impacto + mitigação
+  5. **Timeline**: marcos principais com datas e dependências
+  6. **Definition of Done**: critérios claros de conclusão
+  Gere um documento de kickoff pronto para compartilhar.
+tools: [write_file, datetime_now]
+params:
+  project_name:
+    type: string
+    description: Nome do projeto
+    required: true
+  deadline:
+    type: string
+    description: Data limite do projeto (YYYY-MM-DD)
+    required: false
+  team_size:
+    type: number
+    description: Tamanho da equipe
+    default: 3

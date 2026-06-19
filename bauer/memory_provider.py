@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -603,6 +604,326 @@ class MultiMemoryProvider(MemoryProvider):
             except Exception:
                 pass
         return super().nudge_message()
+
+
+# ---------------------------------------------------------------------------
+# HonchoProvider — honcho.dev session metamessages
+# ---------------------------------------------------------------------------
+
+class HonchoProvider(MemoryProvider):
+    """Integrates with Honcho session memory API (honcho.dev).
+
+    Requires HONCHO_API_KEY environment variable.
+    Stores and retrieves metamessages of type "memory" scoped to a session.
+    """
+
+    _BASE = "https://api.honcho.dev/v1"
+    _TIMEOUT = 8.0
+
+    def __init__(
+        self,
+        api_key: str = "",
+        user_id: str = "bauer",
+        session_id: str = "default",
+    ) -> None:
+        import os
+        self._api_key = api_key or os.environ.get("HONCHO_API_KEY", "")
+        self._user_id = user_id
+        self._session_id = session_id
+        self._memories: list[str] = []
+
+    def initialize(self, workspace: str | Path) -> None:
+        pass
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def prefetch(self) -> None:
+        if not self._api_key:
+            return
+        try:
+            import httpx
+            resp = httpx.get(
+                f"{self._BASE}/apps/bauer/users/{self._user_id}/sessions/{self._session_id}/metamessages",
+                params={"metamessage_type": "memory", "size": 5},
+                headers=self._headers(),
+                timeout=self._TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("items", data.get("results", []))
+            self._memories = [
+                r.get("content", "") for r in items if isinstance(r, dict)
+            ]
+            self._memories = [m for m in self._memories if m]
+        except Exception:
+            self._memories = []
+
+    def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
+        if not self._api_key:
+            return
+        last_assistant = next(
+            (m.get("content", "") for m in reversed(messages) if m.get("role") == "assistant"),
+            "",
+        )
+        if not last_assistant:
+            return
+        try:
+            import httpx
+            httpx.post(
+                f"{self._BASE}/apps/bauer/users/{self._user_id}/sessions/{self._session_id}/metamessages",
+                json={"metamessage_type": "memory", "content": last_assistant},
+                headers=self._headers(),
+                timeout=self._TIMEOUT,
+            )
+        except Exception:
+            pass
+
+    def system_prompt_block(self) -> str:
+        if not self._memories:
+            return ""
+        joined = "\n".join(f"- {m[:200]}" for m in self._memories[:5])
+        return f"## Honcho (memórias de sessão)\n\n{joined}"
+
+
+# ---------------------------------------------------------------------------
+# SupermemoryProvider — supermemory.ai semantic search
+# ---------------------------------------------------------------------------
+
+class SupermemoryProvider(MemoryProvider):
+    """Integrates with Supermemory.ai REST API.
+
+    Requires SUPERMEMORY_API_KEY environment variable.
+    POST /search for retrieval; POST /memories to store.
+    """
+
+    _BASE = "https://api.supermemory.ai/v1"
+    _TIMEOUT = 8.0
+
+    def __init__(self, api_key: str = "") -> None:
+        import os
+        self._api_key = api_key or os.environ.get("SUPERMEMORY_API_KEY", "")
+        self._memories: list[str] = []
+
+    def initialize(self, workspace: str | Path) -> None:
+        pass
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def prefetch(self) -> None:
+        if not self._api_key:
+            return
+        try:
+            import httpx
+            resp = httpx.post(
+                f"{self._BASE}/search",
+                json={"q": "contexto bauer", "limit": 5},
+                headers=self._headers(),
+                timeout=self._TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            self._memories = [
+                r.get("content", "") for r in results if isinstance(r, dict)
+            ]
+            self._memories = [m for m in self._memories if m]
+        except Exception:
+            self._memories = []
+
+    def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
+        if not self._api_key:
+            return
+        last_two = [
+            m.get("content", "")
+            for m in messages[-2:]
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+        if not last_two:
+            return
+        content = "\n".join(last_two)
+        try:
+            import httpx
+            httpx.post(
+                f"{self._BASE}/memories",
+                json={"content": content, "tags": ["bauer"]},
+                headers=self._headers(),
+                timeout=self._TIMEOUT,
+            )
+        except Exception:
+            pass
+
+    def system_prompt_block(self) -> str:
+        if not self._memories:
+            return ""
+        joined = "\n".join(f"- {m[:200]}" for m in self._memories[:5])
+        return f"## Supermemory\n\n{joined}"
+
+
+# ---------------------------------------------------------------------------
+# HindsightProvider — local knowledge-graph (triplas sujeito-predicado-objeto)
+# ---------------------------------------------------------------------------
+
+class HindsightProvider(MemoryProvider):
+    """Local knowledge-graph provider persisted in ~/.bauer/hindsight.json.
+
+    Extracts simple (subject, predicate, object) triples from user messages
+    using regex patterns for Portuguese copula/possession verbs.
+    No external API required.
+    """
+
+    _MAX_FACTS = 200
+    _TIMEOUT = 8.0  # unused (local), kept for interface consistency
+    _VERBS = re.compile(r"\b(é|são|tem|usa)\b", re.IGNORECASE)
+
+    def __init__(self, base_dir: Path | None = None) -> None:
+        self._base = base_dir or (Path.home() / ".bauer")
+        self._store = self._base / "hindsight.json"
+        self._facts: list[dict] = []
+
+    def initialize(self, workspace: str | Path) -> None:
+        pass
+
+    def _load(self) -> list[dict]:
+        try:
+            if self._store.exists():
+                return json.loads(self._store.read_text(encoding="utf-8")).get("facts", [])
+        except Exception:
+            pass
+        return []
+
+    def _save(self, facts: list[dict]) -> None:
+        try:
+            self._base.mkdir(parents=True, exist_ok=True)
+            self._store.write_text(
+                json.dumps({"facts": facts}, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    def prefetch(self) -> None:
+        self._facts = self._load()
+
+    def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
+        user_msgs = [
+            m.get("content", "")
+            for m in messages[-4:]
+            if m.get("role") == "user" and m.get("content")
+        ]
+        new_facts = list(self._load())
+        changed = False
+        for text in user_msgs:
+            for line in text.splitlines():
+                m = self._VERBS.search(line)
+                if m:
+                    verb = m.group(0)
+                    subject = line[: m.start()].strip()[:30]
+                    obj = line[m.end() :].strip()[:60]
+                    if subject and obj:
+                        new_facts.append({
+                            "subject": subject,
+                            "predicate": verb,
+                            "object": obj,
+                            "ts": time.time(),
+                        })
+                        changed = True
+        if changed:
+            # circular buffer
+            new_facts = new_facts[-self._MAX_FACTS :]
+            self._facts = new_facts
+            self._save(new_facts)
+
+    def system_prompt_block(self) -> str:
+        if not self._facts:
+            return ""
+        top5 = sorted(self._facts, key=lambda f: f.get("ts", 0), reverse=True)[:5]
+        lines = "\n".join(
+            f"- {f['subject']} {f['predicate']} {f['object']}" for f in top5
+        )
+        return f"## Hindsight (fatos)\n\n{lines}"
+
+
+# ---------------------------------------------------------------------------
+# RetainDBProvider — retaindb.com persistent memory
+# ---------------------------------------------------------------------------
+
+class RetainDBProvider(MemoryProvider):
+    """Integrates with RetainDB REST API.
+
+    Requires RETAINDB_API_KEY environment variable.
+    GET /memories?limit=5 for retrieval; POST /memories to store.
+    """
+
+    _BASE = "https://api.retaindb.com/v1"
+    _TIMEOUT = 8.0
+
+    def __init__(self, api_key: str = "") -> None:
+        import os
+        self._api_key = api_key or os.environ.get("RETAINDB_API_KEY", "")
+        self._memories: list[str] = []
+
+    def initialize(self, workspace: str | Path) -> None:
+        pass
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def prefetch(self) -> None:
+        if not self._api_key:
+            return
+        try:
+            import httpx
+            resp = httpx.get(
+                f"{self._BASE}/memories",
+                params={"limit": 5},
+                headers=self._headers(),
+                timeout=self._TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("results", [])
+            self._memories = [
+                r.get("text", "") for r in items if isinstance(r, dict)
+            ]
+            self._memories = [m for m in self._memories if m]
+        except Exception:
+            self._memories = []
+
+    def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
+        if not self._api_key:
+            return
+        last_content = next(
+            (m.get("content", "") for m in reversed(messages) if m.get("content")),
+            "",
+        )
+        if not last_content:
+            return
+        try:
+            import httpx
+            httpx.post(
+                f"{self._BASE}/memories",
+                json={"text": last_content, "metadata": {"source": "bauer"}},
+                headers=self._headers(),
+                timeout=self._TIMEOUT,
+            )
+        except Exception:
+            pass
+
+    def system_prompt_block(self) -> str:
+        if not self._memories:
+            return ""
+        joined = "\n".join(f"- {m[:200]}" for m in self._memories[:5])
+        return f"## RetainDB\n\n{joined}"
 
 
 # ---------------------------------------------------------------------------

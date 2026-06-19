@@ -1,0 +1,22 @@
+name: competitive-analysis
+version: "1.0"
+description: Análise competitiva estruturada — players, posicionamento, diferenciais e oportunidades
+tags: [research, strategy, competitive]
+content: |
+  Realize análise competitiva:
+  1. Identifique os 5 principais competidores diretos e indiretos
+  2. Mapeie posicionamento de cada um (preço, público, proposta de valor)
+  3. Construa uma matriz de features/capacidades comparativa
+  4. Identifique gaps do mercado e oportunidades não exploradas
+  5. Recomende 3 ações táticas baseadas na análise
+  Baseie-se em dados públicos (sites, artigos, reviews, GitHub).
+tools: [web_search, web_fetch, write_file]
+params:
+  product_or_market:
+    type: string
+    description: Produto ou mercado a analisar
+    required: true
+  focus_region:
+    type: string
+    description: Região geográfica de foco (global, brasil, latam, etc.)
+    default: global

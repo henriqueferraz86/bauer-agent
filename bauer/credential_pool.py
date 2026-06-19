@@ -96,13 +96,14 @@ def _xor_decrypt(cipher: str, key: str) -> str:
 # ── CredentialPool ────────────────────────────────────────────────────────────
 
 class CredentialPool:
-    """Three-layer secure credential manager.
+    """Four-layer secure credential manager.
 
-    Layer order for get():  keychain → encrypted file → fallback
+    Layer order for get():  bitwarden CLI → keychain → encrypted file → fallback
     Layer order for set():  keychain (preferred) → encrypted file (fallback)
     """
 
     _NAMESPACE = "bauer-agent"
+    _BW_TIMEOUT = 5.0
 
     def __init__(self, base_dir: Path | None = None) -> None:
         self._base = base_dir or (Path.home() / ".bauer")
@@ -115,10 +116,13 @@ class CredentialPool:
     def get(self, provider: str, *, fallback: str = "") -> str:
         """Return credential for *provider*. Never raises."""
         try:
-            val = self._keyring_get(provider)
+            val = self._bw_get(provider)       # Layer 0: Bitwarden CLI
             if val:
                 return val
-            val = self._file_get(provider)
+            val = self._keyring_get(provider)  # Layer 1: OS keychain
+            if val:
+                return val
+            val = self._file_get(provider)     # Layer 2: Fernet file
             if val:
                 return val
         except Exception as exc:
@@ -164,6 +168,30 @@ class CredentialPool:
         except Exception:
             pass
         return sorted(providers)
+
+    # ── Layer 0: Bitwarden CLI ────────────────────────────────────────────────
+
+    def _bw_available(self) -> bool:
+        """Return True if `bw` is in PATH and a BW_SESSION is set."""
+        import shutil, os
+        return bool(shutil.which("bw")) and bool(os.environ.get("BW_SESSION"))
+
+    def _bw_get(self, provider: str) -> str | None:
+        """Fetch credential from Bitwarden CLI. Returns None on any failure."""
+        if not self._bw_available():
+            return None
+        import subprocess, os
+        try:
+            result = subprocess.run(
+                ["bw", "get", "password", f"bauer/{provider}"],
+                capture_output=True, text=True, timeout=self._BW_TIMEOUT,
+                env={**os.environ, "BW_SESSION": os.environ.get("BW_SESSION", "")},
+            )
+            if result.returncode == 0:
+                return result.stdout.strip() or None
+        except Exception:
+            pass
+        return None
 
     # ── Layer 1: system keychain ──────────────────────────────────────────────
 

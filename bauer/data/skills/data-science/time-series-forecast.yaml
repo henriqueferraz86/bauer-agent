@@ -1,0 +1,31 @@
+name: time-series-forecast
+version: "1.0"
+description: Análise e previsão de séries temporais — decomposição, tendência, sazonalidade e forecast
+tags: [data-science, forecasting, time-series, statistics]
+content: |
+  Realize análise de série temporal:
+  1. **Exploração**: plot da série, estatísticas descritivas, valores ausentes
+  2. **Decomposição**: tendência + sazonalidade + resíduo (STL ou clássica)
+  3. **Estacionariedade**: teste ADF, diferenciação se necessário
+  4. **Modelagem**: compare ARIMA, Exponential Smoothing e Prophet (se disponível)
+  5. **Forecast**: projete N períodos com intervalos de confiança 80% e 95%
+  6. **Validação**: backtesting com RMSE, MAE, MAPE
+  Gere código Python executável com cada etapa comentada.
+tools: [execute_code, read_file, write_file]
+params:
+  data_path:
+    type: string
+    description: Caminho do CSV com coluna de data e valor
+    required: true
+  forecast_periods:
+    type: number
+    description: Número de períodos a projetar
+    default: 12
+  date_column:
+    type: string
+    description: Nome da coluna de data
+    default: date
+  value_column:
+    type: string
+    description: Nome da coluna de valor
+    default: value

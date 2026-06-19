@@ -1,0 +1,18 @@
+name: refactor-module
+version: "1.0"
+description: Refatora um módulo Python aplicando princípios SOLID, reduzindo duplicação e melhorando legibilidade
+tags: [coding, refactoring, python]
+content: |
+  Refatore o módulo seguindo este processo:
+  1. Leia o módulo completo e mapeie: classes, funções, dependências, duplicações
+  2. Identifique os 3 maiores problemas (god class, long method, feature envy, etc.)
+  3. Proponha o plano de refactoring com antes/depois
+  4. Execute as mudanças mantendo a interface pública
+  5. Confirme que imports externos não quebraram
+  Não adicione funcionalidade — só melhore o código existente.
+tools: [read_file, patch, write_file, search_text, run_command]
+params:
+  module_path:
+    type: string
+    description: Caminho do módulo a refatorar
+    required: true

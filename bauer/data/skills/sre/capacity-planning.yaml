@@ -1,0 +1,27 @@
+name: capacity-planning
+version: "1.0"
+description: Planejamento de capacidade — analisa crescimento atual e projeta necessidades de infra
+tags: [sre, capacity, infrastructure, scaling]
+content: |
+  Realize planejamento de capacidade:
+  1. **Baseline**: colete métricas atuais (CPU, memória, disco, requisições/s)
+  2. **Tendência**: calcule crescimento mensal dos últimos 3-6 meses
+  3. **Projeção**: estime quando os limites serão atingidos (90% threshold)
+  4. **Cenários**: best case / expected / worst case com multipliers
+  5. **Recomendações**: quando escalar, quanto, qual componente primeiro
+  6. **Custo**: estime custo de capacidade adicional
+  Gere relatório com gráficos de projeção e decision points.
+tools: [run_command, web_search, calculate, write_file]
+params:
+  service_name:
+    type: string
+    description: Nome do serviço a analisar
+    required: true
+  growth_rate_monthly:
+    type: number
+    description: Taxa de crescimento mensal esperada (%)
+    default: 10
+  horizon_months:
+    type: number
+    description: Horizonte de planejamento em meses
+    default: 6

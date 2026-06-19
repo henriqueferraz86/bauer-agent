@@ -1,0 +1,19 @@
+name: security-audit
+version: "1.0"
+description: Auditoria de segurança de aplicação — OWASP Top 10, secrets exposure, dependency vulns
+tags: [devops, security, audit, owasp]
+content: |
+  Realize auditoria de segurança:
+  1. Scan de secrets expostos (env vars, configs, git history)
+  2. Verificação de dependências com CVEs conhecidos
+  3. Revisão de autenticação e autorização
+  4. Verificação de input validation e SQL injection
+  5. Análise de headers de segurança (HTTPS, CSP, HSTS)
+  6. Gere relatório com severidade (CRITICAL/HIGH/MEDIUM/LOW) e fix sugerido
+  Priorize itens CRITICAL — bloqueie deploy se encontrar.
+tools: [run_command, read_file, search_text, list_dir]
+params:
+  scope:
+    type: string
+    description: Diretório ou serviço a auditar
+    default: "."

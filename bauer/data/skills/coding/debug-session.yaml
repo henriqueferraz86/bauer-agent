@@ -1,0 +1,22 @@
+name: debug-session
+version: "1.0"
+description: Sessão guiada de debugging — identifica root cause, sugere fixes e valida a correção
+tags: [coding, debug, troubleshooting]
+content: |
+  Inicie uma sessão de debugging estruturada:
+  1. Reproduza o bug (comando/steps mínimos)
+  2. Identifique o root cause com evidências (logs, stack trace, estado)
+  3. Proponha 2-3 abordagens de fix com trade-offs
+  4. Implemente o fix escolhido
+  5. Valide com teste mínimo que o bug está resolvido
+  Mantenha um "hypothesis log" atualizado durante a investigação.
+tools: [read_file, search_text, run_command, patch, write_file]
+params:
+  bug_description:
+    type: string
+    description: Descrição do bug ou mensagem de erro
+    required: true
+  reproduce_command:
+    type: string
+    description: Comando para reproduzir o bug
+    required: false
