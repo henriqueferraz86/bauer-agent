@@ -38,6 +38,10 @@ _MAX_ACTIVE_SESSIONS = 50
 # Mensagens aguardando na fila de uma sessão ocupada (busy queue)
 _MAX_PENDING_PER_SESSION = 5
 
+# Tempo máximo (segundos) que um turno pode segurar o lock antes de ser
+# considerado travado e a sessão ser reiniciada automaticamente.
+_MAX_TURN_SECONDS = 300
+
 HELP_TEXT = (
     "🤖 *Bauer Agent*\n\n"
     "Mande qualquer mensagem e eu respondo usando o modelo configurado.\n\n"
@@ -168,6 +172,10 @@ class AgentBackend:
         # a thread ativa drena ao terminar o turno corrente.
         self._pending: dict[str, deque] = {}
         self._pending_lock = threading.Lock()
+        # Rastreia quando cada sessão adquiriu o lock (monotonic seconds).
+        # Permite detectar turno travado e resetar automaticamente.
+        self._turn_started_at: dict[str, float] = {}
+        self._turn_ts_lock = threading.Lock()
         self.msgs_processed = 0
         self.errors = 0
 
@@ -435,13 +443,28 @@ class AgentBackend:
         # Sessão ocupada: enfileira e dá feedback imediato — a thread ativa
         # drena a fila ao terminar (sem perder mensagem, sem travar polling).
         if not lock.acquire(blocking=False):
-            with self._pending_lock:
-                queue = self._pending.setdefault(key, deque())
-                if len(queue) >= _MAX_PENDING_PER_SESSION:
-                    return "🚦 Fila cheia — aguarde a resposta atual antes de mandar mais."
-                queue.append(text)
-            return "⏳ Ainda estou na sua mensagem anterior — esta entrou na fila."
+            # Verifica se o turno atual está travado há tempo demais.
+            with self._turn_ts_lock:
+                started_at = self._turn_started_at.get(key, 0.0)
+            elapsed = time.monotonic() - started_at
+            if elapsed > _MAX_TURN_SECONDS:
+                logger.warning(
+                    "Sessão %s com lock travado há %.0fs (>%ds) — resetando.",
+                    key, elapsed, _MAX_TURN_SECONDS,
+                )
+                self._clear_session(key)
+                ctx, lock = self._get_session(key)
+                lock.acquire()  # lock recém-criado, sem contention
+            else:
+                with self._pending_lock:
+                    queue = self._pending.setdefault(key, deque())
+                    if len(queue) >= _MAX_PENDING_PER_SESSION:
+                        return "🚦 Fila cheia — aguarde a resposta atual antes de mandar mais."
+                    queue.append(text)
+                return "⏳ Ainda estou na sua mensagem anterior — esta entrou na fila."
 
+        with self._turn_ts_lock:
+            self._turn_started_at[key] = time.monotonic()
         try:
             response = self._execute_turn(ctx, key, client, model, text, on_delta)
             # Drena mensagens que chegaram enquanto este turno rodava
@@ -460,6 +483,8 @@ class AgentBackend:
                 else:
                     response = f"{response}\n\n{extra}"
         finally:
+            with self._turn_ts_lock:
+                self._turn_started_at.pop(key, None)
             lock.release()
         return response
 
