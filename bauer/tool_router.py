@@ -276,6 +276,8 @@ _TOOL_SECURITY: dict[str, dict] = {
     "lsp_workspace_symbols": {"permission": "read",    "risk": "low",    "approval": False},
     "lsp_completion":        {"permission": "read",    "risk": "low",    "approval": False},
     "lsp_code_actions":      {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_format":            {"permission": "write",   "risk": "medium", "approval": False},
+    "lsp_rename":            {"permission": "write",   "risk": "high",   "approval": True},
     # Escrita local — workspace-scoped
     "write_file":     {"permission": "write",   "risk": "medium", "approval": False},
     "append_file":    {"permission": "write",   "risk": "medium", "approval": False},
@@ -1293,6 +1295,25 @@ class ToolRouter:
                 "start_char": "int — coluna inicial (0-indexed)",
                 "end_line": "int — linha final do intervalo (0-indexed)",
                 "end_char": "int — coluna final (0-indexed)",
+            },
+        }
+        self._tools["lsp_format"] = {
+            "fn": self._lsp_format,
+            "description": "Formata o arquivo usando o formatter do servidor LSP (textDocument/formatting).",
+            "args": {
+                "file": "str — caminho do arquivo a formatar",
+                "tab_size": "int — tamanho do tab (padrão 4)",
+                "insert_spaces": "bool — usar espaços ao invés de tabs (padrão true)",
+            },
+        }
+        self._tools["lsp_rename"] = {
+            "fn": self._lsp_rename,
+            "description": "Renomeia um símbolo em todo o workspace via LSP (textDocument/rename).",
+            "args": {
+                "file": "str — caminho do arquivo onde o símbolo está",
+                "line": "int — linha do símbolo (0-indexed)",
+                "character": "int — coluna do símbolo (0-indexed)",
+                "new_name": "str — novo nome para o símbolo",
             },
         }
 
@@ -3446,6 +3467,17 @@ class ToolRouter:
                     kwargs.get("end_line", line),
                     kwargs.get("end_char", char),
                 )
+            if method == "format_document":
+                return await client.format_document(
+                    file_abs.as_uri(),
+                    tab_size=kwargs.get("tab_size", 4),
+                    insert_spaces=kwargs.get("insert_spaces", True),
+                )
+            if method == "rename_symbol":
+                return await client.rename_symbol(
+                    file_abs.as_uri(), line, char,
+                    kwargs.get("new_name", ""),
+                )
             return None
 
         try:
@@ -3535,6 +3567,38 @@ class ToolRouter:
         result = self._lsp_call(
             "code_actions", file_rel, start_line, start_char,
             end_line=end_line, end_char=end_char,
+        )
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_format(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        if not file_rel:
+            raise ToolError("lsp_format requer 'file'.")
+        tab_size = int(args.get("tab_size", 4))
+        insert_spaces = bool(args.get("insert_spaces", True))
+        result = self._lsp_call(
+            "format_document", file_rel, 0, 0,
+            tab_size=tab_size, insert_spaces=insert_spaces,
+        )
+        if result is None:
+            server_hint = "pyright" if file_rel.endswith(".py") else "typescript-language-server"
+            return json.dumps({"error": "LSP server not running", "hint": f"pip/npm install {server_hint}"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_rename(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        new_name = str(args.get("new_name", "")).strip()
+        if not file_rel:
+            raise ToolError("lsp_rename requer 'file'.")
+        if not new_name:
+            raise ToolError("lsp_rename requer 'new_name'.")
+        line = int(args.get("line", 0))
+        char = int(args.get("character", 0))
+        result = self._lsp_call(
+            "rename_symbol", file_rel, line, char,
+            new_name=new_name,
         )
         if result is None:
             return json.dumps({"error": "LSP server not running"})

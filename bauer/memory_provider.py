@@ -49,6 +49,29 @@ class MemoryProvider(ABC):
     def prefetch(self) -> None:
         """Pré-carrega dados relevantes antes do loop principal. Opcional."""
 
+    def queue_prefetch(self) -> None:
+        """Dispara prefetch em background sem bloquear o loop principal.
+
+        A implementação padrão chama prefetch() diretamente em uma thread daemon.
+        Providers com acesso async podem sobrescrever para usar asyncio.
+        """
+        import threading
+        t = threading.Thread(target=self._safe_prefetch, daemon=True)
+        t.start()
+
+    def _safe_prefetch(self) -> None:
+        try:
+            self.prefetch()
+        except Exception:
+            pass
+
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        """Chamado antes de cada turno do agent (antes da chamada LLM).
+
+        Permite que o provider atualize contexto fresco, injete snippets
+        relevantes para a mensagem atual, ou acione prefetch adicional.
+        """
+
     def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
         """Sincroniza estado após cada turno do agent. Opcional."""
 
@@ -190,6 +213,13 @@ class LocalMemoryProvider(MemoryProvider):
             except Exception:
                 pass
         self._prefetched = "\n\n".join(parts)
+
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        if not self._initialized or self._manager is None:
+            return
+        if turn_index % 5 == 0 and turn_index > 0:
+            # Atualiza prefetch a cada 5 turnos para pegar novas entradas de memória
+            self.prefetch()
 
     def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
         pass  # LocalMemoryProvider é append-only; sem sincronização extra.
@@ -601,6 +631,20 @@ class MultiMemoryProvider(MemoryProvider):
         for p in self._providers:
             try:
                 p.on_memory_write(key, value)
+            except Exception:
+                pass
+
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        for p in self._providers:
+            try:
+                p.on_turn_start(turn_index, messages)
+            except Exception:
+                pass
+
+    def queue_prefetch(self) -> None:
+        for p in self._providers:
+            try:
+                p.queue_prefetch()
             except Exception:
                 pass
 

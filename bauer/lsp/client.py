@@ -177,6 +177,41 @@ class LspClient:
             logger.debug("LSP completion failed: %s", exc)
             return []
 
+    async def format_document(
+        self, file_uri: str, tab_size: int = 4, insert_spaces: bool = True
+    ) -> list[dict]:
+        """Request document formatting (textDocument/formatting).
+
+        Returns a list of TextEdit dicts, or [] if the server doesn't support it.
+        """
+        try:
+            result = await self._send("textDocument/formatting", {
+                "textDocument": {"uri": file_uri},
+                "options": {"tabSize": tab_size, "insertSpaces": insert_spaces},
+            })
+            return result if isinstance(result, list) else []
+        except Exception as exc:
+            logger.debug("LSP format failed: %s", exc)
+            return []
+
+    async def rename_symbol(
+        self, file_uri: str, line: int, character: int, new_name: str
+    ) -> dict | None:
+        """Request symbol rename across the workspace (textDocument/rename).
+
+        Returns a WorkspaceEdit dict, or None if the server doesn't support it.
+        """
+        try:
+            result = await self._send("textDocument/rename", {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line, "character": character},
+                "newName": new_name,
+            })
+            return result if isinstance(result, dict) else None
+        except Exception as exc:
+            logger.debug("LSP rename failed: %s", exc)
+            return None
+
     async def code_actions(
         self,
         file_uri: str,

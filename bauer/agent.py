@@ -2421,6 +2421,7 @@ def run_agent_session(
         try:
             _memprov.initialize(_mem_workspace)
             _memprov.prefetch()
+            _memprov.queue_prefetch()  # dispara background refresh logo após o sync inicial
             _mem_block = _memprov.system_prompt_block()
             if _mem_block:
                 ctx.add_ephemeral_system(_mem_block)
@@ -2693,6 +2694,13 @@ def run_agent_session(
                     f"({ctx.used_tokens}/{ctx.budget} tokens). "
                     "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
                 )
+            # MemoryProvider: on_turn_start antes da chamada LLM
+            if _memprov is not None:
+                try:
+                    _memprov.on_turn_start(_mem_turn_idx, ctx.messages)
+                except Exception:
+                    pass
+
             _native_final = False
             try:
                 if _native_session_ok:
