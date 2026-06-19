@@ -3766,6 +3766,156 @@ def orchestrate_cancel(
         console.print(f"[yellow]Nenhum progresso salvo para: '{task[:60]}'[/yellow]")
 
 
+@orchestrate_app.command("dag")
+def orchestrate_dag(
+    session_id: str = typer.Argument("", help="Session ID do orquestrador (ou vazio para última)"),
+    live: bool = typer.Option(False, "--live", "-l", help="Atualiza em tempo real (Rich Live)"),
+    output_json: bool = typer.Option(False, "--json", help="Emite snapshot JSON"),
+    interval: float = typer.Option(1.0, "--interval", "-i", help="Intervalo de refresh em segundos (--live)"),
+):
+    """Visualiza o DAG de tarefas de uma sessão do orquestrador."""
+    from .dag_renderer import DAGGraph, NodeStatus
+
+    # Tenta carregar grafo do arquivo de progresso
+    progress_dir = Path(".orchestrate_progress")
+    if not progress_dir.exists():
+        console.print("[yellow]Nenhuma sessão ativa encontrada.[/yellow]")
+        raise typer.Exit(0)
+
+    # Encontra o arquivo mais recente ou pelo session_id
+    if session_id:
+        cands = list(progress_dir.glob(f"*{session_id}*.json"))
+    else:
+        cands = sorted(progress_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not cands:
+        console.print("[yellow]Nenhum progresso encontrado.[/yellow]")
+        raise typer.Exit(0)
+
+    import json as _json
+    with open(cands[0]) as f:
+        data = _json.load(f)
+
+    # Reconstrói o grafo a partir do progresso salvo
+    graph = DAGGraph(session_id=data.get("task", "")[:30])
+    for step in data.get("steps", []):
+        step_id = step.get("id", 0)
+        graph.add_node(
+            node_id=step_id,
+            goal=step.get("goal", ""),
+            depends_on=step.get("depends_on", []),
+            priority=step.get("priority", 5),
+        )
+        if step.get("completed"):
+            from .dag_renderer import NodeStatus
+            graph.update_status(step_id, NodeStatus.DONE, result_preview=str(step.get("response", ""))[:100])
+
+    if output_json:
+        console.print(graph.to_json())
+        return
+
+    if live:
+        from rich.live import Live
+        import time as _time
+        with Live(graph.to_rich_tree(), refresh_per_second=4, console=console) as live_ctx:
+            for _ in range(int(60 / interval)):
+                _time.sleep(interval)
+                # Re-lê arquivo para atualizar
+                try:
+                    with open(cands[0]) as f:
+                        data = _json.load(f)
+                    g2 = DAGGraph(session_id=graph.session_id)
+                    for step in data.get("steps", []):
+                        g2.add_node(step["id"], step.get("goal", ""), step.get("depends_on", []))
+                        if step.get("completed"):
+                            g2.update_status(step["id"], NodeStatus.DONE)
+                    live_ctx.update(g2.to_rich_tree())
+                except Exception:
+                    pass
+    else:
+        from rich import print as rprint
+        rprint(graph.to_rich_tree())
+
+
+@orchestrate_app.command("priority")
+def orchestrate_priority(
+    task_id: int = typer.Argument(..., help="ID do passo/tarefa"),
+    set_priority: int = typer.Option(-1, "--set", "-s", help="Nova prioridade (0-10)"),
+    session_id: str = typer.Option("", "--session", help="Session ID específica"),
+):
+    """Ajusta a prioridade de um passo do orquestrador (0 = baixa, 10 = urgente)."""
+    import json as _json
+
+    if not (0 <= set_priority <= 10):
+        console.print("[red]Prioridade deve estar entre 0 e 10.[/red]")
+        raise typer.Exit(1)
+
+    progress_dir = Path(".orchestrate_progress")
+    if session_id:
+        cands = list(progress_dir.glob(f"*{session_id}*.json"))
+    else:
+        cands = sorted(progress_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True) if progress_dir.exists() else []
+
+    if not cands:
+        console.print("[yellow]Nenhuma sessão encontrada.[/yellow]")
+        raise typer.Exit(1)
+
+    path = cands[0]
+    with open(path) as f:
+        data = _json.load(f)
+
+    found = False
+    for step in data.get("steps", []):
+        if step.get("id") == task_id:
+            old = step.get("priority", 5)
+            step["priority"] = set_priority
+            found = True
+            console.print(f"[green]Passo #{task_id}: prioridade {old} → {set_priority}[/green]")
+            break
+
+    if not found:
+        console.print(f"[red]Passo #{task_id} não encontrado.[/red]")
+        raise typer.Exit(1)
+
+    with open(path, "w") as f:
+        _json.dump(data, f, indent=2)
+
+
+@orchestrate_app.command("events")
+def orchestrate_events(
+    topic: str = typer.Option("", "--topic", "-t", help="Filtrar por tópico"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Número de eventos"),
+):
+    """Lista eventos recentes do EventBus."""
+    from .event_bus import EventBus
+    from pathlib import Path
+
+    db = Path.home() / ".bauer" / "event_bus.db"
+    bus = EventBus(db_path=db, persist=db.exists())
+    history = bus.history(topic=topic or None, limit=limit)
+
+    if not history:
+        console.print("[dim]Nenhum evento registrado.[/dim]")
+        return
+
+    from rich.table import Table
+    import datetime
+
+    tbl = Table(title=f"Eventos{f' [{topic}]' if topic else ''}", show_header=True)
+    tbl.add_column("ID", style="dim", width=10)
+    tbl.add_column("Tópico", style="cyan")
+    tbl.add_column("Fonte", style="magenta")
+    tbl.add_column("Hora", style="dim")
+    tbl.add_column("Payload", style="white", max_width=40)
+
+    for evt in history:
+        ts = datetime.datetime.fromtimestamp(evt["ts"]).strftime("%H:%M:%S")
+        payload_str = str(evt["payload"])[:40]
+        tbl.add_row(evt["id"], evt["topic"], evt["source"], ts, payload_str)
+
+    console.print(tbl)
+
+
 # --- project ----------------------------------------------------------------
 
 _PROJECT_WORKSPACE = Path("workspace")
