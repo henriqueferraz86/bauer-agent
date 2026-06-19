@@ -82,6 +82,9 @@ daemon_service_app = typer.Typer(
 )
 daemon_app.add_typer(daemon_service_app, name="service")
 
+traces_app = typer.Typer(help="Traces OTEL — replay e análise de sessões")
+cost_app = typer.Typer(help="Cost tracker — custo USD e uso de tokens")
+
 runtime_service_app = typer.Typer(
     help="Runtime como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
 )
@@ -131,6 +134,8 @@ app.add_typer(serve_app, name="serve")
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(discord_app, name="discord")
 app.add_typer(gateway_app, name="gateway")
+app.add_typer(traces_app, name="traces")
+app.add_typer(cost_app, name="cost")
 
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
@@ -827,6 +832,153 @@ def config_check_cmd(
             )
     except Exception:  # noqa: BLE001
         pass
+
+
+@config_app.command("profile")
+def config_profile(
+    action: str = typer.Argument(..., help="Ação: create | list | use | delete"),
+    profile: str = typer.Argument("", help="Nome do perfil (para create/use/delete)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    force: bool = typer.Option(False, "--force", "-f"),
+):
+    """Gerencia perfis de configuração (dev/staging/prod).
+
+    Exemplos:
+      bauer config profile list
+      bauer config profile create dev
+      bauer config profile use dev
+      bauer config profile delete dev
+    """
+    from .config_profiles import (
+        create_profile, delete_profile, get_active_profile,
+        list_profiles, profile_path, set_active_profile,
+    )
+
+    if action == "list":
+        profiles = list_profiles(config)
+        active = get_active_profile()
+        if not profiles:
+            console.print("[dim]Nenhum perfil encontrado.[/dim]")
+            return
+        for p in profiles:
+            marker = " [green]← ativo[/green]" if p == active else ""
+            pp = profile_path(p, config)
+            console.print(f"  [cyan]{p}[/cyan]{marker}  [dim]{pp}[/dim]")
+
+    elif action == "create":
+        if not profile:
+            console.print("[red]Especifique o nome do perfil: bauer config profile create <nome>[/red]")
+            raise typer.Exit(1)
+        try:
+            p = create_profile(profile, config, overwrite=force)
+            console.print(f"[green]Perfil '{profile}' criado em {p}[/green]")
+        except FileExistsError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+
+    elif action == "use":
+        if not profile:
+            console.print("[red]Especifique o perfil: bauer config profile use <nome>[/red]")
+            raise typer.Exit(1)
+        if not profile_path(profile, config).exists():
+            console.print(f"[red]Perfil '{profile}' não encontrado. Use 'bauer config profile create {profile}' primeiro.[/red]")
+            raise typer.Exit(1)
+        set_active_profile(profile)
+        console.print(f"[green]Perfil ativo: {profile}[/green]")
+
+    elif action == "delete":
+        if not profile:
+            console.print("[red]Especifique o perfil a remover.[/red]")
+            raise typer.Exit(1)
+        removed = delete_profile(profile, config)
+        if removed:
+            if get_active_profile() == profile:
+                set_active_profile(None)
+            console.print(f"[green]Perfil '{profile}' removido.[/green]")
+        else:
+            console.print(f"[yellow]Perfil '{profile}' não encontrado.[/yellow]")
+
+    else:
+        console.print(f"[red]Ação desconhecida: {action}. Use: create | list | use | delete[/red]")
+        raise typer.Exit(1)
+
+
+@config_app.command("diff")
+def config_diff_cmd(
+    profile_a: str = typer.Argument(..., help="Perfil ou caminho A (ex: 'dev' ou 'config.dev.yaml')"),
+    profile_b: str = typer.Argument("", help="Perfil ou caminho B (default: config.yaml)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    """Exibe diff entre dois arquivos de config."""
+    from .config_profiles import config_diff, profile_path
+
+    def _resolve(name: str) -> Path:
+        p = Path(name)
+        if p.exists():
+            return p
+        pp = profile_path(name, config)
+        return pp
+
+    path_a = _resolve(profile_a)
+    path_b = _resolve(profile_b) if profile_b else config
+
+    diff_lines = config_diff(path_a, path_b)
+    if not diff_lines:
+        console.print("[green]Arquivos idênticos.[/green]")
+        return
+
+    for line in diff_lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            console.print(f"[green]{line}[/green]")
+        elif line.startswith("-") and not line.startswith("---"):
+            console.print(f"[red]{line}[/red]")
+        elif line.startswith("@@"):
+            console.print(f"[cyan]{line}[/cyan]")
+        else:
+            console.print(line)
+
+
+@config_app.command("migrate")
+def config_migrate_cmd(
+    migration: str = typer.Argument("", help="Chave da migração (vazio = lista disponíveis)"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    apply: bool = typer.Option(False, "--apply", help="Aplica a migração (default: dry-run)"),
+):
+    """Executa migração de versão do config.yaml."""
+    from .config_profiles import list_migrations, run_migration
+
+    if not migration:
+        migrations = list_migrations()
+        if not migrations:
+            console.print("[dim]Nenhuma migração disponível.[/dim]")
+            return
+        for m in migrations:
+            console.print(f"  [cyan]{m['key']}[/cyan]  {m['description']}")
+        return
+
+    changes = run_migration(migration, config_path=config, dry_run=not apply)
+    for change in changes:
+        console.print(f"  {'[green]Aplicado[/green]' if apply else '[yellow]Dry-run[/yellow]'}: {change}")
+
+    if not apply:
+        console.print("\n[dim]Use --apply para aplicar as mudanças.[/dim]")
+
+
+@config_app.command("validate-full")
+def config_validate_full(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    """Validação aprofundada do config com Pydantic + verificações extras."""
+    from .config_profiles import validate_config
+
+    errors = validate_config(config_path=config)
+    if not errors:
+        console.print(f"[green]✓ Config válido: {config}[/green]")
+    else:
+        console.print(f"[red]✗ {len(errors)} erro(s) encontrado(s):[/red]")
+        for err in errors:
+            console.print(f"  [red]• {err}[/red]")
+        raise typer.Exit(code=2)
 
 
 @models_app.command("test")
@@ -3913,6 +4065,183 @@ def orchestrate_events(
         payload_str = str(evt["payload"])[:40]
         tbl.add_row(evt["id"], evt["topic"], evt["source"], ts, payload_str)
 
+    console.print(tbl)
+
+
+# --- traces -----------------------------------------------------------------
+
+@traces_app.command("list")
+def traces_list(
+    limit: int = typer.Option(20, "--limit", "-n", help="Número de traces"),
+    session_id: str = typer.Option("", "--session", help="Filtrar por session_id"),
+):
+    """Lista traces OTEL gravados localmente."""
+    from .otel import list_traces, load_spans
+    import datetime
+
+    if session_id:
+        spans = load_spans(session_id=session_id, limit=limit * 20)
+        traces = {}
+        for s in spans:
+            tid = s.get("trace_id", "")
+            if tid not in traces:
+                traces[tid] = {"trace_id": tid, "root_name": s.get("name"), "start_ns": s.get("start_ns")}
+        items = list(traces.values())
+    else:
+        items = list_traces(limit=limit)
+
+    if not items:
+        console.print("[dim]Nenhum trace encontrado.[/dim]")
+        return
+
+    from rich.table import Table
+    tbl = Table(title="Traces OTEL", show_header=True)
+    tbl.add_column("Trace ID", style="dim", width=18)
+    tbl.add_column("Root Span", style="cyan")
+    tbl.add_column("Session", style="magenta")
+    tbl.add_column("Início", style="dim")
+
+    for item in items[:limit]:
+        ts = item.get("start_ns", 0)
+        hora = datetime.datetime.fromtimestamp(ts / 1e9).strftime("%H:%M:%S") if ts else "—"
+        tbl.add_row(
+            str(item.get("trace_id", ""))[:16],
+            str(item.get("root_name", ""))[:40],
+            str(item.get("session_id") or "")[:20],
+            hora,
+        )
+    console.print(tbl)
+
+
+@traces_app.command("show")
+def traces_show(
+    trace_id: str = typer.Argument(..., help="Trace ID a mostrar"),
+    output_json: bool = typer.Option(False, "--json", help="Emite JSON"),
+):
+    """Mostra todos os spans de um trace específico."""
+    from .otel import load_spans
+    import datetime
+
+    spans = load_spans(trace_id=trace_id, limit=500)
+    if not spans:
+        console.print(f"[yellow]Trace {trace_id[:16]} não encontrado.[/yellow]")
+        raise typer.Exit(1)
+
+    if output_json:
+        import json as _json
+        console.print(_json.dumps(spans, indent=2))
+        return
+
+    from rich.table import Table
+    tbl = Table(title=f"Trace {trace_id[:16]}", show_header=True)
+    tbl.add_column("Span", style="cyan", width=20)
+    tbl.add_column("Kind", style="magenta")
+    tbl.add_column("Duration", style="yellow")
+    tbl.add_column("Status", style="green")
+    tbl.add_column("Attributes", style="dim", max_width=40)
+
+    for s in spans:
+        dur = f"{s.get('duration_ms', 0):.1f}ms" if s.get("duration_ms") else "—"
+        attrs = ", ".join(f"{k}={v}" for k, v in (s.get("attributes") or {}).items() if k != "service")[:40]
+        status_style = "red" if s.get("status") == "error" else "green"
+        tbl.add_row(
+            s.get("name", "")[:20],
+            s.get("kind", ""),
+            dur,
+            f"[{status_style}]{s.get('status', '')}[/{status_style}]",
+            attrs,
+        )
+    console.print(tbl)
+
+
+# --- cost -------------------------------------------------------------------
+
+@cost_app.command("status")
+def cost_status(
+    session_id: str = typer.Option("", "--session", help="Session ID específica"),
+):
+    """Mostra custo e uso de tokens da sessão."""
+    from .cost_tracker import CostTracker
+
+    history = CostTracker.load_history(limit=200)
+    if not history:
+        console.print("[dim]Nenhum registro de custo encontrado.[/dim]")
+        return
+
+    # Agrupa por sessão
+    sessions = {}
+    for rec in history:
+        sid = rec.get("session_id", "")
+        if session_id and sid != session_id:
+            continue
+        if sid not in sessions:
+            sessions[sid] = {"calls": 0, "tokens": 0, "cost": 0.0, "models": set()}
+        sessions[sid]["calls"] += 1
+        sessions[sid]["tokens"] += rec.get("total_tokens", 0)
+        sessions[sid]["cost"] += rec.get("cost_usd", 0.0)
+        sessions[sid]["models"].add(rec.get("model", ""))
+
+    if not sessions:
+        console.print("[dim]Nenhum registro encontrado para essa sessão.[/dim]")
+        return
+
+    from rich.table import Table
+    tbl = Table(title="Custo por Sessão", show_header=True)
+    tbl.add_column("Session", style="dim", width=16)
+    tbl.add_column("Calls", style="cyan")
+    tbl.add_column("Tokens", style="magenta")
+    tbl.add_column("Custo USD", style="yellow")
+    tbl.add_column("Modelos", style="dim", max_width=30)
+
+    for sid, data in list(sessions.items())[-20:]:
+        tbl.add_row(
+            sid[:16],
+            str(data["calls"]),
+            f"{data['tokens']:,}",
+            f"${data['cost']:.4f}",
+            ", ".join(list(data["models"])[:3]),
+        )
+    console.print(tbl)
+
+
+@cost_app.command("history")
+def cost_history(
+    limit: int = typer.Option(30, "--limit", "-n"),
+    output_json: bool = typer.Option(False, "--json"),
+):
+    """Lista histórico detalhado de chamadas LLM com custo."""
+    from .cost_tracker import CostTracker
+    import datetime
+
+    history = CostTracker.load_history(limit=limit)
+    if not history:
+        console.print("[dim]Nenhum histórico de custo.[/dim]")
+        return
+
+    if output_json:
+        import json as _json
+        console.print(_json.dumps(history, indent=2))
+        return
+
+    from rich.table import Table
+    tbl = Table(title="Histórico de Custo", show_header=True)
+    tbl.add_column("Hora", style="dim")
+    tbl.add_column("Modelo", style="cyan")
+    tbl.add_column("Prompt", style="magenta")
+    tbl.add_column("Compl.", style="blue")
+    tbl.add_column("Custo", style="yellow")
+    tbl.add_column("Session", style="dim", width=12)
+
+    for rec in history[-limit:]:
+        hora = datetime.datetime.fromtimestamp(rec.get("ts", 0)).strftime("%H:%M:%S")
+        tbl.add_row(
+            hora,
+            rec.get("model", "")[:20],
+            str(rec.get("prompt_tokens", 0)),
+            str(rec.get("completion_tokens", 0)),
+            f"${rec.get('cost_usd', 0):.5f}",
+            rec.get("session_id", "")[:12],
+        )
     console.print(tbl)
 
 
