@@ -816,6 +816,11 @@ class BaseBridge(ABC):
     def stop(self) -> None:
         self._stop_event.set()
 
+    def reset(self) -> None:
+        """Limpa o stop_event para permitir uma nova chamada a start() após restart."""
+        self._stop_event.clear()
+        self.last_error = ""
+
     @property
     def stopped(self) -> bool:
         return self._stop_event.is_set()

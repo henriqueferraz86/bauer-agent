@@ -106,8 +106,6 @@ class BauerGatewayRuntime:
         try:
             while not self._stop_event.is_set():
                 time.sleep(0.5)
-        except KeyboardInterrupt:
-            logger.info("Interrompido — desligando…")
         finally:
             self.stop()
 
@@ -117,7 +115,6 @@ class BauerGatewayRuntime:
         while not self._stop_event.is_set():
             try:
                 bridge.start()
-                break  # saída limpa (stop() chamado)
             except Exception as exc:  # noqa: BLE001
                 bridge.last_error = str(exc)
                 if self._stop_event.is_set():
@@ -126,8 +123,18 @@ class BauerGatewayRuntime:
                     "Bridge %s caiu: %s — restart em %.0fs",
                     bridge.name, exc, backoff,
                 )
-                self._stop_event.wait(backoff)
-                backoff = min(backoff * 2, 120.0)
+            else:
+                # start() retornou sem exceção
+                if self._stop_event.is_set():
+                    break  # saída limpa — gateway parando
+                # Bridge saiu inesperadamente sem o gateway ter pedido — reinicia
+                logger.warning(
+                    "Bridge %s saiu sem stop() do gateway — reiniciando em %.0fs",
+                    bridge.name, backoff,
+                )
+            bridge.reset()  # limpa stop_event do bridge para o próximo start()
+            self._stop_event.wait(backoff)
+            backoff = min(backoff * 2, 120.0)
 
     def _outbox_pump(self) -> None:
         """Drena o GatewayOutbox periodicamente (channel_send/escalations)."""
@@ -225,12 +232,37 @@ def _write_pid_file(workspace: Path) -> Path | None:
 
 
 def run_gateway(config_path: str | Path = "config.yaml") -> None:
-    """Entry point: python -m bauer.gateway_runtime (foreground e serviço)."""
+    """Entry point: python -m bauer.gateway_runtime (foreground e serviço).
+
+    Loop de restart interno: qualquer exceção inesperada (config, rede, crash)
+    aguarda restart_delay e tenta de novo. KeyboardInterrupt (Ctrl+C ou
+    SIGINT) sai limpo. Isso garante que o Task Scheduler / systemd / launchd
+    não precisam fazer o restart — o processo cuida de si mesmo.
+    """
     _setup_service_logging()
-    runtime = BauerGatewayRuntime.from_config(config_path)
-    pid_file = _write_pid_file(Path(runtime.workspace))
+    pid_file: Path | None = None
+    restart_delay = 10  # segundos; dobra a cada falha, max 120
+
     try:
-        runtime.start(block=True)
+        while True:
+            try:
+                runtime = BauerGatewayRuntime.from_config(config_path)
+                if pid_file is None:
+                    pid_file = _write_pid_file(Path(runtime.workspace))
+                runtime.start(block=True)
+                # start() retornou sem KeyboardInterrupt = saída limpa via stop()
+                logger.info("Gateway encerrado normalmente.")
+                break
+            except KeyboardInterrupt:
+                logger.info("Interrompido pelo usuário (KeyboardInterrupt).")
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Gateway caiu inesperadamente: %s — reiniciando em %ds",
+                    exc, restart_delay,
+                )
+                time.sleep(restart_delay)
+                restart_delay = min(restart_delay * 2, 120)
     finally:
         if pid_file is not None:
             try:
