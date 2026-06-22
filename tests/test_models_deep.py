@@ -313,7 +313,7 @@ class TestBauerModelsCatalogCli:
         from typer.testing import CliRunner
         from bauer.cli import app
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         return runner.invoke(app, ["models", "catalog", *args], catch_exceptions=False)
 
     def test_command_exists(self):
@@ -321,7 +321,7 @@ class TestBauerModelsCatalogCli:
         from typer.testing import CliRunner
         from bauer.cli import app
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         result = runner.invoke(app, ["models", "catalog", "--help"])
         assert result.exit_code == 0
         assert "catalog" in result.output.lower() or "provider" in result.output.lower()

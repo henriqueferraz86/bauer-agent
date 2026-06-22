@@ -6225,6 +6225,71 @@ def dispatch_worker_cmd(
         raise typer.Exit(code=1)
 
 
+# --- desktop ----------------------------------------------------------------
+
+
+def _desktop_serve_cmd(config: Path, host: str, port: int, api_key: str) -> list[str]:
+    """Monta o comando do serve sidecar usado pelo `bauer desktop`."""
+    import sys
+    cmd = [
+        sys.executable, "-m", "bauer.cli", "serve",
+        "--config", str(config), "--host", host, "--port", str(port),
+    ]
+    if api_key:
+        cmd += ["--api-key", api_key]
+    return cmd
+
+
+@app.command()
+def desktop(
+    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host de escuta do serve sidecar"),
+    port: int = typer.Option(8799, "--port", help="Porta do serve sidecar"),
+    no_open: bool = typer.Option(False, "--no-open", help="Não abre o navegador automaticamente"),
+    dev: bool = typer.Option(False, "--dev", help="Modo dev: abre o Vite (:5173); rode o serve à parte"),
+    api_key: str = typer.Option("", "--api-key", help="X-API-Key do serve (se houver auth)"),
+    timeout: float = typer.Option(25.0, "--timeout", help="Segundos aguardando o serve responder /health"),
+):
+    """Abre o Bauer Agent Desktop (SPA) no navegador, subindo o `bauer serve` como sidecar.
+
+    A interface gráfica (8 telas: Projetos, Chat, Kanban, Modelos, Gateway,
+    Observabilidade, Logs, Config) é servida pelo próprio serve em ``/``.
+
+    Modo dev (``--dev``): assume um ``bauer serve`` já rodando e abre o Vite dev
+    server (http://127.0.0.1:5173); rode ``npm run dev`` em ``desktop/``.
+    """
+    import subprocess
+    import webbrowser
+
+    from .desktop_api import wait_for_health
+
+    if dev:
+        url = "http://127.0.0.1:5173"
+        console.print(f"[bold]Bauer Desktop (dev)[/bold] — {url}")
+        console.print("[dim]Rode `bauer serve` num terminal e `npm run dev` em desktop/.[/dim]")
+        if not no_open:
+            webbrowser.open(url)
+        return
+
+    url = f"http://{host}:{port}"
+    console.print(f"[bold]Bauer Desktop[/bold] — iniciando serve em {url} …")
+    proc = subprocess.Popen(_desktop_serve_cmd(config, host, port, api_key))
+    try:
+        if not wait_for_health(f"{url}/health", timeout=timeout):
+            console.print("[red]O serve não respondeu a tempo.[/red] Veja se o Ollama/provider está ok.")
+            proc.terminate()
+            raise typer.Exit(code=1)
+        console.print(f"[green]Pronto[/green] — {url}  (Ctrl+C encerra)")
+        if not no_open:
+            webbrowser.open(url)
+        proc.wait()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Encerrando o serve…[/dim]")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+
+
 # --- serve ------------------------------------------------------------------
 
 
