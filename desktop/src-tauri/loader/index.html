@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bauer Agent</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; }
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #0d1117; color: #c9d1d9;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px;
+        height: 100vh; user-select: none; -webkit-user-select: none;
+      }
+      .bolt {
+        width: 64px; height: 64px; border-radius: 14px; background: #1a2840;
+        border: 1px solid #2d3f5c; display: flex; align-items: center; justify-content: center;
+        font-size: 34px; color: #58a6ff;
+      }
+      .title { font-size: 16px; color: #e6edf3; font-weight: 500; }
+      .status { font-size: 13px; color: #8b949e; min-height: 18px; text-align: center; max-width: 520px; padding: 0 24px; }
+      .spinner {
+        width: 22px; height: 22px; border: 2px solid #21262d; border-top-color: #58a6ff;
+        border-radius: 50%; animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .error { display: none; color: #f85149; font-size: 13px; max-width: 560px; text-align: center; line-height: 1.6; padding: 0 24px; }
+      .hint { color: #6e7681; font-size: 12px; margin-top: 8px; }
+      .hint code { font-family: "Consolas", monospace; color: #8b949e; background: #161b22; padding: 1px 5px; border-radius: 4px; }
+      body.has-error .spinner, body.has-error .status { display: none; }
+      body.has-error .error { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="bolt">⚡</div>
+    <div class="title">Bauer Agent</div>
+    <div class="spinner" id="spinner"></div>
+    <div class="status" id="status">Iniciando…</div>
+    <div class="error" id="error"></div>
+    <script>
+      const statusEl = document.getElementById("status");
+      const errorEl = document.getElementById("error");
+      function showError(msg) {
+        document.body.classList.add("has-error");
+        errorEl.innerHTML =
+          "<strong>Não foi possível iniciar o Bauer Agent.</strong><br>" + msg +
+          '<div class="hint">Verifique se o Python tem o pacote <code>bauer</code> instalado ' +
+          '(ou defina <code>BAUER_PYTHON</code>) e se o projeto ativo tem <code>config.yaml</code>.</div>';
+      }
+      // Eventos emitidos pelo backend Rust (withGlobalTauri).
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen("bauer://status", (e) => { statusEl.textContent = e.payload; });
+        window.__TAURI__.event.listen("bauer://error", (e) => { showError(e.payload); });
+      }
+    </script>
+  </body>
+</html>
