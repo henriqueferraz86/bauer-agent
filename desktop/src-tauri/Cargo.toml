@@ -1,0 +1,29 @@
+[package]
+name = "bauer-desktop"
+version = "0.1.0"
+description = "Bauer Agent Desktop — shell nativo (Tauri) sobre o bauer serve"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "bauer_desktop"
+crate-type = ["lib"]
+
+[[bin]]
+name = "bauer-agent"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
