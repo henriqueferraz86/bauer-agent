@@ -395,6 +395,14 @@ def build_desktop_router(
         if not _SAFE_LOG_NAME.match(name):
             raise HTTPException(status_code=400, detail="Nome de log inválido.")
         fname = name if name.endswith(".log") else f"{name}.log"
-        return {"name": fname, "lines": tail_log(_logs_dir / fname, lines)}
+        raw = tail_log(_logs_dir / fname, lines)
+        # Logs do gateway carregam tokens de bot em URLs — redige antes de expor à UI.
+        try:
+            from .secrets_scanner import redact
+
+            scrubbed = [redact(line) for line in raw]
+        except Exception:  # noqa: BLE001
+            scrubbed = raw
+        return {"name": fname, "lines": scrubbed}
 
     return router

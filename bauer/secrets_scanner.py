@@ -64,6 +64,10 @@ _PATTERNS: list[SecretPattern] = [
     SecretPattern("Groq API Key",      re.compile(r"\bgsk_[A-Za-z0-9]{50,}\b")),
     SecretPattern("HuggingFace Token", re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
 
+    # Gateway bot tokens (aparecem em URLs nos logs do gateway)
+    SecretPattern("Telegram Bot Token", re.compile(r"\d{8,10}:[A-Za-z0-9_\-]{35}\b")),
+    SecretPattern("Discord Bot Token",  re.compile(r"\b[MNO][A-Za-z0-9_\-]{23,25}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,40}\b")),
+
     # Tokens de alta entropia (heurística) — apenas se precedidos de keyword suspeita
     SecretPattern("High-entropy token", re.compile(
         r'(?i)(?:token|password|passwd|pwd|secret|credential|key)\s*[=:\"\']\s*["\']?([A-Za-z0-9+/=_\-]{32,})["\']?'

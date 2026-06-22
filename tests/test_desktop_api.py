@@ -348,6 +348,19 @@ class TestLogsEndpoint:
         assert data["name"] == "gateway.log"
         assert data["lines"] == ["b", "c"]
 
+    def test_tail_redacts_telegram_token(self, env):
+        # token de bot Telegram embutido numa URL não pode vazar para a UI.
+        # Token SINTÉTICO (formato \d{8,10}:[A-Za-z0-9_-]{35}), não um segredo real.
+        token = "1234567890:" + "A" * 35
+        (env["logs_dir"] / "gateway.log").write_text(
+            f"POST https://api.telegram.org/bot{token}/getUpdates 200 OK\n",
+            encoding="utf-8",
+        )
+        r = env["client"].get("/api/logs/gateway/tail")
+        joined = "\n".join(r.json()["lines"])
+        assert token not in joined
+        assert "REDACTED" in joined
+
     def test_path_traversal_blocked(self, env):
         assert env["client"].get("/api/logs/..%2f..%2fetc%2fpasswd/tail").status_code in (400, 404)
 
