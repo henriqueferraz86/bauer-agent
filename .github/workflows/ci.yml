@@ -99,6 +99,35 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+  desktop-build:
+    # Build smoke do SPA (Bauer Desktop Fase 1) — garante que o frontend
+    # React+Vite compila e emite para bauer/static/. Não roda testes de
+    # componente (fora de escopo desta fase).
+    name: Desktop SPA build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build SPA (tsc + vite)
+        working-directory: desktop
+        run: npm run build
+
+      - name: Verify build output
+        run: test -f bauer/static/index.html
+
   e2e-real:
     # Smoke com provider REAL (opencode free tier) — pega bugs de wiring que
     # mocks não pegam (think field, contexto, compressão). Non-blocking:

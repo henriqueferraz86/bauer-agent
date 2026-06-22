@@ -49,6 +49,29 @@ class MemoryProvider(ABC):
     def prefetch(self) -> None:
         """Pré-carrega dados relevantes antes do loop principal. Opcional."""
 
+    def queue_prefetch(self) -> None:
+        """Dispara prefetch em background sem bloquear o loop principal.
+
+        A implementação padrão chama prefetch() diretamente em uma thread daemon.
+        Providers com acesso async podem sobrescrever para usar asyncio.
+        """
+        import threading
+        t = threading.Thread(target=self._safe_prefetch, daemon=True)
+        t.start()
+
+    def _safe_prefetch(self) -> None:
+        try:
+            self.prefetch()
+        except Exception:
+            pass
+
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        """Chamado antes de cada turno do agent (antes da chamada LLM).
+
+        Permite que o provider atualize contexto fresco, injete snippets
+        relevantes para a mensagem atual, ou acione prefetch adicional.
+        """
+
     def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
         """Sincroniza estado após cada turno do agent. Opcional."""
 
@@ -72,6 +95,40 @@ class MemoryProvider(ABC):
     def get_tool_schemas(self) -> list[dict]:
         """Schemas JSON de tools adicionais fornecidas por este provider."""
         return []
+
+    def get_config_schema(self) -> dict:
+        """Retorna JSON Schema das opções de configuração deste provider.
+
+        Permite que UIs de configuração (CLI, Telegram /config) apresentem
+        campos editáveis sem hardcode. Retorna dict vazio se sem config.
+        """
+        return {}
+
+    # ------------------------------------------------------------------
+    # Hooks de evento avançados
+    # ------------------------------------------------------------------
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        """Chamado após o agent delegar uma subtarefa a um sub-agente.
+
+        Args:
+            sub_task: descrição da tarefa delegada.
+            result: resposta retornada pelo sub-agente.
+        """
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        """Chamado após cada execução de tool pelo agent loop.
+
+        Permite que o provider observe (e opcionalmente indexe) o resultado
+        de qualquer tool call — útil para extrair fatos ou rastrear ações.
+
+        Args:
+            tool_name: nome da tool executada.
+            tool_args: argumentos passados à tool.
+            tool_result: resultado retornado (string serializada).
+        """
 
     # ------------------------------------------------------------------
     # Nudge
@@ -157,6 +214,13 @@ class LocalMemoryProvider(MemoryProvider):
                 pass
         self._prefetched = "\n\n".join(parts)
 
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        if not self._initialized or self._manager is None:
+            return
+        if turn_index % 5 == 0 and turn_index > 0:
+            # Atualiza prefetch a cada 5 turnos para pegar novas entradas de memória
+            self.prefetch()
+
     def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
         pass  # LocalMemoryProvider é append-only; sem sincronização extra.
 
@@ -197,6 +261,35 @@ class LocalMemoryProvider(MemoryProvider):
 
     def get_tool_schemas(self) -> list[dict]:
         return []
+
+    def get_config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Diretório de trabalho onde os arquivos de memória são armazenados.",
+                }
+            },
+        }
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        if not self._initialized or self._manager is None:
+            return
+        try:
+            summary = result[:300].replace("\n", " ")
+            self._manager.add_note(
+                "Delegação registrada",
+                f"Subtarefa: {sub_task[:120]}\nResultado: {summary}",
+            )
+        except Exception:
+            pass
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        if tool_name in ("memory", "memory_search"):
+            self._nudge_state.last_write_turn = _current_turn_marker()
 
     # ------------------------------------------------------------------
     # Nudge
@@ -541,6 +634,20 @@ class MultiMemoryProvider(MemoryProvider):
             except Exception:
                 pass
 
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        for p in self._providers:
+            try:
+                p.on_turn_start(turn_index, messages)
+            except Exception:
+                pass
+
+    def queue_prefetch(self) -> None:
+        for p in self._providers:
+            try:
+                p.queue_prefetch()
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Contexto e tools
     # ------------------------------------------------------------------
@@ -575,6 +682,32 @@ class MultiMemoryProvider(MemoryProvider):
             except Exception:
                 pass
         return schemas
+
+    def get_config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                p.__class__.__name__: p.get_config_schema()
+                for p in self._providers
+                if p.get_config_schema()
+            },
+        }
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        for p in self._providers:
+            try:
+                p.on_delegation(sub_task, result)
+            except Exception:
+                pass
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        for p in self._providers:
+            try:
+                p.handle_tool_call(tool_name, tool_args, tool_result)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Nudge — fires if any provider fires
@@ -848,6 +981,53 @@ class HindsightProvider(MemoryProvider):
             f"- {f['subject']} {f['predicate']} {f['object']}" for f in top5
         )
         return f"## Hindsight (fatos)\n\n{lines}"
+
+    def get_config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "base_dir": {
+                    "type": "string",
+                    "description": "Diretório base onde hindsight.json é armazenado (padrão: ~/.bauer).",
+                },
+                "max_facts": {
+                    "type": "integer",
+                    "description": "Limite máximo de fatos no buffer circular.",
+                    "default": 200,
+                },
+            },
+        }
+
+    def on_delegation(self, sub_task: str, result: str) -> None:
+        facts = self._load()
+        facts.append({
+            "subject": "delegação",
+            "predicate": "resultou",
+            "object": result[:60],
+            "ts": time.time(),
+        })
+        facts = facts[-self._MAX_FACTS:]
+        self._facts = facts
+        self._save(facts)
+
+    def handle_tool_call(
+        self, tool_name: str, tool_args: dict, tool_result: str
+    ) -> None:
+        if tool_name not in ("write_file", "patch", "memory"):
+            return
+        snippet = tool_result[:80].replace("\n", " ")
+        if not snippet:
+            return
+        facts = self._load()
+        facts.append({
+            "subject": tool_name,
+            "predicate": "retornou",
+            "object": snippet,
+            "ts": time.time(),
+        })
+        facts = facts[-self._MAX_FACTS:]
+        self._facts = facts
+        self._save(facts)
 
 
 # ---------------------------------------------------------------------------

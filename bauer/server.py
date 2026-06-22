@@ -648,6 +648,16 @@ def create_app(
             ],
         }
 
+    # --- Desktop API (SPA das 8 telas) ------------------------------------------
+    try:
+        from .desktop_api import build_desktop_router
+
+        app.include_router(build_desktop_router(verify_key=_verify_key))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("bauer.server").warning(
+            "Desktop API não montada: %s", exc
+        )
+
     return app
 
 

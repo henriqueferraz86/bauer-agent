@@ -129,6 +129,117 @@ class LspClient:
             logger.debug("LSP diagnostics failed: %s", exc)
             return []
 
+    async def did_open(self, file_uri: str, language_id: str, text: str) -> None:
+        """Notify server that a document was opened (textDocument/didOpen)."""
+        await self._notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": language_id,
+                "version": 1,
+                "text": text,
+            }
+        })
+
+    async def did_close(self, file_uri: str) -> None:
+        """Notify server that a document was closed."""
+        await self._notify("textDocument/didClose", {
+            "textDocument": {"uri": file_uri}
+        })
+
+    async def workspace_symbols(self, query: str) -> list[dict]:
+        """Search all symbols in the workspace matching query."""
+        try:
+            result = await self._send("workspace/symbol", {"query": query})
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as exc:
+            logger.debug("LSP workspace/symbol failed: %s", exc)
+            return []
+
+    async def completion(
+        self, file_uri: str, line: int, character: int
+    ) -> list[dict]:
+        """Request completion items at the given position."""
+        try:
+            result = await self._send("textDocument/completion", {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line, "character": character},
+                "context": {"triggerKind": 1},
+            })
+            if result is None:
+                return []
+            if isinstance(result, list):
+                return result
+            # CompletionList format
+            return result.get("items", []) if isinstance(result, dict) else []
+        except Exception as exc:
+            logger.debug("LSP completion failed: %s", exc)
+            return []
+
+    async def format_document(
+        self, file_uri: str, tab_size: int = 4, insert_spaces: bool = True
+    ) -> list[dict]:
+        """Request document formatting (textDocument/formatting).
+
+        Returns a list of TextEdit dicts, or [] if the server doesn't support it.
+        """
+        try:
+            result = await self._send("textDocument/formatting", {
+                "textDocument": {"uri": file_uri},
+                "options": {"tabSize": tab_size, "insertSpaces": insert_spaces},
+            })
+            return result if isinstance(result, list) else []
+        except Exception as exc:
+            logger.debug("LSP format failed: %s", exc)
+            return []
+
+    async def rename_symbol(
+        self, file_uri: str, line: int, character: int, new_name: str
+    ) -> dict | None:
+        """Request symbol rename across the workspace (textDocument/rename).
+
+        Returns a WorkspaceEdit dict, or None if the server doesn't support it.
+        """
+        try:
+            result = await self._send("textDocument/rename", {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line, "character": character},
+                "newName": new_name,
+            })
+            return result if isinstance(result, dict) else None
+        except Exception as exc:
+            logger.debug("LSP rename failed: %s", exc)
+            return None
+
+    async def code_actions(
+        self,
+        file_uri: str,
+        start_line: int,
+        start_char: int,
+        end_line: int,
+        end_char: int,
+        diagnostics: list[dict] | None = None,
+    ) -> list[dict]:
+        """Request code actions (quick-fixes, refactors) for a range."""
+        try:
+            result = await self._send("textDocument/codeAction", {
+                "textDocument": {"uri": file_uri},
+                "range": {
+                    "start": {"line": start_line, "character": start_char},
+                    "end": {"line": end_line, "character": end_char},
+                },
+                "context": {
+                    "diagnostics": diagnostics or [],
+                    "only": None,
+                    "triggerKind": 1,
+                },
+            })
+            return result if isinstance(result, list) else []
+        except Exception as exc:
+            logger.debug("LSP codeAction failed: %s", exc)
+            return []
+
     # ------------------------------------------------------------------
     # JSON-RPC internals
     # ------------------------------------------------------------------

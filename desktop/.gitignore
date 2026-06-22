@@ -1,0 +1,7 @@
+node_modules
+dist
+*.local
+.vite
+
+# TS incremental build cache
+*.tsbuildinfo

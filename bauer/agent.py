@@ -1335,6 +1335,7 @@ def run_one_turn(
     tool_timeout_s: float = 30.0,
     tracer: "Any | None" = None,
     session_id: str | None = None,
+    memory_provider: "Any | None" = None,
 ) -> tuple[str, list[dict]]:
     """Executa um turno completo do agente, incluindo tool calls encadeados.
 
@@ -1357,6 +1358,7 @@ def run_one_turn(
     from .iteration_budget import IterationBudget as _IterBudget
     from .tracing import _NoopTrace as _TraceNoop
 
+    _memprov = memory_provider  # G25: lifecycle hooks
     tool_log: list[dict] = []
     if budget is None:
         # `MAX_TOOL_TURNS + 1`: até MAX rodadas de tool call, +1 turno final para
@@ -1491,6 +1493,16 @@ def run_one_turn(
                         _tool_failed = True
                         _bridge_span.end(output=tool_result, level="ERROR")
                     _deduper.record(action_name, action_args, tool_result, failed=_tool_failed)
+
+                # G25: memory lifecycle — handle_tool_call + on_delegation
+                if _memprov is not None and not _tool_failed:
+                    try:
+                        _memprov.handle_tool_call(action_name, action_args, str(tool_result))
+                        if action_name == "delegate_task":
+                            sub = action_args.get("task", "") or action_args.get("context", "")
+                            _memprov.on_delegation(str(sub), str(tool_result))
+                    except Exception:
+                        pass
 
                 # Wave 4.5: post-call guardrail update
                 if _guardrail is not None:
@@ -2409,6 +2421,7 @@ def run_agent_session(
         try:
             _memprov.initialize(_mem_workspace)
             _memprov.prefetch()
+            _memprov.queue_prefetch()  # dispara background refresh logo após o sync inicial
             _mem_block = _memprov.system_prompt_block()
             if _mem_block:
                 ctx.add_ephemeral_system(_mem_block)
@@ -2681,6 +2694,13 @@ def run_agent_session(
                     f"({ctx.used_tokens}/{ctx.budget} tokens). "
                     "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
                 )
+            # MemoryProvider: on_turn_start antes da chamada LLM
+            if _memprov is not None:
+                try:
+                    _memprov.on_turn_start(_mem_turn_idx, ctx.messages)
+                except Exception:
+                    pass
+
             _native_final = False
             try:
                 if _native_session_ok:

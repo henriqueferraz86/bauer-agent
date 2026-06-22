@@ -268,11 +268,16 @@ _TOOL_SECURITY: dict[str, dict] = {
     "find_definition":{"permission": "read",    "risk": "low",    "approval": False},
     "get_imports":    {"permission": "read",    "risk": "low",    "approval": False},
     "find_usages":    {"permission": "read",    "risk": "low",    "approval": False},
-    # G15: LSP tools
-    "lsp_hover":      {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_definitions":{"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_references": {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_diagnostics":{"permission": "read",    "risk": "low",    "approval": False},
+    # G15/G26: LSP tools
+    "lsp_hover":             {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_definitions":       {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_references":        {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_diagnostics":       {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_workspace_symbols": {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_completion":        {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_code_actions":      {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp_format":            {"permission": "write",   "risk": "medium", "approval": False},
+    "lsp_rename":            {"permission": "write",   "risk": "high",   "approval": True},
     # Escrita local — workspace-scoped
     "write_file":     {"permission": "write",   "risk": "medium", "approval": False},
     "append_file":    {"permission": "write",   "risk": "medium", "approval": False},
@@ -442,6 +447,9 @@ _WORKER_CONTEXT_ALLOWLIST = frozenset({
     "lsp_definitions",
     "lsp_references",
     "lsp_diagnostics",
+    "lsp_workspace_symbols",
+    "lsp_completion",
+    "lsp_code_actions",
     # Mutate only the local workspace needed to complete the claimed task.
     "write_file",
     "append_file",
@@ -1260,6 +1268,52 @@ class ToolRouter:
             "description": "Retorna erros e warnings do arquivo via LSP (type checking, lint).",
             "args": {
                 "file": "str — caminho do arquivo para inspecionar",
+            },
+        }
+        self._tools["lsp_workspace_symbols"] = {
+            "fn": self._lsp_workspace_symbols,
+            "description": "Busca símbolos (classes, funções, variáveis) em todo o workspace via LSP.",
+            "args": {
+                "query": "str — texto de busca parcial do símbolo",
+            },
+        }
+        self._tools["lsp_completion"] = {
+            "fn": self._lsp_completion,
+            "description": "Retorna sugestões de autocompletar na posição dada via LSP.",
+            "args": {
+                "file": "str — caminho do arquivo",
+                "line": "int — linha (0-indexed)",
+                "character": "int — coluna (0-indexed)",
+            },
+        }
+        self._tools["lsp_code_actions"] = {
+            "fn": self._lsp_code_actions,
+            "description": "Retorna ações de código (quick-fixes, refatorações) para um intervalo via LSP.",
+            "args": {
+                "file": "str — caminho do arquivo",
+                "start_line": "int — linha inicial do intervalo (0-indexed)",
+                "start_char": "int — coluna inicial (0-indexed)",
+                "end_line": "int — linha final do intervalo (0-indexed)",
+                "end_char": "int — coluna final (0-indexed)",
+            },
+        }
+        self._tools["lsp_format"] = {
+            "fn": self._lsp_format,
+            "description": "Formata o arquivo usando o formatter do servidor LSP (textDocument/formatting).",
+            "args": {
+                "file": "str — caminho do arquivo a formatar",
+                "tab_size": "int — tamanho do tab (padrão 4)",
+                "insert_spaces": "bool — usar espaços ao invés de tabs (padrão true)",
+            },
+        }
+        self._tools["lsp_rename"] = {
+            "fn": self._lsp_rename,
+            "description": "Renomeia um símbolo em todo o workspace via LSP (textDocument/rename).",
+            "args": {
+                "file": "str — caminho do arquivo onde o símbolo está",
+                "line": "int — linha do símbolo (0-indexed)",
+                "character": "int — coluna do símbolo (0-indexed)",
+                "new_name": "str — novo nome para o símbolo",
             },
         }
 
@@ -3360,20 +3414,35 @@ class ToolRouter:
 
     # --- G15: LSP Tools --------------------------------------------------------
 
-    def _lsp_call(self, method: str, file_rel: str, line: int, char: int) -> dict | list | None:
+    def _lsp_call(
+        self,
+        method: str,
+        file_rel: str,
+        line: int,
+        char: int,
+        **kwargs,
+    ) -> dict | list | None:
         """Helper: run an LSP async call synchronously using asyncio."""
         import asyncio
-        from pathlib import Path
         from .lsp.servers import server_for_file
         from .lsp.manager import get_or_start
 
-        file_abs = self._sandbox(file_rel)
-        server_cfg = server_for_file(str(file_abs))
+        # workspace_symbols doesn't need a real file path
+        if method == "workspace_symbols":
+            query = file_rel  # repurpose first positional arg as query
+            server_cfg = next(
+                (c for c in __import__("bauer.lsp.servers", fromlist=["KNOWN_SERVERS"]).KNOWN_SERVERS.values()
+                 if c.lang == "python"),
+                None,
+            )
+        else:
+            file_abs = self._sandbox(file_rel)
+            server_cfg = server_for_file(str(file_abs))
+
         if server_cfg is None:
             return None
 
         workspace = str(self.workspace)
-        file_uri = file_abs.as_uri()
 
         async def _run():
             mgr = await get_or_start(server_cfg, workspace)
@@ -3381,13 +3450,34 @@ class ToolRouter:
                 return None
             client = mgr.client()
             if method == "hover":
-                return await client.hover(file_uri, line, char)
+                return await client.hover(file_abs.as_uri(), line, char)
             if method == "definitions":
-                return await client.definitions(file_uri, line, char)
+                return await client.definitions(file_abs.as_uri(), line, char)
             if method == "references":
-                return await client.references(file_uri, line, char)
+                return await client.references(file_abs.as_uri(), line, char)
             if method == "diagnostics":
-                return await client.diagnostics(file_uri)
+                return await client.diagnostics(file_abs.as_uri())
+            if method == "workspace_symbols":
+                return await client.workspace_symbols(query)
+            if method == "completion":
+                return await client.completion(file_abs.as_uri(), line, char)
+            if method == "code_actions":
+                return await client.code_actions(
+                    file_abs.as_uri(), line, char,
+                    kwargs.get("end_line", line),
+                    kwargs.get("end_char", char),
+                )
+            if method == "format_document":
+                return await client.format_document(
+                    file_abs.as_uri(),
+                    tab_size=kwargs.get("tab_size", 4),
+                    insert_spaces=kwargs.get("insert_spaces", True),
+                )
+            if method == "rename_symbol":
+                return await client.rename_symbol(
+                    file_abs.as_uri(), line, char,
+                    kwargs.get("new_name", ""),
+                )
             return None
 
         try:
@@ -3441,6 +3531,75 @@ class ToolRouter:
         if not file_rel:
             raise ToolError("lsp_diagnostics requer 'file'.")
         result = self._lsp_call("diagnostics", file_rel, 0, 0)
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_workspace_symbols(self, args: dict) -> str:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            raise ToolError("lsp_workspace_symbols requer 'query'.")
+        # file_rel is repurposed as query string for workspace_symbols
+        result = self._lsp_call("workspace_symbols", query, 0, 0)
+        if result is None:
+            return json.dumps({"error": "LSP server not running", "hint": "pip install pyright"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_completion(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        line = int(args.get("line", 0))
+        char = int(args.get("character", 0))
+        if not file_rel:
+            raise ToolError("lsp_completion requer 'file'.")
+        result = self._lsp_call("completion", file_rel, line, char)
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_code_actions(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        if not file_rel:
+            raise ToolError("lsp_code_actions requer 'file'.")
+        start_line = int(args.get("start_line", 0))
+        start_char = int(args.get("start_char", 0))
+        end_line = int(args.get("end_line", start_line))
+        end_char = int(args.get("end_char", start_char))
+        result = self._lsp_call(
+            "code_actions", file_rel, start_line, start_char,
+            end_line=end_line, end_char=end_char,
+        )
+        if result is None:
+            return json.dumps({"error": "LSP server not running"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_format(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        if not file_rel:
+            raise ToolError("lsp_format requer 'file'.")
+        tab_size = int(args.get("tab_size", 4))
+        insert_spaces = bool(args.get("insert_spaces", True))
+        result = self._lsp_call(
+            "format_document", file_rel, 0, 0,
+            tab_size=tab_size, insert_spaces=insert_spaces,
+        )
+        if result is None:
+            server_hint = "pyright" if file_rel.endswith(".py") else "typescript-language-server"
+            return json.dumps({"error": "LSP server not running", "hint": f"pip/npm install {server_hint}"})
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    def _lsp_rename(self, args: dict) -> str:
+        file_rel = str(args.get("file", "")).strip()
+        new_name = str(args.get("new_name", "")).strip()
+        if not file_rel:
+            raise ToolError("lsp_rename requer 'file'.")
+        if not new_name:
+            raise ToolError("lsp_rename requer 'new_name'.")
+        line = int(args.get("line", 0))
+        char = int(args.get("character", 0))
+        result = self._lsp_call(
+            "rename_symbol", file_rel, line, char,
+            new_name=new_name,
+        )
         if result is None:
             return json.dumps({"error": "LSP server not running"})
         return json.dumps(result, indent=2, ensure_ascii=False)

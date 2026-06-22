@@ -702,11 +702,31 @@ class TelegramBridge(BaseBridge):
         # chat_id == session key suffix: tg:<chat_id>
         active_provider, active_model = self._active_pair(f"tg:{chat_id}")
 
+        # Build models_dev metadata index for this provider (ctx window + cost)
+        _mdev_index: dict = {}
+        try:
+            from .models_dev import catalog_models as _catalog
+            for _entry in _catalog(provider=provider):
+                _mdev_index[_entry["id"]] = _entry
+        except Exception:
+            pass
+
         rows = []
         for j, m in enumerate(window):
             label = m
             if profile and profile.is_model_free(m):
                 label += " 🆓"
+            # Append context window and cost badges from models_dev
+            _meta = _mdev_index.get(m, {})
+            if _meta.get("context_window"):
+                ctx_k = _meta["context_window"] // 1000
+                label += f" [{ctx_k}k]"
+            if _meta.get("cost_in"):
+                ci = _meta["cost_in"]
+                # Normalize to per-M if per-token
+                if ci < 0.01:
+                    ci *= 1_000_000
+                label += f" ${ci:.2f}/M"
             if provider == active_provider and m == active_model:
                 label = "✅ " + label
             rows.append([{
