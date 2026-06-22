@@ -269,6 +269,25 @@ class TestCatalogModels:
             providers_seq[i] <= providers_seq[i + 1] for i in range(len(providers_seq) - 1)
         )
 
+    def test_openrouter_free_models_sort_first(self):
+        catalog = {
+            "openrouter": {
+                "models": {
+                    "openai/gpt-4o-mini": {"pricing": {"input": 0.15, "output": 0.6}},
+                    "meta-llama/llama-3.3-70b-instruct:free": {"pricing": {}},
+                    "anthropic/claude-sonnet-4": {"pricing": {"input": 3.0, "output": 15.0}},
+                    "openrouter/free": {"pricing": {"input": 0, "output": 0}},
+                }
+            }
+        }
+        with patch("bauer.models_dev.fetch_models_dev", return_value=catalog):
+            results = catalog_models(provider="openrouter")
+        assert [r["id"] for r in results[:2]] == [
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "openrouter/free",
+        ]
+        assert all(r["is_free"] for r in results[:2])
+
     def test_empty_catalog_returns_empty(self):
         with patch("bauer.models_dev.fetch_models_dev", return_value={}):
             results = catalog_models()

@@ -25,18 +25,25 @@ console = Console(highlight=False)
 # ---------------------------------------------------------------------------
 
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    # (id, descrição)
-    ("openai/gpt-4o-mini",                  "ChatGPT 4o mini — rápido e barato"),
-    ("openai/gpt-4o",                       "ChatGPT 4o — mais capaz"),
-    ("openai/gpt-4.1",                      "ChatGPT 4.1 — mais recente"),
-    ("anthropic/claude-haiku-3-5",          "Claude Haiku — rápido e barato"),
-    ("anthropic/claude-sonnet-4",           "Claude Sonnet — equilibrado"),
-    ("anthropic/claude-opus-4",             "Claude Opus — mais capaz"),
-    ("google/gemini-flash-1.5",             "Gemini Flash — rápido"),
-    ("google/gemini-2.0-flash-001",         "Gemini 2.0 Flash"),
-    ("meta-llama/llama-3.3-70b-instruct",   "Llama 3.3 70B — gratuito via OR"),
-    ("deepseek/deepseek-chat",              "DeepSeek V3 — gratuito via OR"),
-    ("qwen/qwen-2.5-72b-instruct",          "Qwen 2.5 72B — gratuito via OR"),
+    # Free models first (official OpenRouter convention: ':free').
+    ("meta-llama/llama-3.3-70b-instruct:free", "FREE | Llama 3.3 70B"),
+    ("openai/gpt-oss-120b:free",               "FREE | GPT OSS 120B"),
+    ("openai/gpt-oss-20b:free",                "FREE | GPT OSS 20B"),
+    ("qwen/qwen3-coder:free",                  "FREE | Qwen3 Coder"),
+    ("cohere/north-mini-code:free",            "FREE | Cohere North Mini Code"),
+    ("google/gemma-4-31b-it:free",             "FREE | Gemma 4 31B"),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "FREE | Nemotron 3 Super"),
+    # Paid models.
+    ("openai/gpt-4o-mini",                     "PAID | ChatGPT 4o mini - fast and cheap"),
+    ("openai/gpt-4o",                          "PAID | ChatGPT 4o - more capable"),
+    ("openai/gpt-4.1",                         "PAID | ChatGPT 4.1"),
+    ("anthropic/claude-haiku-3-5",             "PAID | Claude Haiku - fast and cheap"),
+    ("anthropic/claude-sonnet-4",              "PAID | Claude Sonnet"),
+    ("anthropic/claude-opus-4",                "PAID | Claude Opus"),
+    ("google/gemini-flash-1.5",                "PAID | Gemini Flash"),
+    ("google/gemini-2.0-flash-001",            "PAID | Gemini 2.0 Flash"),
+    ("deepseek/deepseek-chat",                 "PAID | DeepSeek V3"),
+    ("qwen/qwen-2.5-72b-instruct",             "PAID | Qwen 2.5 72B"),
 ]
 
 OPENAI_MODELS: list[tuple[str, str]] = [

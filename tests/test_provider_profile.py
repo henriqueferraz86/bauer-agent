@@ -54,6 +54,22 @@ def test_get_profile_case_insensitive():
     assert p_lower.name == "openai"
 
 
+def test_openrouter_free_models_sort_first():
+    p = get_profile("openrouter")
+    assert p is not None
+    models = p.sort_models_for_display([
+        "openai/gpt-4o-mini",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "openrouter/free",
+        "anthropic/claude-sonnet-4",
+    ])
+    assert models[:2] == [
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "openrouter/free",
+    ]
+    assert p.is_model_free("openrouter/free") is True
+
+
 # ---------------------------------------------------------------------------
 # Provider fields
 # ---------------------------------------------------------------------------
