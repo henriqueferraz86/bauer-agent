@@ -147,6 +147,21 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 .composer textarea { background: transparent; border: none; color: var(--text); resize: none; flex: 1; font-family: inherit; font-size: 13px; outline: none; max-height: 120px; }
 .send-btn { width: 28px; height: 28px; border-radius: 6px; background: #1a2840; border: 1px solid var(--accent-border); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--accent); }
 
+/* ── Slash command palette ── */
+.slash-palette {
+  position: absolute; bottom: calc(100% - 4px); left: 14px; right: 14px;
+  background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 10px;
+  padding: 4px; max-height: 280px; overflow-y: auto;
+  box-shadow: 0 -8px 24px rgba(0,0,0,0.4); z-index: 20;
+}
+.slash-item {
+  display: flex; align-items: baseline; gap: 10px; padding: 7px 10px;
+  border-radius: 7px; cursor: pointer;
+}
+.slash-item.active { background: var(--accent-bg); }
+.slash-cmd { color: var(--accent); font-size: 13px; min-width: 86px; }
+.slash-desc { color: var(--text-3); font-size: 12px; }
+
 /* ── Lists ── */
 .list-item {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-2);
