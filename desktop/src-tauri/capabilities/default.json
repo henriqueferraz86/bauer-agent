@@ -4,6 +4,9 @@
   "description": "Capacidades padrão da janela principal do Bauer Agent.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "updater:default",
+    "dialog:default",
+    "process:default"
   ]
 }

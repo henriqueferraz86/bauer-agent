@@ -36,5 +36,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/henriqueferraz86/bauer-agent/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4MDI0Q0E5NENEN0QyOTkKUldTWjB0ZE1xVXdDK1AvSjcvQzJ6bWVTTEthb01OMThzVUtRYjI4UkxBOUdQdVZLZnQ3M0FYNW4K"
+    }
   }
 }

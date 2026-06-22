@@ -20,6 +20,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# native-tls (schannel no Windows) evita o ring/rustls — cujo build-script é
+# bloqueado pela política WDAC desta máquina. O download do update usa o TLS do SO.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
 
 [profile.release]
 panic = "abort"
