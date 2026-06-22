@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
-import { streamSSE } from "../api/client";
+import { useNavigate } from "react-router-dom";
+import { api, streamSSE } from "../api/client";
 
 interface ToolCall { name: string; }
 interface Message {
@@ -9,14 +10,91 @@ interface Message {
   streaming?: boolean;
 }
 
+interface SlashCommand {
+  cmd: string;
+  desc: string;
+  run: (arg: string) => void | Promise<void>;
+}
+
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState<string>("");
+  const [palIdx, setPalIdx] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
 
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
+
+  function appendInfo(text: string) {
+    setMessages((m) => [...m, { role: "assistant", text }]);
+    scroll();
+  }
+  function resetSession() {
+    setMessages([]);
+    setSessionId("");
+  }
+
+  // ── Comandos de barra (paridade com o menu "/" do Telegram) ───────────────
+  const COMMANDS: SlashCommand[] = [
+    { cmd: "/start", desc: "Menu inicial", run: () => appendInfo(helpText()) },
+    { cmd: "/help", desc: "Ajuda e comandos disponíveis", run: () => appendInfo(helpText()) },
+    {
+      cmd: "/status",
+      desc: "Modelo, contexto e sessão atual",
+      run: async () => {
+        try {
+          const s = await api.get<{ model: string; context_tokens: number; tools: string[]; auth_enabled: boolean }>("/status");
+          const g = await api.get<{ running: boolean; telegram: boolean }>("/api/gateway/status").catch(() => null);
+          appendInfo(
+            `📊 Status\n` +
+            `• modelo: ${s.model}\n` +
+            `• contexto: ${s.context_tokens} tokens\n` +
+            `• tools: ${s.tools.length}\n` +
+            `• auth: ${s.auth_enabled ? "habilitada" : "desabilitada"}\n` +
+            `• gateway: ${g?.running ? "online" : "offline"}\n` +
+            `• sessão: ${sessionId ? sessionId.slice(0, 8) : "(nova)"}`
+          );
+        } catch (e) {
+          appendInfo(`[Erro ao obter status: ${e}]`);
+        }
+      },
+    },
+    {
+      cmd: "/model",
+      desc: "Trocar provider/modelo",
+      run: async (arg) => {
+        if (!arg) { navigate("/models"); return; }
+        try {
+          await api.post("/models/switch", { model: arg });
+          appendInfo(`✅ Modelo trocado para \`${arg}\`.`);
+        } catch (e) {
+          appendInfo(`[Erro ao trocar modelo: ${e}]`);
+        }
+      },
+    },
+    { cmd: "/tasks", desc: "Tarefas do kanban do workspace", run: () => navigate("/kanban") },
+    { cmd: "/new", desc: "Conversa nova (apaga o histórico)", run: () => resetSession() },
+    { cmd: "/clear", desc: "O mesmo que /new", run: () => resetSession() },
+  ];
+
+  function helpText(): string {
+    return "Comandos disponíveis:\n" + COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n");
+  }
+
+  // Paleta visível quando a mensagem começa com "/". Filtra pelo que foi digitado.
+  const typed = input.startsWith("/") ? input.slice(1).split(" ")[0].toLowerCase() : null;
+  const matches = typed !== null ? COMMANDS.filter((c) => c.cmd.slice(1).startsWith(typed)) : [];
+  const showPalette = typed !== null && matches.length > 0 && !busy;
+  const selIdx = Math.min(palIdx, matches.length - 1);
+
+  function execCommand(c: SlashCommand) {
+    const arg = input.slice(c.cmd.length).trim();
+    setInput("");
+    setPalIdx(0);
+    void c.run(arg);
+  }
 
   async function send() {
     const text = input.trim();
@@ -65,6 +143,13 @@ export default function Chat() {
   }
 
   function onKey(e: React.KeyboardEvent) {
+    if (showPalette) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setPalIdx((i) => (Math.min(i, matches.length - 1) + 1) % matches.length); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setPalIdx((i) => (Math.min(i, matches.length - 1) + matches.length - 1) % matches.length); return; }
+      if (e.key === "Tab") { e.preventDefault(); setInput(matches[selIdx].cmd + " "); setPalIdx(0); return; }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); execCommand(matches[selIdx]); return; }
+      if (e.key === "Escape") { e.preventDefault(); setInput(""); return; }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
@@ -78,13 +163,15 @@ export default function Chat() {
         <span className="title">Chat</span>
         {sessionId && <span className="sub mono">· {sessionId.slice(0, 8)}</span>}
         <div className="spacer" />
-        <button className="btn" onClick={() => { setMessages([]); setSessionId(""); }}>
+        <button className="btn" onClick={resetSession}>
           <i className="ti ti-plus" /> Nova sessão
         </button>
       </div>
 
       <div className="content">
-        {messages.length === 0 && <div className="empty">Comece uma conversa com o Bauer.</div>}
+        {messages.length === 0 && (
+          <div className="empty">Comece uma conversa com o Bauer. Digite <span className="mono">/</span> para ver os comandos.</div>
+        )}
         <div className="msgs">
           {messages.map((m, i) => (
             <div className="msg" key={i}>
@@ -110,13 +197,28 @@ export default function Chat() {
         <div ref={endRef} />
       </div>
 
-      <div className="composer">
+      <div className="composer" style={{ position: "relative" }}>
+        {showPalette && (
+          <div className="slash-palette">
+            {matches.map((c, i) => (
+              <div
+                key={c.cmd}
+                className={"slash-item" + (i === selIdx ? " active" : "")}
+                onMouseEnter={() => setPalIdx(i)}
+                onMouseDown={(e) => { e.preventDefault(); execCommand(c); }}
+              >
+                <span className="slash-cmd mono">{c.cmd}</span>
+                <span className="slash-desc">{c.desc}</span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="box">
           <textarea
-            placeholder="Mensagem para Bauer… (Enter envia, Shift+Enter quebra linha)"
+            placeholder="Mensagem para Bauer… (digite / para comandos · Enter envia · Shift+Enter quebra linha)"
             value={input}
             rows={1}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { setInput(e.target.value); setPalIdx(0); }}
             onKeyDown={onKey}
             disabled={busy}
           />

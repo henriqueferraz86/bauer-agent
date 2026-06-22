@@ -104,8 +104,14 @@ class ProviderProfile:
         if self.is_free:
             return True
         if self.name == "openrouter":
-            return model_name.endswith(":free")
+            return model_name.endswith(":free") or model_name == "openrouter/free"
         return False
+
+    def sort_models_for_display(self, models: list[str]) -> list[str]:
+        """Return models in UI order, with free OpenRouter models first."""
+        if self.name != "openrouter":
+            return models
+        return sorted(models, key=lambda model: 0 if self.is_model_free(model) else 1)
 
     def get_api_key(self) -> str | None:
         """Return the first non-empty value from env_vars, or None."""
@@ -158,7 +164,7 @@ class ProviderProfile:
                 ]
             elif isinstance(data, list):
                 result = [m.get("id") or m.get("name", "") for m in data if isinstance(m, dict)]
-            return result or self._fetch_models_from_catalog()
+            return self.sort_models_for_display(result) or self._fetch_models_from_catalog()
         except Exception:
             pass
         return self._fetch_models_from_catalog()
@@ -167,7 +173,7 @@ class ProviderProfile:
         """Busca modelos do catálogo models.dev (offline-first). Fallback silencioso."""
         try:
             from .models_dev import list_provider_models
-            return list_provider_models(self.name)
+            return self.sort_models_for_display(list_provider_models(self.name))
         except Exception:
             return []
 
@@ -181,7 +187,7 @@ class ProviderProfile:
             from .models_dev import list_agentic_models
             result = list_agentic_models(self.name)
             if result:
-                return result
+                return self.sort_models_for_display(result)
         except Exception:
             pass
         return self.fetch_models()

@@ -272,7 +272,12 @@ def build_desktop_router(
             ql = q.lower()
             models = [m for m in models if ql in str(m.get("id", "")).lower()]
         if free:
-            models = [m for m in models if not m.get("cost_in")]
+            models = [
+                m for m in models
+                if m.get("is_free") is True or (
+                    "is_free" not in m and m.get("cost_in") == 0
+                )
+            ]
         total = len(models)
         page = models[offset:offset + limit]
         return {"total": total, "models": page}

@@ -329,6 +329,15 @@ def stop_background_refresh() -> None:
     _refresh_stop = True
 
 
+def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], cost_out: Optional[float]) -> bool:
+    """Best-effort free-model classification for catalog display."""
+    if provider_id == "openrouter":
+        return model_id.endswith(":free") or model_id == "openrouter/free"
+    if cost_in is None:
+        return False
+    return cost_in == 0 and (cost_out is None or cost_out == 0)
+
+
 def catalog_models(
     provider: Optional[str] = None,
     capability: Optional[str] = None,
@@ -404,11 +413,16 @@ def catalog_models(
                 "context_window": context_window,
                 "cost_in": cost_in,
                 "cost_out": cost_out,
+                "is_free": _is_free_model(prov_id, model_id, cost_in, cost_out),
                 "capabilities": caps,
                 "description": mdata.get("description", ""),
             })
 
-    results.sort(key=lambda r: (r["provider"], r["id"]))
+    results.sort(key=lambda r: (
+        r["provider"],
+        0 if r["provider"] == "openrouter" and r.get("is_free") else 1,
+        r["id"],
+    ))
     return results
 
 
