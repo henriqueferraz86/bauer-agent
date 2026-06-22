@@ -277,3 +277,40 @@ class TestAuth:
             "/sessions", headers={"Authorization": "Bearer mykey"}
         )
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# SPA estática — regressão: os assets referenciados pelo index.html devem servir
+# (a SPA buildada referencia /assets/*; sem o mount o serve devolve a página em
+#  branco com 404 nos chunks). Ver bauer/server.py mount de /assets.
+# ---------------------------------------------------------------------------
+
+class TestStaticSpaAssets:
+    def _static_dir(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "bauer" / "static"
+
+    def test_index_referenced_assets_served(self, tmp_path):
+        import re
+
+        static_dir = self._static_dir()
+        if not (static_dir / "index.html").exists():
+            pytest.skip("SPA build ausente (bauer/static/index.html)")
+
+        client = _client(_make_app(tmp_path))
+        html = client.get("/")
+        assert html.status_code == 200
+
+        refs = re.findall(r'(?:src|href)="(\.?/assets/[^"]+)"', html.text)
+        assert refs, "index.html não referencia nenhum /assets/* (build inesperado)"
+        for ref in refs:
+            path = ref.lstrip(".")  # './assets/x' -> '/assets/x'
+            r = client.get(path)
+            assert r.status_code == 200, f"asset {path} retornou {r.status_code}"
+
+    def test_assets_mount_present_when_build_exists(self, tmp_path):
+        static_dir = self._static_dir()
+        if not (static_dir / "assets").is_dir():
+            pytest.skip("diretório de assets ausente")
+        app = _make_app(tmp_path)
+        mounts = {getattr(r, "path", "") for r in app.routes}
+        assert "/assets" in mounts
