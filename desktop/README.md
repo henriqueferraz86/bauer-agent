@@ -67,8 +67,50 @@ Significa que o serve não respondeu. Causas comuns: Python sem o pacote `bauer`
 (defina `BAUER_PYTHON`), projeto ativo sem `config.yaml`, ou provider/Ollama
 offline. A tela de erro do app aponta isso.
 
+## Releases & auto-update
+
+O app se atualiza sozinho via `tauri-plugin-updater` + **GitHub Releases**. No boot, ele
+consulta a release `latest`, e se houver versão nova pergunta "Instalar e reiniciar agora?".
+Os artefatos de update são assinados com uma chave **minisign** própria (≠ code-signing) —
+mesmo sem assinatura de código, o update é verificado contra adulteração.
+
+### Cortar uma release
+
+```bash
+# 1) bump da versão (fonte: src-tauri/tauri.conf.json -> "version")
+# 2) tag + push  → dispara .github/workflows/release.yml
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+O workflow builda nos 3 SOs, gera os bundles + `latest.json` e cria uma **GitHub Release
+DRAFT**. Revise e **publique** a release — só então o `latest.json` fica acessível em
+`releases/latest/download/latest.json` e os apps existentes detectam a atualização.
+
+`workflow_dispatch` (Actions → Release → Run) builda sem criar release — útil para validar
+o pipeline.
+
+### Secrets necessários (uma vez, no repositório)
+
+A chave **privada** do updater foi gerada em `~/.tauri/bauer-updater.key` (fora do repo,
+nunca commitada). Adicione como secrets do GitHub:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/bauer-updater.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""   # senha vazia (como gerada)
+```
+
+A chave **pública** já está em `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
+
+### Caveats
+
+- **macOS sem code-signing**: o auto-update é frágil (o Gatekeeper pode barrar o `.app`
+  atualizado/quarentena). **Windows e Linux** atualizam bem unsigned. Resolver de vez exige
+  code-signing (Authenticode + Apple Developer ID + notarização) — fase futura.
+- Os instaladores são **unsigned** por ora: o SmartScreen/Gatekeeper avisam na 1ª instalação.
+
 ## Testes
 
 ```bash
-cd src-tauri && cargo test --lib   # lógica Rust (projeto ativo, porta, python)
+cd src-tauri && cargo test --lib   # projeto ativo, porta, python, should_update (semver)
 ```

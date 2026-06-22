@@ -157,15 +157,85 @@ fn wait_health(port: u16, timeout: Duration) -> bool {
     false
 }
 
+/// Compara versões semver "x.y.z" — true se `latest` for estritamente maior que
+/// `current` (descarta prefixo 'v' e sufixos pre-release/build).
+fn should_update(current: &str, latest: &str) -> bool {
+    fn parse(v: &str) -> (u64, u64, u64) {
+        let v = v.trim().trim_start_matches('v');
+        let core = v.split(['-', '+']).next().unwrap_or(v);
+        let mut it = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+        (
+            it.next().unwrap_or(0),
+            it.next().unwrap_or(0),
+            it.next().unwrap_or(0),
+        )
+    }
+    parse(latest) > parse(current)
+}
+
+/// Verifica/instala atualização (best-effort). Retorna true se instalou — nesse
+/// caso o app reinicia (a função não retorna de fato). Qualquer falha (sem rede,
+/// sem update, usuário recusou) → false e o boot normal segue.
+fn maybe_update(handle: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = match handle.updater() {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    let update = match tauri::async_runtime::block_on(updater.check()) {
+        Ok(Some(u)) => u,
+        _ => return false,
+    };
+    let current = env!("CARGO_PKG_VERSION");
+    if !should_update(current, &update.version) {
+        return false;
+    }
+
+    let msg = format!(
+        "Nova versão disponível: {} (atual {}).\nInstalar e reiniciar agora?",
+        update.version, current
+    );
+    let confirmed = handle
+        .dialog()
+        .message(msg)
+        .title("Atualização do Bauer Agent")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Instalar".into(),
+            "Agora não".into(),
+        ))
+        .blocking_show();
+    if !confirmed {
+        return false;
+    }
+
+    let _ = handle.emit("bauer://status", "Baixando atualização…".to_string());
+    match tauri::async_runtime::block_on(update.download_and_install(|_chunk, _total| {}, || {})) {
+        Ok(_) => {
+            let _ = handle.emit("bauer://status", "Reiniciando…".to_string());
+            handle.restart();
+        }
+        Err(_) => false,
+    }
+}
+
 /// Inicia o app Tauri.
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             app.manage(ServeProcess(Mutex::new(None)));
             let handle = app.handle().clone();
 
             // Boot do serve numa thread para não bloquear a janela (mostra o splash).
             std::thread::spawn(move || {
+                // Verifica atualização antes de subir o serve. Se instalar, reinicia aqui.
+                if maybe_update(&handle) {
+                    return;
+                }
                 let port = free_port();
                 let proj = active_project_dir();
                 let python = find_python();
@@ -257,5 +327,27 @@ mod tests {
         std::env::set_var("BAUER_PYTHON", "/custom/python");
         assert_eq!(python_candidates(), vec!["/custom/python".to_string()]);
         std::env::remove_var("BAUER_PYTHON");
+    }
+
+    #[test]
+    fn should_update_detects_newer() {
+        assert!(should_update("0.1.0", "0.1.1"));
+        assert!(should_update("0.1.0", "0.2.0"));
+        assert!(should_update("0.9.9", "1.0.0"));
+        assert!(should_update("1.2.3", "v1.2.4")); // tolera prefixo 'v'
+    }
+
+    #[test]
+    fn should_update_rejects_same_or_older() {
+        assert!(!should_update("0.1.0", "0.1.0"));
+        assert!(!should_update("0.2.0", "0.1.9"));
+        assert!(!should_update("1.0.0", "0.9.9"));
+    }
+
+    #[test]
+    fn should_update_ignores_prerelease_suffix() {
+        // mesmo core de versão (1.2.3) → não atualiza
+        assert!(!should_update("1.2.3", "1.2.3-beta.1"));
+        assert!(should_update("1.2.3", "1.2.4-rc.1"));
     }
 }
