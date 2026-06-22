@@ -233,6 +233,13 @@ def create_app(
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+        # A SPA buildada (Vite) referencia seus chunks em /assets/* a partir da
+        # raiz — monta esse diretório direto para o index.html servido em "/"
+        # encontrar JS/CSS/fontes (sem isso a página fica em branco: 404 nos assets).
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
         @app.get("/", include_in_schema=False)
         def web_ui():
             return FileResponse(static_dir / "index.html")
