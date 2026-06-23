@@ -324,9 +324,12 @@ class OpenAIClient:
                 else:
                     _hint = (
                         "Falha de autenticacao.\n"
-                        "  - Verifique se a API key esta correta em config.yaml\n"
-                        "  - Rode: bauer model para configurar novamente\n"
-                        f"  - URL: {self.host}"
+                        f"  Provider: {self.host}\n\n"
+                        "  'Gratis' = sem custo por token, mas ainda exige API key.\n"
+                        "  Para resolver:\n"
+                        "  - No Desktop: /model para trocar de modelo\n"
+                        "  - No CLI: bauer model\n"
+                        "  - Ou configure a chave em config.yaml: <provider>.api_key"
                     )
             elif status == 403:
                 _hint = (

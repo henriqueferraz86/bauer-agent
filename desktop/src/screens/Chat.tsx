@@ -207,7 +207,7 @@ export default function Chat() {
                     <span className="tname">{t.name}</span>
                   </div>
                 ))}
-                <div className="text">{m.text}{m.streaming && <span className="blink">▍</span>}</div>
+                <div className="text" style={{ whiteSpace: "pre-wrap" }}>{m.text}{m.streaming && <span className="blink">▍</span>}</div>
               </div>
             </div>
           ))}

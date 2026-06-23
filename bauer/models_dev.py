@@ -411,6 +411,13 @@ _ALWAYS_FREE_PROVIDERS: frozenset[str] = frozenset({
     "cerebras",   # free API tier (sem cobrança por token)
 })
 
+# Providers que usam convenção de sufixo no ID para indicar variante gratuita.
+# Sufixo indica custo zero, mas o provider ainda pode exigir API key.
+_SUFFIX_FREE_PROVIDERS: frozenset[str] = frozenset({
+    "openrouter",  # ":free" — ex: meta-llama/llama-3.2-3b-instruct:free
+    "together",    # "-Free" — ex: Meta-Llama-3.1-8B-Instruct-Turbo-Free
+})
+
 # Padrões no model_id que indicam variante gratuita (case-insensitive)
 _FREE_MODEL_ID_SUFFIXES = ("-free", "/free", ":free")
 
@@ -419,17 +426,16 @@ def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], co
     """Best-effort free-model classification for catalog display."""
     pid = provider_id.lower()
 
-    if pid == "openrouter":
-        mid_l = model_id.lower()
-        return any(mid_l.endswith(s) for s in _FREE_MODEL_ID_SUFFIXES) or model_id == "openrouter/owl-alpha"
-
     if pid in _ALWAYS_FREE_PROVIDERS:
         return True
 
-    # Padrão no id (ex: Together AI usa sufixo "-Free")
-    mid_l = model_id.lower()
-    if any(mid_l.endswith(s) for s in _FREE_MODEL_ID_SUFFIXES):
-        return True
+    # Detecção por sufixo: só para providers onde a convenção é conhecida
+    if pid in _SUFFIX_FREE_PROVIDERS:
+        mid_l = model_id.lower()
+        if any(mid_l.endswith(s) for s in _FREE_MODEL_ID_SUFFIXES):
+            return True
+        if model_id in ("openrouter/free", "openrouter/owl-alpha"):
+            return True
 
     # Custo explicitamente zero nos dados do provider
     if cost_in is not None:
