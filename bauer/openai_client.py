@@ -302,6 +302,17 @@ class OpenAIClient:
                         "  - Verifique sua conta e billing em platform.openai.com\n"
                         "  - Ou troque de provider: bauer model"
                     )
+            elif status == 402:
+                _hint = (
+                    "Creditos insuficientes no provider.\n\n"
+                    "  Este modelo requer saldo — escolha um gratuito:\n"
+                    "  - OpenRouter: use modelos com ':free' no ID\n"
+                    "    (ex: meta-llama/llama-3.2-3b-instruct:free)\n"
+                    "  - OpenCode: modelos com '-free' no ID\n"
+                    "    (ex: mimo-v2-flash-free)\n"
+                    "  - No Desktop: /model → ative 'so gratis' para filtrar\n\n"
+                    f"  Detalhe: {body[:200]}"
+                )
             elif status == 401:
                 _code = ""
                 try:

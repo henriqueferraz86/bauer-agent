@@ -416,6 +416,7 @@ _ALWAYS_FREE_PROVIDERS: frozenset[str] = frozenset({
 _SUFFIX_FREE_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",  # ":free" — ex: meta-llama/llama-3.2-3b-instruct:free
     "together",    # "-Free" — ex: Meta-Llama-3.1-8B-Instruct-Turbo-Free
+    "opencode",    # "-free" — ex: mimo-v2-flash-free (chave "public" funciona)
 })
 
 # Padrões no model_id que indicam variante gratuita (case-insensitive)
