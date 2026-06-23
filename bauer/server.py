@@ -221,11 +221,24 @@ def create_app(
 
     store = SessionStore(sessions_dir)
 
+    # Detecta provider inicial pelo atributo _provider ou, como fallback, pela URL do host.
+    def _detect_provider(c) -> str:
+        if p := getattr(c, "_provider", ""):
+            return p
+        host = getattr(c, "host", "").lower()
+        for kw in ("openrouter", "groq", "mistral", "deepseek", "together", "openai",
+                   "anthropic", "xai", "github", "opencode", "gemini"):
+            if kw in host:
+                return kw
+        if hasattr(c, "list_models"):  # OllamaClient
+            return "ollama"
+        return ""
+
     # Estado mutável do modelo ativo e client (permite troca em runtime via /models/switch)
     _state = {
         "model": model_name,
         "client": client,
-        "provider": getattr(client, "_provider", ""),
+        "provider": _detect_provider(client),
     }
 
     # Rate limiter (desativado se rate_limit_requests <= 0)
