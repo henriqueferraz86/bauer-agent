@@ -20,9 +20,16 @@ function fmtCtx(n?: number | null): string {
 }
 
 function fmtCost(m: Model): string {
-  if (m.is_free) return "free";
+  if (m.is_free || m.cost_in === 0) return "free";
   if (m.cost_in == null) return "—";
-  return `$${m.cost_in}/M`;
+  const v = m.cost_in;
+  return `$${v >= 1 ? v.toFixed(2) : v.toFixed(3)}/M`;
+}
+
+function costColor(m: Model): string {
+  if (m.is_free || m.cost_in === 0) return "var(--green)";
+  if (m.cost_in == null) return "var(--text-4)";
+  return "var(--text-2)";
 }
 
 export default function Models() {
@@ -166,8 +173,8 @@ export default function Models() {
                       className="mono"
                       style={{
                         fontSize: 11,
-                        color: m.is_free ? "var(--green)" : "var(--purple)",
-                        minWidth: 52,
+                        color: costColor(m),
+                        minWidth: 60,
                         textAlign: "right",
                       }}
                     >

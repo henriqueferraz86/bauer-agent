@@ -373,12 +373,15 @@ def fetch_openrouter_catalog(force_refresh: bool = False) -> List[Dict[str, Any]
                 except Exception:
                     return None
 
-            cost_in = _f(pricing.get("prompt"))
-            cost_out = _f(pricing.get("completion"))
+            # OpenRouter API retorna custo por TOKEN; normalizar para por-milhão
+            raw_in = _f(pricing.get("prompt"))
+            raw_out = _f(pricing.get("completion"))
+            cost_in = raw_in * 1_000_000 if raw_in is not None else None
+            cost_out = raw_out * 1_000_000 if raw_out is not None else None
             is_free = (
                 mid.endswith(":free")
                 or mid in ("openrouter/free", "openrouter/owl-alpha")
-                or (cost_in == 0.0 and cost_out == 0.0)
+                or (raw_in == 0.0 and raw_out == 0.0)
             )
             result.append({
                 "id": mid,
@@ -447,13 +450,15 @@ def catalog_models(
             limit = mdata.get("limit", {})
             context_window = limit.get("context") if isinstance(limit, dict) else None
 
-            # Extract costs
+            # Extract costs (models.dev usa USD por milhão de tokens)
             pricing = mdata.get("pricing", {})
             cost_in: Optional[float] = None
             cost_out: Optional[float] = None
             if isinstance(pricing, dict):
-                cost_in = pricing.get("input") or pricing.get("input_per_token")
-                cost_out = pricing.get("output") or pricing.get("output_per_token")
+                raw_in = pricing.get("input") if "input" in pricing else pricing.get("input_per_token")
+                raw_out = pricing.get("output") if "output" in pricing else pricing.get("output_per_token")
+                cost_in = float(raw_in) if raw_in is not None else None
+                cost_out = float(raw_out) if raw_out is not None else None
 
             # Extract capabilities
             caps: list = []
@@ -472,11 +477,9 @@ def catalog_models(
             if capability and capability.lower() not in [c.lower() for c in caps]:
                 continue
 
-            # Cost filter
+            # Cost filter (cost_in é USD/milhão de tokens)
             if max_cost_per_m is not None and cost_in is not None:
-                # cost_in might be in per-token (multiply by 1M) or already per-M
-                effective = cost_in * 1_000_000 if cost_in < 0.01 else cost_in
-                if effective > max_cost_per_m:
+                if cost_in > max_cost_per_m:
                     continue
 
             results.append({
