@@ -378,10 +378,11 @@ def fetch_openrouter_catalog(force_refresh: bool = False) -> List[Dict[str, Any]
             raw_out = _f(pricing.get("completion"))
             cost_in = raw_in * 1_000_000 if raw_in is not None else None
             cost_out = raw_out * 1_000_000 if raw_out is not None else None
+            # Para OpenRouter só o sufixo ":free" é confiável — modelos de
+            # preview podem ter custo $0 na API mas ainda exigem créditos
             is_free = (
                 mid.endswith(":free")
                 or mid in ("openrouter/free", "openrouter/owl-alpha")
-                or (raw_in == 0.0 and raw_out == 0.0)
             )
             result.append({
                 "id": mid,
