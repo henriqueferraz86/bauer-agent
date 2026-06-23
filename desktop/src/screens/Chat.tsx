@@ -45,10 +45,11 @@ export default function Chat() {
       desc: "Modelo, contexto e sessão atual",
       run: async () => {
         try {
-          const s = await api.get<{ model: string; context_tokens: number; tools: string[]; auth_enabled: boolean }>("/status");
+          const s = await api.get<{ model: string; provider: string; context_tokens: number; tools: string[]; auth_enabled: boolean }>("/status");
           const g = await api.get<{ running: boolean; telegram: boolean }>("/api/gateway/status").catch(() => null);
           appendInfo(
             `📊 Status\n` +
+            `• provider: ${s.provider || "(default)"}\n` +
             `• modelo: ${s.model}\n` +
             `• contexto: ${s.context_tokens} tokens\n` +
             `• tools: ${s.tools.length}\n` +
@@ -63,14 +64,31 @@ export default function Chat() {
     },
     {
       cmd: "/model",
-      desc: "Trocar provider/modelo",
+      desc: "Trocar modelo (ex: /model gpt-4o ou /model openai gpt-4o)",
       run: async (arg) => {
         if (!arg) { navigate("/models"); return; }
+        // Suporta "/model PROVIDER MODEL_ID" para trocar provider junto
+        const parts = arg.trim().split(/\s+/);
+        const provider = parts.length >= 2 ? parts[0] : "";
+        const model = parts.length >= 2 ? parts.slice(1).join(" ") : parts[0];
         try {
-          await api.post("/models/switch", { model: arg });
-          appendInfo(`✅ Modelo trocado para \`${arg}\`.`);
+          await api.post("/models/switch", { model, ...(provider ? { provider } : {}) });
+          appendInfo(`✅ Modelo trocado para \`${model}\`${provider ? ` (${provider})` : ""}.`);
         } catch (e) {
           appendInfo(`[Erro ao trocar modelo: ${e}]`);
+        }
+      },
+    },
+    {
+      cmd: "/provider",
+      desc: "Ver providers disponíveis ou filtrar modelos por provider",
+      run: async (arg) => {
+        if (arg) { navigate(`/models?provider=${encodeURIComponent(arg)}`); return; }
+        try {
+          const r = await api.get<{ providers: string[] }>("/api/models/providers");
+          appendInfo(`Providers disponíveis:\n${r.providers.join(", ")}\n\nUse /provider NOME para ver modelos, ou /model PROVIDER MODEL para trocar.`);
+        } catch (e) {
+          appendInfo(`[Erro: ${e}]`);
         }
       },
     },

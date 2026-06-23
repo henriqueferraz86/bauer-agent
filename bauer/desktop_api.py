@@ -254,6 +254,36 @@ def build_desktop_router(
         return {"columns": columns, "total": len(tasks)}
 
     # ── Modelos (catálogo) ────────────────────────────────────────────────
+    # Providers primários exibidos no filtro do Desktop (ordem de exibição)
+    _PRIMARY_PROVIDERS = [
+        "openrouter", "openai", "anthropic", "google", "groq",
+        "mistral", "cohere", "deepseek", "nvidia", "azure",
+        "github-models", "github-copilot", "huggingface", "togetherai",
+        "fireworks-ai", "cerebras", "perplexity", "xai", "ollama-cloud",
+        "opencode",
+    ]
+
+    @router.get("/models/providers")
+    def models_providers():
+        try:
+            from .models_dev import catalog_models
+            all_models = catalog_models()
+        except Exception:
+            all_models = []
+        seen: dict[str, int] = {}
+        for m in all_models:
+            p = m.get("provider", "")
+            if p:
+                seen[p] = seen.get(p, 0) + 1
+        # Ordena: primários primeiro (na ordem acima), depois demais por contagem desc
+        primary = [p for p in _PRIMARY_PROVIDERS if p in seen]
+        others = sorted(
+            [p for p in seen if p not in _PRIMARY_PROVIDERS],
+            key=lambda p: -seen[p],
+        )
+        providers = primary + others[:20]
+        return {"providers": providers, "counts": seen}
+
     @router.get("/models/catalog")
     def models_catalog(
         q: str = Query("", description="filtro de substring no id"),

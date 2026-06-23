@@ -30,11 +30,16 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
+_OPENROUTER_API_URL = "https://openrouter.ai/api/v1/models"
 _CACHE_TTL = 3600  # 1 hora
 
-# In-memory cache
+# In-memory cache — models.dev
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+
+# In-memory cache — OpenRouter live API
+_openrouter_catalog_cache: List[Dict[str, Any]] = []
+_openrouter_catalog_time: float = 0
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +334,73 @@ def stop_background_refresh() -> None:
     _refresh_stop = True
 
 
+def fetch_openrouter_catalog(force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """Busca catálogo completo direto da API pública do OpenRouter.
+
+    Hierarquia: in-mem fresco → rede → in-mem expirado.
+    Retorna lista de dicts normalizados (mesma forma que catalog_models).
+    """
+    global _openrouter_catalog_cache, _openrouter_catalog_time
+
+    if (
+        not force_refresh
+        and _openrouter_catalog_cache
+        and (time.time() - _openrouter_catalog_time) < _CACHE_TTL
+    ):
+        return _openrouter_catalog_cache
+
+    try:
+        import httpx
+
+        resp = httpx.get(_OPENROUTER_API_URL, timeout=15.0, follow_redirects=True)
+        resp.raise_for_status()
+        raw_list = resp.json().get("data", [])
+        if not isinstance(raw_list, list):
+            raise ValueError("resposta inesperada da API do OpenRouter")
+
+        result: List[Dict[str, Any]] = []
+        for m in raw_list:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("id", "")
+            if not mid:
+                continue
+            pricing = m.get("pricing") or {}
+
+            def _f(v: Any) -> Optional[float]:
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            cost_in = _f(pricing.get("prompt"))
+            cost_out = _f(pricing.get("completion"))
+            is_free = (
+                mid.endswith(":free")
+                or mid in ("openrouter/free", "openrouter/owl-alpha")
+                or (cost_in == 0.0 and cost_out == 0.0)
+            )
+            result.append({
+                "id": mid,
+                "provider": "openrouter",
+                "context_window": m.get("context_length"),
+                "cost_in": cost_in,
+                "cost_out": cost_out,
+                "is_free": is_free,
+                "capabilities": [],
+                "description": m.get("description", ""),
+            })
+
+        _openrouter_catalog_cache = result
+        _openrouter_catalog_time = time.time()
+        logger.debug("openrouter: buscado da API — %d modelos", len(result))
+        return result
+    except Exception as exc:
+        logger.debug("openrouter: falha na API direta: %s", exc)
+
+    return _openrouter_catalog_cache
+
+
 def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], cost_out: Optional[float]) -> bool:
     """Best-effort free-model classification for catalog display."""
     if provider_id == "openrouter":
@@ -418,9 +490,16 @@ def catalog_models(
                 "description": mdata.get("description", ""),
             })
 
+    # Merge OpenRouter from live API (authoritative — models.dev is often stale/incomplete)
+    if provider is None or provider.lower() == "openrouter":
+        results = [r for r in results if r["provider"] != "openrouter"]
+        results.extend(fetch_openrouter_catalog())
+
+    # Sort: free first globally, then cheapest, then provider/id
     results.sort(key=lambda r: (
+        0 if r.get("is_free") else 1,
+        r.get("cost_in") or 999.0,
         r["provider"],
-        0 if r["provider"] == "openrouter" and r.get("is_free") else 1,
         r["id"],
     ))
     return results

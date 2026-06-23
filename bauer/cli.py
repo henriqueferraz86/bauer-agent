@@ -2747,6 +2747,7 @@ def _start_embedded_server(
         api_key=api_key,
         rate_limit_requests=60,
         rate_limit_window_s=60.0,
+        config_path=config,
     )
 
     uv_config = uvicorn.Config(
@@ -6381,6 +6382,7 @@ def serve(
         cors_origins=list(cfg.serve.cors_origins) or None,
         enable_gzip=cfg.serve.enable_gzip,
         enable_access_log=cfg.serve.enable_access_log,
+        config_path=config,
     )
 
     auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"
