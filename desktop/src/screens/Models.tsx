@@ -35,6 +35,7 @@ export default function Models() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [offset, setOffset] = useState(0);
+  const [freeTotal, setFreeTotal] = useState(0);
   const [active, setActive] = useState("");
   const offsetRef = useRef(0);
 
@@ -45,8 +46,9 @@ export default function Models() {
       const qs = new URLSearchParams({ q, limit: String(PAGE_SIZE), offset: String(off) });
       if (freeOnly) qs.set("free", "true");
       if (provider) qs.set("provider", provider);
-      const r = await api.get<{ total: number; models: Model[] }>(`/api/models/catalog?${qs}`);
+      const r = await api.get<{ total: number; free_count: number; models: Model[] }>(`/api/models/catalog?${qs}`);
       setTotal(r.total);
+      if (!append) setFreeTotal(r.free_count ?? 0);
       setModels((prev) => (append ? [...prev, ...r.models] : r.models));
       offsetRef.current = off + r.models.length;
       setOffset(off + r.models.length);
@@ -81,7 +83,6 @@ export default function Models() {
     } catch (e) { alert(String(e)); }
   }
 
-  const freeCount = models.filter((m) => m.is_free).length;
   const hasMore = models.length < total;
 
   return (
@@ -91,7 +92,7 @@ export default function Models() {
         <span className="title">Modelos</span>
         <span className="sub">
           {total} no catálogo
-          {freeCount > 0 && !freeOnly ? ` · ${freeCount} grátis` : ""}
+          {freeTotal > 0 && !freeOnly ? ` · ${freeTotal} grátis` : ""}
         </span>
       </div>
 

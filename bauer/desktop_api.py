@@ -309,8 +309,9 @@ def build_desktop_router(
                 )
             ]
         total = len(models)
+        free_count = sum(1 for m in models if m.get("is_free"))
         page = models[offset:offset + limit]
-        return {"total": total, "models": page}
+        return {"total": total, "free_count": free_count, "models": page}
 
     # ── Gateway ───────────────────────────────────────────────────────────
     @router.get("/gateway/status")
