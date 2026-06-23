@@ -404,13 +404,38 @@ def fetch_openrouter_catalog(force_refresh: bool = False) -> List[Dict[str, Any]
     return _openrouter_catalog_cache
 
 
+# Providers onde TODOS os modelos são gratuitos (sem custo por token)
+_ALWAYS_FREE_PROVIDERS: frozenset[str] = frozenset({
+    "ollama",     # local
+    "lmstudio",   # local
+    "cerebras",   # free API tier (sem cobrança por token)
+})
+
+# Padrões no model_id que indicam variante gratuita (case-insensitive)
+_FREE_MODEL_ID_SUFFIXES = ("-free", "/free", ":free")
+
+
 def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], cost_out: Optional[float]) -> bool:
     """Best-effort free-model classification for catalog display."""
-    if provider_id == "openrouter":
-        return model_id.endswith(":free") or model_id == "openrouter/free"
-    if cost_in is None:
-        return False
-    return cost_in == 0 and (cost_out is None or cost_out == 0)
+    pid = provider_id.lower()
+
+    if pid == "openrouter":
+        mid_l = model_id.lower()
+        return any(mid_l.endswith(s) for s in _FREE_MODEL_ID_SUFFIXES) or model_id == "openrouter/owl-alpha"
+
+    if pid in _ALWAYS_FREE_PROVIDERS:
+        return True
+
+    # Padrão no id (ex: Together AI usa sufixo "-Free")
+    mid_l = model_id.lower()
+    if any(mid_l.endswith(s) for s in _FREE_MODEL_ID_SUFFIXES):
+        return True
+
+    # Custo explicitamente zero nos dados do provider
+    if cost_in is not None:
+        return cost_in == 0 and (cost_out is None or cost_out == 0)
+
+    return False
 
 
 def catalog_models(
