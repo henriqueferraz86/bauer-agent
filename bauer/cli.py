@@ -1528,10 +1528,10 @@ def memory_cleanup(
 
 # --- tools ------------------------------------------------------------------
 
-_WORKSPACE_DIR = Path("workspace")
+_WORKSPACE_DIR = _get_bauer_home() / "workspace"
 # Localização canônica das empresas — dentro do workspace para manter tudo junto.
 # Fallback legacy: bauer também aceita companies/ na raiz (via CompanyManager.get_active).
-_COMPANIES_DIR = Path("workspace") / "companies"
+_COMPANIES_DIR = _get_bauer_home() / "workspace" / "companies"
 
 
 def _build_client(cfg):
