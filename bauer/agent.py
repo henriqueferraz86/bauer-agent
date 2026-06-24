@@ -45,6 +45,8 @@ _DISPATCH_CMDS = {"/dispatch"}
 _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
+_THUMBSUP_CMDS = {"/thumbsup", "/bom", "/positivo", "/like"}
+_THUMBSDOWN_CMDS = {"/thumbsdown", "/ruim", "/negativo", "/dislike"}
 
 # Sub-comandos exibidos no menu de autocomplete
 _SLASH_BASE = [
@@ -76,6 +78,8 @@ _SLASH_BASE = [
     "/memory list",
     "/memory note",
     "/project",
+    "/thumbsup",
+    "/thumbsdown",
     "/agents",
     "/agent list",
     "/agent create",
@@ -2376,6 +2380,7 @@ def run_agent_session(
     fallback_clients: "list | None" = None,
     tool_timeout_s: float = 30.0,
     memory_provider: "Any | None" = None,
+    learning_hints: "str | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -2395,6 +2400,8 @@ def run_agent_session(
             principal falha com erro retryável (PROVIDER_DOWN / QUOTA_EXCEEDED).
     """
     system_prompt = _build_system_prompt(router)
+    if learning_hints:
+        system_prompt += f"\n\n# Aprendizados desta sessão\n{learning_hints}"
     # Determina provider a partir do tipo do client para context budget correto
     _provider = getattr(client, "_provider", None) or (
         "ollama" if hasattr(client, "host") and "ollama" in getattr(client, "host", "").lower()
@@ -2579,6 +2586,23 @@ def run_agent_session(
                     _provider = getattr(_new_client, "_provider", None) or "openai"
                     stats.provider = _provider
                     ctx._provider = _provider
+                    # L8: persiste preferência explícita do usuário (sobrepõe SelfTuner)
+                    try:
+                        import json as _json_l8
+                        from datetime import datetime as _dt_l8
+                        _pref_dir = Path("memory") if not (Path("memory")).exists() else Path("memory")
+                        _pref_dir.mkdir(parents=True, exist_ok=True)
+                        (_pref_dir / "model_preference.json").write_text(
+                            _json_l8.dumps({
+                                "model": model_name,
+                                "provider": _provider,
+                                "set_by": "user",
+                                "set_at": _dt_l8.utcnow().isoformat(),
+                            }, indent=2),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
                     console.print(
                         f"[green]✓ Modelo trocado para [cyan]{model_name}[/cyan] — "
                         f"próxima mensagem já usa o novo modelo.[/green]"
@@ -2626,6 +2650,40 @@ def run_agent_session(
             continue
         if user_input.lower() in _PROJECT_CMDS:
             _handle_project_cmd(console, active_workspace)
+            continue
+
+        # L7: feedback de usuário — /thumbsup / /thumbsdown
+        if user_input.lower() in _THUMBSUP_CMDS or user_input.lower() in _THUMBSDOWN_CMDS:
+            _rating = "positivo" if user_input.lower() in _THUMBSUP_CMDS else "negativo"
+            _last_msgs = ctx.messages
+            _last_user = next(
+                (m["content"] for m in reversed(_last_msgs) if m.get("role") == "user"),
+                "",
+            )
+            _last_asst = next(
+                (m["content"] for m in reversed(_last_msgs) if m.get("role") == "assistant"),
+                "",
+            )
+            try:
+                from .learning_engine import LearningEngine as _LE7
+                _le7 = _LE7()
+                _le7.mm.append_entry(
+                    "FEEDBACK.md",
+                    f"Feedback {_rating} — {model_name}",
+                    fields={
+                        "rating": _rating,
+                        "model": model_name,
+                        "machine_id": stats.machine_id,
+                    },
+                    body=(
+                        f"**Pergunta:**\n{_last_user[:300]}\n\n"
+                        f"**Resposta:**\n{_last_asst[:500]}"
+                    ),
+                )
+                _icon = "👍" if _rating == "positivo" else "👎"
+                console.print(f"[dim]{_icon} Feedback registrado.[/dim]")
+            except Exception:
+                console.print("[dim]Feedback não pôde ser salvo.[/dim]")
             continue
 
         suggested = skills.observe(user_input)

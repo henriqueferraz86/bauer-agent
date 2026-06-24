@@ -762,13 +762,24 @@ def _valid_fields_for(section_name: str) -> str:
 
 
 def load_config(path: str | Path = "config.yaml") -> BauerConfig:
-    """Lê e valida config.yaml. Aplica .env automaticamente. Levanta ConfigError em falha."""
+    """Lê e valida config.yaml. Aplica .env automaticamente. Levanta ConfigError em falha.
+
+    Ordem de busca (quando o caminho padrão não existe):
+      1. Caminho fornecido (ou "config.yaml" no cwd)
+      2. ~/.bauer/config.yaml  ($BAUER_HOME/config.yaml)
+    """
     p = Path(path)
     if not p.exists():
-        raise ConfigError(
-            f"Arquivo de config não encontrado: {p}\n"
-            f"Crie um config.yaml ou indique o caminho com --config."
-        )
+        from .paths import config_path as _config_path
+        fallback = _config_path()
+        if fallback.exists():
+            p = fallback
+        else:
+            raise ConfigError(
+                f"Arquivo de config não encontrado: {p}\n"
+                f"Também tentei: {fallback}\n"
+                f"Execute 'bauer init' para criar a configuração inicial."
+            )
 
     try:
         raw = yaml.safe_load(p.read_text(encoding="utf-8"))
