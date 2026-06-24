@@ -353,5 +353,9 @@ def call_aux_text(
     try:
         return "".join(client.chat_stream(model, messages))
     except Exception as exc:
-        logger.info("auxiliary_client.call_aux_text(%r): %s", slot, exc)
+        # Best-effort: clientes auxiliares (background_reviewer, etc.) são
+        # opcionais. Falha (ex.: 429 do free tier) degrada em silêncio com o
+        # fallback — DEBUG, não INFO, para não poluir o console do usuário com
+        # um erro de provider que não afeta a resposta principal.
+        logger.debug("auxiliary_client.call_aux_text(%r): %s", slot, exc)
         return fallback
