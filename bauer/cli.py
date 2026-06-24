@@ -2099,6 +2099,7 @@ def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
         web_config=web_config,
         llm_client=llm_client,
         vision_client=vision_client,
+        model_name=cfg.model.name if cfg is not None else "",
     )
 
 
@@ -3289,6 +3290,24 @@ def agent_run(
         )
     finally:
         _agent_mod._build_system_prompt = _original_build  # type: ignore[attr-defined]
+
+
+@agent_app.command("run-one")
+def agent_run_one(
+    task: str = typer.Argument(..., help="Tarefa para o sub-agente executar"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+):
+    """Executa uma única tarefa e imprime o resultado (usado por delegate_task)."""
+    cfg, _ = _load_or_die(config, models)
+    client = _build_client(cfg)
+    messages = [{"role": "user", "content": task}]
+    try:
+        chunks = list(client.chat_stream(cfg.model.name, messages))
+        console.print("".join(chunks))
+    except Exception as exc:
+        console.print(f"[red]run-one: {exc}[/red]", err=True)
+        raise typer.Exit(code=1)
 
 
 @agent_app.command("delete")

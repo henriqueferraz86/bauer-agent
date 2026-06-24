@@ -521,6 +521,7 @@ class ToolRouter:
         web_config=None,
         llm_client=None,
         vision_client=None,
+        model_name: str = "",
         dry_run: bool = False,
         max_tool_calls: int = 500,
         max_retries: int = 3,
@@ -531,6 +532,7 @@ class ToolRouter:
     ):
         self.workspace = Path(workspace).resolve()
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
+        self._model_name = model_name  # nome do modelo configurado (para delegate_task)
         # G18.4: cliente multimodal dedicado (auxiliary.vision_model). As tools de
         # visão usam ele se presente; senão caem no _llm_client principal.
         self._vision_client = vision_client
@@ -3170,16 +3172,19 @@ class ToolRouter:
         if len(full_task) > 4096:
             full_task = full_task[:4096]
 
-        # Tenta usar o cliente LLM diretamente se disponível (mais eficiente)
+        # Usa o cliente LLM diretamente se disponível — single-turn sem tools
         if self._llm_client is not None:
             try:
-                from .agent import run_one_turn
+                _model = (
+                    self._model_name
+                    or getattr(self._llm_client, "default_model", "")
+                    or ""
+                )
                 messages = [{"role": "user", "content": full_task}]
-                response = run_one_turn(self._llm_client, messages, tools=None)
-                return f"[sub-agente]\n{response}"
-            except Exception as exc:
-                # Fallback para subprocess
-                pass
+                chunks = list(self._llm_client.chat_stream(_model, messages))
+                return f"[sub-agente]\n{''.join(chunks)}"
+            except Exception:
+                pass  # fallback para subprocess
 
         # Fallback: subprocess com bauer CLI
         # nosec: shell=False (default); full_task é passado como elemento de lista,
