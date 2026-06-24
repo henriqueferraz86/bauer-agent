@@ -239,7 +239,6 @@ MAX_TOOL_TURNS = 150
 # Protege contra modelos que ficam chamando a mesma tool repetidamente.
 # Usa fingerprint = tool_name + primeiros 100 chars do resultado para detectar
 # chamadas idênticas consecutivas, independente dos args (que não ficam no log).
-_LOOP_REPEAT_WARN  = 3   # N° de repetições consecutivas → soft warning no contexto
 _LOOP_REPEAT_HARD  = 5   # N° de repetições consecutivas → hard stop imediato
 _LOOP_OSCIL_WINDOW = 6   # Janela de calls para detectar padrão A→B→A→B
 
@@ -292,17 +291,6 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
         except Exception:
             pass
         return msg, True  # hard stop
-
-    if consecutive == _LOOP_REPEAT_WARN:
-        # `==` e não `>=`: o aviso dispara UMA vez (na 3ª repetição). Repetir
-        # o mesmo aviso na 4ª só enche o contexto — se o modelo ignorou a
-        # primeira, a próxima parada é o hard stop acima.
-        msg = (
-            f"[sistema] Você chamou '{last_tool}' {consecutive}x seguidas com o "
-            "mesmo resultado — ele não vai mudar. Use o que já tem ou mude de "
-            f"abordagem; na {_LOOP_REPEAT_HARD}ª repetição o turno será interrompido."
-        )
-        return msg, False  # soft warning (única)
 
     # ── 2. Oscilação A→B→A→B (últimas N calls alternam entre 2 tools) ─────────
     if len(tool_log) >= _LOOP_OSCIL_WINDOW:
