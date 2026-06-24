@@ -2777,12 +2777,31 @@ def run_agent_session(
                         client, active_model, ctx.get_payload(), fallback_clients, console
                     )
             except (OllamaError, OpenAIClientError) as exc:
-                _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
-                console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
-                stats.record_error(str(exc))
-                if ctx.messages and ctx.messages[-1]["role"] == "user":
-                    ctx.messages.pop()
-                break
+                # Tenta fallback automático para erros retryáveis (429, 5xx)
+                _did_fallback = False
+                if fallback_clients:
+                    try:
+                        from .error_classifier import classify_api_error
+                        _cls = classify_api_error(exc)
+                        _should_fb = _cls.should_fallback
+                    except Exception:
+                        _should_fb = True  # sem classifier: assume retryável
+                    if _should_fb:
+                        for _fb in fallback_clients:
+                            _fb_client, _fb_model = (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple)) else (_fb, active_model)
+                            console.print(f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_model}[/bold][/yellow]")
+                            client = _fb_client
+                            active_model = _fb_model
+                            _native_session_ok = False  # fallback usa Tool Bridge
+                            _did_fallback = True
+                            break
+                if not _did_fallback:
+                    _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
+                    console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
+                    stats.record_error(str(exc))
+                    if ctx.messages and ctx.messages[-1]["role"] == "user":
+                        ctx.messages.pop()
+                    break
             except KeyboardInterrupt:
                 console.print("\n[dim][interrompido][/dim]")
                 if ctx.messages and ctx.messages[-1]["role"] == "user":
