@@ -2481,6 +2481,9 @@ def run_agent_session(
         isinstance(client, _OpenAIClientCls)
         and getattr(client, "supports_native_tools", False)
     )
+    # Índice do próximo fallback a tentar — avança a cada falha, não reinicia
+    # no primeiro item (senão ficaria preso no mesmo provider quebrado).
+    _fb_idx = 0
 
     while True:
         # --- entrada do usuário ---
@@ -2777,9 +2780,11 @@ def run_agent_session(
                         client, active_model, ctx.get_payload(), fallback_clients, console
                     )
             except (OllamaError, OpenAIClientError) as exc:
-                # Tenta fallback automático para erros retryáveis (429, 5xx)
+                # Tenta fallback automático para erros retryáveis (429, 5xx).
+                # Avança em fallback_clients (não reinicia no item 0) para
+                # percorrer a lista quando vários providers falham em sequência.
                 _did_fallback = False
-                if fallback_clients:
+                if fallback_clients and _fb_idx < len(fallback_clients):
                     try:
                         from .error_classifier import classify_api_error
                         _cls = classify_api_error(exc)
@@ -2787,21 +2792,42 @@ def run_agent_session(
                     except Exception:
                         _should_fb = True  # sem classifier: assume retryável
                     if _should_fb:
-                        for _fb in fallback_clients:
-                            _fb_client, _fb_model = (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple)) else (_fb, active_model)
-                            console.print(f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_model}[/bold][/yellow]")
-                            client = _fb_client
-                            active_model = _fb_model
-                            _native_session_ok = False  # fallback usa Tool Bridge
-                            _did_fallback = True
-                            break
+                        _fb = fallback_clients[_fb_idx]
+                        _fb_idx += 1
+                        _fb_client, _fb_model = (
+                            (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple))
+                            else (_fb, active_model)
+                        )
+                        console.print(
+                            f"[yellow]⚡ Provider falhou ({exc.__class__.__name__}) — "
+                            f"trocando para fallback {_fb_idx}/{len(fallback_clients)}: "
+                            f"[bold]{_fb_model}[/bold][/yellow]"
+                        )
+                        client = _fb_client
+                        active_model = _fb_model
+                        _native_session_ok = (
+                            isinstance(_fb_client, _OpenAIClientCls)
+                            and getattr(_fb_client, "supports_native_tools", False)
+                        )
+                        _did_fallback = True
                 if not _did_fallback:
                     _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
                     console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
+                    if fallback_clients and _fb_idx >= len(fallback_clients):
+                        console.print(
+                            f"[dim]Todos os {len(fallback_clients)} fallbacks foram tentados.[/dim]"
+                        )
                     stats.record_error(str(exc))
                     if ctx.messages and ctx.messages[-1]["role"] == "user":
                         ctx.messages.pop()
                     break
+                # Fallback ativado: re-tenta o turno com o novo client (mesma
+                # mensagem do usuário ainda no contexto). Atualiza stats/provider.
+                stats.model = active_model
+                _fb_provider = getattr(client, "_provider", None) or "openai"
+                stats.provider = _fb_provider
+                ctx._provider = _fb_provider
+                continue
             except KeyboardInterrupt:
                 console.print("\n[dim][interrompido][/dim]")
                 if ctx.messages and ctx.messages[-1]["role"] == "user":
