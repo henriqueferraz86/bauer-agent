@@ -368,6 +368,11 @@ class TestCatalogModels:
 
 
 class TestBauerModelsCatalogCli:
+    @pytest.fixture(autouse=True)
+    def _no_live_openrouter(self):
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=[]):
+            yield
+
     def _invoke(self, *args):
         typer = pytest.importorskip("typer")
         from typer.testing import CliRunner
