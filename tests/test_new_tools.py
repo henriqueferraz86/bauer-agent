@@ -332,9 +332,10 @@ class TestDelegateTask:
 
     def test_usa_llm_client_se_disponivel(self, ws):
         mock_client = MagicMock()
-        router = ToolRouter(workspace=ws, llm_client=mock_client)
-        with patch("bauer.agent.run_one_turn", return_value="resultado do sub-agente"):
-            result = router._delegate_task({"task": "Calcule 2+2"})
+        mock_client.default_model = "test-model"
+        mock_client.chat_stream.return_value = iter(["resultado do sub-agente"])
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        result = router._delegate_task({"task": "Calcule 2+2"})
         assert "sub-agente" in result
         assert "resultado" in result
 
@@ -358,13 +359,14 @@ class TestDelegateTask:
 
     def test_contexto_e_concatenado(self, ws):
         mock_client = MagicMock()
-        router = ToolRouter(workspace=ws, llm_client=mock_client)
+        mock_client.default_model = "test-model"
         captured = {}
-        def fake_run_one_turn(client, messages, tools):
+        def fake_chat_stream(model, messages):
             captured["content"] = messages[0]["content"]
-            return "ok"
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run_one_turn):
-            router._delegate_task({"task": "A tarefa", "context": "Contexto extra"})
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_chat_stream
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        router._delegate_task({"task": "A tarefa", "context": "Contexto extra"})
         assert "Contexto extra" in captured["content"]
         assert "A tarefa" in captured["content"]
 

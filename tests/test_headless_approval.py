@@ -328,9 +328,14 @@ def test_integration_yolo_engine_approves_dangerous_via_pipeline():
     assert result.action == "approved"
 
 
-def test_integration_deny_all_engine_denies_dangerous_via_pipeline():
+def test_integration_deny_all_engine_denies_dangerous_via_pipeline(tmp_path, monkeypatch):
     """Full pipeline: dangerous command + deny_all engine → denied."""
-    from bauer.approval import check_all_command_guards
+    import bauer.approval as _ap
+    from bauer.approval import check_all_command_guards, save_permanent_allowlist
+
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "bauer-home"))
+    _ap._PERM_CACHE = None
+    save_permanent_allowlist(set())  # allowlist vazia — callback deve negar
 
     eng = make_headless_engine(mode="deny_all")
     cb = eng.make_approval_callback()
