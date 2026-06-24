@@ -4676,17 +4676,14 @@ class ToolRouter:
             lines.append(f"  Stack: {stack}")
         lines.append(f"  {len(written)} arquivo(s) criado(s) (docs/ + raiz).")
         lines.append(
-            "  GATE DISCOVERY ativo — a escrita de código está BLOQUEADA.\n"
-            "  PRÓXIMO PASSO OBRIGATÓRIO: use a tool 'clarify' para fazer perguntas\n"
-            "  ao usuário e coletar os detalhes necessários para preencher os 7 docs\n"
-            "  de planejamento (SPEC, ARCHITECTURE, BACKLOG, TASKS, DECISIONS,\n"
-            "  PROJECT_CONTEXT, PROGRESS). NÃO tente escrever código nem preencher\n"
-            "  os docs sem antes perguntar ao usuário:\n"
-            "    1. Quem são os usuários-alvo?\n"
-            "    2. Quais são as funcionalidades essenciais da V1?\n"
-            "    3. Há restrições de stack, prazo ou orçamento?\n"
-            "    4. O que define sucesso para este projeto?\n"
-            "  Após coletar as respostas, preencha os docs e avance o gate."
+            "  GATE DISCOVERY ativo — escrita de código BLOQUEADA.\n"
+            "  SUA PRÓXIMA AÇÃO É UMA TOOL CALL — não responda em texto.\n"
+            "  Chame 'clarify' quatro vezes, uma pergunta por vez:\n"
+            "    clarify({\"question\": \"Quem são os usuários-alvo da aplicação?\"})\n"
+            "    clarify({\"question\": \"Quais funcionalidades são essenciais na V1?\"})\n"
+            "    clarify({\"question\": \"Há restrições de stack, prazo ou orçamento?\"})\n"
+            "    clarify({\"question\": \"O que define sucesso para este projeto?\"})\n"
+            "  Só após as 4 respostas, preencha os docs e avance o gate."
         )
         return "\n".join(lines)
 
