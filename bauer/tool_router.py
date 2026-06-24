@@ -259,6 +259,8 @@ _TOOL_SECURITY: dict[str, dict] = {
     "todo":           {"permission": "read",    "risk": "low",    "approval": False},
     "skills_list":    {"permission": "read",    "risk": "low",    "approval": False},
     "skill_view":     {"permission": "read",    "risk": "low",    "approval": False},
+    "app_factory_status": {"permission": "read", "risk": "low",   "approval": False},
+    "app_factory_score":  {"permission": "read", "risk": "low",   "approval": False},
     "memory":         {"permission": "read",    "risk": "low",    "approval": False},
     "session_search": {"permission": "read",    "risk": "low",    "approval": False},
     "kanban_list":    {"permission": "read",    "risk": "low",    "approval": False},
@@ -286,6 +288,7 @@ _TOOL_SECURITY: dict[str, dict] = {
     "move_file":      {"permission": "write",   "risk": "medium", "approval": False},
     "delete_file":    {"permission": "write",   "risk": "high",   "approval": True},
     "skill_manage":   {"permission": "write",   "risk": "low",    "approval": False},
+    "app_factory_init": {"permission": "write", "risk": "low",    "approval": False},
     "kanban_create":  {"permission": "write",   "risk": "low",    "approval": False},
     "kanban_complete":{"permission": "write",   "risk": "low",    "approval": False},
     "kanban_block":   {"permission": "write",   "risk": "low",    "approval": False},
@@ -871,6 +874,46 @@ class ToolRouter:
             ),
             "args": {
                 "filter": "str — substring para filtrar por nome ou tag (opcional)",
+            },
+        }
+
+        # ── App Factory (Spec-Driven Development) ────────────────────────────
+        self._tools["app_factory_init"] = {
+            "fn": self._app_factory_init,
+            "description": (
+                "Inicia a governanca da App Factory no projeto: cria docs/ com os "
+                "esqueletos dos 7 docs de planejamento (SPEC, ARCHITECTURE, BACKLOG, "
+                "TASKS, DECISIONS, PROJECT_CONTEXT, PROGRESS) + docs de entrega + "
+                "README/.env.example/CI. Depois disso a escrita de codigo fica "
+                "BLOQUEADA ate os 7 docs estarem preenchidos."
+            ),
+            "args": {
+                "idea": "str — descricao da ideia/aplicacao (obrigatorio)",
+                "stack": "str — stack preferida, ex: FastAPI+React (opcional)",
+                "path": "str — subdiretorio do projeto (opcional, default = raiz do workspace)",
+                "overwrite": "bool — sobrescrever docs existentes (opcional, default false)",
+            },
+        }
+        self._tools["app_factory_status"] = {
+            "fn": self._app_factory_status,
+            "description": (
+                "Mostra o estado da App Factory: gate atual (discovery/planning/"
+                "implementation/delivery), docs de planejamento pendentes e o "
+                "Delivery Score parcial."
+            ),
+            "args": {
+                "path": "str — subdiretorio do projeto (opcional)",
+            },
+        }
+        self._tools["app_factory_score"] = {
+            "fn": self._app_factory_score,
+            "description": (
+                "Calcula o Delivery Score objetivo (0-10) da V1 a partir de sinais "
+                "verificaveis: SPEC/ARCHITECTURE/BACKLOG preenchidos, README, "
+                ".env.example, testes, seguranca, deploy, runbook."
+            ),
+            "args": {
+                "path": "str — subdiretorio do projeto (opcional)",
             },
         }
 
@@ -1618,6 +1661,25 @@ class ToolRouter:
                     f"Teria executado com args: {json.dumps(args, ensure_ascii=False)[:200]}"
                 ),
             ))
+
+        # App Factory: gate de Spec-Driven Development. Em projetos governados
+        # (docs/.app_factory.json presente), bloqueia a escrita de CÓDIGO antes
+        # de os 7 docs de planejamento estarem preenchidos. Docs/, README e
+        # .env.example permanecem liberados. Sem governança, é no-op.
+        _AF_GUARDED = {
+            "write_file": "path", "append_file": "path", "patch": "path",
+            "create_dir": "path", "move_file": "dst",
+        }
+        if name in _AF_GUARDED and not self._dry_run:
+            _target = str(args.get(_AF_GUARDED[name], "") or "")
+            if _target:
+                try:
+                    from . import app_factory as _af
+                    _allowed, _why = _af.can_write_code(self.workspace, _target)
+                except Exception:  # noqa: BLE001 — nunca quebrar o fluxo por causa do gate
+                    _allowed, _why = True, ""
+                if not _allowed:
+                    return f"[App Factory] {_why}"
 
         # G4: LLM approval for high-risk tools (fail-open if aux unavailable)
         _sec = _TOOL_SECURITY.get(name, {})
@@ -4574,6 +4636,86 @@ class ToolRouter:
         for s in sorted(results, key=lambda x: x["name"]):
             tags = ", ".join(s.get("tags", [])) or "—"
             lines.append(f"  • {s['name']} [{tags}] — {s.get('description', '')[:80]}")
+        return "\n".join(lines)
+
+    # =========================================================================
+    # App Factory (Spec-Driven Development)
+    # =========================================================================
+
+    def _af_project_dir(self, args: dict):
+        """Resolve a raiz do projeto-alvo (workspace ou subdir sandboxed)."""
+        sub = str(args.get("path", "") or "").strip()
+        if sub and sub not in (".", "./"):
+            return self._sandbox(sub)
+        return self.workspace
+
+    def _app_factory_init(self, args: dict) -> str:
+        from . import app_factory as af
+
+        idea = str(args.get("idea", "") or "").strip()
+        if not idea:
+            raise ToolError("app_factory_init: 'idea' é obrigatório.")
+        stack = str(args.get("stack", "") or "").strip()
+        overwrite = bool(args.get("overwrite", False))
+        project_dir = self._af_project_dir(args)
+
+        result = af.init_project(
+            project_dir, idea=idea, stack=stack, overwrite=overwrite,
+        )
+        written = result.get("written", [])
+        lines = [
+            f"[app_factory_init] Governança iniciada — gate: {result.get('gate')}.",
+            f"  Ideia: {idea}",
+        ]
+        if stack:
+            lines.append(f"  Stack: {stack}")
+        lines.append(f"  {len(written)} arquivo(s) criado(s) (docs/ + raiz).")
+        lines.append(
+            "  PRÓXIMO PASSO: preencha os 7 docs de planejamento em docs/ "
+            "(comece por SPEC.md). A escrita de código está BLOQUEADA até eles "
+            "estarem prontos. Use app_factory_status para acompanhar o gate."
+        )
+        return "\n".join(lines)
+
+    def _app_factory_status(self, args: dict) -> str:
+        from . import app_factory as af
+
+        project_dir = self._af_project_dir(args)
+        st = af.status(project_dir)
+        if not st["governed"]:
+            return (
+                "[app_factory_status] Projeto NÃO está sob governança da App "
+                "Factory. Use app_factory_init para iniciar."
+            )
+        lines = [
+            f"[app_factory_status] gate: {st['gate']}",
+            f"  planejamento completo: {'sim' if st['planning_complete'] else 'não'}",
+        ]
+        missing = st["missing_planning_docs"]
+        if missing:
+            lines.append(f"  docs pendentes: {', '.join(missing)}")
+        sc = st.get("delivery_score") or {}
+        if sc:
+            lines.append(f"  delivery score parcial: {sc.get('score')}/10 "
+                         f"({sc.get('satisfied')}/{sc.get('total')} itens)")
+        return "\n".join(lines)
+
+    def _app_factory_score(self, args: dict) -> str:
+        from . import app_factory as af
+
+        project_dir = self._af_project_dir(args)
+        if not af.is_governed(project_dir):
+            return (
+                "[app_factory_score] Projeto não governado — sem score. "
+                "Use app_factory_init primeiro."
+            )
+        sc = af.delivery_score(project_dir)
+        lines = [
+            f"[app_factory_score] Delivery Score: {sc['score']}/10 "
+            f"({'PRONTO' if sc['ready'] else 'NÃO pronto'} para V1)",
+        ]
+        for item, ok in sc["checks"].items():
+            lines.append(f"  [{'x' if ok else ' '}] {item}")
         return "\n".join(lines)
 
     # =========================================================================
