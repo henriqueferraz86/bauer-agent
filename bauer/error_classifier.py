@@ -270,7 +270,9 @@ def classify_api_error(
         return _result(FailReason.QUOTA_EXCEEDED, retryable=False, fallback=True)
 
     if status == 429 or _matches_any(msg, _RATE_LIMIT_PATTERNS):
-        return _result(FailReason.RATE_LIMIT, retryable=True)
+        # retryable: o caller já fez backoff/retry; se a exceção chegou aqui,
+        # o retry esgotou → fallback para provider alternativo é o próximo passo.
+        return _result(FailReason.RATE_LIMIT, retryable=True, fallback=True)
 
     # 3. Server errors
     if status is not None and status >= 500:

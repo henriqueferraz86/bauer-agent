@@ -134,26 +134,45 @@ class OpenAIClient:
             "tool_choice": tool_choice,
             "stream": False,
         }
-        try:
-            resp = httpx.post(
-                self._chat_url(),
-                json=body,
-                headers=self._headers,
-                timeout=httpx.Timeout(
-                    connect=float(self.timeout),
-                    read=300.0,
-                    write=10.0,
-                    pool=5.0,
-                ),
-            )
-        except httpx.ConnectError as exc:
-            raise OpenAIClientError(
-                f"Conexao recusada em {self.host}.\nVerifique se o servidor esta rodando."
-            ) from exc
-        except httpx.TimeoutException:
-            raise OpenAIClientError(f"Timeout ({self.timeout}s) em {self.host}.")
-        except httpx.HTTPError as exc:
-            raise OpenAIClientError(f"Erro HTTP: {exc}") from exc
+        # Retry com backoff em 429 (rate-limit, comum no free tier) e 5xx
+        # (transiente). Backoff exponencial: 2s, 4s, 8s. Honra Retry-After
+        # quando o provider o envia.
+        import time as _time
+        _max_retries = 3
+        resp = None
+        for _attempt in range(_max_retries + 1):
+            try:
+                resp = httpx.post(
+                    self._chat_url(),
+                    json=body,
+                    headers=self._headers,
+                    timeout=httpx.Timeout(
+                        connect=float(self.timeout),
+                        read=300.0,
+                        write=10.0,
+                        pool=5.0,
+                    ),
+                )
+            except httpx.ConnectError as exc:
+                raise OpenAIClientError(
+                    f"Conexao recusada em {self.host}.\nVerifique se o servidor esta rodando."
+                ) from exc
+            except httpx.TimeoutException:
+                raise OpenAIClientError(f"Timeout ({self.timeout}s) em {self.host}.")
+            except httpx.HTTPError as exc:
+                raise OpenAIClientError(f"Erro HTTP: {exc}") from exc
+
+            _retryable = resp.status_code == 429 or resp.status_code >= 500
+            if _retryable and _attempt < _max_retries:
+                try:
+                    _ra = resp.headers.get("retry-after")
+                    _wait = float(_ra) if _ra else 2.0 * (2 ** _attempt)
+                except (ValueError, TypeError):
+                    _wait = 2.0 * (2 ** _attempt)
+                _wait = min(_wait, 30.0)  # teto de 30s por espera
+                _time.sleep(_wait)
+                continue
+            break
 
         if resp.status_code >= 400:
             body_text = resp.text[:600]
