@@ -141,3 +141,18 @@ tools:
       args:
         url: "https://example.com"
         max_chars: 3000
+
+  browser_navigate:
+    description: "Abre uma URL no browser headless (Playwright) e retorna o HTML/texto da página."
+    risk: medium
+    requires_confirmation: false
+    timeout_seconds: 600
+    args:
+      url:
+        type: string
+        description: "URL completa a navegar"
+        required: true
+    example:
+      action: browser_navigate
+      args:
+        url: "https://example.com"
