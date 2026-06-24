@@ -223,9 +223,13 @@ def create_app(
 
     # Detecta provider inicial pelo atributo _provider ou, como fallback, pela URL do host.
     def _detect_provider(c) -> str:
-        if p := getattr(c, "_provider", ""):
+        # Só aceita _provider quando é string não-vazia (evita falsos truthy,
+        # ex: atributos auto-criados de mocks/proxies).
+        p = getattr(c, "_provider", "")
+        if isinstance(p, str) and p:
             return p
-        host = getattr(c, "host", "").lower()
+        host = getattr(c, "host", "")
+        host = host.lower() if isinstance(host, str) else ""
         for kw in ("openrouter", "groq", "mistral", "deepseek", "together", "openai",
                    "anthropic", "xai", "github", "opencode", "gemini"):
             if kw in host:

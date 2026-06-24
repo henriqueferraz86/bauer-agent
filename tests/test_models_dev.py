@@ -299,3 +299,55 @@ def test_disk_cache_roundtrip(tmp_path, monkeypatch):
     loaded = md._load_disk_cache()
     assert "anthropic" in loaded
     assert loaded["anthropic"]["name"] == "Anthropic"
+
+
+# ---------------------------------------------------------------------------
+# _is_free_model — fonte única de classificação gratuita
+# ---------------------------------------------------------------------------
+
+class TestIsFreeModel:
+    def test_always_free_providers(self):
+        assert md._is_free_model("ollama", "llama3") is True
+        assert md._is_free_model("lmstudio", "qualquer-coisa") is True
+        assert md._is_free_model("cerebras", "llama3.1-8b") is True
+
+    def test_suffix_free_openrouter(self):
+        assert md._is_free_model("openrouter", "meta-llama/llama-3.2-3b-instruct:free") is True
+        assert md._is_free_model("openrouter", "openrouter/free") is True
+
+    def test_suffix_free_together_and_opencode(self):
+        assert md._is_free_model("together", "Meta-Llama-3.1-8B-Instruct-Turbo-Free") is True
+        assert md._is_free_model("opencode", "mimo-v2-flash-free") is True
+
+    def test_paid_models_not_free(self):
+        assert md._is_free_model("openrouter", "openai/gpt-4o") is False
+        assert md._is_free_model("anthropic", "claude-3-5-sonnet") is False
+        assert md._is_free_model("groq", "llama-3.1-8b-instant") is False
+
+    def test_cost_zero_is_not_free(self):
+        # Regressão do bug do lyria: custo 0 por token != gratuito.
+        # Modelos de áudio/imagem cobram por request/segundo → 402.
+        # Sem sinal explícito (provider sempre-grátis ou sufixo), é pago.
+        assert md._is_free_model("openrouter", "google/lyria-3-pro-preview") is False
+        # provider desconhecido, mesmo que custo fosse 0, não é grátis
+        assert md._is_free_model("randomvendor", "qualquer-modelo") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_chat_capable — filtro de modalidade
+# ---------------------------------------------------------------------------
+
+class TestIsChatCapable:
+    def test_text_output_is_chat(self):
+        assert md._is_chat_capable(["text"]) is True
+        assert md._is_chat_capable(["text", "audio"]) is True  # misto conta
+
+    def test_media_only_not_chat(self):
+        assert md._is_chat_capable(["image"]) is False
+        assert md._is_chat_capable(["video"]) is False
+        assert md._is_chat_capable(["audio"]) is False
+
+    def test_unknown_modality_assumes_chat(self):
+        # Sem metadado → não esconder (assume chat)
+        assert md._is_chat_capable([]) is True
+        assert md._is_chat_capable(None) is True

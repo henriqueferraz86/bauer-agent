@@ -302,12 +302,10 @@ def build_desktop_router(
             ql = q.lower()
             models = [m for m in models if ql in str(m.get("id", "")).lower()]
         if free:
-            models = [
-                m for m in models
-                if m.get("is_free") is True or (
-                    "is_free" not in m and m.get("cost_in") == 0
-                )
-            ]
+            # Fonte única: o campo is_free do catálogo (models_dev._is_free_model).
+            # Não reclassificar por cost==0 aqui — custo zero por token não
+            # significa gratuito (modelos de áudio/imagem cobram por request).
+            models = [m for m in models if m.get("is_free") is True]
         total = len(models)
         free_count = sum(1 for m in models if m.get("is_free"))
         page = models[offset:offset + limit]

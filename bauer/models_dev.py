@@ -378,19 +378,26 @@ def fetch_openrouter_catalog(force_refresh: bool = False) -> List[Dict[str, Any]
             raw_out = _f(pricing.get("completion"))
             cost_in = raw_in * 1_000_000 if raw_in is not None else None
             cost_out = raw_out * 1_000_000 if raw_out is not None else None
-            # Para OpenRouter só o sufixo ":free" é confiável — modelos de
-            # preview podem ter custo $0 na API mas ainda exigem créditos
-            is_free = (
-                mid.endswith(":free")
-                or mid in ("openrouter/free", "openrouter/owl-alpha")
-            )
+
+            # Modalidades de saída — em architecture.output_modalities, ou
+            # parseadas da string architecture.modality ("text+image->text").
+            arch = m.get("architecture") or {}
+            out_mods = arch.get("output_modalities")
+            if not out_mods:
+                modality = arch.get("modality") or ""
+                if "->" in modality:
+                    tail = modality.split("->", 1)[1]
+                    out_mods = [s.strip() for s in tail.split("+") if s.strip()]
+            out_mods = out_mods or []
+
             result.append({
                 "id": mid,
                 "provider": "openrouter",
                 "context_window": m.get("context_length"),
                 "cost_in": cost_in,
                 "cost_out": cost_out,
-                "is_free": is_free,
+                "is_free": _is_free_model("openrouter", mid),
+                "output_modalities": out_mods,
                 "capabilities": [],
                 "description": m.get("description", ""),
             })
@@ -424,8 +431,21 @@ _SUFFIX_FREE_PROVIDERS: frozenset[str] = frozenset({
 _FREE_MODEL_ID_SUFFIXES = ("-free", "/free", ":free")
 
 
-def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], cost_out: Optional[float]) -> bool:
-    """Best-effort free-model classification for catalog display."""
+def _is_free_model(provider_id: str, model_id: str) -> bool:
+    """Classificação ÚNICA de modelo gratuito — fonte de verdade do catálogo.
+
+    NÃO usa custo==0 como sinal: muitos modelos de áudio/imagem/vídeo têm
+    custo por-token zero mas cobram por request/segundo/imagem (ex:
+    google/lyria-* tem cost.input=0 mas retorna HTTP 402). Custo zero por
+    token != gratuito. Só sinais explícitos contam:
+
+      1. Provider inteiramente gratuito (local ou free-tier sem cobrança)
+      2. Sufixo conhecido no ID (:free, -free) em providers onde a
+         convenção é documentada
+
+    Usada por fetch_openrouter_catalog, catalog_models e (via campo is_free)
+    pelo desktop_api e frontend — todos concordam por construção.
+    """
     pid = provider_id.lower()
 
     if pid in _ALWAYS_FREE_PROVIDERS:
@@ -439,17 +459,28 @@ def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], co
         if model_id in ("openrouter/free", "openrouter/owl-alpha"):
             return True
 
-    # Custo explicitamente zero nos dados do provider
-    if cost_in is not None:
-        return cost_in == 0 and (cost_out is None or cost_out == 0)
-
     return False
+
+
+def _is_chat_capable(output_modalities) -> bool:
+    """True se o modelo produz TEXTO — único tipo usável em chat completions.
+
+    Modelos que só geram imagem/áudio/vídeo (kling, veo, grok-imagine, lyria
+    puro) não servem para o chat e devem ser ocultados do seletor.
+
+    Modalidade desconhecida (lista vazia/None) → assume chat, para não
+    esconder modelos por simples falta de metadado.
+    """
+    if not output_modalities:
+        return True
+    return any(str(m).lower() == "text" for m in output_modalities)
 
 
 def catalog_models(
     provider: Optional[str] = None,
     capability: Optional[str] = None,
     max_cost_per_m: Optional[float] = None,
+    chat_only: bool = True,
 ) -> List[Dict[str, Any]]:
     """Retorna lista de modelos do catálogo models.dev com filtros opcionais.
 
@@ -457,10 +488,13 @@ def catalog_models(
         provider: filtrar por provider ID (ex: "openai", "anthropic").
         capability: filtrar por capability (ex: "tools", "vision", "reasoning").
         max_cost_per_m: filtrar por custo máximo em USD/M tokens (input).
+        chat_only: ocultar modelos que não produzem texto (imagem/áudio/vídeo).
+            True por padrão — o seletor do chat só deve oferecer modelos
+            usáveis em chat completions.
 
     Returns:
         Lista de dicts com keys: id, provider, context_window, cost_in, cost_out,
-        capabilities, description.
+        is_free, output_modalities, capabilities, description.
     """
     data = fetch_models_dev()
     results: List[Dict[str, Any]] = []
@@ -483,28 +517,32 @@ def catalog_models(
             limit = mdata.get("limit", {})
             context_window = limit.get("context") if isinstance(limit, dict) else None
 
-            # Extract costs (models.dev usa USD por milhão de tokens)
-            pricing = mdata.get("pricing", {})
+            # Custos — models.dev usa a chave "cost" (USD por milhão de tokens),
+            # NÃO "pricing". Ler do campo errado deixava cost_in/out sempre None.
+            cost = mdata.get("cost", {})
             cost_in: Optional[float] = None
             cost_out: Optional[float] = None
-            if isinstance(pricing, dict):
-                raw_in = pricing.get("input") if "input" in pricing else pricing.get("input_per_token")
-                raw_out = pricing.get("output") if "output" in pricing else pricing.get("output_per_token")
+            if isinstance(cost, dict):
+                raw_in = cost.get("input")
+                raw_out = cost.get("output")
                 cost_in = float(raw_in) if raw_in is not None else None
                 cost_out = float(raw_out) if raw_out is not None else None
 
-            # Extract capabilities
+            # Modalidades — "modalities" é um dict {input:[...], output:[...]},
+            # não uma lista. Extrair output para o filtro de chat.
+            modalities = mdata.get("modalities", {})
+            out_mods = modalities.get("output", []) if isinstance(modalities, dict) else []
+            in_mods = modalities.get("input", []) if isinstance(modalities, dict) else []
+
+            # Capabilities — campos reais: tool_call, reasoning, e vision via
+            # presença de "image" nos inputs (não supports_tools/vision/...).
             caps: list = []
-            if isinstance(mdata.get("supports_tools"), bool) and mdata["supports_tools"]:
+            if mdata.get("tool_call"):
                 caps.append("tools")
-            if isinstance(mdata.get("supports_vision"), bool) and mdata["supports_vision"]:
-                caps.append("vision")
-            if isinstance(mdata.get("supports_reasoning"), bool) and mdata["supports_reasoning"]:
+            if mdata.get("reasoning"):
                 caps.append("reasoning")
-            # also check modalities list
-            for modal in mdata.get("modalities", []):
-                if isinstance(modal, str) and modal not in caps:
-                    caps.append(modal)
+            if any(str(m).lower() == "image" for m in in_mods) or mdata.get("attachment"):
+                caps.append("vision")
 
             # Capability filter
             if capability and capability.lower() not in [c.lower() for c in caps]:
@@ -521,7 +559,8 @@ def catalog_models(
                 "context_window": context_window,
                 "cost_in": cost_in,
                 "cost_out": cost_out,
-                "is_free": _is_free_model(prov_id, model_id, cost_in, cost_out),
+                "is_free": _is_free_model(prov_id, model_id),
+                "output_modalities": list(out_mods),
                 "capabilities": caps,
                 "description": mdata.get("description", ""),
             })
@@ -530,6 +569,11 @@ def catalog_models(
     if provider is None or provider.lower() == "openrouter":
         results = [r for r in results if r["provider"] != "openrouter"]
         results.extend(fetch_openrouter_catalog())
+
+    # Filtro de modalidade: só modelos que produzem texto (usáveis em chat).
+    # Remove geradores puros de imagem/áudio/vídeo do seletor.
+    if chat_only:
+        results = [r for r in results if _is_chat_capable(r.get("output_modalities"))]
 
     # Sort: free first globally, then cheapest, then provider/id
     results.sort(key=lambda r: (
