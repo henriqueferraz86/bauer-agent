@@ -283,12 +283,22 @@ def can_write_code(project_dir: Path | str, target: str) -> Tuple[bool, str]:
         return True, ""
 
     missing = missing_planning_docs(project_dir)
+    current_gate_slug = gate.slug if gate else "discovery"
+    if current_gate_slug == "discovery":
+        gate_hint = (
+            "  DISCOVERY: use a tool 'clarify' para perguntar ao usuario sobre\n"
+            "  usuarios-alvo, funcionalidades V1, stack e criterio de sucesso.\n"
+            "  Depois preencha os docs em docs/ com o que foi coletado."
+        )
+    else:
+        gate_hint = (
+            f"  Documentos pendentes em docs/: {', '.join(missing) or '(nenhum)'}\n"
+            "  Preencha-os (use write_file em docs/<NOME>.md)."
+        )
     reason = (
         "App Factory: escrita de codigo bloqueada — o planejamento ainda nao "
-        f"esta completo (gate atual: {gate.slug if gate else 'discovery'}).\n"
-        f"  Documentos pendentes em docs/: {', '.join(missing) or '(nenhum)'}\n"
-        "  Preencha-os primeiro (use write_file em docs/<NOME>.md). Apenas docs/, "
-        "README.md e .env.example podem ser escritos antes de a SPEC estar pronta."
+        f"esta completo (gate atual: {current_gate_slug}).\n"
+        f"{gate_hint}"
     )
     return False, reason
 
