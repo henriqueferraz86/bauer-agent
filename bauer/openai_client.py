@@ -302,6 +302,17 @@ class OpenAIClient:
                         "  - Verifique sua conta e billing em platform.openai.com\n"
                         "  - Ou troque de provider: bauer model"
                     )
+            elif status == 402:
+                _hint = (
+                    "Creditos insuficientes no provider.\n\n"
+                    "  Este modelo requer saldo — escolha um gratuito:\n"
+                    "  - OpenRouter: use modelos com ':free' no ID\n"
+                    "    (ex: meta-llama/llama-3.2-3b-instruct:free)\n"
+                    "  - OpenCode: modelos com '-free' no ID\n"
+                    "    (ex: mimo-v2-flash-free)\n"
+                    "  - No Desktop: /model → ative 'so gratis' para filtrar\n\n"
+                    f"  Detalhe: {body[:200]}"
+                )
             elif status == 401:
                 _code = ""
                 try:
@@ -324,9 +335,12 @@ class OpenAIClient:
                 else:
                     _hint = (
                         "Falha de autenticacao.\n"
-                        "  - Verifique se a API key esta correta em config.yaml\n"
-                        "  - Rode: bauer model para configurar novamente\n"
-                        f"  - URL: {self.host}"
+                        f"  Provider: {self.host}\n\n"
+                        "  'Gratis' = sem custo por token, mas ainda exige API key.\n"
+                        "  Para resolver:\n"
+                        "  - No Desktop: /model para trocar de modelo\n"
+                        "  - No CLI: bauer model\n"
+                        "  - Ou configure a chave em config.yaml: <provider>.api_key"
                     )
             elif status == 403:
                 _hint = (

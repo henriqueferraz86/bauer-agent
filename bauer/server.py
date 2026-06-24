@@ -158,6 +158,7 @@ def create_app(
     cors_origins: list[str] | None = None,
     enable_gzip: bool = True,
     enable_access_log: bool = False,
+    config_path: Optional[Path] = None,
 ):
     """Cria e retorna o app FastAPI configurado."""
     _require_fastapi()
@@ -220,8 +221,29 @@ def create_app(
 
     store = SessionStore(sessions_dir)
 
-    # Estado mutável do modelo ativo (permite troca em runtime via /models/switch)
-    _state = {"model": model_name}
+    # Detecta provider inicial pelo atributo _provider ou, como fallback, pela URL do host.
+    def _detect_provider(c) -> str:
+        # Só aceita _provider quando é string não-vazia (evita falsos truthy,
+        # ex: atributos auto-criados de mocks/proxies).
+        p = getattr(c, "_provider", "")
+        if isinstance(p, str) and p:
+            return p
+        host = getattr(c, "host", "")
+        host = host.lower() if isinstance(host, str) else ""
+        for kw in ("openrouter", "groq", "mistral", "deepseek", "together", "openai",
+                   "anthropic", "xai", "github", "opencode", "gemini"):
+            if kw in host:
+                return kw
+        if hasattr(c, "list_models"):  # OllamaClient
+            return "ollama"
+        return ""
+
+    # Estado mutável do modelo ativo e client (permite troca em runtime via /models/switch)
+    _state = {
+        "model": model_name,
+        "client": client,
+        "provider": _detect_provider(client),
+    }
 
     # Rate limiter (desativado se rate_limit_requests <= 0)
     _limiter = _RateLimiter(
@@ -338,6 +360,7 @@ def create_app(
     def status():
         return {
             "model": _state["model"],
+            "provider": _state["provider"],
             "context_tokens": applied_context,
             "tools": router.available_tools(),
             "auth_enabled": bool(api_key),
@@ -368,12 +391,48 @@ def create_app(
     @app.post("/models/switch")
     def models_switch(body: dict, _: None = Depends(_verify_key)):
         new_model = (body.get("model") or "").strip()
+        new_provider = (body.get("provider") or "").strip().lower()
         if not new_model:
             raise HTTPException(status_code=400, detail="Campo 'model' obrigatorio.")
-        if not client.has_model(new_model):
-            raise HTTPException(status_code=404, detail=f"Modelo '{new_model}' nao encontrado no Ollama.")
-        _state["model"] = new_model
-        return {"active": new_model}
+
+        current_provider = _state["provider"]
+        # Normaliza: se não veio provider, assume o atual
+        if not new_provider:
+            new_provider = current_provider
+
+        if new_provider == current_provider:
+            # Mesmo provider — valida com has_model() só para Ollama
+            if current_provider in ("ollama", "") and not _state["client"].has_model(new_model):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Modelo '{new_model}' nao encontrado no {current_provider or 'provider atual'}.",
+                )
+            _state["model"] = new_model
+        else:
+            # Provider diferente — tenta reconstruir o client
+            new_client = None
+            if config_path is not None:
+                try:
+                    from .auxiliary_client import _build_client_for_provider
+                    from .config_loader import load_config
+                    cfg = load_config(config_path)
+                    new_client = _build_client_for_provider(new_provider, new_model, cfg)
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Nao foi possivel construir client para provider '{new_provider}': {exc}",
+                    )
+            else:
+                # Sem config_path — aceita a troca mas mantém o client atual
+                # (o chat vai falhar se o provider for incompatível)
+                pass
+
+            _state["model"] = new_model
+            _state["provider"] = new_provider
+            if new_client is not None:
+                _state["client"] = new_client
+
+        return {"active": _state["model"], "provider": _state["provider"]}
 
     @app.get("/sessions")
     def list_sessions(_: None = Depends(_verify_key)):
@@ -396,7 +455,7 @@ def create_app(
         ctx.add_user(req.message)
 
         try:
-            response, tool_log = run_one_turn(ctx, router, client, _state["model"])
+            response, tool_log = run_one_turn(ctx, router, _state["client"], _state["model"])
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
@@ -436,7 +495,7 @@ def create_app(
                 buffering = False   # True quando response pode ser JSON (aguarda completar)
 
                 try:
-                    for chunk in client.chat_stream(_state["model"], ctx.get_payload()):
+                    for chunk in _state["client"].chat_stream(_state["model"], ctx.get_payload()):
                         parts.append(chunk)
 
                         if streaming:
@@ -553,7 +612,7 @@ def create_app(
                 while True:
                     parts = []
                     try:
-                        for chunk in client.chat_stream(active_model, ctx.get_payload()):
+                        for chunk in _state["client"].chat_stream(active_model, ctx.get_payload()):
                             parts.append(chunk)
                             # Emite chunk no formato OpenAI delta
                             delta = _json.dumps({
@@ -609,7 +668,7 @@ def create_app(
 
         # ── modo não-streaming (resposta completa) ────────────────────────────
         try:
-            response, tool_log = run_one_turn(ctx, router, client, active_model)
+            response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 

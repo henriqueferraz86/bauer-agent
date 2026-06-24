@@ -162,6 +162,16 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 .slash-cmd { color: var(--accent); font-size: 13px; min-width: 86px; }
 .slash-desc { color: var(--text-3); font-size: 12px; }
 
+/* ── Section labels ── */
+.section-label {
+  padding: 6px 2px 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 /* ── Lists ── */
 .list-item {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-2);

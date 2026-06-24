@@ -214,10 +214,12 @@ class TestKanbanEndpoint:
 
 class TestModelsCatalog:
     def _models(self):
+        # catalog_models() sempre seta is_free — o filtro do endpoint confia
+        # só nesse campo (custo 0 não implica grátis: ver _is_free_model).
         return [
-            {"id": "claude-sonnet", "provider": "anthropic", "cost_in": 3.0},
-            {"id": "deepseek-free", "provider": "opencode", "cost_in": 0},
-            {"id": "llama-70b", "provider": "groq", "cost_in": 0.6},
+            {"id": "claude-sonnet", "provider": "anthropic", "cost_in": 3.0, "is_free": False},
+            {"id": "deepseek-free", "provider": "opencode", "cost_in": 0, "is_free": True},
+            {"id": "llama-70b", "provider": "groq", "cost_in": 0.6, "is_free": False},
         ]
 
     def test_returns_all(self, env):

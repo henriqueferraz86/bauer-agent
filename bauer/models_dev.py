@@ -30,11 +30,16 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
+_OPENROUTER_API_URL = "https://openrouter.ai/api/v1/models"
 _CACHE_TTL = 3600  # 1 hora
 
-# In-memory cache
+# In-memory cache — models.dev
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+
+# In-memory cache — OpenRouter live API
+_openrouter_catalog_cache: List[Dict[str, Any]] = []
+_openrouter_catalog_time: float = 0
 
 
 # ---------------------------------------------------------------------------
@@ -329,19 +334,153 @@ def stop_background_refresh() -> None:
     _refresh_stop = True
 
 
-def _is_free_model(provider_id: str, model_id: str, cost_in: Optional[float], cost_out: Optional[float]) -> bool:
-    """Best-effort free-model classification for catalog display."""
-    if provider_id == "openrouter":
-        return model_id.endswith(":free") or model_id == "openrouter/free"
-    if cost_in is None:
-        return False
-    return cost_in == 0 and (cost_out is None or cost_out == 0)
+def fetch_openrouter_catalog(force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """Busca catálogo completo direto da API pública do OpenRouter.
+
+    Hierarquia: in-mem fresco → rede → in-mem expirado.
+    Retorna lista de dicts normalizados (mesma forma que catalog_models).
+    """
+    global _openrouter_catalog_cache, _openrouter_catalog_time
+
+    if (
+        not force_refresh
+        and _openrouter_catalog_cache
+        and (time.time() - _openrouter_catalog_time) < _CACHE_TTL
+    ):
+        return _openrouter_catalog_cache
+
+    try:
+        import httpx
+
+        resp = httpx.get(_OPENROUTER_API_URL, timeout=15.0, follow_redirects=True)
+        resp.raise_for_status()
+        raw_list = resp.json().get("data", [])
+        if not isinstance(raw_list, list):
+            raise ValueError("resposta inesperada da API do OpenRouter")
+
+        result: List[Dict[str, Any]] = []
+        for m in raw_list:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("id", "")
+            if not mid:
+                continue
+            pricing = m.get("pricing") or {}
+
+            def _f(v: Any) -> Optional[float]:
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            # OpenRouter API retorna custo por TOKEN; normalizar para por-milhão
+            raw_in = _f(pricing.get("prompt"))
+            raw_out = _f(pricing.get("completion"))
+            cost_in = raw_in * 1_000_000 if raw_in is not None else None
+            cost_out = raw_out * 1_000_000 if raw_out is not None else None
+
+            # Modalidades de saída — em architecture.output_modalities, ou
+            # parseadas da string architecture.modality ("text+image->text").
+            arch = m.get("architecture") or {}
+            out_mods = arch.get("output_modalities")
+            if not out_mods:
+                modality = arch.get("modality") or ""
+                if "->" in modality:
+                    tail = modality.split("->", 1)[1]
+                    out_mods = [s.strip() for s in tail.split("+") if s.strip()]
+            out_mods = out_mods or []
+
+            result.append({
+                "id": mid,
+                "provider": "openrouter",
+                "context_window": m.get("context_length"),
+                "cost_in": cost_in,
+                "cost_out": cost_out,
+                "is_free": _is_free_model("openrouter", mid),
+                "output_modalities": out_mods,
+                "capabilities": [],
+                "description": m.get("description", ""),
+            })
+
+        _openrouter_catalog_cache = result
+        _openrouter_catalog_time = time.time()
+        logger.debug("openrouter: buscado da API — %d modelos", len(result))
+        return result
+    except Exception as exc:
+        logger.debug("openrouter: falha na API direta: %s", exc)
+
+    return _openrouter_catalog_cache
+
+
+# Providers onde TODOS os modelos são gratuitos (sem custo por token)
+_ALWAYS_FREE_PROVIDERS: frozenset[str] = frozenset({
+    "ollama",     # local
+    "lmstudio",   # local
+    "cerebras",   # free API tier (sem cobrança por token)
+})
+
+# Providers que usam convenção de sufixo no ID para indicar variante gratuita.
+# Sufixo indica custo zero, mas o provider ainda pode exigir API key.
+_SUFFIX_FREE_PROVIDERS: frozenset[str] = frozenset({
+    "openrouter",  # ":free" — ex: meta-llama/llama-3.2-3b-instruct:free
+    "together",    # "-Free" — ex: Meta-Llama-3.1-8B-Instruct-Turbo-Free
+    "opencode",    # "-free" — ex: mimo-v2-flash-free (chave "public" funciona)
+})
+
+# Padrões no model_id que indicam variante gratuita (case-insensitive)
+_FREE_MODEL_ID_SUFFIXES = ("-free", "/free", ":free")
+
+
+def _is_free_model(provider_id: str, model_id: str) -> bool:
+    """Classificação ÚNICA de modelo gratuito — fonte de verdade do catálogo.
+
+    NÃO usa custo==0 como sinal: muitos modelos de áudio/imagem/vídeo têm
+    custo por-token zero mas cobram por request/segundo/imagem (ex:
+    google/lyria-* tem cost.input=0 mas retorna HTTP 402). Custo zero por
+    token != gratuito. Só sinais explícitos contam:
+
+      1. Provider inteiramente gratuito (local ou free-tier sem cobrança)
+      2. Sufixo conhecido no ID (:free, -free) em providers onde a
+         convenção é documentada
+
+    Usada por fetch_openrouter_catalog, catalog_models e (via campo is_free)
+    pelo desktop_api e frontend — todos concordam por construção.
+    """
+    pid = provider_id.lower()
+
+    if pid in _ALWAYS_FREE_PROVIDERS:
+        return True
+
+    # Detecção por sufixo: só para providers onde a convenção é conhecida
+    if pid in _SUFFIX_FREE_PROVIDERS:
+        mid_l = model_id.lower()
+        if any(mid_l.endswith(s) for s in _FREE_MODEL_ID_SUFFIXES):
+            return True
+        if model_id in ("openrouter/free", "openrouter/owl-alpha"):
+            return True
+
+    return False
+
+
+def _is_chat_capable(output_modalities) -> bool:
+    """True se o modelo produz TEXTO — único tipo usável em chat completions.
+
+    Modelos que só geram imagem/áudio/vídeo (kling, veo, grok-imagine, lyria
+    puro) não servem para o chat e devem ser ocultados do seletor.
+
+    Modalidade desconhecida (lista vazia/None) → assume chat, para não
+    esconder modelos por simples falta de metadado.
+    """
+    if not output_modalities:
+        return True
+    return any(str(m).lower() == "text" for m in output_modalities)
 
 
 def catalog_models(
     provider: Optional[str] = None,
     capability: Optional[str] = None,
     max_cost_per_m: Optional[float] = None,
+    chat_only: bool = True,
 ) -> List[Dict[str, Any]]:
     """Retorna lista de modelos do catálogo models.dev com filtros opcionais.
 
@@ -349,10 +488,13 @@ def catalog_models(
         provider: filtrar por provider ID (ex: "openai", "anthropic").
         capability: filtrar por capability (ex: "tools", "vision", "reasoning").
         max_cost_per_m: filtrar por custo máximo em USD/M tokens (input).
+        chat_only: ocultar modelos que não produzem texto (imagem/áudio/vídeo).
+            True por padrão — o seletor do chat só deve oferecer modelos
+            usáveis em chat completions.
 
     Returns:
         Lista de dicts com keys: id, provider, context_window, cost_in, cost_out,
-        capabilities, description.
+        is_free, output_modalities, capabilities, description.
     """
     data = fetch_models_dev()
     results: List[Dict[str, Any]] = []
@@ -375,36 +517,40 @@ def catalog_models(
             limit = mdata.get("limit", {})
             context_window = limit.get("context") if isinstance(limit, dict) else None
 
-            # Extract costs
-            pricing = mdata.get("pricing", {})
+            # Custos — models.dev usa a chave "cost" (USD por milhão de tokens),
+            # NÃO "pricing". Ler do campo errado deixava cost_in/out sempre None.
+            cost = mdata.get("cost", {})
             cost_in: Optional[float] = None
             cost_out: Optional[float] = None
-            if isinstance(pricing, dict):
-                cost_in = pricing.get("input") or pricing.get("input_per_token")
-                cost_out = pricing.get("output") or pricing.get("output_per_token")
+            if isinstance(cost, dict):
+                raw_in = cost.get("input")
+                raw_out = cost.get("output")
+                cost_in = float(raw_in) if raw_in is not None else None
+                cost_out = float(raw_out) if raw_out is not None else None
 
-            # Extract capabilities
+            # Modalidades — "modalities" é um dict {input:[...], output:[...]},
+            # não uma lista. Extrair output para o filtro de chat.
+            modalities = mdata.get("modalities", {})
+            out_mods = modalities.get("output", []) if isinstance(modalities, dict) else []
+            in_mods = modalities.get("input", []) if isinstance(modalities, dict) else []
+
+            # Capabilities — campos reais: tool_call, reasoning, e vision via
+            # presença de "image" nos inputs (não supports_tools/vision/...).
             caps: list = []
-            if isinstance(mdata.get("supports_tools"), bool) and mdata["supports_tools"]:
+            if mdata.get("tool_call"):
                 caps.append("tools")
-            if isinstance(mdata.get("supports_vision"), bool) and mdata["supports_vision"]:
-                caps.append("vision")
-            if isinstance(mdata.get("supports_reasoning"), bool) and mdata["supports_reasoning"]:
+            if mdata.get("reasoning"):
                 caps.append("reasoning")
-            # also check modalities list
-            for modal in mdata.get("modalities", []):
-                if isinstance(modal, str) and modal not in caps:
-                    caps.append(modal)
+            if any(str(m).lower() == "image" for m in in_mods) or mdata.get("attachment"):
+                caps.append("vision")
 
             # Capability filter
             if capability and capability.lower() not in [c.lower() for c in caps]:
                 continue
 
-            # Cost filter
+            # Cost filter (cost_in é USD/milhão de tokens)
             if max_cost_per_m is not None and cost_in is not None:
-                # cost_in might be in per-token (multiply by 1M) or already per-M
-                effective = cost_in * 1_000_000 if cost_in < 0.01 else cost_in
-                if effective > max_cost_per_m:
+                if cost_in > max_cost_per_m:
                     continue
 
             results.append({
@@ -413,14 +559,27 @@ def catalog_models(
                 "context_window": context_window,
                 "cost_in": cost_in,
                 "cost_out": cost_out,
-                "is_free": _is_free_model(prov_id, model_id, cost_in, cost_out),
+                "is_free": _is_free_model(prov_id, model_id),
+                "output_modalities": list(out_mods),
                 "capabilities": caps,
                 "description": mdata.get("description", ""),
             })
 
+    # Merge OpenRouter from live API (authoritative — models.dev is often stale/incomplete)
+    if provider is None or provider.lower() == "openrouter":
+        results = [r for r in results if r["provider"] != "openrouter"]
+        results.extend(fetch_openrouter_catalog())
+
+    # Filtro de modalidade: só modelos que produzem texto (usáveis em chat).
+    # Remove geradores puros de imagem/áudio/vídeo do seletor.
+    if chat_only:
+        results = [r for r in results if _is_chat_capable(r.get("output_modalities"))]
+
+    # Sort: free first globally, then cheapest, then provider/id
     results.sort(key=lambda r: (
+        0 if r.get("is_free") else 1,
+        r.get("cost_in") or 999.0,
         r["provider"],
-        0 if r["provider"] == "openrouter" and r.get("is_free") else 1,
         r["id"],
     ))
     return results

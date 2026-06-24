@@ -285,6 +285,49 @@ def _pick_from_list(items: list[tuple[str, str]], title: str) -> str | None:
 # Fluxo principal
 # ---------------------------------------------------------------------------
 
+def _pick_openrouter_model() -> str | None:
+    """Busca catálogo live do OpenRouter e exibe seletor interativo.
+
+    Mostra gratuitos primeiro (todos), depois pagos (top 40 por custo).
+    """
+    console.print("[dim]Buscando catálogo OpenRouter…[/dim]")
+    try:
+        from .models_dev import fetch_openrouter_catalog
+        catalog = fetch_openrouter_catalog()
+    except Exception as exc:
+        console.print(f"[yellow]Não foi possível buscar catálogo live: {exc}[/yellow]")
+        console.print("[dim]Usando lista curada.[/dim]")
+        return _pick_from_list(OPENROUTER_MODELS, "Modelos OpenRouter (lista curada)")
+
+    free = [m for m in catalog if m.get("is_free")]
+    paid = [m for m in catalog if not m.get("is_free")]
+
+    # Ordena pagos por custo ascendente, limita a 40
+    paid.sort(key=lambda m: m.get("cost_in") or 999.0)
+    paid = paid[:40]
+
+    def _desc(m: dict) -> str:
+        if m.get("is_free"):
+            ctx = m.get("context_window")
+            ctx_s = f" · {ctx // 1000}k ctx" if ctx else ""
+            return f"GRÁTIS{ctx_s}"
+        cost = m.get("cost_in")
+        cost_s = f"${cost}/M" if cost else "—"
+        return f"PAGO · {cost_s} entrada"
+
+    items: list[tuple[str, str]] = (
+        [(m["id"], _desc(m)) for m in free]
+        + [(m["id"], _desc(m)) for m in paid]
+        + [("__custom__", ">> digitar ID do modelo")]
+    )
+
+    console.print(
+        f"[dim]{len(free)} gratuitos · {len(paid)} pagos mostrados "
+        f"(de {len(catalog)} no catálogo)[/dim]"
+    )
+    return _pick_from_list(items, "Modelos OpenRouter")
+
+
 def run_model_switcher(config_path: Path) -> None:
     """Seletor interativo de provider + modelo. Salva config.yaml e .env."""
     env_path = config_path.parent / ".env"
@@ -338,7 +381,7 @@ def run_model_switcher(config_path: Path) -> None:
         internal_provider = "opencode"
 
     elif provider_id == "openrouter":
-        model_name = _pick_from_list(OPENROUTER_MODELS, "Modelos OpenRouter")
+        model_name = _pick_openrouter_model()
         if not model_name:
             console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
             return run_model_switcher(config_path)

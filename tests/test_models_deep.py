@@ -27,23 +27,28 @@ from bauer.models_dev import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Schema REAL do models.dev (confirmado em ~/.bauer/models_dev_cache.json):
+#   - custo na chave "cost" (USD/M tokens), NÃO "pricing"
+#   - "modalities" é dict {input:[...], output:[...]}, NÃO lista
+#   - capabilities via "tool_call"/"reasoning"/"attachment", vision = "image"
+#     nos inputs (NÃO supports_tools/supports_vision/supports_reasoning)
 _SAMPLE_CATALOG: Dict[str, Any] = {
     "openai": {
         "models": {
             "gpt-4o": {
                 "description": "GPT-4o",
                 "limit": {"context": 128000, "output": 4096},
-                "pricing": {"input": 5.0, "output": 15.0},
-                "supports_tools": True,
-                "supports_vision": True,
-                "supports_reasoning": False,
+                "cost": {"input": 5.0, "output": 15.0},
+                "tool_call": True,
+                "reasoning": False,
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
             },
             "gpt-3.5-turbo": {
                 "description": "GPT-3.5",
                 "limit": {"context": 16385, "output": 4096},
-                "pricing": {"input": 0.5, "output": 1.5},
-                "supports_tools": True,
-                "supports_vision": False,
+                "cost": {"input": 0.5, "output": 1.5},
+                "tool_call": True,
+                "modalities": {"input": ["text"], "output": ["text"]},
             },
         }
     },
@@ -52,17 +57,17 @@ _SAMPLE_CATALOG: Dict[str, Any] = {
             "claude-3-5-sonnet": {
                 "description": "Claude 3.5 Sonnet",
                 "limit": {"context": 200000, "output": 8192},
-                "pricing": {"input": 3.0, "output": 15.0},
-                "supports_tools": True,
-                "supports_vision": True,
-                "supports_reasoning": False,
+                "cost": {"input": 3.0, "output": 15.0},
+                "tool_call": True,
+                "reasoning": False,
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
             },
             "claude-3-opus": {
                 "description": "Claude 3 Opus",
                 "limit": {"context": 200000, "output": 4096},
-                "pricing": {"input": 15.0, "output": 75.0},
-                "supports_tools": True,
-                "supports_vision": True,
+                "cost": {"input": 15.0, "output": 75.0},
+                "tool_call": True,
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
             },
         }
     },
@@ -71,9 +76,9 @@ _SAMPLE_CATALOG: Dict[str, Any] = {
             "llama-3.1-8b": {
                 "description": "Llama 3.1 8B",
                 "limit": {"context": 131072, "output": 8192},
-                "pricing": {"input": 0.05, "output": 0.08},
-                "supports_tools": True,
-                "supports_vision": False,
+                "cost": {"input": 0.05, "output": 0.08},
+                "tool_call": True,
+                "modalities": {"input": ["text"], "output": ["text"]},
             }
         }
     },
@@ -149,6 +154,14 @@ class TestBackgroundRefreshDaemon:
 
 
 class TestCatalogModels:
+    @pytest.fixture(autouse=True)
+    def _no_live_openrouter(self):
+        # catalog_models() mescla o catálogo ao vivo do OpenRouter quando
+        # provider é None/openrouter. Sem isolar, os testes vazariam 300+
+        # modelos reais da rede. Mock para [] mantém os testes herméticos.
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=[]):
+            yield
+
     def _mock_fetch(self):
         return patch("bauer.models_dev.fetch_models_dev", return_value=_SAMPLE_CATALOG)
 
@@ -261,32 +274,60 @@ class TestCatalogModels:
         assert "tools" in gpt4o["capabilities"]
         assert "vision" in gpt4o["capabilities"]
 
-    def test_sorted_by_provider_then_id(self):
+    def test_sorted_free_first_then_cheapest(self):
+        # Ordenação do catálogo: gratuitos primeiro, depois por custo crescente.
+        # (Antes do fix, cost_in era sempre None — tudo empatava e caía no
+        #  provider; por isso o teste antigo "passava" por acidente.)
         with self._mock_fetch():
             results = catalog_models()
-        providers_seq = [r["provider"] for r in results]
-        assert providers_seq == sorted(providers_seq) or all(
-            providers_seq[i] <= providers_seq[i + 1] for i in range(len(providers_seq) - 1)
-        )
+        costs = [r.get("cost_in") if r.get("cost_in") is not None else 999.0 for r in results]
+        assert costs == sorted(costs), f"esperado custo crescente, veio {costs}"
+        # groq/llama (0.05) é o mais barato → primeiro
+        assert results[0]["id"] == "llama-3.1-8b"
 
     def test_openrouter_free_models_sort_first(self):
-        catalog = {
-            "openrouter": {
-                "models": {
-                    "openai/gpt-4o-mini": {"pricing": {"input": 0.15, "output": 0.6}},
-                    "meta-llama/llama-3.3-70b-instruct:free": {"pricing": {}},
-                    "anthropic/claude-sonnet-4": {"pricing": {"input": 3.0, "output": 15.0}},
-                    "openrouter/free": {"pricing": {"input": 0, "output": 0}},
-                }
-            }
-        }
-        with patch("bauer.models_dev.fetch_models_dev", return_value=catalog):
+        # OpenRouter vem do fetch ao vivo (não do models.dev). O autouse
+        # mock retorna [] — aqui sobrescrevemos com entradas no formato do
+        # catálogo (já normalizado por fetch_openrouter_catalog).
+        live = [
+            {"id": "openai/gpt-4o-mini", "provider": "openrouter", "cost_in": 0.15,
+             "cost_out": 0.6, "is_free": False, "output_modalities": ["text"]},
+            {"id": "meta-llama/llama-3.3-70b-instruct:free", "provider": "openrouter",
+             "cost_in": 0.0, "cost_out": 0.0, "is_free": True, "output_modalities": ["text"]},
+            {"id": "anthropic/claude-sonnet-4", "provider": "openrouter", "cost_in": 3.0,
+             "cost_out": 15.0, "is_free": False, "output_modalities": ["text"]},
+            {"id": "openrouter/free", "provider": "openrouter", "cost_in": 0.0,
+             "cost_out": 0.0, "is_free": True, "output_modalities": ["text"]},
+        ]
+        with patch("bauer.models_dev.fetch_models_dev", return_value={}), \
+                patch("bauer.models_dev.fetch_openrouter_catalog", return_value=live):
             results = catalog_models(provider="openrouter")
         assert [r["id"] for r in results[:2]] == [
             "meta-llama/llama-3.3-70b-instruct:free",
             "openrouter/free",
         ]
         assert all(r["is_free"] for r in results[:2])
+
+    def test_non_chat_models_filtered_out(self):
+        # Modelos que só produzem imagem/áudio/vídeo não devem aparecer
+        # no seletor de chat (filtro de modalidade).
+        catalog = {
+            "vendor": {
+                "models": {
+                    "chat-model": {"cost": {"input": 1.0},
+                                   "modalities": {"input": ["text"], "output": ["text"]}},
+                    "image-gen": {"cost": {"input": 0},
+                                  "modalities": {"input": ["text"], "output": ["image"]}},
+                    "video-gen": {"cost": {"input": 0},
+                                  "modalities": {"input": ["text"], "output": ["video"]}},
+                }
+            }
+        }
+        with patch("bauer.models_dev.fetch_models_dev", return_value=catalog):
+            ids = {r["id"] for r in catalog_models()}
+        assert "chat-model" in ids
+        assert "image-gen" not in ids
+        assert "video-gen" not in ids
 
     def test_empty_catalog_returns_empty(self):
         with patch("bauer.models_dev.fetch_models_dev", return_value={}):
@@ -327,6 +368,11 @@ class TestCatalogModels:
 
 
 class TestBauerModelsCatalogCli:
+    @pytest.fixture(autouse=True)
+    def _no_live_openrouter(self):
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=[]):
+            yield
+
     def _invoke(self, *args):
         typer = pytest.importorskip("typer")
         from typer.testing import CliRunner
@@ -510,23 +556,28 @@ class TestTelegramModelKeyboardMetadata:
 
 
 class TestCatalogModelsCostNormalization:
-    def test_per_token_cost_normalized_for_filter(self):
-        """If pricing uses per-token values (< 0.01), cost filter should still work."""
+    @pytest.fixture(autouse=True)
+    def _no_live_openrouter(self):
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=[]):
+            yield
+
+    def test_cost_filter_uses_usd_per_million(self):
+        """models.dev 'cost' já é USD/M tokens — o filtro compara direto."""
         catalog = {
             "cheap": {
                 "models": {
                     "nano": {
                         "limit": {"context": 8192},
-                        "pricing": {"input": 0.000001, "output": 0.000002},
+                        "cost": {"input": 1.0, "output": 2.0},
+                        "modalities": {"input": ["text"], "output": ["text"]},
                     }
                 }
             }
         }
         with patch("bauer.models_dev.fetch_models_dev", return_value=catalog):
-            # 0.000001 * 1e6 = 1.0 USD/M — filter at $0.50/M should exclude
-            results_low = catalog_models(max_cost_per_m=0.50)
-            # filter at $2/M should include
-            results_high = catalog_models(max_cost_per_m=2.0)
+            results_low = catalog_models(max_cost_per_m=0.50)   # $1/M > $0.50 → exclui
+            results_high = catalog_models(max_cost_per_m=2.0)   # $1/M < $2 → inclui
 
         assert len(results_low) == 0
         assert len(results_high) == 1
+        assert results_high[0]["cost_in"] == 1.0

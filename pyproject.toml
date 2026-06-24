@@ -61,7 +61,13 @@ include = ["bauer*"]
 exclude = ["tests*", "memory*", "workspace*", "logs*"]
 
 [tool.setuptools.package-data]
-bauer = ["*.yaml", "*.json", "py.typed"]
+bauer = [
+    "*.yaml", "*.json", "py.typed",
+    # Dados embutidos: skills do hub + templates da App Factory (Spec-Driven).
+    # Inclui dotfiles (.env.example) e extensões variadas (.md/.yml) em subdirs.
+    "data/**/*.yaml", "data/**/*.yml", "data/**/*.json", "data/**/*.md",
+    "data/app_factory/templates/.env.example",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

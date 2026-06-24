@@ -204,7 +204,9 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
         section = _provider_section(cfg, "anthropic")
         api_key = getattr(section, "api_key", "") if section else ""
         timeout = int(getattr(section, "timeout_seconds", 60) if section else 60)
-        return AnthropicClient(api_key=api_key, timeout_seconds=timeout, model=model)
+        _c = AnthropicClient(api_key=api_key, timeout_seconds=timeout, model=model)
+        _c._provider = "anthropic"
+        return _c
 
     # --- Ollama local -------------------------------------------------------
     if p == "ollama":
@@ -213,7 +215,9 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
         host = getattr(section, "host", "http://localhost:11434") if section else "http://localhost:11434"
         timeout = int(getattr(section, "timeout_seconds", 30) if section else 30)
         api_key = getattr(section, "api_key", "") if section else ""
-        return OllamaClient(host=host, timeout_seconds=timeout, api_key=api_key)
+        _c = OllamaClient(host=host, timeout_seconds=timeout, api_key=api_key)
+        _c._provider = "ollama"
+        return _c
 
     # --- OpenAI-compatible providers ---------------------------------------
     # All these share the same client class — only host + chat_path + headers
@@ -299,7 +303,7 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
         # GitHub Models accepts the same Bearer flow but needs api-version.
         extra_headers = {"X-GitHub-Api-Version": "2023-07-07"}
 
-    return OpenAIClient(
+    _c = OpenAIClient(
         host=host,
         timeout_seconds=timeout,
         api_key=api_key,
@@ -307,6 +311,8 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
         extra_headers=extra_headers,
         chat_path=spec["chat_path"],
     )
+    _c._provider = p
+    return _c
 
 
 # ---------------------------------------------------------------------------

@@ -394,6 +394,24 @@ class TestOpenAIClientChatStreamErrors:
         msg = str(exc_info.value)
         assert "autenticacao" in msg.lower() or "401" in msg
 
+    def test_402_error_shows_insufficient_credits_hint(self):
+        """HTTP 402: deve explicar créditos insuficientes e sugerir grátis."""
+        from bauer.openai_client import OpenAIClient, OpenAIClientError
+        from unittest.mock import patch
+
+        body_content = b'{"error":{"message":"Insufficient credits","code":402}}'
+        mock_resp = self._make_mock_stream_response(402, body_content)
+
+        c = OpenAIClient(host="https://openrouter.ai/api/v1", api_key="sk-test")
+        with patch("httpx.stream", return_value=mock_resp):
+            with pytest.raises(OpenAIClientError) as exc_info:
+                list(c.chat_stream("google/lyria-3-pro-preview",
+                                   [{"role": "user", "content": "hi"}]))
+
+        msg = str(exc_info.value).lower()
+        assert "creditos insuficientes" in msg or "402" in msg
+        assert ":free" in msg or "gratuit" in msg  # sugere alternativa grátis
+
     def test_429_error_shows_rate_limit_hint(self):
         """HTTP 429: deve mostrar hint de rate limit."""
         from bauer.openai_client import OpenAIClient, OpenAIClientError

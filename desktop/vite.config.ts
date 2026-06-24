@@ -15,7 +15,7 @@ export default defineConfig({
     port: 5173,
     proxy: Object.fromEntries(
       ["/api", "/chat", "/stream", "/health", "/status", "/models", "/sessions", "/tools", "/v1"].map(
-        (p) => [p, { target: "http://127.0.0.1:8000", changeOrigin: true }]
+        (p) => [p, { target: "http://127.0.0.1:5174", changeOrigin: true }]
       )
     ),
   },
