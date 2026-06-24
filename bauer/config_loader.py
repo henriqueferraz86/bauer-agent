@@ -678,6 +678,8 @@ class TelegramSection(_StrictSection):
     Segurança: allowed_users vazio NEGA todo mundo; para liberar geral é
     preciso allow_all: true explícito (não recomendado).
     """
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
     enabled: bool = False
     bot_token: str = ""                  # ou TELEGRAM_BOT_TOKEN no .env (preferido)
     allowed_users: list[int] = Field(default_factory=list)  # ids numéricos do Telegram
