@@ -1141,6 +1141,71 @@ def models_catalog(
         console.print(f"[dim]Mostrando {limit} de muitos resultados. Use --limit N para mais.[/dim]")
 
 
+@models_app.command("set-fallbacks")
+def models_set_fallbacks(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra os modelos sem salvar no config."),
+    config_path: "Path | None" = typer.Option(None, "--config", help="Caminho alternativo para config.yaml"),
+):
+    """Preenche fallback_models no config.yaml com todos os modelos gratuitos disponíveis.
+
+    Consulta o catálogo models.dev + OpenRouter + lista curada (Groq, GitHub)
+    e salva todos os pares (provider, name) em model.fallback_models.
+    O modelo primário configurado é automaticamente excluído da lista.
+    """
+    try:
+        from .models_dev import free_models_for_fallback
+    except ImportError:
+        console.print("[red]models_dev não disponível.[/red]")
+        raise typer.Exit(code=1)
+
+    # Resolve config path
+    from .paths import config_path as _cfg_path_fn
+    cfg_path = config_path or _cfg_path_fn()
+    if not cfg_path.exists():
+        console.print(f"[red]Config não encontrado: {cfg_path}[/red]")
+        raise typer.Exit(code=1)
+
+    # Lê config atual para saber o modelo primário (evitar duplicata no fallback)
+    import yaml as _yaml
+    raw = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    primary_provider = (raw.get("model") or {}).get("provider", "")
+    primary_name = (raw.get("model") or {}).get("name", "")
+
+    console.print("[bold]Consultando catálogo de modelos gratuitos…[/bold] [dim](pode levar alguns segundos)[/dim]")
+
+    with console.status("[cyan]Baixando catálogo…[/cyan]"):
+        free_list = free_models_for_fallback(
+            skip_provider=primary_provider,
+            skip_name=primary_name,
+        )
+
+    if not free_list:
+        console.print("[yellow]Nenhum modelo gratuito encontrado no catálogo.[/yellow]")
+        raise typer.Exit(code=1)
+
+    # Exibe prévia
+    table = Table(title=f"{len(free_list)} modelos gratuitos para fallback")
+    table.add_column("provider", style="cyan", no_wrap=True)
+    table.add_column("modelo", style="bold")
+    for m in free_list:
+        table.add_row(m["provider"], m["name"])
+    console.print(table)
+
+    if dry_run:
+        console.print("[yellow]--dry-run: nada salvo.[/yellow]")
+        return
+
+    # Salva no config.yaml
+    raw.setdefault("model", {})
+    raw["model"]["fallback_models"] = free_list
+    # Remove campo legado se presente
+    raw["model"].pop("fallback_providers", None)
+    cfg_path.write_text(_yaml.dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    console.print(f"\n[green]✓[/green] {len(free_list)} modelos salvos em [bold]{cfg_path}[/bold]")
+    console.print("[dim]O switch automático usará essa lista quando o modelo primário falhar.[/dim]")
+
+
 # --- memory -----------------------------------------------------------------
 
 _MEMORY_DIR = _memory_dir_fn()
@@ -2718,18 +2783,29 @@ def agent(
         except Exception:
             pass  # nunca bloqueia o startup por falha do tuner
 
-    # Constrói clientes de fallback se configurados em model.fallback_providers
+    # Constrói clientes de fallback a partir de fallback_models (provider+name pairs)
     _fallback_clients: list = []
-    for _fb_provider in getattr(cfg.model, "fallback_providers", []):
+    _fb_models = getattr(cfg.model, "fallback_models", []) or []
+    # backward compat: se só fallback_providers estiver preenchido, ignora
+    # (esquema antigo sem model.name — não há como saber o modelo certo)
+    for _fb in _fb_models:
         try:
+            _fb_provider = _fb.provider if hasattr(_fb, "provider") else _fb.get("provider", "")
+            _fb_name = _fb.name if hasattr(_fb, "name") else _fb.get("name", "")
+            if not _fb_provider or not _fb_name:
+                continue
             _fb_raw = cfg.model_dump()
             _fb_raw["model"]["provider"] = _fb_provider
+            _fb_raw["model"]["name"] = _fb_name
+            # fallback_models/fallback_providers não se propaga recursivamente
+            _fb_raw["model"]["fallback_models"] = []
+            _fb_raw["model"]["fallback_providers"] = []
             from .config_loader import BauerConfig as _BauerCfg
             _fb_cfg = _BauerCfg(**_fb_raw)
             from .env_loader import apply_env_to_config as _aenv
             _aenv(_fb_cfg)
             _fb_client = _build_client(_fb_cfg)
-            _fallback_clients.append((_fb_client, _fb_cfg.model.name))
+            _fallback_clients.append((_fb_client, _fb_name))
         except Exception:
             pass  # fallback mal configurado — ignora silenciosamente
 

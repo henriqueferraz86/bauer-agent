@@ -467,6 +467,15 @@ class LeptonSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=600, default=60)
 
 
+class FallbackModel(BaseModel):
+    """Par (provider, name) para fallback automático de modelo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    name: str
+
+
 class ModelSection(_StrictSection):
     provider: Literal[
         "ollama", "openai", "openrouter", "opencode", "custom",
@@ -486,9 +495,14 @@ class ModelSection(_StrictSection):
     minimum_context: int = Field(ge=512, le=1_000_000, default=8192)
     auto_downgrade_context: bool = True
     think: bool | None = None  # Ollama only: desativa thinking mode (gemma4, qwq, etc.)
+    fallback_models: list[FallbackModel] = Field(
+        default_factory=list,
+        description="Modelos alternativos (provider+name) quando o principal falha.",
+    )
+    # Mantido para compatibilidade — ignorado se fallback_models estiver preenchido
     fallback_providers: list[str] = Field(
         default_factory=list,
-        description="Providers alternativos quando o principal falha (ex: ['openrouter', 'groq']).",
+        description="[deprecated] Use fallback_models.",
     )
 
     @field_validator("minimum_context")

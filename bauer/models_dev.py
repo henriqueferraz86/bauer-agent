@@ -586,6 +586,98 @@ def catalog_models(
 
 
 # ---------------------------------------------------------------------------
+# Free models for fallback chain
+# ---------------------------------------------------------------------------
+
+# Providers locais — não têm sentido em fallback remoto
+_LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama", "lmstudio"})
+
+# Groq é free-tier (sem cobrança por token) mas não está em _ALWAYS_FREE_PROVIDERS
+# pois modelos específicos podem ter custo. Lista curada dos gratuitos confirmados.
+_GROQ_FREE_MODELS: list[tuple[str, str]] = [
+    ("groq", "llama-3.3-70b-versatile"),
+    ("groq", "llama-3.1-8b-instant"),
+    ("groq", "llama3-8b-8192"),
+    ("groq", "llama3-70b-8192"),
+    ("groq", "mixtral-8x7b-32768"),
+    ("groq", "gemma2-9b-it"),
+    ("groq", "gemma-7b-it"),
+]
+
+# GitHub Models — gratuitos para contas GitHub (sem billing necessário)
+_GITHUB_FREE_MODELS: list[tuple[str, str]] = [
+    ("github", "gpt-4o-mini"),
+    ("github", "gpt-4o"),
+    ("github", "meta-llama-3.1-405b-instruct"),
+    ("github", "meta-llama-3.1-70b-instruct"),
+    ("github", "meta-llama-3.1-8b-instruct"),
+    ("github", "mistral-large"),
+    ("github", "mistral-small"),
+    ("github", "phi-3.5-mini-instruct"),
+    ("github", "phi-3.5-moe-instruct"),
+    ("github", "deepseek-r1"),
+    ("github", "deepseek-v3"),
+]
+
+
+def free_models_for_fallback(
+    skip_provider: str = "",
+    skip_name: str = "",
+) -> list[dict[str, str]]:
+    """Retorna todos os modelos gratuitos disponíveis para fallback automático.
+
+    Combina:
+    - Catálogo models.dev filtrado por is_free=True (cerebras, opencode, together, openrouter)
+    - Lista curada de modelos Groq gratuitos
+    - Lista curada de modelos GitHub gratuitos
+
+    Exclui providers locais (ollama, lmstudio) e o modelo primário configurado.
+
+    Returns:
+        Lista de dicts {"provider": ..., "name": ...} sem duplicatas,
+        ordenada: free-tier primeiro (cerebras, groq, github), depois openrouter :free,
+        depois together Free, depois opencode.
+    """
+    seen: set[tuple[str, str]] = set()
+    results: list[dict[str, str]] = []
+
+    def _add(provider: str, name: str) -> None:
+        key = (provider.lower(), name.lower())
+        if key in seen:
+            return
+        if provider.lower() in _LOCAL_PROVIDERS:
+            return
+        if provider.lower() == skip_provider.lower() and name.lower() == skip_name.lower():
+            return
+        seen.add(key)
+        results.append({"provider": provider, "name": name})
+
+    # 1. Groq — curated free list (reliable, fast, high rate limits)
+    for prov, name in _GROQ_FREE_MODELS:
+        _add(prov, name)
+
+    # 2. GitHub Models — free for GitHub accounts
+    for prov, name in _GITHUB_FREE_MODELS:
+        _add(prov, name)
+
+    # 3. Catalog models.dev: cerebras (always_free) + opencode/together/openrouter (:free suffix)
+    try:
+        all_models = catalog_models(chat_only=True)
+        for m in all_models:
+            if not m.get("is_free"):
+                continue
+            prov = m.get("provider", "")
+            name = m.get("id", "")
+            if not prov or not name:
+                continue
+            _add(prov, name)
+    except Exception:
+        pass
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Helpers internos de lookup
 # ---------------------------------------------------------------------------
 
