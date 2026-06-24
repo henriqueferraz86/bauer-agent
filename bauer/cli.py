@@ -192,6 +192,12 @@ def guide_cmd():
 
 
 def _load_or_die(config_path: Path, models_path: Path):
+    # Se o caminho passado não existe, tenta o default global ~/.bauer/config.yaml
+    if not config_path.exists():
+        from .paths import config_path as _default_cfg
+        fallback = _default_cfg()
+        if fallback.exists():
+            config_path = fallback
     try:
         cfg = load_config(config_path)
     except ConfigError as exc:
@@ -560,15 +566,16 @@ def status(
 
 @app.command()
 def model(
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+    config: Path = typer.Option(None, "--config", help="Caminho do config.yaml (default: ~/.bauer/config.yaml)"),
 ):
     """Seletor interativo de provider e modelo — igual ao 'hermes model'.
 
     Lista providers (Ollama, OpenRouter, OpenAI, Groq, Custom) e modelos disponíveis.
     Salva a escolha no config.yaml e a API key no .env automaticamente.
     """
+    from .paths import config_path as _cfg_path
     from .model_switcher import run_model_switcher
-    run_model_switcher(config)
+    run_model_switcher(config or _cfg_path())
 
 
 @app.command()
