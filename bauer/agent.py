@@ -271,13 +271,6 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
     last_tool = tool_log[-1]["tool"]
 
     if consecutive >= _LOOP_REPEAT_HARD:
-        # Conciso de propósito: esta string é injetada no contexto da sessão
-        # e ecoada ao usuário — um parágrafo gritado a cada repetição só
-        # polui o histórico sem mudar o comportamento do modelo.
-        msg = (
-            f"[sistema] Loop: '{last_tool}' repetida {consecutive}x com resultado "
-            "idêntico — turno interrompido. Responda com o que já foi obtido."
-        )
         # Telemetria: loops hard-stop viram incidentes → testes de regressão
         try:
             from .incidents import record_incident
@@ -290,7 +283,7 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
             )
         except Exception:
             pass
-        return msg, True  # hard stop
+        return None, True  # hard stop silencioso
 
     # ── 2. Oscilação A→B→A→B (últimas N calls alternam entre 2 tools) ─────────
     if len(tool_log) >= _LOOP_OSCIL_WINDOW:
@@ -1406,8 +1399,8 @@ def run_one_turn(
             loop_warn, hard_stop = _detect_loop(tool_log)
             if loop_warn:
                 ctx.add_user(loop_warn)
-                if hard_stop:
-                    return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
+            if hard_stop:
+                return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
         if use_native:
             # Budget esgotado sem resposta final (ainda em native)
             return "[Limite de iterações atingido]", tool_log
@@ -1520,8 +1513,8 @@ def run_one_turn(
             loop_warn, hard_stop = _detect_loop(tool_log)
             if loop_warn:
                 ctx.add_user(loop_warn)
-                if hard_stop:
-                    return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
+            if hard_stop:
+                return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
         else:
             return response, tool_log
 
@@ -2768,13 +2761,9 @@ def run_agent_session(
                             _maybe_reflect(ctx, tool_turns)
                             loop_warn, hard_stop = _detect_loop(cli_tool_log)
                             if loop_warn:
-                                console.print(f"[bold yellow]⚠ {loop_warn}[/bold yellow]")
                                 ctx.add_user(loop_warn)
-                                if hard_stop:
-                                    console.print(
-                                        "[red]Loop detectado — interrompendo turno automaticamente.[/red]"
-                                    )
-                                    break
+                            if hard_stop:
+                                break
                             continue
                         # _nkind == "final": resposta de texto sem tools
                         response = _ntext or ""
@@ -2883,11 +2872,9 @@ def run_agent_session(
                 # Detecção de loop após cada batch de tool calls (CLI path)
                 loop_warn, hard_stop = _detect_loop(cli_tool_log)
                 if loop_warn:
-                    console.print(f"[bold yellow]⚠ {loop_warn}[/bold yellow]")
                     ctx.add_user(loop_warn)
-                    if hard_stop:
-                        console.print("[red]Loop detectado — interrompendo turno automaticamente.[/red]")
-                        break
+                if hard_stop:
+                    break
                 continue
 
             if tool_turns >= MAX_TOOL_TURNS:

@@ -85,13 +85,12 @@ def test_detect_loop_two_same_tool_below_threshold():
     assert warn is None  # só 2 repetições, threshold é 3
 
 
-def test_detect_loop_hard_stop_mensagem_concisa():
-    """Hard stop vai para o contexto E para o usuário — precisa ser curto."""
+def test_detect_loop_hard_stop_silencioso():
+    """Hard stop é silencioso — não exibe mensagem ao usuário."""
     log = [_entry("web_search")] * _LOOP_REPEAT_HARD
     warn, hard = _detect_loop(log)
     assert hard is True
-    assert len(warn) < 250
-    assert "web_search" in warn
+    assert warn is None
 
 
 # ─── _detect_loop — hard stop (5×) ───────────────────────────────────────────
@@ -100,16 +99,16 @@ def test_detect_loop_hard_stop_mensagem_concisa():
 def test_detect_loop_hard_stop_at_threshold():
     log = [_entry("list_dir")] * _LOOP_REPEAT_HARD
     warn, hard = _detect_loop(log)
-    assert warn is not None
+    assert warn is None  # hard stop é silencioso
     assert hard is True
 
 
-def test_detect_loop_hard_stop_message_firm():
+def test_detect_loop_hard_stop_sem_mensagem():
+    """Hard stop não injeta mensagem no contexto — turno encerra silenciosamente."""
     log = [_entry("read_file")] * _LOOP_REPEAT_HARD
     warn, hard = _detect_loop(log)
     assert hard is True
-    # Mensagem deve ser mais enfática
-    assert "PARE" in warn or "interromp" in warn.lower() or "LOOP" in warn
+    assert warn is None
 
 
 def test_detect_loop_hard_stop_beyond_threshold():
@@ -186,11 +185,11 @@ def test_detect_loop_three_tools_no_oscillation():
 
 
 def test_detect_loop_same_tool_not_oscillation():
-    """A→A→A→A→A→A é repetição, não oscilação."""
+    """A→A→A→A→A→A é repetição hard stop (silencioso), não oscilação."""
     log = [_entry("list_dir")] * _LOOP_OSCIL_WINDOW
     warn, hard = _detect_loop(log)
-    # Deve detectar como repetição (hard stop), não oscilação
-    assert warn is not None
+    # Hard stop silencioso: sem mensagem, mas para o turno
+    assert warn is None
     assert hard is True  # 6 repetições → hard stop (> _LOOP_REPEAT_HARD=5)
 
 
@@ -209,5 +208,5 @@ def test_hard_stop_takes_priority_over_oscillation():
     for _ in range(_LOOP_REPEAT_HARD):
         log.append(_entry("execute_code", "mesmo resultado"))
     warn, hard = _detect_loop(log)
-    assert warn is not None
+    assert warn is None  # hard stop é silencioso
     assert hard is True  # repetição de execute_code dispara hard stop
