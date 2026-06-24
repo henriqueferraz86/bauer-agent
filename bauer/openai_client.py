@@ -182,11 +182,31 @@ class OpenAIClient:
 
         try:
             data = resp.json()
+        except json.JSONDecodeError as exc:
+            raise OpenAIClientError(f"Resposta inesperada do provider: {exc}") from exc
+
+        # Alguns providers (ex.: modelos free do OpenRouter) devolvem o erro no
+        # CORPO com HTTP 200 — `{"error": {"message": ..., "code": 429}}` em vez
+        # de `choices`. Detecta isso e levanta com a mensagem real + código, para
+        # o error_classifier reconhecer rate-limit/billing e disparar fallback.
+        if isinstance(data, dict) and "choices" not in data and data.get("error"):
+            err = data["error"]
+            if isinstance(err, dict):
+                _emsg = err.get("message", "") or str(err)
+                _ecode = err.get("code", "")
+            else:
+                _emsg, _ecode = str(err), ""
+            raise OpenAIClientError(
+                f"[Provedor] erro no corpo (HTTP 200) em tool calling"
+                f"{f' [{_ecode}]' if _ecode else ''}: {_emsg}"
+            )
+
+        try:
             # Capture usage for downstream cost accounting. Non-streaming
             # responses always carry it in the top-level `usage` field.
             self.last_usage = dict(data.get("usage") or {})
             return data["choices"][0]["message"]
-        except (KeyError, IndexError, json.JSONDecodeError) as exc:
+        except (KeyError, IndexError, TypeError) as exc:
             raise OpenAIClientError(f"Resposta inesperada do provider: {exc}") from exc
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:

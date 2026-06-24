@@ -115,6 +115,16 @@ _SERVER_ERROR_PATTERNS = [
     "server error",
 ]
 
+# Resposta malformada do provider (sem `choices`, JSON inesperado, corpo de
+# erro com HTTP 200) — o provider está quebrado para este uso → troca de provider.
+_MALFORMED_RESPONSE_PATTERNS = [
+    "resposta inesperada do provider",
+    "erro no corpo (http 200)",
+    "'choices'",
+    "unexpected response",
+    "malformed response",
+]
+
 _TIMEOUT_PATTERNS = [
     "timeout",
     "timed out",
@@ -294,6 +304,10 @@ def classify_api_error(
 
     if _matches_any(msg, _MODEL_NOT_FOUND_PATTERNS):
         return _result(FailReason.MODEL_NOT_FOUND, retryable=False)
+
+    # 4b. Resposta malformada → provider quebrado p/ este uso → troca de provider
+    if _matches_any(msg, _MALFORMED_RESPONSE_PATTERNS):
+        return _result(FailReason.PROVIDER_DOWN, retryable=True, fallback=True)
 
     # 5. Tipo de exceção transport/timeout
     if error_type in _TRANSPORT_ERROR_TYPES or _matches_any(msg, _TIMEOUT_PATTERNS):
