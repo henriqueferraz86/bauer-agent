@@ -294,8 +294,12 @@ def test_approve_session_ignores_empty_key(bauer_home: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_load_empty_when_file_missing(bauer_home: Path):
-    assert load_permanent_allowlist(refresh=True) == set()
+def test_load_all_keys_when_file_missing(bauer_home: Path):
+    """Primeira execução sem arquivo → cria approvals.yaml com todos os padrões."""
+    from bauer.approval import _all_pattern_keys
+    keys = load_permanent_allowlist(refresh=True)
+    assert keys == _all_pattern_keys()
+    assert (bauer_home / "approvals.yaml").exists()
 
 
 def test_approve_permanent_creates_file(bauer_home: Path):
@@ -307,11 +311,12 @@ def test_approve_permanent_creates_file(bauer_home: Path):
 
 
 def test_approve_permanent_idempotent(bauer_home: Path):
-    """Approving the same key twice doesn't duplicate it."""
+    """Approving the same key twice doesn't duplicate it — sets are inherently deduplicated."""
+    save_permanent_allowlist({"rm_recursive"})
     approve_permanent("rm_recursive")
     approve_permanent("rm_recursive")
     keys = load_permanent_allowlist(refresh=True)
-    assert sorted(keys) == ["rm_recursive"]
+    assert keys == {"rm_recursive"}
 
 
 def test_save_then_load_round_trip(bauer_home: Path):
@@ -368,19 +373,23 @@ def test_hardline_denied_under_yolo(bauer_home: Path):
 
 
 def test_dangerous_denied_when_no_callback(bauer_home: Path):
-    """Non-interactive context with no approver = deny by default."""
+    """Sem callback e sem o padrão na allowlist → negado."""
+    # Cria allowlist vazia explicitamente (sem rm_recursive) para testar negação
+    save_permanent_allowlist(set())
     decision = check_all_command_guards("rm -rf /tmp/build")
     assert decision.action == "denied"
     assert decision.scope == "no-prompt"
 
 
 def test_dangerous_yolo_approves_without_callback(bauer_home: Path):
+    save_permanent_allowlist(set())
     decision = check_all_command_guards("rm -rf /tmp/build", yolo=True)
     assert decision.action == "approved"
     assert decision.scope == "yolo"
 
 
 def test_dangerous_callback_once(bauer_home: Path, yes_once):
+    save_permanent_allowlist(set())
     decision = check_all_command_guards(
         "rm -rf /tmp/build", approval_callback=yes_once,
     )
@@ -391,6 +400,7 @@ def test_dangerous_callback_once(bauer_home: Path, yes_once):
 
 
 def test_dangerous_callback_session(bauer_home: Path, yes_session):
+    save_permanent_allowlist(set())
     decision = check_all_command_guards(
         "rm -rf /tmp/build", approval_callback=yes_session,
     )
@@ -406,6 +416,7 @@ def test_dangerous_callback_session(bauer_home: Path, yes_session):
 
 
 def test_dangerous_callback_always(bauer_home: Path, yes_always):
+    save_permanent_allowlist(set())
     decision = check_all_command_guards(
         "rm -rf /tmp/build", approval_callback=yes_always,
     )
@@ -415,6 +426,7 @@ def test_dangerous_callback_always(bauer_home: Path, yes_always):
 
 
 def test_dangerous_callback_deny(bauer_home: Path, no_thanks):
+    save_permanent_allowlist(set())
     decision = check_all_command_guards(
         "rm -rf /tmp/build", approval_callback=no_thanks,
     )
@@ -424,6 +436,7 @@ def test_dangerous_callback_deny(bauer_home: Path, no_thanks):
 
 
 def test_callback_invalid_response_treated_as_deny(bauer_home: Path):
+    save_permanent_allowlist(set())
     decision = check_all_command_guards(
         "rm -rf /tmp/x",
         approval_callback=lambda cmd, desc: "maybe",
@@ -433,6 +446,7 @@ def test_callback_invalid_response_treated_as_deny(bauer_home: Path):
 
 def test_callback_raising_treated_as_deny(bauer_home: Path):
     """If the approval callback raises, we deny — never crash the caller."""
+    save_permanent_allowlist(set())
     def boom(cmd, desc):
         raise RuntimeError("approval queue down")
     decision = check_all_command_guards(

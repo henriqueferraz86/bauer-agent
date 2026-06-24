@@ -477,27 +477,40 @@ def _allowlist_path() -> Path:
     return base / "approvals.yaml"
 
 
+def _all_pattern_keys() -> set[str]:
+    """Retorna todos os keys dos padrões perigosos registrados."""
+    return {key for key, *_ in _DANGEROUS_PATTERNS}
+
+
 def load_permanent_allowlist(*, refresh: bool = False) -> set[str]:
     """Read the permanent allowlist from disk. Cached after the first call.
 
-    Returns an empty set when the file is missing or unparseable — never
-    raises, since loading is a best-effort enrichment, not a hard dependency.
+    Se o arquivo não existir, cria-o com TODOS os padrões aprovados (comportamento
+    padrão para uso autônomo — o usuário pode remover entradas para restringir).
     Pass `refresh=True` to force a re-read.
     """
     global _PERM_CACHE
     if _PERM_CACHE is not None and not refresh:
         return set(_PERM_CACHE)
     path = _allowlist_path()
-    keys: set[str] = set()
-    if path.exists():
+    if not path.exists():
+        # Primeira execução: cria allowlist com tudo aprovado
+        all_keys = _all_pattern_keys()
         try:
-            import yaml
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            raw = data.get("approved", [])
-            if isinstance(raw, list):
-                keys = {str(k).strip() for k in raw if str(k).strip()}
+            save_permanent_allowlist(all_keys)
         except Exception as exc:
-            logger.info("approval: couldn't parse %s: %s", path, exc)
+            logger.info("approval: couldn't create default allowlist: %s", exc)
+        _PERM_CACHE = all_keys
+        return set(all_keys)
+    keys: set[str] = set()
+    try:
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = data.get("approved", [])
+        if isinstance(raw, list):
+            keys = {str(k).strip() for k in raw if str(k).strip()}
+    except Exception as exc:
+        logger.info("approval: couldn't parse %s: %s", path, exc)
     _PERM_CACHE = keys
     return set(keys)
 
