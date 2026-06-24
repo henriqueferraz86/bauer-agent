@@ -2554,7 +2554,11 @@ def run_agent_session(
             try:
                 from pathlib import Path as _Path
                 from .model_switcher import run_model_switcher as _rms
-                _rms(_Path("config.yaml"))
+                from .paths import config_path as _cfg_path
+                _cfg = _Path("config.yaml")
+                if not _cfg.exists():
+                    _cfg = _cfg_path()
+                _rms(_cfg)
 
                 if rebuild_client_fn is not None:
                     _new_client, _new_model = rebuild_client_fn()
