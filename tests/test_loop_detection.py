@@ -3,11 +3,10 @@
 Cobre:
 1. Fingerprint correta
 2. Nenhum loop em log curto
-3. Soft warning (3× consecutivas)
-4. Hard stop (5× consecutivas)
-5. Oscilação A→B→A→B→A→B
-6. Tools diferentes não disparam alerta
-7. Oscilação com mesma tool não dispara (A→A→A → repetição, não oscilação)
+3. Hard stop (5× consecutivas)
+4. Oscilação A→B→A→B→A→B
+5. Tools diferentes não disparam alerta
+6. Oscilação com mesma tool não dispara (A→A→A → repetição, não oscilação)
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import pytest
 from bauer.agent import (
     _LOOP_OSCIL_WINDOW,
     _LOOP_REPEAT_HARD,
-    _LOOP_REPEAT_WARN,
     _detect_loop,
     _loop_fp,
 )
@@ -85,44 +83,6 @@ def test_detect_loop_two_same_tool_below_threshold():
     log = [_entry("list_dir"), _entry("list_dir")]
     warn, hard = _detect_loop(log)
     assert warn is None  # só 2 repetições, threshold é 3
-
-
-# ─── _detect_loop — soft warning (3×) ────────────────────────────────────────
-
-
-def test_detect_loop_soft_warning_at_threshold():
-    log = [_entry("list_dir")] * _LOOP_REPEAT_WARN
-    warn, hard = _detect_loop(log)
-    assert warn is not None
-    assert hard is False
-    assert "list_dir" in warn
-    assert str(_LOOP_REPEAT_WARN) in warn
-
-
-def test_detect_loop_soft_warning_mentions_tool():
-    log = [_entry("execute_code", "erro: arquivo não encontrado")] * _LOOP_REPEAT_WARN
-    warn, hard = _detect_loop(log)
-    assert warn is not None
-    assert "execute_code" in warn
-
-
-def test_detect_loop_soft_warning_not_hard():
-    log = [_entry("read_file")] * _LOOP_REPEAT_WARN
-    _, hard = _detect_loop(log)
-    assert hard is False
-
-
-def test_detect_loop_warning_dispara_uma_unica_vez():
-    """Na 4ª repetição NÃO repete o aviso (anti-ruído, 2026-06-11).
-
-    O aviso é injetado no contexto da sessão — repeti-lo a cada chamada
-    enchia o histórico com o mesmo parágrafo. Dispara só em ==3; entre o
-    aviso e o hard stop (5) o sistema fica em silêncio.
-    """
-    log = [_entry("web_search")] * (_LOOP_REPEAT_WARN + 1)  # 4 repetições
-    warn, hard = _detect_loop(log)
-    assert warn is None
-    assert hard is False
 
 
 def test_detect_loop_hard_stop_mensagem_concisa():
