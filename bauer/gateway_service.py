@@ -69,20 +69,20 @@ def _launchd_label() -> str:
 
 
 def _service_python(project_dir: Path) -> str:
-    """Python que o serviço vai usar — o do venv do projeto se existir."""
-    candidates = []
+    """Python que o serviço vai usar.
+
+    Prefere o pythonw.exe/python do venv onde o bauer está instalado
+    (detectado via sys.executable), garantindo que o mesmo venv que
+    roda o CLI é usado pelo serviço — independente do working dir.
+    """
+    exe = Path(sys.executable)
     if sys.platform == "win32":
-        candidates = [
-            project_dir / ".venv" / "Scripts" / "pythonw.exe",  # sem console
-            project_dir / ".venv" / "Scripts" / "python.exe",
-            Path(sys.executable).with_name("pythonw.exe"),
-        ]
-    else:
-        candidates = [project_dir / ".venv" / "bin" / "python"]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    return sys.executable
+        # Tenta pythonw.exe (sem janela de console) no mesmo diretório do exe atual
+        pythonw = exe.with_name("pythonw.exe")
+        if pythonw.is_file():
+            return str(pythonw)
+        return str(exe)
+    return str(exe)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -284,7 +284,9 @@ class GatewayServiceManager:
         platform: str | None = None,
         run_fn: Callable[..., Any] | None = None,
     ) -> None:
-        self.project_dir = Path(project_dir or Path.cwd()).resolve()
+        from .paths import get_bauer_home
+        # working dir do serviço é sempre ~/.bauer/ (config.yaml e .env ficam lá)
+        self.project_dir = Path(project_dir) if project_dir else get_bauer_home()
         self.platform = platform or detect_service_platform()
         self._run = run_fn or self._default_run
 

@@ -28,7 +28,11 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
+from .paths import get_bauer_home as _get_bauer_home, memory_dir as _memory_dir_fn, runtime_state_path as _runtime_state_path_fn
 from .agent import run_agent_session
+
+# Paths canônicos — avaliados no import para uso como defaults de typer.Option
+_RUNTIME_STATE_DEFAULT = _runtime_state_path_fn()
 from .ascii_intro import play_intro
 from .model_router import ModelRouter, Route, RouterConfig
 from .orchestrator import MAX_STEPS, AgentOrchestrator, OrchestratorConfig
@@ -142,6 +146,9 @@ app.add_typer(traces_app, name="traces")
 app.add_typer(cost_app, name="cost")
 app.add_typer(factory_app, name="factory")
 
+home_app = typer.Typer(help="Diretório home do Bauer (~/.bauer/) — paths, migração, status.")
+app.add_typer(home_app, name="home")
+
 # legacy_windows=False: usa ANSI codes em vez de Win32 API (suporta Unicode/UTF-8)
 console = Console(highlight=False, legacy_windows=False)
 
@@ -249,7 +256,7 @@ def doctor(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     state_file: Path = typer.Option(
-        Path(".runtime_state.json"),
+        _RUNTIME_STATE_DEFAULT,
         "--state-file",
         help="Onde gravar o runtime_state",
     ),
@@ -382,12 +389,16 @@ def _doctor_check_providers() -> None:
 
 @app.command("init")
 def init_cmd(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Caminho do config.yaml"),
-    env: Path = typer.Option(Path(".env"), "--env", help="Caminho do .env para gravar API keys"),
+    config: Path = typer.Option(None, "--config", "-c", help="Caminho do config.yaml (default: ~/.bauer/config.yaml)"),
+    env: Path = typer.Option(None, "--env", help="Caminho do .env (default: ~/.bauer/.env)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Sobrescrever config existente sem confirmacao"),
 ):
-    """Wizard de primeiro uso — configura provider, modelo e workspace interativamente."""
+    """Wizard de primeiro uso — configura provider, modelo e workspace em ~/.bauer/."""
+    from .paths import config_path as _cfg_path, get_bauer_home as _gbh
     from .init_wizard import run_init_wizard
+    _bh = _gbh()
+    config = config or _cfg_path()
+    env = env or (_bh / ".env")
     ok = run_init_wizard(
         config_path=config,
         env_path=env,
@@ -428,7 +439,7 @@ def init_cmd(
 def status(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     state_file: Path = typer.Option(
-        Path(".runtime_state.json"),
+        _RUNTIME_STATE_DEFAULT,
         "--state-file",
         help="Arquivo de runtime_state",
     ),
@@ -565,7 +576,7 @@ def chat(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     state_file: Path = typer.Option(
-        Path(".runtime_state.json"),
+        _RUNTIME_STATE_DEFAULT,
         "--state-file",
         help="Runtime state (gerado pelo doctor)",
     ),
@@ -1132,7 +1143,8 @@ def models_catalog(
 
 # --- memory -----------------------------------------------------------------
 
-_MEMORY_DIR = Path("memory")
+_MEMORY_DIR = _memory_dir_fn()
+_RUNTIME_STATE_DEFAULT = _runtime_state_path_fn()
 
 _FILE_ALIASES = {
     "memory": "MEMORY.md",
@@ -1218,7 +1230,7 @@ def memory_add_failure(
 def memory_add_model_exp(
     result: str = typer.Argument(..., help="Resultado: ok | slow | oom | error"),
     lesson: str = typer.Option("", "--lesson", help="Licao aprendida"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir"),
 ):
     """Registra experiencia do modelo atual em MODEL_EXPERIENCE.md.
@@ -2393,7 +2405,7 @@ def agent(
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
     state_file: Path = typer.Option(
-        Path(".runtime_state.json"),
+        _RUNTIME_STATE_DEFAULT,
         "--state-file",
         help="Runtime state (gerado pelo doctor)",
     ),
@@ -2665,6 +2677,47 @@ def agent(
             "Exemplo: [bold]bauer agent --port 7770 --gateway-port 18789[/bold]"
         )
 
+    # L1: SelfTuner — ajusta modelo e contexto com base em RAM + histórico (Ollama only)
+    if is_ollama_provider:
+        try:
+            from .self_tuner import SelfTuner as _SelfTuner
+            import json as _pref_json
+            # L8: detecta preferência explícita do usuário (impede troca de modelo pelo tuner)
+            _pref_file = _MEMORY_DIR / "model_preference.json"
+            _user_preferred = False
+            try:
+                if _pref_file.exists():
+                    _pref = _pref_json.loads(_pref_file.read_text(encoding="utf-8"))
+                    _user_preferred = (
+                        _pref.get("set_by") == "user"
+                        and _pref.get("model", "") == model_name
+                    )
+            except Exception:
+                pass
+            _installed = [m.get("name", "") for m in (client.list_models() or [])]
+            _tune = _SelfTuner(_MEMORY_DIR, cfg.runtime.safety_margin_mb).tune(
+                desired_model=model_name,
+                desired_context=applied_context,
+                minimum_context=cfg.model.minimum_context,
+                installed_models=_installed,
+                registry=reg,
+                ram_available_mb=state["ram_available_mb"],
+                machine_id=state.get("machine_id", ""),
+                honor_user_preference=_user_preferred,
+            )
+            if _tune.adjustments:
+                for _adj in _tune.adjustments:
+                    console.print(f"[dim cyan]Auto-tuner:[/dim cyan] [dim]{_adj}[/dim]")
+                model_name = _tune.model
+                applied_context = _tune.context_tokens
+                if hasattr(client, "num_ctx"):
+                    client.num_ctx = applied_context
+            if _tune.warnings:
+                for _w in _tune.warnings:
+                    console.print(f"[yellow]Auto-tuner:[/yellow] {_w}")
+        except Exception:
+            pass  # nunca bloqueia o startup por falha do tuner
+
     # Constrói clientes de fallback se configurados em model.fallback_providers
     _fallback_clients: list = []
     for _fb_provider in getattr(cfg.model, "fallback_providers", []):
@@ -2688,6 +2741,25 @@ def agent(
         _new_client = _build_client(_new_cfg)
         return _new_client, _new_cfg.model.name
 
+    # L6: injeta recomendações do LearningEngine no system prompt
+    _learning_hints: str | None = None
+    try:
+        from .learning_engine import LearningEngine as _LE6
+        _le6 = _LE6(_MEMORY_DIR)
+        _recs = _le6.recommend(machine_id=state.get("machine_id", ""))
+        if _recs:
+            _hint_lines = []
+            for _r in _recs[:3]:
+                _hint_lines.append(f"- {_r.action}")
+                if _r.reason:
+                    _hint_lines.append(f"  (evidência: {_r.reason})")
+            _learning_hints = "\n".join(_hint_lines)
+    except Exception:
+        pass
+
+    import time as _time
+    _session_start = _time.time()
+    _session_result = "ok"
     try:
         run_agent_session(
             client, model_name, applied_context, console, router,
@@ -2696,14 +2768,36 @@ def agent(
             rebuild_client_fn=_rebuild_client_chat,
             fallback_clients=_fallback_clients or None,
             tool_timeout_s=cfg.agent.tool_timeout_s,
+            learning_hints=_learning_hints,
         )
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):
+            _session_result = "interrupted"
             console.print("\n[dim]Sessao encerrada pelo usuario.[/dim]")
         else:
+            _session_result = "error"
             console.print(f"\n[red]Erro inesperado:[/red] {exc}")
             console.print("[dim]Execute 'bauer doctor' para verificar o ambiente.[/dim]")
         raise typer.Exit(code=1)
+    finally:
+        # L5: grava outcome da sessão automaticamente no MODEL_EXPERIENCE.md
+        _session_dur = _time.time() - _session_start
+        if _session_dur >= 10:  # ignora sessões de teste (< 10s)
+            try:
+                from .learning_engine import LearningEngine as _LE
+                _le = _LE(_MEMORY_DIR)
+                _le.mm.append_entry(
+                    "MODEL_EXPERIENCE.md",
+                    f"{model_name} via {cfg.model.provider}",
+                    fields={
+                        "context_tokens": str(applied_context),
+                        "result": _session_result,
+                        "machine_id": state.get("machine_id", ""),
+                        "lesson": f"duração: {_session_dur:.0f}s",
+                    },
+                )
+            except Exception:
+                pass  # nunca interrompe o fluxo por falha de gravação
 
 
 def _start_embedded_server(
@@ -2845,7 +2939,7 @@ def agent_run(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Retoma a ultima sessao"),
     sessions_dir: Path = typer.Option(Path("memory/sessions"), "--sessions-dir"),
@@ -3216,7 +3310,7 @@ def orchestrate_run(
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
     state_file: Path = typer.Option(
-        Path(".runtime_state.json"),
+        _RUNTIME_STATE_DEFAULT,
         "--state-file",
         help="Runtime state (gerado pelo doctor)",
     ),
@@ -3683,7 +3777,7 @@ def orchestrate_node_worker(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
     planner: str = typer.Option("", "--planner"),
     synthesizer: str = typer.Option("", "--synthesizer"),
@@ -3737,7 +3831,7 @@ def orchestrate_advance(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
 ):
     """Avanca uma orchestration_run duravel: enfileira proximos nodes ou sintetiza final."""
@@ -3781,7 +3875,7 @@ def orchestrate_resume(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
 ):
     """Retoma uma execucao duravel pelo run_id."""
@@ -6305,7 +6399,7 @@ def serve(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
     host: str = typer.Option("", "--host", help="Host de escuta (padrao: config serve.host)"),
     port: int = typer.Option(0, "--port", help="Porta (padrao: config serve.port)"),
     model: str = typer.Option("", "--model", help="Sobrescreve modelo do config"),
@@ -6424,7 +6518,7 @@ def serve(
 @learning_app.command("show")
 def learning_show(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
 ):
     """Mostra resumo do aprendizado acumulado (experiencias e falhas)."""
     from .learning_engine import LearningEngine
@@ -6453,7 +6547,7 @@ def learning_show(
 @learning_app.command("explain")
 def learning_explain(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
-    state_file: Path = typer.Option(Path(".runtime_state.json"), "--state-file"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
 ):
     """Mostra recomendacoes com motivo e evidencia explicita."""
     from .learning_engine import LearningEngine
@@ -6600,6 +6694,236 @@ def learning_reset(
             console.print(f"[green]resetado:[/green] {p.name}  [dim](backup: {bak.name})[/dim]")
     else:
         console.print("[dim]Nenhum arquivo de aprendizado encontrado.[/dim]")
+
+
+@learning_app.command("clean")
+def learning_clean(
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretório de memória"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria removido sem alterar"),
+):
+    """Remove entradas de ruído do MODEL_EXPERIENCE.md (test-model, CI, duplicatas).
+
+    Cria backup .bak antes de modificar. Nunca apaga o arquivo — apenas limpa entradas
+    de teste que poluem a análise de aprendizado.
+    """
+    import re as _re
+
+    _NOISE_PATTERNS = ["test-model", "test_model", "github-actions", "ci-runner", "runner-"]
+    p = memory_dir / "MODEL_EXPERIENCE.md"
+    if not p.exists():
+        console.print("[yellow]MODEL_EXPERIENCE.md não encontrado.[/yellow]")
+        return
+
+    content = p.read_text(encoding="utf-8")
+    parts = content.split("\n---\n", 1)
+    header = parts[0] + "\n---\n"
+    body = parts[1] if len(parts) > 1 else ""
+
+    section_pat = _re.compile(r"(?=\n## \[)")
+    sections = section_pat.split(body)
+
+    kept, removed = [], 0
+    for sec in sections:
+        is_noise = any(pat.lower() in sec.lower() for pat in _NOISE_PATTERNS)
+        if is_noise:
+            removed += 1
+        else:
+            kept.append(sec)
+
+    if removed == 0:
+        console.print("[green]Nenhuma entrada de ruído encontrada.[/green]")
+        return
+
+    if dry_run:
+        console.print(
+            f"[yellow]dry-run:[/yellow] {removed} entrada(s) seriam removidas "
+            f"({len(kept)} mantidas). Use sem --dry-run para aplicar."
+        )
+        return
+
+    bak = p.with_suffix(".md.bak")
+    bak.write_text(content, encoding="utf-8")
+    p.write_text(header + "".join(kept), encoding="utf-8")
+    console.print(
+        f"[green]Limpeza concluída:[/green] {removed} entrada(s) removidas, "
+        f"{len(kept)} mantidas.  [dim](backup: {bak.name})[/dim]"
+    )
+
+
+@learning_app.command("learn")
+def learning_learn(
+    min_occ: int = typer.Option(3, "--min", "-n", help="Mínimo de ocorrências para virar candidato"),
+    show_yaml: bool = typer.Option(False, "--yaml", "-y", help="Exibe o YAML draft de cada candidato"),
+    max_sessions: int = typer.Option(200, "--max-sessions", help="Máximo de sessões a analisar"),
+):
+    """Detecta pedidos repetidos no histórico e sugere skills automáticas.
+
+    Varre as sessões salvas, agrupa pedidos similares por TF-IDF e lista
+    os workflows candidatos a virar skill (>= --min ocorrências em >= 2 sessões).
+
+    Use --yaml para ver o YAML pronto para instalar via 'bauer skills install'.
+    """
+    from .skill_learning import find_skill_candidates, draft_skill_yaml
+
+    console.print("[bold cyan]Analisando histórico de sessões...[/bold cyan]")
+    candidates = find_skill_candidates(min_occurrences=min_occ, max_sessions=max_sessions)
+
+    if not candidates:
+        console.print(
+            f"[yellow]Nenhum candidato encontrado[/yellow] (mínimo: {min_occ} ocorrências em ≥2 sessões).\n"
+            "[dim]Continue usando o Bauer para acumular histórico.[/dim]"
+        )
+        return
+
+    console.print(f"[green]{len(candidates)} candidato(s) encontrado(s):[/green]\n")
+    for c in candidates:
+        console.print(f"  [bold]{c.slug}[/bold]  ({c.occurrences}x em {len(c.sessions)} sessões)")
+        console.print(f"  [dim]Exemplo: {c.representative[:100]}[/dim]")
+        if show_yaml:
+            console.print(f"\n[dim]{draft_skill_yaml(c)}[/dim]")
+        console.print()
+
+    console.print(
+        "[dim]Use 'bauer learning learn --yaml' para ver o YAML de cada candidato.[/dim]"
+    )
+
+
+@learning_app.command("stats")
+def learning_stats(
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretório de memória"),
+    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
+):
+    """Dashboard unificado do estado de aprendizado — modelo, experiências, feedback e recomendações.
+
+    Mostra em uma tela:
+      • Modelo atual e se está pinado pelo usuário (L8)
+      • Taxa de sucesso das sessões (MODEL_EXPERIENCE.md)
+      • Feedbacks positivos/negativos (/thumbsup, /thumbsdown)
+      • Skills pendentes de aprovação (SKILLS_LEARNED.md)
+      • Top-3 recomendações do LearningEngine
+      • Últimas lições do SelfTuner (RUNTIME_LESSONS.md)
+    """
+    import json as _json
+    import re as _re
+    from .learning_engine import LearningEngine
+
+    engine = LearningEngine(memory_dir)
+    state = read_state(state_file)
+    machine_id = state.get("machine_id", "") if state else ""
+
+    # ── 1. Modelo ──────────────────────────────────────────────────────────────
+    _pref_file = memory_dir / "model_preference.json"
+    _pref_model, _pref_provider, _pref_pinned = "", "", False
+    try:
+        if _pref_file.exists():
+            _p = _json.loads(_pref_file.read_text(encoding="utf-8"))
+            _pref_model = _p.get("model", "")
+            _pref_provider = _p.get("provider", "")
+            _pref_pinned = _p.get("set_by") == "user"
+    except Exception:
+        pass
+    try:
+        from .config_loader import load_config as _lc
+        _cfg = _lc()
+        _active_model = _pref_model or _cfg.model.name
+        _active_provider = _pref_provider or _cfg.model.provider
+    except Exception:
+        _active_model = _pref_model or "?"
+        _active_provider = _pref_provider or "?"
+
+    _pin_tag = " [bold green](pinado pelo usuário)[/bold green]" if _pref_pinned else ""
+    console.print(
+        f"\n[bold cyan]◆ Modelo ativo:[/bold cyan] {_active_model} "
+        f"[dim]via {_active_provider}[/dim]{_pin_tag}"
+    )
+
+    # ── 2. Experiências ─────────────────────────────────────────────────────────
+    exps = engine.load_experience()
+    _total = len(exps)
+    _ok = sum(1 for e in exps if e.result == "ok")
+    _err = sum(1 for e in exps if e.result == "error")
+    _int = sum(1 for e in exps if e.result == "interrupted")
+    _ok_pct = f"{100*_ok//_total}%" if _total else "—"
+
+    exp_table = Table(title="Sessões registradas", show_lines=False, box=None)
+    exp_table.add_column("", style="dim")
+    exp_table.add_column("", justify="right")
+    exp_table.add_row("Total", str(_total))
+    exp_table.add_row("Ok", f"[green]{_ok}[/green]  ({_ok_pct})")
+    exp_table.add_row("Erro", f"[red]{_err}[/red]")
+    exp_table.add_row("Interrompidas", str(_int))
+    if exps:
+        _last = exps[-1]
+        exp_table.add_row("Última", f"{_last.title[:40]} [{_last.timestamp[:16]}]")
+    console.print(exp_table)
+
+    # ── 3. Feedback ─────────────────────────────────────────────────────────────
+    _fb_file = memory_dir / "FEEDBACK.md"
+    _fb_pos, _fb_neg = 0, 0
+    try:
+        if _fb_file.exists():
+            _txt = _fb_file.read_text(encoding="utf-8")
+            _fb_pos = _txt.count("positivo")
+            _fb_neg = _txt.count("negativo")
+    except Exception:
+        pass
+    _fb_total = _fb_pos + _fb_neg
+    if _fb_total:
+        _fb_bar = "👍" * min(_fb_pos, 10) + "👎" * min(_fb_neg, 10)
+        console.print(
+            f"\n[bold]Feedback:[/bold]  {_fb_pos} positivo  {_fb_neg} negativo"
+            f"   [dim]{_fb_bar}[/dim]"
+        )
+    else:
+        console.print(
+            "\n[dim]Feedback: nenhum ainda — use /thumbsup ou /thumbsdown durante a sessão.[/dim]"
+        )
+
+    # ── 4. Skills pendentes ─────────────────────────────────────────────────────
+    try:
+        from .skill_registry import SkillRegistry as _SR
+        _pending = _SR(memory_dir).pending_suggestions()
+        if _pending:
+            _names = ", ".join(s["name"] for s in _pending[:5])
+            console.print(
+                f"\n[bold]Skills pendentes:[/bold] {len(_pending)}  "
+                f"[dim]({_names}{'…' if len(_pending) > 5 else ''})[/dim]\n"
+                f"[dim]  → bauer learning learn  para ver candidatos detectados automaticamente[/dim]"
+            )
+    except Exception:
+        pass
+
+    # ── 5. Recomendações ────────────────────────────────────────────────────────
+    recs = engine.recommend(machine_id=machine_id)
+    if recs:
+        _SCOLOR = {"info": "dim", "suggestion": "cyan", "warning": "yellow"}
+        console.print("\n[bold]Recomendações ativas:[/bold]")
+        for r in recs[:3]:
+            _c = _SCOLOR.get(r.severity, "white")
+            console.print(f"  [{_c}]▸ {r.action}[/{_c}]")
+            console.print(f"    [dim]{r.reason}[/dim]")
+    else:
+        console.print("\n[dim]Nenhuma recomendação ativa.[/dim]")
+
+    # ── 6. Lições do SelfTuner ──────────────────────────────────────────────────
+    _rt_file = memory_dir / "RUNTIME_LESSONS.md"
+    try:
+        if _rt_file.exists():
+            _rt_text = _rt_file.read_text(encoding="utf-8")
+            _lessons = _re.findall(r"## \[([^\]]+)\][^\n]*\n(.*?)(?=\n## |\Z)", _rt_text, _re.S)
+            if _lessons:
+                console.print(f"\n[bold]Últimas lições do auto-tuner:[/bold]")
+                for _ts, _body in _lessons[-3:]:
+                    _first = _body.strip().splitlines()[0][:80] if _body.strip() else ""
+                    console.print(f"  [dim]{_ts[:16]}[/dim]  {_first}")
+    except Exception:
+        pass
+
+    console.print(
+        "\n[dim]Dicas: 'bauer learning explain' → recomendações detalhadas | "
+        "'bauer learning clean' → remove ruído | "
+        "'bauer learning learn' → skills automáticas[/dim]\n"
+    )
 
 
 @learning_app.command("analyze")
@@ -9250,7 +9574,7 @@ def gateway_status(
 
 def _service_manager():
     from bauer.gateway_service import GatewayServiceManager
-    return GatewayServiceManager(project_dir=Path.cwd())
+    return GatewayServiceManager()  # usa ~/.bauer/ como working dir
 
 
 @gateway_service_app.command("install", help="Instala E inicia o serviço (systemd/Task Scheduler)")
@@ -9366,7 +9690,8 @@ def _daemon_svc_manager(
     budget_hours: float = 24.0,
 ) -> "ProcessServiceManager":
     from bauer.process_service import ProcessServiceManager
-    return ProcessServiceManager(_daemon_service_cfg(board, workers, budget_usd, budget_hours))
+    from .paths import get_bauer_home
+    return ProcessServiceManager(_daemon_service_cfg(board, workers, budget_usd, budget_hours), project_dir=get_bauer_home())
 
 
 @daemon_service_app.command("install", help="Instala E inicia o daemon como serviço do sistema")
@@ -9467,7 +9792,8 @@ def _runtime_service_cfg(workspace: "Path | None" = None) -> "ProcessServiceConf
 
 def _runtime_svc_manager(workspace: "Path | None" = None) -> "ProcessServiceManager":
     from bauer.process_service import ProcessServiceManager
-    return ProcessServiceManager(_runtime_service_cfg(workspace))
+    from .paths import get_bauer_home
+    return ProcessServiceManager(_runtime_service_cfg(workspace), project_dir=get_bauer_home())
 
 
 @runtime_service_app.command("install", help="Instala E inicia o runtime como serviço do sistema")
@@ -9855,6 +10181,81 @@ def credential_delete(
         console.print(f"[green]✓ Credencial de '{provider}' removida.[/green]")
     else:
         console.print(f"[yellow]Nenhuma credencial encontrada para '{provider}'.[/yellow]")
+
+
+# --- home --------------------------------------------------------------------
+
+
+@home_app.command("path")
+def home_path():
+    """Mostra o caminho do diretório home do Bauer (~/.bauer/ ou $BAUER_HOME)."""
+    from .paths import get_bauer_home
+    console.print(str(get_bauer_home()))
+
+
+@home_app.command("status")
+def home_status():
+    """Mostra o estado atual do diretório home — quais arquivos existem."""
+    from .paths import get_bauer_home, config_path, memory_dir, runtime_state_path, logs_dir, workspace_dir
+
+    bh = get_bauer_home()
+    console.print(f"\n[bold cyan]Bauer Home:[/bold cyan] {bh}\n")
+
+    checks = [
+        ("config.yaml",          config_path()),
+        (".env",                  bh / ".env"),
+        (".runtime_state.json",   runtime_state_path()),
+        ("memory/",               memory_dir()),
+        ("logs/",                 logs_dir()),
+        ("workspace/",            workspace_dir()),
+    ]
+    for label, path in checks:
+        exists = path.exists()
+        icon = "[green]✓[/green]" if exists else "[dim]·[/dim]"
+        console.print(f"  {icon}  {label:<28} [dim]{path}[/dim]")
+    console.print()
+
+
+@home_app.command("migrate")
+def home_migrate(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria movido sem mover"),
+):
+    """Migra config.yaml e .runtime_state.json soltos na home do usuário para ~/.bauer/.
+
+    Move apenas se o arquivo de destino ainda não existir (não sobrescreve).
+    """
+    import shutil
+    from .paths import get_bauer_home, config_path, runtime_state_path
+
+    bh = get_bauer_home()
+    user_home = Path.home()
+
+    candidates = [
+        (user_home / "config.yaml",          config_path()),
+        (user_home / ".runtime_state.json",   runtime_state_path()),
+        (user_home / ".env",                  bh / ".env"),
+    ]
+
+    moved_any = False
+    for src, dst in candidates:
+        if not src.exists():
+            continue
+        if dst.exists():
+            console.print(f"[dim]Ignorado (destino já existe):[/dim] {src.name}")
+            continue
+        console.print(f"[cyan]{'[dry-run] ' if dry_run else ''}Mover:[/cyan] {src}  →  {dst}")
+        if not dry_run:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        moved_any = True
+
+    if not moved_any:
+        console.print("[dim]Nada para migrar.[/dim]")
+    elif not dry_run:
+        console.print("\n[green]Migração concluída.[/green]")
+        console.print("[dim]Reinstale os serviços para aplicar o novo working dir:[/dim]")
+        console.print("[dim]  bauer gateway service uninstall && bauer gateway service install[/dim]")
+        console.print("[dim]  bauer runtime service uninstall && bauer runtime service install[/dim]")
 
 
 if __name__ == "__main__":
