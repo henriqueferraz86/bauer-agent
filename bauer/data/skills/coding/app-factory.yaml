@@ -14,15 +14,26 @@ content: |
   não estiverem preenchidos. Só `docs/`, `README.md` e `.env.example` podem ser
   escritos antes disso.
 
+  ## Regra de pasta única (containment — 1 ideia = 1 pasta)
+
+  Cada ideia/projeto vive em UMA pasta própria. Ao chamar `app_factory_init`,
+  passe SEMPRE `path` com um slug da ideia (ex.: `path: "problemas-app"`). Essa
+  pasta vira o **projeto ativo** e a ToolRouter passa a **bloquear qualquer
+  escrita FORA dela** — nada de arquivos soltos na raiz do workspace nem pastas
+  irmãs. Escreva TUDO sob a pasta da ideia: `<pasta>/app/...`,
+  `<pasta>/frontend/...`, `<pasta>/docs/...`. Governança E código moram juntos na
+  MESMA pasta.
+
   ## Como conduzir
 
   1. **Discovery** — entenda antes de planejar: qual problema, quem usa, qual a
      funcionalidade principal da V1, onde roda, stack preferida, o que está fora
      do escopo. Se o usuário não souber tudo, assuma o mínimo e documente as
      premissas.
-  2. **Iniciar governança** — chame a tool `app_factory_init` com `idea` (e
-     `stack`/`path` se houver). Ela cria `docs/` com os esqueletos dos 7 docs de
-     planejamento + docs de entrega + README/.env.example/CI.
+  2. **Iniciar governança** — chame a tool `app_factory_init` com `idea`,
+     `path` (slug da ideia — SEMPRE, p/ a pasta única) e `stack` se houver. Ela
+     cria `<path>/docs/` com os esqueletos dos 7 docs de planejamento + docs de
+     entrega + README/.env.example/CI, e fixa `<path>/` como projeto ativo.
   3. **Planejamento** — preencha de verdade (não deixe esqueleto):
      `docs/SPEC.md`, `ARCHITECTURE.md`, `BACKLOG.md`, `TASKS.md`, `DECISIONS.md`,
      `PROJECT_CONTEXT.md`, `PROGRESS.md`. A SPEC precisa bastar para outro agente

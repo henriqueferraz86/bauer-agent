@@ -1687,10 +1687,13 @@ class ToolRouter:
                 ),
             ))
 
-        # App Factory: gate de Spec-Driven Development. Em projetos governados
-        # (docs/.app_factory.json presente), bloqueia a escrita de CÓDIGO antes
-        # de os 7 docs de planejamento estarem preenchidos. Docs/, README e
-        # .env.example permanecem liberados. Sem governança, é no-op.
+        # App Factory: gate de Spec-Driven Development + containment.
+        #  - Containment: se há projeto ativo (app_factory_init com path), toda
+        #    escrita deve ficar DENTRO da pasta da ideia — nada solto na raiz nem
+        #    em pastas irmãs. Bloqueia com orientação de onde escrever.
+        #  - Gate: em projetos governados, bloqueia CÓDIGO antes dos 7 docs de
+        #    planejamento. Docs/, README e .env.example permanecem liberados.
+        # Sem projeto ativo e sem governança, é no-op.
         _AF_GUARDED = {
             "write_file": "path", "append_file": "path", "patch": "path",
             "create_dir": "path", "move_file": "dst",
@@ -1699,11 +1702,24 @@ class ToolRouter:
             _target = str(args.get(_AF_GUARDED[name], "") or "")
             if _target:
                 try:
+                    from pathlib import Path as _P
                     from . import app_factory as _af
-                    _allowed, _why = _af.can_write_code(self.workspace, _target)
+                    # 1. Containment no projeto ativo (1 ideia = 1 pasta) —
+                    #    usa o target cru (relativo ao workspace) p/ mensagem clara.
+                    _ok, _why = _af.check_containment(self.workspace, _target)
+                    # 2. Gate de planejamento, no projeto correto (ativo se houver,
+                    #    senão a raiz). can_write_code resolve o target relativo ao
+                    #    project_dir → passamos ABSOLUTO p/ evitar prefixo duplicado
+                    #    quando o projeto é uma subpasta.
+                    if _ok:
+                        _active = _af.get_active_project(self.workspace)
+                        _proj = _active if _active is not None else self.workspace
+                        _tp = _P(_target)
+                        _abs_target = _tp if _tp.is_absolute() else (_P(self.workspace) / _tp)
+                        _ok, _why = _af.can_write_code(_proj, str(_abs_target))
                 except Exception:  # noqa: BLE001 — nunca quebrar o fluxo por causa do gate
-                    _allowed, _why = True, ""
-                if not _allowed:
+                    _ok, _why = True, ""
+                if not _ok:
                     return f"[App Factory] {_why}"
 
         # G4: LLM approval for high-risk tools (fail-open if aux unavailable)
@@ -4683,15 +4699,32 @@ class ToolRouter:
         result = af.init_project(
             project_dir, idea=idea, stack=stack, overwrite=overwrite,
         )
+        # Containment: fixa esta pasta como projeto ativo — TODO o código/arquivo
+        # desta ideia fica contido aqui (nada solto na raiz nem em pastas irmãs).
+        try:
+            af.set_active_project(self.workspace, project_dir)
+        except Exception:
+            pass
+        try:
+            _proj_name = Path(project_dir).resolve().relative_to(
+                Path(self.workspace).resolve()
+            ).as_posix()
+        except Exception:
+            _proj_name = Path(project_dir).name
+        _proj_name = _proj_name or "."
         written = result.get("written", [])
         lines = [
             f"[app_factory_init] Governança iniciada — gate: {result.get('gate')}.",
             f"  Ideia: {idea}",
+            f"  Pasta do projeto (raiz ÚNICA): {_proj_name}/",
         ]
         if stack:
             lines.append(f"  Stack: {stack}")
         lines.append(f"  {len(written)} arquivo(s) criado(s) (docs/ + raiz).")
         lines.append(
+            f"  CONTAINMENT: escreva TUDO sob '{_proj_name}/' (ex.: "
+            f"'{_proj_name}/app/...', '{_proj_name}/frontend/...'). Arquivos fora "
+            "dessa pasta serão bloqueados.\n"
             "  GATE DISCOVERY ativo — escrita de código BLOQUEADA.\n"
             "  SUA PRÓXIMA AÇÃO É UMA TOOL CALL — não responda em texto.\n"
             "  Chame 'clarify' quatro vezes, uma pergunta por vez:\n"

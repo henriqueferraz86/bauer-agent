@@ -281,3 +281,78 @@ def test_skill_yaml_discoverable():
     assert p.is_file()
     text = p.read_text(encoding="utf-8")
     assert "app_factory_init" in text
+
+
+# ---------------------------------------------------------------------------
+# Projeto ativo + containment (1 ideia = 1 pasta; nada solto na raiz)
+# ---------------------------------------------------------------------------
+
+
+class TestActiveProjectContainment:
+    def test_set_get_active_project(self, tmp_path):
+        proj = tmp_path / "minha-ideia"
+        proj.mkdir()
+        assert af.get_active_project(tmp_path) is None  # nenhum ativo no início
+        af.set_active_project(tmp_path, proj)
+        active = af.get_active_project(tmp_path)
+        assert active is not None and active.name == "minha-ideia"
+
+    def test_active_pointer_ignora_pasta_inexistente(self, tmp_path):
+        af.set_active_project(tmp_path, tmp_path / "some-proj")  # nunca criada
+        assert af.get_active_project(tmp_path) is None  # defensivo
+
+    def test_containment_noop_sem_projeto_ativo(self, tmp_path):
+        ok, _ = af.check_containment(tmp_path, "qualquer/coisa.py")
+        assert ok is True
+
+    def test_containment_permite_dentro_bloqueia_fora(self, tmp_path):
+        proj = tmp_path / "problemas-app"
+        proj.mkdir()
+        af.set_active_project(tmp_path, proj)
+        assert af.check_containment(tmp_path, "problemas-app/app/main.py")[0] is True
+        # fora: pasta irmã e raiz solta
+        ok_sibling, why = af.check_containment(tmp_path, "real-problems-mapper/app.py")
+        assert ok_sibling is False and "problemas-app" in why
+        assert af.check_containment(tmp_path, "README_solto.md")[0] is False
+
+    def test_init_subpasta_seta_ativo_e_contem(self, tmp_path):
+        from bauer.tool_router import ToolRouter
+        tr = ToolRouter(workspace=tmp_path)
+        tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "Mapear problemas", "path": "problemas-app"},
+        }))
+        # projeto ativo fixado na subpasta
+        active = af.get_active_project(tmp_path)
+        assert active is not None and active.name == "problemas-app"
+
+        # escrever FORA da pasta da ideia → bloqueado por containment
+        out = tr.execute(json.dumps({
+            "action": "write_file",
+            "args": {"path": "real-problems-mapper/app/main.py", "content": "x"},
+        }))
+        assert "[App Factory]" in out and "projeto ativo" in out
+        assert not (tmp_path / "real-problems-mapper" / "app" / "main.py").exists()
+
+        # doc DENTRO da pasta da ideia → liberado (always-writable)
+        out2 = tr.execute(json.dumps({
+            "action": "write_file",
+            "args": {"path": "problemas-app/docs/NOTAS.md", "content": "# n\n" + "x" * 60},
+        }))
+        assert "[App Factory]" not in out2
+        assert (tmp_path / "problemas-app" / "docs" / "NOTAS.md").exists()
+
+    def test_init_subpasta_libera_codigo_dentro_apos_planning(self, tmp_path):
+        from bauer.tool_router import ToolRouter
+        tr = ToolRouter(workspace=tmp_path)
+        tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "x", "path": "problemas-app"},
+        }))
+        _fill_all_planning(tmp_path / "problemas-app")
+        out = tr.execute(json.dumps({
+            "action": "write_file",
+            "args": {"path": "problemas-app/app/main.py", "content": "print(1)"},
+        }))
+        assert "[App Factory]" not in out
+        assert (tmp_path / "problemas-app" / "app" / "main.py").exists()

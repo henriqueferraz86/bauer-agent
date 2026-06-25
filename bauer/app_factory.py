@@ -148,6 +148,103 @@ def is_governed(project_dir: Path | str) -> bool:
     return marker_path(project_dir).is_file()
 
 
+# ---------------------------------------------------------------------------
+# Projeto ativo + containment (1 ideia = 1 pasta; nada solto na raiz)
+# ---------------------------------------------------------------------------
+
+#: Ponteiro do projeto ativo, por workspace. Guarda a pasta da ideia em foco
+#: para que a escrita de arquivos fique contida nela (não vaze para a raiz nem
+#: para pastas irmãs). Criado pelo app_factory_init; ausente = sem containment.
+_ACTIVE_POINTER_REL = Path(".bauer_meta") / "app_factory_active.json"
+
+
+def _active_pointer_path(workspace: Path | str) -> Path:
+    return Path(workspace) / _ACTIVE_POINTER_REL
+
+
+def set_active_project(workspace: Path | str, project_dir: Path | str) -> None:
+    """Marca ``project_dir`` como o projeto ativo do workspace.
+
+    A escrita subsequente de código/arquivos fica contida nessa pasta.
+    Guarda o caminho RELATIVO ao workspace quando possível (portável).
+    """
+    ws = Path(workspace).resolve()
+    pd = Path(project_dir).resolve()
+    try:
+        rel = pd.relative_to(ws).as_posix()
+    except ValueError:
+        rel = pd.as_posix()  # fora do workspace — guarda absoluto
+    ptr = _active_pointer_path(ws)
+    ptr.parent.mkdir(parents=True, exist_ok=True)
+    ptr.write_text(
+        json.dumps({"project": rel}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def get_active_project(workspace: Path | str) -> Optional[Path]:
+    """Retorna a pasta do projeto ativo (absoluta) ou ``None``.
+
+    Defensivo: se o ponteiro aponta para uma pasta inexistente, retorna None
+    (não força containment em um alvo morto).
+    """
+    ptr = _active_pointer_path(workspace)
+    if not ptr.is_file():
+        return None
+    try:
+        data = json.loads(ptr.read_text(encoding="utf-8"))
+        rel = str(data.get("project", "")).strip()
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not rel:
+        return None
+    cand = Path(rel)
+    if not cand.is_absolute():
+        cand = Path(workspace) / cand
+    return cand if cand.exists() else None
+
+
+def path_is_within(project_dir: Path | str, workspace: Path | str, target: str) -> bool:
+    """True se ``target`` (relativo ao workspace ou absoluto) cai DENTRO de project_dir."""
+    base = Path(project_dir).resolve()
+    t = Path(target)
+    if not t.is_absolute():
+        t = Path(workspace) / t
+    try:
+        t.resolve().relative_to(base)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def check_containment(
+    workspace: Path | str, target: str
+) -> Tuple[bool, str]:
+    """Garante que ``target`` fique dentro do projeto ativo (se houver).
+
+    Returns:
+        ``(permitido, motivo)``. Sem projeto ativo → sempre permitido (no-op).
+        Alvo fora do projeto ativo → bloqueado, com orientação de onde escrever.
+    """
+    active = get_active_project(workspace)
+    if active is None:
+        return True, ""
+    if path_is_within(active, workspace, target):
+        return True, ""
+    try:
+        name = active.relative_to(Path(workspace).resolve()).as_posix()
+    except (ValueError, OSError):
+        name = active.name
+    rel_target = str(target).replace("\\", "/").lstrip("/")
+    return False, (
+        f"App Factory: projeto ativo é '{name}/'. Tudo deste projeto deve ficar "
+        f"DENTRO dessa pasta — nada solto na raiz nem em pastas irmãs.\n"
+        f"  Você tentou escrever em: '{rel_target or target}'\n"
+        f"  Escreva sob '{name}/' — ex.: '{name}/app/...', '{name}/frontend/...', "
+        f"'{name}/{rel_target.split('/', 1)[-1] if '/' in rel_target else rel_target}'."
+    )
+
+
 def load_state(project_dir: Path | str) -> Optional[Dict[str, Any]]:
     """Lê o estado do marker. Retorna ``None`` se não governado/ilegível."""
     p = marker_path(project_dir)
