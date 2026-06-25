@@ -187,6 +187,31 @@ def test_strip_par_valido_permanece():
     assert len(clean) == 4
 
 
+def test_strip_batch_parcial_filtra_calls_orfas():
+    """Batch com 3 tool_calls mas só 2 respondidas: mantém as 2, descarta a órfã.
+
+    Regressão: truncamento parcial de batch native deixava calls penduradas →
+    provider rejeitava o próximo request (400 'tool_call_id sem resposta').
+    """
+    msgs = [
+        {"role": "user", "content": "faz tudo"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "a", "function": {"name": "x"}},
+            {"id": "b", "function": {"name": "y"}},
+            {"id": "c", "function": {"name": "z"}},  # sem resposta
+        ]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "tool", "tool_call_id": "b", "content": "rb"},
+    ]
+    clean = _strip_orphan_tool_messages(msgs)
+    asst = [m for m in clean if m["role"] == "assistant"][0]
+    kept = [tc["id"] for tc in asst["tool_calls"]]
+    assert kept == ["a", "b"], "deve filtrar a call órfã 'c'"
+    # Toda tool restante tem assistant call correspondente
+    tool_ids = {m["tool_call_id"] for m in clean if m["role"] == "tool"}
+    assert tool_ids == {"a", "b"}
+
+
 def test_get_payload_strip_automatico():
     """get_payload() remove tool results órfãos transparentemente (fix do 400)."""
     ctx = ContextManager(applied_context=4096)

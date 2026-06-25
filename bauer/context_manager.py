@@ -366,10 +366,15 @@ def _strip_orphan_tool_messages(messages: list[dict]) -> list[dict]:
             if not tc_id or tc_id not in declared_ids:
                 continue  # sem tool_call_id ou sem assistant correspondente
         elif role == "assistant" and msg.get("tool_calls"):
-            tc_ids = {tc.get("id") for tc in (msg.get("tool_calls") or []) if tc.get("id")}
-            # Remove se: nenhuma call tem id (malformado) OU nenhum result existe
-            if not tc_ids or not any(tid in result_ids for tid in tc_ids):
-                continue
+            calls = msg.get("tool_calls") or []
+            # Mantém só as calls que têm result correspondente — descarta as
+            # penduradas (caso de truncamento parcial de batch). Assim um único
+            # tool_call sem resposta não invalida a mensagem inteira nem o request.
+            answered = [tc for tc in calls if tc.get("id") and tc["id"] in result_ids]
+            if not answered:
+                continue  # nenhuma call respondida → remove a mensagem
+            if len(answered) != len(calls):
+                msg = {**msg, "tool_calls": answered}  # filtra as órfãs
         clean.append(msg)
     return clean
 

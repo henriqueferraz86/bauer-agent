@@ -1273,7 +1273,11 @@ def _native_turn_interactive(
 
     ctx.messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
 
-    for tc in tool_calls[:max(0, calls_left)]:
+    # Executa TODAS as tool_calls do batch: cada `tool_calls` da mensagem assistant
+    # PRECISA de uma resposta `tool` correspondente, senão o provider rejeita o
+    # próximo request (400 "tool_call_id sem resposta"). O cap de rounds é feito
+    # pelo loop externo (MAX_TOOL_TURNS) — não truncamos o batch aqui.
+    for tc in tool_calls:
         tc_id = tc.get("id", "call_0")
         fn = tc.get("function", {})
         name = fn.get("name", "?")
@@ -2564,7 +2568,15 @@ def run_agent_session(
                 _rms(_cfg)
 
                 if rebuild_client_fn is not None:
-                    _new_client, _new_model = rebuild_client_fn()
+                    _rebuilt = rebuild_client_fn()
+                    # Aceita 2-tupla (legado) ou 3-tupla (com fallbacks renovados).
+                    if isinstance(_rebuilt, tuple) and len(_rebuilt) == 3:
+                        _new_client, _new_model, _new_fallbacks = _rebuilt
+                        fallback_clients = _new_fallbacks  # renova cadeia do novo modelo
+                    else:
+                        _new_client, _new_model = _rebuilt
+                    # Novo modelo escolhido → recomeça a cadeia de fallback do topo
+                    _fb_idx = 0
                     # Rebind ao vivo — próximo turno já usa o novo modelo
                     client = _new_client
                     model_name = _new_model
@@ -2770,6 +2782,15 @@ def run_agent_session(
                             if loop_warn:
                                 ctx.add_user(loop_warn)
                             if hard_stop:
+                                break
+                            # Cap de rounds (antes feito pelo slice em
+                            # _native_turn_interactive, removido p/ não quebrar
+                            # o pareamento assistant↔tool).
+                            if tool_turns >= MAX_TOOL_TURNS:
+                                console.print(
+                                    f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls "
+                                    "atingido neste turno.[/yellow]"
+                                )
                                 break
                             continue
                         # _nkind == "final": resposta de texto sem tools

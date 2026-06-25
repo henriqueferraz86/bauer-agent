@@ -2069,6 +2069,60 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     )
 
 
+def _build_fallback_clients(cfg, *, console=None) -> list:
+    """Constrói clientes de fallback a partir de cfg.model.fallback_models.
+
+    - Dedup: pula entradas iguais ao modelo principal ou repetidas (evita
+      re-tentar o mesmo provider que acabou de falhar).
+    - Observabilidade: falhas de construção vão para DEBUG (não somem em
+      silêncio) e um resumo é exibido no console.
+
+    Retorna lista de (client, model_name) pronta para `fallback_clients`.
+    """
+    import logging as _logging
+    _log = _logging.getLogger("bauer.fallback")
+    clients: list = []
+    fb_models = getattr(cfg.model, "fallback_models", []) or []
+    primary = (cfg.model.provider, cfg.model.name)
+    seen: set = {primary}
+    skipped = 0
+    for fb in fb_models:
+        prov = fb.provider if hasattr(fb, "provider") else (fb or {}).get("provider", "")
+        name = fb.name if hasattr(fb, "name") else (fb or {}).get("name", "")
+        if not prov or not name:
+            continue
+        key = (prov, name)
+        if key in seen:
+            _log.debug("fallback: pulando %s/%s (duplicado ou igual ao principal)", prov, name)
+            skipped += 1
+            continue
+        seen.add(key)
+        try:
+            _fb_raw = cfg.model_dump()
+            _fb_raw["model"]["provider"] = prov
+            _fb_raw["model"]["name"] = name
+            # fallback não se propaga recursivamente
+            _fb_raw["model"]["fallback_models"] = []
+            _fb_raw["model"]["fallback_providers"] = []
+            from .config_loader import BauerConfig as _BauerCfg
+            _fb_cfg = _BauerCfg(**_fb_raw)
+            from .env_loader import apply_env_to_config as _aenv
+            _aenv(_fb_cfg)
+            _fb_client = _build_client(_fb_cfg)
+            clients.append((_fb_client, name))
+            _log.debug("fallback: pronto %s/%s", prov, name)
+        except Exception as exc:  # noqa: BLE001 — fallback mal configurado é tolerável
+            skipped += 1
+            _log.debug("fallback: falhou ao montar %s/%s: %s", prov, name, exc)
+    if console is not None and (clients or skipped):
+        console.print(
+            f"[dim]Fallback: {len(clients)} modelo(s) pronto(s)"
+            + (f", {skipped} pulado(s)" if skipped else "")
+            + ".[/dim]"
+        )
+    return clients
+
+
 def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
     """Cria ToolRouter com shell_runner, web e llm_client a partir da config.
 
@@ -2791,39 +2845,21 @@ def agent(
         except Exception:
             pass  # nunca bloqueia o startup por falha do tuner
 
-    # Constrói clientes de fallback a partir de fallback_models (provider+name pairs)
-    _fallback_clients: list = []
-    _fb_models = getattr(cfg.model, "fallback_models", []) or []
-    # backward compat: se só fallback_providers estiver preenchido, ignora
-    # (esquema antigo sem model.name — não há como saber o modelo certo)
-    for _fb in _fb_models:
-        try:
-            _fb_provider = _fb.provider if hasattr(_fb, "provider") else _fb.get("provider", "")
-            _fb_name = _fb.name if hasattr(_fb, "name") else _fb.get("name", "")
-            if not _fb_provider or not _fb_name:
-                continue
-            _fb_raw = cfg.model_dump()
-            _fb_raw["model"]["provider"] = _fb_provider
-            _fb_raw["model"]["name"] = _fb_name
-            # fallback_models/fallback_providers não se propaga recursivamente
-            _fb_raw["model"]["fallback_models"] = []
-            _fb_raw["model"]["fallback_providers"] = []
-            from .config_loader import BauerConfig as _BauerCfg
-            _fb_cfg = _BauerCfg(**_fb_raw)
-            from .env_loader import apply_env_to_config as _aenv
-            _aenv(_fb_cfg)
-            _fb_client = _build_client(_fb_cfg)
-            _fallback_clients.append((_fb_client, _fb_name))
-        except Exception:
-            pass  # fallback mal configurado — ignora silenciosamente
+    # Constrói clientes de fallback (dedup + observabilidade no helper)
+    _fallback_clients = _build_fallback_clients(cfg, console=console)
 
     def _rebuild_client_chat():
-        """Reconstrói client + model_name a partir do config.yaml atual."""
+        """Reconstrói client + model_name + fallbacks a partir do config.yaml atual.
+
+        Retorna 3-tupla — o /model ao vivo precisa renovar a cadeia de fallback,
+        senão ela ficaria apontando para os fallbacks do modelo anterior.
+        """
         from .env_loader import load_dotenv as _lenv
         _lenv()
         _new_cfg, _ = _load_or_die(config, models)
         _new_client = _build_client(_new_cfg)
-        return _new_client, _new_cfg.model.name
+        _new_fallbacks = _build_fallback_clients(_new_cfg, console=console)
+        return _new_client, _new_cfg.model.name, _new_fallbacks
 
     # L6: injeta recomendações do LearningEngine no system prompt
     _learning_hints: str | None = None
@@ -3281,12 +3317,13 @@ def agent_run(
     _agent_mod._build_system_prompt = _agent_system_prompt  # type: ignore[attr-defined]
 
     def _rebuild_client_agent():
-        """Reconstrói client + model_name a partir do config.yaml atual (live switch)."""
+        """Reconstrói client + model_name + fallbacks a partir do config.yaml (live switch)."""
         from .env_loader import load_dotenv as _lenv
         _lenv()
         _new_cfg, _ = _load_or_die(config, models)
         _new_client = _build_client(_new_cfg)
-        return _new_client, _new_cfg.model.name
+        _new_fallbacks = _build_fallback_clients(_new_cfg, console=console)
+        return _new_client, _new_cfg.model.name, _new_fallbacks
 
     try:
         _run_session(
