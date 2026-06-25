@@ -43,6 +43,10 @@ content: |
      escrita de código é liberada automaticamente.
   5. **Vertical slice primeiro** — interface → API/serviço → persistência →
      resposta validada → teste mínimo. Só depois expanda funcionalidades.
+  5b. **Auto-verificar** — após cada fatia, chame `verify_app` para BUILDAR e
+     RODAR/testar o app de verdade. Não considere a fatia pronta enquanto
+     `verify_app` não passar — "arquivos existem" ≠ "funciona". Em falha,
+     corrija com base na saída e rode de novo.
   6. **Qualidade** — uma alteração por vez, erro tratado, entrada validada, teste
      mínimo ou justificativa, sem secret exposto, `PROGRESS.md` atualizado.
   7. **Entrega** — segurança revisada, deploy documentado, runbook, e
