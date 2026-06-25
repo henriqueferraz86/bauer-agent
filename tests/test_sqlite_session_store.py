@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -322,6 +323,31 @@ class TestSearch:
         populated_store.delete("s1")
         results = populated_store.search_sessions("python")
         assert not any(r["session_id"] == "s1" for r in results)
+
+    def test_vector_search_nao_vaza_sessao_de_outro_store(self, populated_store):
+        """VectorStore é GLOBAL — sessões de outros stores/projetos/empresas não
+        podem aparecer na busca deste store (isolamento por workspace).
+
+        Mocka o store global retornando uma sessão 'foreign' inexistente neste
+        SQLite; ela deve ser filtrada (não está na tabela sessions deste store).
+        """
+        class _FakeHit:
+            def __init__(self, sid):
+                self.source_id = f"{sid}:user:0"
+                self.text = "conteudo de outro projeto"
+                self.score = 0.9
+
+        class _FakeStore:
+            def count(self, _src):
+                return 1
+            def search(self, *a, **k):
+                return [_FakeHit("foreign99")]
+
+        with patch("bauer.vector_store.get_default_store", return_value=_FakeStore()):
+            results = populated_store.search_sessions("qualquer", use_vectors=True)
+        assert all(r["session_id"] != "foreign99" for r in results), (
+            "sessão de outro store vazou na busca vetorial"
+        )
 
 
 # ---------------------------------------------------------------------------

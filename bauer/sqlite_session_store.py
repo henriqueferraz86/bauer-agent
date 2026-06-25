@@ -404,11 +404,17 @@ class SqliteSessionStore:
                     continue
                 if sid in seen:
                     continue
-                # Pega updated_at da tabela sessions
+                # Pega updated_at da tabela sessions. O VectorStore é GLOBAL
+                # (get_default_store) e indexa sessões de TODOS os stores/projetos/
+                # empresas. Se a sessão não está NESTE store, ela pertence a outro
+                # contexto — pular evita vazamento de busca entre stores (isolamento
+                # por workspace/empresa) e mantém search_sessions escopado ao DB.
                 row = conn.execute(
                     "SELECT updated_at FROM sessions WHERE session_id=?", (sid,)
                 ).fetchone()
-                updated_at = row["updated_at"] if row else ""
+                if row is None:
+                    continue
+                updated_at = row["updated_at"]
                 seen[sid] = {
                     "session_id": sid,
                     "role": role,
