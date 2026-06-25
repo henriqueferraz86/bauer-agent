@@ -147,3 +147,79 @@ class TestToolRouterVerifyApp:
         assert "[verify_app]" in out
         assert "BUILD QUEBROU" in out
         assert "verificação falhou" in out or "verificacao falhou" in out or "✗" in out
+
+    def test_verify_app_persiste_resultado(self, tmp_path, monkeypatch):
+        """P1.4: verify_app salva .bauer_meta/verify_result.json após rodar."""
+        from bauer.tool_router import ToolRouter
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"build": "b"}}), encoding="utf-8",
+        )
+        import bauer.app_verify as _av
+        monkeypatch.setattr(_av.shutil, "which", lambda e: "/usr/bin/" + e)
+        monkeypatch.setattr(_av, "_default_runner", lambda cmd, cwd, to: (0, "ok"))
+
+        tr = ToolRouter(workspace=tmp_path)
+        tr.execute(json.dumps({"action": "verify_app", "args": {}}))
+
+        result_path = tmp_path / ".bauer_meta" / "verify_result.json"
+        assert result_path.is_file(), "verify_result.json deve ser criado"
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        assert data["ok"] is True
+        assert data["stack"] == "node"
+
+    def test_verify_app_falha_atualiza_resultado(self, tmp_path, monkeypatch):
+        """P1.4: resultado ok=False é salvo quando verify falha."""
+        from bauer.tool_router import ToolRouter
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"build": "b"}}), encoding="utf-8",
+        )
+        import bauer.app_verify as _av
+        monkeypatch.setattr(_av.shutil, "which", lambda e: "/usr/bin/" + e)
+        seq = iter([(0, "ok"), (1, "build error")])
+        monkeypatch.setattr(_av, "_default_runner", lambda cmd, cwd, to: next(seq))
+
+        tr = ToolRouter(workspace=tmp_path)
+        tr.execute(json.dumps({"action": "verify_app", "args": {}}))
+
+        data = json.loads((tmp_path / ".bauer_meta" / "verify_result.json").read_text())
+        assert data["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Diagnóstico de falha (P1.3)
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseFailure:
+    def test_module_not_found_python(self):
+        hint = av._diagnose_failure("ModuleNotFoundError: No module named 'flask'", 1)
+        assert "pip install" in hint
+
+    def test_cannot_find_module_node(self):
+        hint = av._diagnose_failure("Cannot find module 'express'", 1)
+        assert "npm install" in hint.lower()
+
+    def test_syntax_error_python(self):
+        hint = av._diagnose_failure("SyntaxError: invalid syntax at line 12", 1)
+        assert "sintaxe" in hint.lower() or "syntax" in hint.lower()
+
+    def test_rc_127_command_not_found(self):
+        hint = av._diagnose_failure("", 127)
+        assert "PATH" in hint or "instalad" in hint.lower()
+
+    def test_no_hint_for_generic_error(self):
+        hint = av._diagnose_failure("xyzzy unknown error", 1)
+        assert hint == ""
+
+    def test_hint_appears_in_summary(self):
+        """P1.3: hint de diagnóstico aparece no summary do VerifyResult."""
+        root = __import__("pathlib").Path(__import__("tempfile").mkdtemp())
+        (root / "package.json").write_text(
+            json.dumps({"scripts": {"build": "b"}}), encoding="utf-8"
+        )
+        seq = iter([(0, "ok"), (1, "ModuleNotFoundError: No module named 'lodash'")])
+        r = av.verify_project(
+            root,
+            runner=lambda cmd, cwd, to: next(seq),
+            which=lambda e: "/bin/" + e,
+        )
+        assert "pip install" in r.summary or "Dependência" in r.summary

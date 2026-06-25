@@ -4814,6 +4814,23 @@ class ToolRouter:
 
         result = av.verify_project(project_dir, install=install, timeout=timeout)
 
+        # P1.4: persiste resultado para o Delivery Score ler sem re-executar.
+        try:
+            import json as _json, time as _time
+            _meta = Path(project_dir) / ".bauer_meta"
+            _meta.mkdir(parents=True, exist_ok=True)
+            (_meta / "verify_result.json").write_text(
+                _json.dumps({
+                    "ok": result.ok,
+                    "stack": result.stack,
+                    "summary": result.summary,
+                    "ts": _time.time(),
+                }),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass  # non-fatal
+
         lines = [f"[verify_app] {result.summary}", f"  projeto: {result.project}"]
         for s in result.steps:
             mark = "pulado" if s.skipped else ("ok" if s.ok else f"FALHOU rc={s.rc}")

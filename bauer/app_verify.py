@@ -126,13 +126,56 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
     return "unknown", []
 
 
+# ---------------------------------------------------------------------------
+# Diagnóstico de falha acionável (P1.3)
+# ---------------------------------------------------------------------------
+
+_DIAGNOSE_RULES: List[Tuple[str, str]] = [
+    # Python
+    ("ModuleNotFoundError: No module named", "Dependência ausente — rode: pip install <modulo>"),
+    ("ImportError: cannot import name",      "Import inexistente — verifique o nome/versão do pacote"),
+    ("SyntaxError",                          "Erro de sintaxe Python — verifique o código"),
+    ("IndentationError",                     "Erro de indentação Python — verifique espaçamentos"),
+    # Node / npm
+    ("Cannot find module",                   "Dependência npm ausente — rode: npm install"),
+    ("Module not found: Error",              "Dependência npm ausente — rode: npm install"),
+    ("ERR_MODULE_NOT_FOUND",                 "Dependência npm ausente — rode: npm install"),
+    ("ENOENT",                               "Arquivo não encontrado — verifique caminhos de import"),
+    ("TS",                                   "Erro TypeScript — verifique tipos e imports"),
+    # Go
+    ("cannot find package",                  "Pacote Go não encontrado — rode: go mod tidy"),
+    ("no required module",                   "Módulo Go ausente — rode: go mod tidy"),
+    # Rust
+    ("error[E",                              "Erro de compilação Rust — verifique o código"),
+    # Generic
+    ("permission denied",                    "Permissão negada — verifique permissões do arquivo"),
+    ("connection refused",                   "Conexão recusada — verifique se o serviço está rodando"),
+]
+
+
+def _diagnose_failure(output: str, rc: int) -> str:
+    """Detecta causa provável da falha a partir da saída do passo."""
+    if rc == 127:
+        return "Comando não encontrado no PATH — verifique se a ferramenta está instalada"
+    out_lower = output.lower()
+    for pattern, hint in _DIAGNOSE_RULES:
+        if pattern.lower() in out_lower:
+            return hint
+    return ""
+
+
 def _summarize(stack: str, steps: List[Step], ok: bool) -> str:
     parts = []
     for s in steps:
         if s.skipped:
             parts.append(f"{s.name}: pulado ({s.reason})")
         else:
-            parts.append(f"{s.name}: {'ok' if s.ok else f'FALHOU (rc={s.rc})'}")
+            part = f"{s.name}: {'ok' if s.ok else f'FALHOU (rc={s.rc})'}"
+            if not s.ok and not s.skipped:
+                hint = _diagnose_failure(s.output, s.rc)
+                if hint:
+                    part += f" [{hint}]"
+            parts.append(part)
     head = "✓ app verificado — roda" if ok else "✗ verificação falhou"
     return f"{head} [{stack}] — " + ("; ".join(parts) if parts else "sem passos")
 

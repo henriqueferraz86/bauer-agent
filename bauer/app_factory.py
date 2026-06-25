@@ -546,11 +546,25 @@ def _root_file_ok(project_dir: Path | str, rel: str, min_chars: int = 1) -> bool
         return False
 
 
+def _last_verify_ok(project_dir: Path | str) -> bool:
+    """True se a última execução de verify_app passou (lê .bauer_meta/verify_result.json)."""
+    import json as _json
+    p = Path(project_dir) / ".bauer_meta" / "verify_result.json"
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        return bool(data.get("ok"))
+    except Exception:
+        return False
+
+
 def delivery_score(project_dir: Path | str) -> Dict[str, Any]:
     """Calcula um Delivery Score objetivo (0–10) a partir de sinais verificáveis.
 
     Cada item vale igual; o score é a fração satisfeita × 10. ``ready`` indica
     se atingiu o limiar de prontidão da V1.
+
+    P1.4: o check ``verified`` exige que verify_app tenha passado (build/test
+    verde) — "arquivo existe" não basta, o app tem que rodar de verdade.
     """
     checks: Dict[str, bool] = {
         "spec": doc_is_filled(project_dir, "SPEC.md"),
@@ -563,6 +577,7 @@ def delivery_score(project_dir: Path | str) -> Dict[str, Any]:
         "readme": _root_file_ok(project_dir, "README.md", min_chars=80),
         "env_example": _root_file_ok(project_dir, ".env.example"),
         "tests": _has_tests(project_dir),
+        "verified": _last_verify_ok(project_dir),  # P1.4: app roda de verdade
     }
     total = len(checks)
     satisfied = sum(1 for v in checks.values() if v)

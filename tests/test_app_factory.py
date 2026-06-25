@@ -186,6 +186,48 @@ class TestDeliveryScore:
         (tmp_path / "tests" / "test_smoke.py").write_text("def test_x(): assert True", encoding="utf-8")
         assert af.delivery_score(tmp_path)["checks"]["tests"] is True
 
+    def test_verified_false_sem_arquivo(self, tmp_path):
+        """P1.4: verified=False quando verify_result.json não existe."""
+        af.init_project(tmp_path, idea="y")
+        sc = af.delivery_score(tmp_path)
+        assert "verified" in sc["checks"]
+        assert sc["checks"]["verified"] is False
+
+    def test_verified_true_quando_ok(self, tmp_path):
+        """P1.4: verified=True quando verify_result.json existe com ok=True."""
+        import json
+        af.init_project(tmp_path, idea="y")
+        meta = tmp_path / ".bauer_meta"
+        meta.mkdir(exist_ok=True)
+        (meta / "verify_result.json").write_text(
+            json.dumps({"ok": True, "stack": "node", "summary": "✓"}), encoding="utf-8"
+        )
+        assert af.delivery_score(tmp_path)["checks"]["verified"] is True
+
+    def test_verified_false_quando_falhou(self, tmp_path):
+        """P1.4: verified=False quando verify_result.json existe com ok=False."""
+        import json
+        af.init_project(tmp_path, idea="y")
+        meta = tmp_path / ".bauer_meta"
+        meta.mkdir(exist_ok=True)
+        (meta / "verify_result.json").write_text(
+            json.dumps({"ok": False, "stack": "node", "summary": "✗"}), encoding="utf-8"
+        )
+        assert af.delivery_score(tmp_path)["checks"]["verified"] is False
+
+    def test_score_sobe_com_verified(self, tmp_path):
+        """P1.4: score aumenta quando verify passa."""
+        import json
+        af.init_project(tmp_path, idea="y")
+        score_sem = af.delivery_score(tmp_path)["score"]
+        meta = tmp_path / ".bauer_meta"
+        meta.mkdir(exist_ok=True)
+        (meta / "verify_result.json").write_text(
+            json.dumps({"ok": True, "stack": "python"}), encoding="utf-8"
+        )
+        score_com = af.delivery_score(tmp_path)["score"]
+        assert score_com > score_sem
+
 
 # ---------------------------------------------------------------------------
 # Integração com ToolRouter (enforcement no DNA)
