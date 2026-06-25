@@ -79,8 +79,13 @@ def ws(tmp_path: Path) -> Path:
 # ─── _load_or_die error paths ─────────────────────────────────────────────────
 
 
-def test_config_validate_missing_file(tmp_path: Path):
-    """Arquivo de config inexistente → exit code 2."""
+def test_config_validate_missing_file(tmp_path: Path, monkeypatch):
+    """Arquivo de config inexistente → exit code 2.
+
+    Isola BAUER_HOME: load_config faz fallback p/ ~/.bauer/config.yaml quando o
+    path não existe; sem isolar, falha em máquinas com config global real.
+    """
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "empty-home"))
     bad_path = tmp_path / "nao_existe.yaml"
     result = runner.invoke(app, ["config", "validate", "--config", str(bad_path)])
     assert result.exit_code != 0

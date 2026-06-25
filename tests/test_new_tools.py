@@ -395,13 +395,16 @@ class TestVisionAnalyze:
     def test_com_client_e_url(self, ws):
         mock_client = MagicMock()
         mock_client.model = "gpt-4o"  # G18.4: modelo multimodal p/ passar no gate
+        mock_client.chat_stream.return_value = iter(["Um gato sentado."])
         router = ToolRouter(workspace=ws, llm_client=mock_client)
-        with patch("bauer.agent.run_one_turn", return_value="Um gato sentado."):
-            result = router._vision_analyze({
-                "image": "https://example.com/cat.jpg",
-                "query": "O que tem na imagem?",
-            })
+        result = router._vision_analyze({
+            "image": "https://example.com/cat.jpg",
+            "query": "O que tem na imagem?",
+        })
         assert "gato" in result
+        # Confirma que a imagem foi enviada no formato multimodal correto
+        _, sent_messages = mock_client.chat_stream.call_args[0]
+        assert sent_messages[0]["content"][1]["type"] == "image_url"
 
     def test_com_path_local(self, ws):
         # Cria imagem fake (PNG mínimo)
@@ -409,12 +412,12 @@ class TestVisionAnalyze:
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
         mock_client = MagicMock()
         mock_client.model = "gpt-4o"
+        mock_client.chat_stream.return_value = iter(["Imagem analisada."])
         router = ToolRouter(workspace=ws, llm_client=mock_client)
-        with patch("bauer.agent.run_one_turn", return_value="Imagem analisada."):
-            result = router._vision_analyze({
-                "image": "test.png",
-                "query": "Descreva",
-            })
+        result = router._vision_analyze({
+            "image": "test.png",
+            "query": "Descreva",
+        })
         assert "Imagem" in result
 
     def test_path_local_nao_existente_levanta(self, ws):
@@ -429,16 +432,16 @@ class TestVisionAnalyze:
     def test_mensagem_inclui_image_url(self, ws):
         mock_client = MagicMock()
         mock_client.model = "gpt-4o"
-        router = ToolRouter(workspace=ws, llm_client=mock_client)
         captured = {}
-        def fake_run(client, messages, tools):
+        def fake_stream(model, messages):
             captured["msg"] = messages[0]
-            return "ok"
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
-            router._vision_analyze({
-                "image": "https://example.com/img.jpg",
-                "query": "Teste",
-            })
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_stream
+        router = ToolRouter(workspace=ws, llm_client=mock_client)
+        router._vision_analyze({
+            "image": "https://example.com/img.jpg",
+            "query": "Teste",
+        })
         content = captured["msg"]["content"]
         assert any(c.get("type") == "image_url" for c in content)
         assert any(c.get("type") == "text" for c in content)

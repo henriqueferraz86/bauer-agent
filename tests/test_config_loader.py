@@ -46,7 +46,12 @@ def test_load_valid_config(tmp_path: Path):
     assert cfg.runtime.safety_margin_mb == 1024
 
 
-def test_missing_file(tmp_path: Path):
+def test_missing_file(tmp_path: Path, monkeypatch):
+    # Isola BAUER_HOME: load_config faz fallback para ~/.bauer/config.yaml
+    # quando o path não existe. Sem isolar, o teste falha em máquinas que têm
+    # um config global real (passa em CI por não ter). Aqui garantimos que NEM
+    # o path NEM o global existem → deve levantar.
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "empty-home"))
     with pytest.raises(ConfigError, match="não encontrado"):
         load_config(tmp_path / "noexist.yaml")
 

@@ -3284,9 +3284,19 @@ class ToolRouter:
         # G18.4: usa o cliente de visão resolvido (vision_model dedicado ou
         # llm_client principal se multimodal). Erro claro e acionável se nenhum.
         vision_client = self._resolve_vision_client("vision_analyze")
+        # Single-turn direto via chat_stream — NÃO usar run_one_turn aqui: a
+        # assinatura dele é (ctx, router, client, model_name, ...) e não aceita
+        # `tools=`; chamá-lo com (client, messages) quebrava com TypeError
+        # (mascarado pelo except → vision_analyze nunca funcionava em produção).
+        _vmodel = (
+            getattr(vision_client, "default_model", "")
+            or getattr(vision_client, "model", "")
+            or self._model_name
+            or ""
+        )
         try:
-            from .agent import run_one_turn
-            return run_one_turn(vision_client, [message], tools=None)
+            chunks = list(vision_client.chat_stream(_vmodel, [message]))
+            return "".join(chunks)
         except ToolError:
             raise
         except Exception as exc:

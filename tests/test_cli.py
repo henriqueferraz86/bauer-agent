@@ -74,7 +74,10 @@ def test_config_validate_ok(cfg_path: Path):
     assert "OK" in result.output
 
 
-def test_config_validate_missing_file(tmp_path: Path):
+def test_config_validate_missing_file(tmp_path: Path, monkeypatch):
+    # Isola BAUER_HOME — load_config faz fallback p/ ~/.bauer/config.yaml,
+    # que existe em máquinas reais (passa em CI por não existir lá).
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "empty-home"))
     result = runner.invoke(app, ["config", "validate", "--config", str(tmp_path / "missing.yaml")])
     assert result.exit_code != 0
 

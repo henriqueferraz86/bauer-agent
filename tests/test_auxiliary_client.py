@@ -174,9 +174,14 @@ def test_unsupported_provider_returns_none_pair():
 # ---------------------------------------------------------------------------
 
 
-def test_no_config_no_autoload_returns_none_pair(monkeypatch: pytest.MonkeyPatch):
-    """cfg=None + missing config.yaml → (None, None), never raise."""
+def test_no_config_no_autoload_returns_none_pair(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """cfg=None + missing config.yaml → (None, None), never raise.
+
+    Isola BAUER_HOME: load_config faz fallback p/ ~/.bauer/config.yaml, então
+    só BAUER_CONFIG inexistente não basta em máquinas com config global real.
+    """
     monkeypatch.setenv("BAUER_CONFIG", "/nonexistent/path/config.yaml")
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "empty-home"))
     client, model = get_text_auxiliary_client("kanban_decomposer", cfg=None)
     assert client is None
     assert model is None

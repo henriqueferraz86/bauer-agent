@@ -594,39 +594,43 @@ class TestExecuteCodeDenylist:
 # =============================================================================
 
 class TestDelegateTaskSanitization:
-    """Verifica que delegate_task sanitiza o input antes de passar para subprocess."""
+    """Verifica que delegate_task sanitiza o input antes de enviar ao sub-agente.
+
+    Usa um llm_client mockado para exercitar o caminho direto (chat_stream) de
+    forma determinística — captura exatamente o que seria enviado, sem depender
+    de subprocess/rede (que torna o teste lento e ambiente-dependente).
+    """
+
+    @staticmethod
+    def _router_capturando(ws):
+        """ToolRouter com llm_client mock que captura a mensagem enviada."""
+        from unittest.mock import MagicMock
+        captured = {}
+        client = MagicMock()
+        client.default_model = "test-model"
+        def _stream(model, messages):
+            captured["content"] = messages[0]["content"]
+            return iter(["ok"])
+        client.chat_stream.side_effect = _stream
+        router = ToolRouter(workspace=ws, llm_client=client, model_name="test-model")
+        return router, captured
 
     def test_null_bytes_removidos(self, ws):
-        """Null bytes devem ser removidos do task string sem causar crash."""
-        router = ToolRouter(workspace=ws)
-        # Tenta delegate com null bytes — deve falhar em CLI não encontrado,
-        # mas NÃO em ValueError/TypeError por null byte no args da lista
-        try:
-            router._delegate_task({"task": "tarefa\x00com\x00nulls"})
-        except ToolError as e:
-            # Aceitável: CLI não encontrado ou outro erro de infra
-            assert "nao encontrado" in str(e).lower() or "bauer" in str(e).lower() or True
-        except (ValueError, TypeError) as e:
-            pytest.fail(f"Null bytes causaram erro de tipo inesperado: {e}")
+        """Null bytes devem ser removidos do task antes do envio."""
+        router, captured = self._router_capturando(ws)
+        router._delegate_task({"task": "tarefa\x00com\x00nulls"})
+        assert "\x00" not in captured["content"]
+        assert "tarefacomnulls" in captured["content"]
 
     def test_task_muito_longa_truncada(self, ws):
-        """Tasks maiores que 4096 chars devem ser truncadas silenciosamente."""
-        router = ToolRouter(workspace=ws)
-        longa = "x" * 10000
-        # Se o router tentar executar, vai falhar por CLI não encontrado,
-        # mas não por OverflowError de args — a truncagem deve acontecer antes
-        with pytest.raises((ToolError, Exception)):
-            router._delegate_task({"task": longa})
-        # O teste valida que não levanta OverflowError ou MemoryError
+        """Tasks maiores que 4096 chars são truncadas (sem OverflowError)."""
+        router, captured = self._router_capturando(ws)
+        router._delegate_task({"task": "x" * 10000})
+        assert len(captured["content"]) == 4096
 
     def test_task_normal_nao_truncada(self, ws):
-        """Tasks normais (< 4096 chars) não devem ser modificadas."""
-        router = ToolRouter(workspace=ws)
+        """Tasks normais (< 4096 chars) passam intactas."""
+        router, captured = self._router_capturando(ws)
         normal = "Analise o arquivo app.py e sugira melhorias"
-        # Verifica que a sanitização não corta strings normais
-        # (vai falhar em outro ponto — CLI não disponível)
-        try:
-            router._delegate_task({"task": normal})
-        except ToolError as e:
-            # Deve falhar por motivo diferente de truncagem
-            assert "nao encontrado" in str(e) or "bauer" in str(e).lower() or True
+        router._delegate_task({"task": normal})
+        assert captured["content"] == normal
