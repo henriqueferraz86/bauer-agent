@@ -872,7 +872,7 @@ class TestBrowserUtilities:
         page.screenshot.return_value = b"\x89PNG" + b"\x00" * 50
         router._browser_page = page
 
-        with patch("bauer.agent.run_one_turn", return_value="Vi um botão vermelho."):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", return_value="Vi um botão vermelho."):
             result = router._browser_vision({"query": "O que tem na página?"})
         assert isinstance(result, str)
 

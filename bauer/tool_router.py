@@ -1517,6 +1517,29 @@ class ToolRouter:
             )
         return self._llm_client
 
+    def _llm_single_turn(self, client, messages: list[dict]) -> str:
+        """Chamada single-turn (sem tools) a um cliente LLM, via chat_stream.
+
+        Helper central das tools que fazem UMA chamada direta ao modelo
+        (vision_analyze, video_analyze, mixture_of_agents, browser_vision).
+
+        IMPORTANTE: NÃO usar `run_one_turn` para isso. A assinatura dele é
+        ``run_one_turn(ctx, router, client, model_name, ...)`` — não aceita uma
+        lista de mensagens nem `tools=`. Chamá-lo como
+        ``run_one_turn(client, messages, tools=None)`` quebra com TypeError, que
+        era silenciosamente mascarado pelos `except Exception` dessas tools
+        (deixando-as não-funcionais em produção, ainda que os testes passassem
+        por mockar run_one_turn).
+        """
+        model = (
+            getattr(client, "default_model", "")
+            or getattr(client, "model", "")
+            or self._model_name
+            or ""
+        )
+        chunks = list(client.chat_stream(model, messages))
+        return "".join(chunks)
+
     def get_tool_schemas(self) -> list[dict]:
         """Retorna schemas de tools no formato OpenAI function calling.
 
@@ -3284,19 +3307,8 @@ class ToolRouter:
         # G18.4: usa o cliente de visão resolvido (vision_model dedicado ou
         # llm_client principal se multimodal). Erro claro e acionável se nenhum.
         vision_client = self._resolve_vision_client("vision_analyze")
-        # Single-turn direto via chat_stream — NÃO usar run_one_turn aqui: a
-        # assinatura dele é (ctx, router, client, model_name, ...) e não aceita
-        # `tools=`; chamá-lo com (client, messages) quebrava com TypeError
-        # (mascarado pelo except → vision_analyze nunca funcionava em produção).
-        _vmodel = (
-            getattr(vision_client, "default_model", "")
-            or getattr(vision_client, "model", "")
-            or self._model_name
-            or ""
-        )
         try:
-            chunks = list(vision_client.chat_stream(_vmodel, [message]))
-            return "".join(chunks)
+            return self._llm_single_turn(vision_client, [message])
         except ToolError:
             raise
         except Exception as exc:
@@ -4256,8 +4268,7 @@ class ToolRouter:
                 {"role": "user", "content": query},
             ]
             try:
-                from .agent import run_one_turn
-                response = run_one_turn(self._llm_client, messages, tools=None)
+                response = self._llm_single_turn(self._llm_client, messages)
                 return perspective, str(response)
             except Exception as exc:
                 return perspective, f"[erro: {exc}]"
@@ -4297,11 +4308,9 @@ class ToolRouter:
                 f"resposta integrada e acionável. Seja conciso e direto."
             )
             try:
-                from .agent import run_one_turn
-                synthesis = run_one_turn(
+                synthesis = self._llm_single_turn(
                     self._llm_client,
                     [{"role": "user", "content": synthesis_prompt}],
-                    tools=None,
                 )
                 lines.append("\n── [SÍNTESE] ──")
                 lines.append(str(synthesis)[:600])
@@ -4387,8 +4396,7 @@ class ToolRouter:
             ],
         }
         try:
-            from .agent import run_one_turn
-            result = run_one_turn(self._resolve_vision_client("video_analyze"), [message], tools=None)
+            result = self._llm_single_turn(self._resolve_vision_client("video_analyze"), [message])
             return f"[video_analyze — URL]\n{result}"
         except Exception as exc:
             raise ToolError(
@@ -4443,7 +4451,7 @@ class ToolRouter:
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-                resp = run_one_turn(self._resolve_vision_client("video_analyze"), [msg], tools=None)
+                resp = self._llm_single_turn(self._resolve_vision_client("video_analyze"), [msg])
                 frame_analyses.append(f"[{timestamp_s:.1f}s] {str(resp)[:300]}")
             except Exception as exc:
                 frame_analyses.append(f"[{timestamp_s:.1f}s] [erro: {exc}]")
@@ -4462,7 +4470,6 @@ class ToolRouter:
 
         if len(frame_analyses) > 1:
             try:
-                from .agent import run_one_turn
                 synthesis_input = "\n".join(frame_analyses)
                 synth_msg = {
                     "role": "user",
@@ -4473,7 +4480,7 @@ class ToolRouter:
                         "Sintetize uma resposta final coerente sobre o vídeo completo."
                     ),
                 }
-                synthesis = run_one_turn(self._resolve_vision_client("video_analyze"), [synth_msg], tools=None)
+                synthesis = self._llm_single_turn(self._resolve_vision_client("video_analyze"), [synth_msg])
                 lines.append("\nSíntese:")
                 lines.append(str(synthesis)[:600])
             except Exception:
@@ -4501,7 +4508,6 @@ class ToolRouter:
             data_url = f"data:image/jpeg;base64,{b64}"
 
             try:
-                from .agent import run_one_turn
                 msg = {
                     "role": "user",
                     "content": [
@@ -4509,7 +4515,7 @@ class ToolRouter:
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-                resp = run_one_turn(self._resolve_vision_client("video_analyze"), [msg], tools=None)
+                resp = self._llm_single_turn(self._resolve_vision_client("video_analyze"), [msg])
                 frame_analyses.append(f"[frame {idx}] {str(resp)[:300]}")
             except Exception as exc:
                 frame_analyses.append(f"[frame {idx}] [erro: {exc}]")
@@ -5725,7 +5731,6 @@ class ToolRouter:
         b64 = base64.b64encode(screenshot_bytes).decode()
         data_url = f"data:image/png;base64,{b64}"
         try:
-            from .agent import run_one_turn
             msg = {
                 "role": "user",
                 "content": [
@@ -5733,7 +5738,7 @@ class ToolRouter:
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }
-            return str(run_one_turn(vision_client, [msg], tools=None))
+            return str(self._llm_single_turn(vision_client, [msg]))
         except Exception as exc:
             raise ToolError(f"browser_vision: falha na análise — {exc}") from exc
 

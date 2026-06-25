@@ -371,11 +371,11 @@ class TestMixtureOfAgents:
     def test_chama_perspectivas_em_paralelo(self, router_with_client):
         call_count = {"n": 0}
 
-        def fake_run(client, messages, tools):
+        def fake_run(client, messages):
             call_count["n"] += 1
             return f"Resposta {call_count['n']}"
 
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", side_effect=fake_run):
             result = router_with_client._mixture_of_agents({
                 "query": "Como melhorar performance?",
                 "perspectives": "analitico|critico",
@@ -389,11 +389,11 @@ class TestMixtureOfAgents:
     def test_sintetiza_quando_synthesize_true(self, router_with_client):
         call_count = {"n": 0}
 
-        def fake_run(client, messages, tools):
+        def fake_run(client, messages):
             call_count["n"] += 1
             return "Insight relevante"
 
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", side_effect=fake_run):
             result = router_with_client._mixture_of_agents({
                 "query": "Analise este problema",
                 "perspectives": "critico|pragmatico",
@@ -407,14 +407,14 @@ class TestMixtureOfAgents:
     def test_perspectives_custom(self, router_with_client):
         captured_prompts = []
 
-        def fake_run(client, messages, tools):
+        def fake_run(client, messages):
             system = next(
                 (m["content"] for m in messages if m.get("role") == "system"), ""
             )
             captured_prompts.append(system)
             return "resposta"
 
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", side_effect=fake_run):
             router_with_client._mixture_of_agents({
                 "query": "Teste",
                 "perspectives": "junior|senior",
@@ -427,11 +427,11 @@ class TestMixtureOfAgents:
     def test_4_perspectivas_padrao(self, router_with_client):
         call_count = {"n": 0}
 
-        def fake_run(client, messages, tools):
+        def fake_run(client, messages):
             call_count["n"] += 1
             return "ok"
 
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", side_effect=fake_run):
             router_with_client._mixture_of_agents({
                 "query": "Questão complexa",
                 "synthesize": "false",
@@ -441,7 +441,7 @@ class TestMixtureOfAgents:
         assert call_count["n"] == 4
 
     def test_output_contem_query(self, router_with_client):
-        with patch("bauer.agent.run_one_turn", return_value="resposta"):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", return_value="resposta"):
             result = router_with_client._mixture_of_agents({
                 "query": "Pergunta única aqui",
                 "perspectives": "analitico",
@@ -452,13 +452,13 @@ class TestMixtureOfAgents:
     def test_perspectiva_com_erro_nao_quebra_tudo(self, router_with_client):
         call_count = {"n": 0}
 
-        def fake_run(client, messages, tools):
+        def fake_run(client, messages):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise Exception("Falha simulada")
             return "resposta ok"
 
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", side_effect=fake_run):
             result = router_with_client._mixture_of_agents({
                 "query": "Teste resiliente",
                 "perspectives": "analitico|critico",
@@ -490,7 +490,7 @@ class TestVideoAnalyze:
             })
 
     def test_url_passa_para_provider(self, router_with_client):
-        with patch("bauer.agent.run_one_turn", return_value="Um vídeo de gatos."):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", return_value="Um vídeo de gatos."):
             result = router_with_client._video_analyze({
                 "video": "https://example.com/cats.mp4",
                 "query": "O que tem no vídeo?",
@@ -501,11 +501,11 @@ class TestVideoAnalyze:
     def test_url_mensagem_tem_image_url(self, router_with_client):
         captured = {}
 
-        def fake_run(client, messages, tools):
+        def fake_run(client, messages):
             captured["messages"] = messages
             return "ok"
 
-        with patch("bauer.agent.run_one_turn", side_effect=fake_run):
+        with patch("bauer.tool_router.ToolRouter._llm_single_turn", side_effect=fake_run):
             router_with_client._video_analyze({
                 "video": "https://example.com/v.mp4",
                 "query": "Teste",
@@ -572,7 +572,7 @@ class TestVideoAnalyze:
         with patch.dict(sys.modules, {"PIL": fake_pil, "PIL.Image": fake_pil_image}):
             with patch("bauer.tool_router._package_available") as mock_avail:
                 mock_avail.side_effect = lambda name: name == "PIL"
-                with patch("bauer.agent.run_one_turn", return_value="Frame analisado."):
+                with patch("bauer.tool_router.ToolRouter._llm_single_turn", return_value="Frame analisado."):
                     result = router_with_client._video_analyze({
                         "video": "anim.gif",
                         "query": "O que acontece?",
