@@ -261,6 +261,7 @@ _TOOL_SECURITY: dict[str, dict] = {
     "skill_view":     {"permission": "read",    "risk": "low",    "approval": False},
     "app_factory_status": {"permission": "read", "risk": "low",   "approval": False},
     "app_factory_score":  {"permission": "read", "risk": "low",   "approval": False},
+    "verify_app":     {"permission": "shell",   "risk": "medium", "approval": False},
     "memory":         {"permission": "read",    "risk": "low",    "approval": False},
     "session_search": {"permission": "read",    "risk": "low",    "approval": False},
     "kanban_list":    {"permission": "read",    "risk": "low",    "approval": False},
@@ -916,6 +917,20 @@ class ToolRouter:
             ),
             "args": {
                 "path": "str — subdiretorio do projeto (opcional)",
+            },
+        }
+        self._tools["verify_app"] = {
+            "fn": self._verify_app,
+            "description": (
+                "Auto-verifica que o app GERADO realmente roda: detecta a stack "
+                "(Node/Python/Go/Rust), instala deps, builda e roda testes/smoke, "
+                "e reporta pass/fail com a cauda do erro. Use APÓS implementar uma "
+                "fatia para confirmar que funciona (não só que os arquivos existem)."
+            ),
+            "args": {
+                "path": "str — subdiretorio do projeto (opcional; default = projeto ativo da App Factory)",
+                "install": "bool — instalar dependencias antes (opcional, default true)",
+                "timeout": "int — timeout por passo em segundos (opcional, default 300)",
             },
         }
 
@@ -4775,6 +4790,45 @@ class ToolRouter:
         ]
         for item, ok in sc["checks"].items():
             lines.append(f"  [{'x' if ok else ' '}] {item}")
+        return "\n".join(lines)
+
+    def _verify_app(self, args: dict) -> str:
+        """P1.1 — auto-verificação: builda/roda/testa o app gerado e reporta."""
+        from . import app_verify as av
+        from . import app_factory as af
+
+        # Resolve o projeto: path explícito > projeto ativo da App Factory > workspace.
+        sub = str(args.get("path", "") or "").strip()
+        if sub and sub not in (".", "./"):
+            project_dir = self._sandbox(sub)
+        else:
+            active = af.get_active_project(self.workspace)
+            project_dir = active if active is not None else self.workspace
+
+        install = bool(args.get("install", True))
+        try:
+            timeout = int(args.get("timeout", 300))
+        except (TypeError, ValueError):
+            timeout = 300
+        timeout = max(10, min(timeout, 1800))
+
+        result = av.verify_project(project_dir, install=install, timeout=timeout)
+
+        lines = [f"[verify_app] {result.summary}", f"  projeto: {result.project}"]
+        for s in result.steps:
+            mark = "pulado" if s.skipped else ("ok" if s.ok else f"FALHOU rc={s.rc}")
+            lines.append(f"  → {s.name}: {mark} ({' '.join(s.cmd)})")
+            if not s.ok and not s.skipped and s.output:
+                tail = s.output.strip().splitlines()[-15:]
+                lines.append("    --- saída (cauda) ---")
+                lines.extend(f"    {ln}" for ln in tail)
+            elif s.skipped and s.reason:
+                lines.append(f"    motivo: {s.reason}")
+        if not result.ok:
+            lines.append(
+                "  AÇÃO: corrija o erro acima e rode verify_app de novo até passar "
+                "(não considere a fatia pronta enquanto falhar)."
+            )
         return "\n".join(lines)
 
     # =========================================================================
