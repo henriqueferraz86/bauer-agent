@@ -17,6 +17,31 @@ import httpx
 from .ollama_client import ModelfileParams
 
 
+def _is_html_body(body: str) -> bool:
+    """True when provider returned an HTML page instead of JSON (login/Cloudflare/proxy)."""
+    stripped = body.lstrip()
+    return stripped.startswith("<") or stripped.lower().startswith("<!doctype")
+
+
+def _safe_body(status: int, body: str) -> str:
+    """Return a human-readable one-liner for error body, hiding raw HTML dumps."""
+    if _is_html_body(body):
+        # 403 from ChatGPT/Codex backend when model not accessible via this token
+        if status == 403:
+            return (
+                "HTTP 403 — provider retornou pagina HTML (bloqueio de acesso).\n"
+                "  Este modelo/endpoint nao aceita este token.\n"
+                "  - Para o Codex backend: use 'gpt-5-codex' ou 'codex-mini-latest'\n"
+                "  - Ou troque de provider: bauer model"
+            )
+        return (
+            f"HTTP {status} — provider retornou pagina HTML em vez de JSON "
+            f"(bloqueio de login, proxy ou Cloudflare).\n"
+            "  Troque de provider: bauer model"
+        )
+    return body
+
+
 class OpenAIClientError(Exception):
     pass
 
@@ -177,7 +202,7 @@ class OpenAIClient:
         if resp.status_code >= 400:
             body_text = resp.text[:600]
             raise OpenAIClientError(
-                f"[Provedor] HTTP {resp.status_code} em tool calling. Detalhe: {body_text}"
+                f"[Provedor] {_safe_body(resp.status_code, body_text)}"
             )
 
         try:
@@ -382,11 +407,15 @@ class OpenAIClient:
                         "  - Ou configure a chave em config.yaml: <provider>.api_key"
                     )
             elif status == 403:
-                _hint = (
-                    "Acesso negado.\n"
-                    "  - Sua API key pode nao ter acesso a este modelo\n"
-                    "  - Verifique os permissoes da chave no provider"
-                )
+                if _is_html_body(body):
+                    _hint = _safe_body(403, body)
+                else:
+                    _hint = (
+                        "Acesso negado (HTTP 403).\n"
+                        "  - Sua API key pode nao ter acesso a este modelo\n"
+                        "  - Verifique as permissoes da chave no provider\n"
+                        f"  - Detalhe: {body[:200]}"
+                    )
             elif 500 <= status < 600:
                 _hint = (
                     "Erro no servidor do provider.\n"

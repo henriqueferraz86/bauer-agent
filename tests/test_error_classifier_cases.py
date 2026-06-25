@@ -260,3 +260,63 @@ def test_timeout_exception_types(exception_class):
     assert any(k in reason_str for k in ("timeout", "connection", "transient", "transport")), (
         f"Expected timeout for exception type {exception_class}, got: {reason}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 403 → should_fallback (modelo/endpoint rejeita token → tenta próximo provider)
+# ---------------------------------------------------------------------------
+
+def _exc_with_status(status: int, msg: str = "error") -> Exception:
+    exc = Exception(msg)
+    exc.status_code = status  # type: ignore[attr-defined]
+    return exc
+
+
+def test_403_triggers_fallback():
+    from bauer.error_classifier import classify_api_error
+    result = classify_api_error(_exc_with_status(403, "HTTP 403 pagina html"))
+    assert result.should_fallback is True, "403 deve disparar fallback para próximo provider"
+
+
+def test_401_no_fallback():
+    from bauer.error_classifier import classify_api_error
+    result = classify_api_error(_exc_with_status(401, "HTTP 401 Unauthorized"))
+    assert result.should_fallback is False, "401 (chave inválida) NÃO deve desperdiçar fallbacks"
+
+
+def test_403_not_retryable():
+    from bauer.error_classifier import classify_api_error
+    result = classify_api_error(_exc_with_status(403))
+    assert result.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# HTML body detection (_is_html_body / _safe_body)
+# ---------------------------------------------------------------------------
+
+def test_is_html_body_true_for_html():
+    from bauer.openai_client import _is_html_body
+    assert _is_html_body("<!DOCTYPE html><html>") is True
+    assert _is_html_body("<html><head>") is True
+    assert _is_html_body("   <html>") is True  # leading whitespace
+
+
+def test_is_html_body_false_for_json():
+    from bauer.openai_client import _is_html_body
+    assert _is_html_body('{"error": "forbidden"}') is False
+    assert _is_html_body("Access denied") is False
+
+
+def test_safe_body_403_html_returns_clean_message():
+    from bauer.openai_client import _safe_body
+    html_body = "<!DOCTYPE html><html><body>Login Required</body></html>"
+    result = _safe_body(403, html_body)
+    assert "HTML" in result or "html" in result.lower()
+    assert "<!DOCTYPE" not in result  # não vaza o HTML bruto
+
+
+def test_safe_body_json_error_passthrough():
+    from bauer.openai_client import _safe_body
+    json_body = '{"error": "model not found"}'
+    result = _safe_body(403, json_body)
+    assert "model not found" in result

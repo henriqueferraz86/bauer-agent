@@ -270,9 +270,12 @@ def classify_api_error(
     # 1. Auth errors
     if status in (401, 403):
         permanent = status == 403 and not _matches_any(msg, _RATE_LIMIT_PATTERNS)
+        # 403 = model/endpoint rejeita este token → tenta próximo provider.
+        # 401 = chave inválida em geral → não desperdiça fallbacks.
         return _result(
             FailReason.AUTH_PERMANENT if permanent else FailReason.AUTH_ERROR,
             retryable=False,
+            fallback=(status == 403),
         )
 
     # 2. Payment / rate limit
