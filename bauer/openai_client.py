@@ -39,7 +39,7 @@ def _safe_body(status: int, body: str) -> str:
             f"(bloqueio de login, proxy ou Cloudflare).\n"
             "  Troque de provider: bauer model"
         )
-    return body
+    return f"HTTP {status}: {body}"
 
 
 class OpenAIClientError(Exception):
