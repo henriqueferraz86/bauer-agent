@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 from .shell_runner import ShellError
 from .tool_policy import load_tool_policy
 from .tools.browser import BrowserToolsMixin
+from .tools.channel import ChannelToolsMixin
 from .tools.code_intel import CodeIntelToolsMixin
 from .tools.cronjob import CronjobToolsMixin
 from .tools.execution import ExecToolsMixin
@@ -362,6 +363,7 @@ def _normalize_tool_context(value: str | None) -> str:
 
 class ToolRouter(
     BrowserToolsMixin,
+    ChannelToolsMixin,
     CodeIntelToolsMixin,
     CronjobToolsMixin,
     ExecToolsMixin,
@@ -2187,62 +2189,6 @@ class ToolRouter(
 
     # --- channel_send / channel_list — Bauer Gateway ----------------------------
 
-    def _channel_send(self, args: dict) -> str:
-        """Envia mensagem a um canal do gateway via outbox durável.
-
-        A mensagem NÃO é entregue inline — entra no GatewayOutbox (SQLite)
-        e o `bauer gateway start` (pump) entrega com retry. Isso torna o
-        envio auditável e resiliente a quedas de rede no meio do turno.
-        """
-        channel_name = str(args.get("channel", "")).strip()
-        text = str(args.get("text", "")).strip()
-        if not channel_name:
-            raise ToolError("channel_send requer 'channel'. Use channel_list para ver os nomes.")
-        if not text:
-            raise ToolError("channel_send requer 'text'.")
-
-        from .gateway_channels import GatewayChannelRegistry
-        from .gateway_outbox import GatewayOutbox
-
-        registry = GatewayChannelRegistry(self.workspace)
-        entry = registry.get(channel_name)
-        if entry is None:
-            known = ", ".join(c.name for c in registry.list_channels()) or "(nenhum)"
-            raise ToolError(
-                f"Canal '{channel_name}' não existe. Canais configurados: {known}. "
-                "Registre com: bauer gateway-channel-add <nome> <plataforma> <target>"
-            )
-        if not entry.enabled:
-            raise ToolError(f"Canal '{channel_name}' está desabilitado.")
-
-        outbox = GatewayOutbox(self.workspace)
-        message = outbox.enqueue(
-            channel=entry.platform,
-            target=entry.target,
-            payload={"text": text, "source": "channel_send"},
-            metadata=dict(entry.metadata),
-        )
-        return (
-            f"Mensagem enfileirada para '{channel_name}' ({entry.platform}). "
-            f"id={message.message_id} — entrega via `bauer gateway start`."
-        )
-
-    def _channel_list(self, args: dict) -> str:
-        """Lista canais de notificação registrados no gateway."""
-        from .gateway_channels import GatewayChannelRegistry
-
-        registry = GatewayChannelRegistry(self.workspace)
-        channels = registry.list_channels(include_disabled=True)
-        if not channels:
-            return (
-                "Nenhum canal configurado. Registre com: "
-                "bauer gateway-channel-add <nome> <plataforma> <target>"
-            )
-        lines = ["Canais do Bauer Gateway:"]
-        for c in channels:
-            state = "on" if c.enabled else "off"
-            lines.append(f"- {c.name} [{c.platform}] → {c.target} ({state})")
-        return "\n".join(lines)
 
     def _send_message(self, args: dict) -> str:
         """Envia mensagem direto pelo bridge vivo do gateway (ou outbox).
