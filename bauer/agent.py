@@ -1332,7 +1332,7 @@ def run_one_turn(
     client: OllamaClient,
     model_name: str,
     *,
-    budget: "IterationBudget | None" = None,
+    budget: "IterationBudget | None" = None,  # noqa: F821
     tool_timeout_s: float = 30.0,
     tracer: "Any | None" = None,
     session_id: str | None = None,
@@ -2638,7 +2638,8 @@ def run_agent_session(
                     try:
                         import json as _json_l8
                         from datetime import datetime as _dt_l8
-                        _pref_dir = Path("memory") if not (Path("memory")).exists() else Path("memory")
+                        from pathlib import Path as _Path_l8
+                        _pref_dir = _Path_l8("memory")
                         _pref_dir.mkdir(parents=True, exist_ok=True)
                         (_pref_dir / "model_preference.json").write_text(
                             _json_l8.dumps({

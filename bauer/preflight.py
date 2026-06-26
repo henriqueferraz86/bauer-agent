@@ -234,6 +234,17 @@ def run_doctor(
         tool_mode = "bridge"  # padrão conservador; Fase 4 implementa de fato
         findings.append(f"Tool mode planejado: {tool_mode}")
 
+    # --- segurança do serve -------------------------------------------------------
+    _serve_host = config.serve.host
+    _serve_key = config.serve.api_key or ""
+    if _serve_host not in ("127.0.0.1", "localhost") and not _serve_key:
+        findings.append(
+            "[AVISO DE SEGURANÇA] serve.host está exposto na rede "
+            f"({_serve_host}) mas serve.api_key está vazio — qualquer host na rede "
+            "pode acessar a API sem autenticação. "
+            "Configure serve.api_key ou altere serve.host para 127.0.0.1."
+        )
+
     # --- status final ------------------------------------------------------------
     if is_cloud:
         # Cloud sempre pode rodar (desde que contexto > 0)

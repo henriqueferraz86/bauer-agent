@@ -621,20 +621,45 @@ environment:
 
 ## 🧪 Desenvolvimento
 
+### Setup em 3 comandos (recomendado — usa uv)
+
 ```bash
-# Instalar com dependências de dev
-pip install -e ".[server]"
-pip install pytest pytest-cov
+pip install uv          # instala o gerenciador de pacotes
+uv sync --all-extras    # instala todas as dependências (incluindo dev)
+uv run pytest           # roda a suite
+```
 
-# Rodar todos os testes
-pytest
+> **Windows — conflito com `bauer.exe` em uso:** se `uv sync` falhar por permissão no executável,
+> pare o processo antes: `taskkill /f /im bauer.exe` (cmd) ou `Stop-Process -Name bauer -Force` (PowerShell).
+> Alternativa: use `uv run bauer` em vez de instalar o executável globalmente.
 
+### Comandos úteis
+
+```bash
 # Cobertura
-pytest --cov=bauer --cov-report=term-missing
+uv run pytest --cov=bauer --cov-report=term-missing
+
+# Verificar tempo dos testes mais lentos
+uv run pytest --durations=10 -q
+
+# Lint crítico (mesmo check que bloqueia o CI)
+uv run ruff check bauer/ --select E9,F63,F7,F82
+
+# Lint completo (informativo)
+uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
 
 # Diagnóstico completo
 bauer doctor
 bauer doctor --providers   # testa conectividade de todos os providers
+```
+
+### Setup alternativo (sem uv)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+pytest
 ```
 
 ---

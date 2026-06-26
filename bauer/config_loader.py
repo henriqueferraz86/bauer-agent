@@ -523,7 +523,7 @@ class OllamaSection(_StrictSection):
 
 
 class ServeSection(_StrictSection):
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"  # default seguro — bind apenas local; use 0.0.0.0 só com api_key
     port: int = Field(ge=1, le=65535, default=8000)
     api_key: str = ""  # Bearer token para proteger o bauer serve (ou BAUER_SERVE_API_KEY no .env)
     workers: int = Field(ge=1, le=8, default=1)

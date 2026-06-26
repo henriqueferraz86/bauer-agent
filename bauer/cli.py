@@ -2783,6 +2783,7 @@ def agent(
             host="0.0.0.0",
             port=port,
             console=console,
+            config_path=config,
         )
         # ── Gateway WebSocket (opcional — requer --port) ──────────────────────
         if gateway_port > 0:
@@ -2931,6 +2932,7 @@ def _start_embedded_server(
     host: str,
     port: int,
     console: Console,
+    config_path: "Path | None" = None,  # noqa: F821
 ):
     """Sobe o servidor HTTP em uma daemon thread e retorna o thread.
 
@@ -2966,7 +2968,7 @@ def _start_embedded_server(
         api_key=api_key,
         rate_limit_requests=60,
         rate_limit_window_s=60.0,
-        config_path=config,
+        config_path=config_path,
     )
 
     uv_config = uvicorn.Config(
@@ -9800,7 +9802,7 @@ def _daemon_service_cfg(
     workers: int = 2,
     budget_usd: float = 5.0,
     budget_hours: float = 24.0,
-) -> "ProcessServiceConfig":
+) -> "ProcessServiceConfig":  # noqa: F821
     from bauer.process_service import ProcessServiceConfig, pid_reader_from_file
     return ProcessServiceConfig(
         service_name="bauer-daemon",
@@ -9827,7 +9829,7 @@ def _daemon_svc_manager(
     workers: int = 2,
     budget_usd: float = 5.0,
     budget_hours: float = 24.0,
-) -> "ProcessServiceManager":
+) -> "ProcessServiceManager":  # noqa: F821
     from bauer.process_service import ProcessServiceManager
     from .paths import get_bauer_home
     return ProcessServiceManager(_daemon_service_cfg(board, workers, budget_usd, budget_hours), project_dir=get_bauer_home())
@@ -9909,7 +9911,7 @@ def daemon_service_logs(
 # ── bauer runtime service — serviço do sistema ───────────────────────────────
 
 
-def _runtime_service_cfg(workspace: "Path | None" = None) -> "ProcessServiceConfig":
+def _runtime_service_cfg(workspace: "Path | None" = None) -> "ProcessServiceConfig":  # noqa: F821
     from bauer.process_service import ProcessServiceConfig, pid_reader_from_supervisor_json
     ws = workspace or _PROJECT_WORKSPACE
 
@@ -9929,7 +9931,7 @@ def _runtime_service_cfg(workspace: "Path | None" = None) -> "ProcessServiceConf
     )
 
 
-def _runtime_svc_manager(workspace: "Path | None" = None) -> "ProcessServiceManager":
+def _runtime_svc_manager(workspace: "Path | None" = None) -> "ProcessServiceManager":  # noqa: F821
     from bauer.process_service import ProcessServiceManager
     from .paths import get_bauer_home
     return ProcessServiceManager(_runtime_service_cfg(workspace), project_dir=get_bauer_home())
@@ -10030,7 +10032,7 @@ def _serve_pid_path(project_dir: "Path") -> "Path":
     return ws / ".bauer_serve" / "serve.pid"
 
 
-def _serve_service_cfg() -> "ProcessServiceConfig":
+def _serve_service_cfg() -> "ProcessServiceConfig":  # noqa: F821
     from bauer.process_service import ProcessServiceConfig, pid_reader_from_file
     return ProcessServiceConfig(
         service_name="bauer-serve",
@@ -10043,7 +10045,7 @@ def _serve_service_cfg() -> "ProcessServiceConfig":
     )
 
 
-def _serve_svc_manager() -> "ProcessServiceManager":
+def _serve_svc_manager() -> "ProcessServiceManager":  # noqa: F821
     from bauer.process_service import ProcessServiceManager
     return ProcessServiceManager(_serve_service_cfg())
 

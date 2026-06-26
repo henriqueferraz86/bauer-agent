@@ -73,3 +73,13 @@ bauer = [
 testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"
+
+[tool.ruff.lint]
+# Selecao de regras versionada aqui para manter CI e editor em sincronia.
+# Bloqueante no CI (job lint-critical): E9, F63, F7, F82
+# Informativo no CI (job lint): E, F, W com as excecoes abaixo
+select = ["E", "F", "W"]
+# E501: linhas longas — aceito no projeto (cli.py/tool_router.py tem linhas necessariamente longas)
+# W291/W293: trailing whitespace — ruido sem impacto funcional
+# E302/E303: blank lines — nao seguimos PEP8 rigido aqui
+ignore = ["E501", "W291", "W293", "E302", "E303"]

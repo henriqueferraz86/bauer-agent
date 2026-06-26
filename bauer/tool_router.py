@@ -2646,7 +2646,7 @@ class ToolRouter:
             raise ToolError("json_query requer 'query'.")
 
         # Tenta como arquivo primeiro, depois como string JSON
-        raw: Any = None
+        raw = None
         try:
             p = self._sandbox(str(data_arg))
             if p.exists() and p.is_file():

@@ -125,7 +125,7 @@ class DAGGraph:
     # Rich rendering
     # ------------------------------------------------------------------
 
-    def to_rich_tree(self) -> "rich.tree.Tree":  # type: ignore[name-defined]
+    def to_rich_tree(self) -> "rich.tree.Tree":  # type: ignore[name-defined]  # noqa: F821
         """Gera Rich Tree para exibição no terminal."""
         try:
             from rich.tree import Tree
