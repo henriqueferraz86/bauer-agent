@@ -4815,19 +4815,54 @@ class ToolRouter:
         result = av.verify_project(project_dir, install=install, timeout=timeout)
 
         # P1.4: persiste resultado para o Delivery Score ler sem re-executar.
+        _MAX_VERIFY_ATTEMPTS = 3
+        _attempt_num = 1
         try:
             import json as _json, time as _time
             _meta = Path(project_dir) / ".bauer_meta"
             _meta.mkdir(parents=True, exist_ok=True)
-            (_meta / "verify_result.json").write_text(
-                _json.dumps({
-                    "ok": result.ok,
-                    "stack": result.stack,
-                    "summary": result.summary,
-                    "ts": _time.time(),
-                }),
-                encoding="utf-8",
+
+            # Lê tentativas anteriores (se houver) para incrementar o contador.
+            _prev_path = _meta / "verify_result.json"
+            try:
+                _prev = _json.loads(_prev_path.read_text(encoding="utf-8"))
+                _attempt_num = int(_prev.get("attempts", 0)) + 1
+            except Exception:
+                _attempt_num = 1
+
+            # smoke_passed: True apenas se o step "serve" (port probe) passou.
+            # Distingue "build verde" de "app executado de verdade na porta".
+            _smoke_ok = any(
+                s.name == "serve" and s.ok and not s.skipped
+                for s in result.steps
             )
+
+            _result_data = {
+                "ok": result.ok,
+                "smoke_passed": _smoke_ok,
+                "stack": result.stack,
+                "summary": result.summary,
+                "attempts": _attempt_num,
+                "ts": _time.time(),
+            }
+            _prev_path.write_text(_json.dumps(_result_data), encoding="utf-8")
+
+            # Apende ao log de tentativas para rastrear progresso de autocorrecao.
+            _log_entry = {
+                "attempt": _attempt_num,
+                "ok": result.ok,
+                "smoke_passed": _smoke_ok,
+                "summary": result.summary,
+                "ts": _time.time(),
+                "steps": [
+                    {"name": s.name, "ok": s.ok, "skipped": s.skipped,
+                     "rc": s.rc, "output_tail": s.output[-500:] if s.output else ""}
+                    for s in result.steps
+                ],
+            }
+            _log_path = _meta / "verify_log.jsonl"
+            with _log_path.open("a", encoding="utf-8") as _lf:
+                _lf.write(_json.dumps(_log_entry) + "\n")
         except Exception:
             pass  # non-fatal
 
@@ -4841,11 +4876,20 @@ class ToolRouter:
                 lines.extend(f"    {ln}" for ln in tail)
             elif s.skipped and s.reason:
                 lines.append(f"    motivo: {s.reason}")
+        lines.append(f"  tentativa: {_attempt_num}/{_MAX_VERIFY_ATTEMPTS}")
         if not result.ok:
-            lines.append(
-                "  AÇÃO: corrija o erro acima e rode verify_app de novo até passar "
-                "(não considere a fatia pronta enquanto falhar)."
-            )
+            if _attempt_num >= _MAX_VERIFY_ATTEMPTS:
+                lines.append(
+                    f"  LIMITE ATINGIDO: {_attempt_num} tentativas sem sucesso. "
+                    "Documente o que foi tentado no PROGRESS.md e reporte ao usuário — "
+                    "não tente mais autocorrecao nesta sessão."
+                )
+            else:
+                remaining = _MAX_VERIFY_ATTEMPTS - _attempt_num
+                lines.append(
+                    f"  AÇÃO: corrija o erro acima e rode verify_app de novo "
+                    f"({remaining} tentativa(s) restante(s))."
+                )
         return "\n".join(lines)
 
     # =========================================================================

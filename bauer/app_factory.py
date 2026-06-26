@@ -333,7 +333,10 @@ def current_gate(project_dir: Path | str) -> Optional[Gate]:
     if not is_governed(project_dir):
         return None
     if planning_complete(project_dir):
-        if delivery_score(project_dir)["ready"]:
+        score_data = delivery_score(project_dir)
+        # Gate.DELIVERY exige score >= limiar E smoke run verde (gate hard).
+        # "arquivos presentes" não basta — o app tem que rodar de verdade.
+        if score_data["ready"] and _last_verify_ok(project_dir):
             return Gate.DELIVERY
         return Gate.IMPLEMENTATION
     if _spec_filled(project_dir):
