@@ -2510,8 +2510,9 @@ def run_agent_session(
         from .plugin_hooks import hooks as _phooks
         _phooks.ensure_plugins_loaded()
         _phooks.emit("session_start", session_id=session_id or "local", model=model_name)
-    except Exception:
-        pass
+    except Exception as _exc:
+        from .logging_config import log_suppressed
+        log_suppressed("plugin_hooks.session_start", _exc)
 
     # Cria sessão prompt_toolkit (autocomplete de /) apenas em terminal interativo real.
     # Só exige stdin como tty — stdout pode estar capturado pelo Rich em alguns terminais.
