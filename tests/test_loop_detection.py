@@ -1,12 +1,13 @@
-"""Testes para _detect_loop e _loop_fp (detecção de loop no agent).
+"""Testes para _detect_loop, _loop_fp e _args_sig (detecção de loop no agent).
 
 Cobre:
-1. Fingerprint correta
+1. Fingerprint correta (inclui args_sig — P2.1)
 2. Nenhum loop em log curto
-3. Hard stop (5× consecutivas)
-4. Oscilação A→B→A→B→A→B
+3. Hard stop (5x consecutivas)
+4. Oscilação A->B->A->B->A->B
 5. Tools diferentes não disparam alerta
-6. Oscilação com mesma tool não dispara (A→A→A → repetição, não oscilação)
+6. Oscilação com mesma tool não dispara (A->A->A -> repetição, não oscilação)
+7. Falso-positivo eliminado: mesma tool + mesmo resultado + args diferentes -> fingerprints distintas (P2.1)
 """
 
 from __future__ import annotations
@@ -16,16 +17,20 @@ import pytest
 from bauer.agent import (
     _LOOP_OSCIL_WINDOW,
     _LOOP_REPEAT_HARD,
+    _args_sig,
     _detect_loop,
     _loop_fp,
 )
 
 
-def _entry(tool: str, result: str = "resultado ok") -> dict:
-    return {"tool": tool, "result": result}
+def _entry(tool: str, result: str = "resultado ok", args: dict | None = None) -> dict:
+    e: dict = {"tool": tool, "result": result}
+    if args is not None:
+        e["args_sig"] = _args_sig(args)
+    return e
 
 
-# ─── _loop_fp ────────────────────────────────────────────────────────────────
+# _loop_fp
 
 
 def test_loop_fp_includes_tool_name():
@@ -42,7 +47,6 @@ def test_loop_fp_includes_result_prefix():
 def test_loop_fp_truncates_long_result():
     e = _entry("read_file", "x" * 500)
     fp = _loop_fp(e)
-    # Fingerprint não deve ter 500 chars do resultado
     assert len(fp) < 200
 
 
@@ -58,7 +62,48 @@ def test_loop_fp_same_tool_different_result_differ():
     assert a != b
 
 
-# ─── _detect_loop — sem loop ─────────────────────────────────────────────────
+# P2.1: args_sig previne falso-positivo
+
+
+def test_args_sig_deterministic():
+    """Mesmo args -> mesmo hash."""
+    assert _args_sig({"file": "a.py"}) == _args_sig({"file": "a.py"})
+
+
+def test_args_sig_different_args_differ():
+    assert _args_sig({"file": "a.py"}) != _args_sig({"file": "b.py"})
+
+
+def test_args_sig_empty_args():
+    sig = _args_sig({})
+    assert isinstance(sig, str) and len(sig) > 0
+
+
+def test_loop_fp_same_tool_same_result_different_args_differ():
+    """P2.1: mesmo tool + mesmo resultado + args diferentes -> fingerprints distintas."""
+    e_a = _entry("read_file", "# Header\nContent", args={"path": "a.py"})
+    e_b = _entry("read_file", "# Header\nContent", args={"path": "b.py"})
+    assert _loop_fp(e_a) != _loop_fp(e_b)
+
+
+def test_loop_fp_same_tool_same_result_same_args_equal():
+    """P2.1: mesmo tool + mesmo resultado + mesmos args -> mesma fingerprint (loop real)."""
+    e_a = _entry("read_file", "conteudo", args={"path": "f.py"})
+    e_b = _entry("read_file", "conteudo", args={"path": "f.py"})
+    assert _loop_fp(e_a) == _loop_fp(e_b)
+
+
+def test_no_false_positive_different_args_consecutive():
+    """P2.1: agent lendo 2 arquivos diferentes com mesmo conteudo nao dispara loop."""
+    log = [
+        _entry("read_file", "# Header\n", args={"path": "readme.md"}),
+        _entry("read_file", "# Header\n", args={"path": "other.md"}),
+    ]
+    warn, hard = _detect_loop(log)
+    assert warn is None and hard is False
+
+
+# _detect_loop -- sem loop
 
 
 def test_detect_loop_empty_log():
@@ -93,7 +138,7 @@ def test_detect_loop_hard_stop_silencioso():
     assert warn is None
 
 
-# ─── _detect_loop — hard stop (5×) ───────────────────────────────────────────
+# _detect_loop -- hard stop (5x)
 
 
 def test_detect_loop_hard_stop_at_threshold():
@@ -119,7 +164,7 @@ def test_detect_loop_hard_stop_beyond_threshold():
 
 
 def test_detect_loop_consecutive_resets_with_different():
-    """2 repetições + 1 diferente + 2 repetições → não deve dar warning."""
+    """2 repetições + 1 diferente + 2 repetições -> não deve dar warning."""
     log = [
         _entry("list_dir", "r1"),
         _entry("list_dir", "r1"),
@@ -131,7 +176,7 @@ def test_detect_loop_consecutive_resets_with_different():
     assert warn is None  # só 2 consecutivas no final
 
 
-# ─── _detect_loop — oscilação A→B→A→B ────────────────────────────────────────
+# _detect_loop -- oscilação A->B->A->B
 
 
 def test_detect_loop_oscillation_detected():
@@ -162,13 +207,11 @@ def test_detect_loop_oscillation_below_window():
         log.append(_entry("list_dir"))
         log.append(_entry("read_file"))
     warn, hard = _detect_loop(log)
-    # Pode ter soft warning (repetição) mas não oscilação — a janela não está cheia
-    # O importante é que o log é menor que OSCIL_WINDOW
     assert len(log) < _LOOP_OSCIL_WINDOW
 
 
 def test_detect_loop_three_tools_no_oscillation():
-    """A→B→C→A→B→C não é oscilação de 2 (precisa ser exatamente 2 padrões alternados)."""
+    """A->B->C->A->B->C não é oscilação de 2."""
     log = [
         _entry("list_dir"),
         _entry("read_file"),
@@ -178,35 +221,28 @@ def test_detect_loop_three_tools_no_oscillation():
         _entry("execute_code"),
     ]
     warn, hard = _detect_loop(log)
-    # 3 tools diferentes nas posições ímpares e pares — não é oscilação de 2
-    # (evens = {list_dir, execute_code}, não é conjunto de 1 elemento)
-    # Pode retornar None ou warning por repetição, mas não oscilação 2-cycle
     assert hard is False
 
 
 def test_detect_loop_same_tool_not_oscillation():
-    """A→A→A→A→A→A é repetição hard stop (silencioso), não oscilação."""
+    """A->A->A->A->A->A é repetição hard stop (silencioso), não oscilação."""
     log = [_entry("list_dir")] * _LOOP_OSCIL_WINDOW
     warn, hard = _detect_loop(log)
-    # Hard stop silencioso: sem mensagem, mas para o turno
     assert warn is None
-    assert hard is True  # 6 repetições → hard stop (> _LOOP_REPEAT_HARD=5)
+    assert hard is True  # 6 repetições -> hard stop (> _LOOP_REPEAT_HARD=5)
 
 
-# ─── Prioridade: repetição vs oscilação ──────────────────────────────────────
+# Prioridade: repetição vs oscilação
 
 
 def test_hard_stop_takes_priority_over_oscillation():
-    """Se as últimas calls são repetição E há oscilação no histórico,
-    hard stop deve prevalecer."""
+    """Hard stop deve prevalecer sobre oscilação no histórico."""
     log = []
-    # Oscilação primeiro
     for _ in range(3):
         log.append(_entry("list_dir"))
         log.append(_entry("read_file"))
-    # Depois repetição pesada
     for _ in range(_LOOP_REPEAT_HARD):
         log.append(_entry("execute_code", "mesmo resultado"))
     warn, hard = _detect_loop(log)
     assert warn is None  # hard stop é silencioso
-    assert hard is True  # repetição de execute_code dispara hard stop
+    assert hard is True

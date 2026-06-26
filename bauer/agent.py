@@ -14,6 +14,8 @@ Nenhum tool call é silencioso — cada execução é exibida ao usuário.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 from typing import TYPE_CHECKING, Any
@@ -243,9 +245,19 @@ _LOOP_REPEAT_HARD  = 5   # N° de repetições consecutivas → hard stop imedia
 _LOOP_OSCIL_WINDOW = 6   # Janela de calls para detectar padrão A→B→A→B
 
 
+def _args_sig(args: object) -> str:
+    """Hash curto dos args — distingue chamadas com args diferentes (evita falso-positivo no loop)."""
+    try:
+        raw = json.dumps(args, sort_keys=True, default=str, ensure_ascii=False)
+        return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:8]
+    except Exception:
+        return ""
+
+
 def _loop_fp(entry: dict) -> str:
-    """Fingerprint de uma entrada do tool_log: nome + primeiros 100 chars do resultado."""
-    return f"{entry['tool']}:{entry['result'][:100]}"
+    """Fingerprint: nome + hash dos args + primeiros 100 chars do resultado."""
+    sig = entry.get("args_sig", "")
+    return f"{entry['tool']}:{sig}:{entry['result'][:100]}"
 
 
 def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
@@ -1172,7 +1184,7 @@ def _run_native_tool_turn(
                 # For halt: add the blocked result and return immediately
                 # after processing all pending tool_calls in this batch.
                 if _pre_n.action == "halt":
-                    tool_log.append({"tool": name, "result": result[:300]})
+                    tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
                     ctx.messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
@@ -1221,7 +1233,7 @@ def _run_native_tool_turn(
                     ctx.add_user(_post_n.message)
 
         ctx_result, _ = _ctx_result_for_context(name, result)
-        tool_log.append({"tool": name, "result": result[:300]})
+        tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
         ctx.messages.append({
             "role": "tool",
             "tool_call_id": tc_id,
@@ -1303,7 +1315,7 @@ def _native_turn_interactive(
         console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
 
         ctx_result, _ = _ctx_result_for_context(name, result)
-        cli_tool_log.append({"tool": name, "result": result[:300]})
+        cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
         ctx.messages.append({
             "role": "tool",
             "tool_call_id": tc_id,
@@ -1448,7 +1460,7 @@ def run_one_turn(
                         if _pre.action == "halt":
                             return _pre.message, tool_log
                         tool_result = f"[BLOCKED] {_pre.message}"
-                        tool_log.append({"tool": action_name, "result": tool_result[:300]})
+                        tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300]})
                         combined_parts.append(f"[Resultado de {action_name}]\n{tool_result}")
                         continue
 
@@ -1502,10 +1514,10 @@ def run_one_turn(
                         ctx.add_user(_post.message)
                     elif _post.should_halt:
                         ctx.add_user(_post.message)
-                        tool_log.append({"tool": action_name, "result": tool_result[:300]})
+                        tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300]})
                         return _post.message, tool_log
 
-                tool_log.append({"tool": action_name, "result": tool_result[:300]})
+                tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300]})
 
                 ctx_result, _ = _ctx_result_for_context(action_name, tool_result)
                 combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
@@ -2351,6 +2363,37 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
     console.print()
 
 
+def _ledger_block(workspace_dir: str | None) -> str:
+    """Retorna bloco markdown com tarefas pendentes do TASKS.md do workspace.
+
+    Retorna string vazia se não há workspace, TASKS.md não existe ou não há
+    tarefas pendentes (TODO/READY/IN_PROGRESS/BLOCKED).
+    """
+    if not workspace_dir:
+        return ""
+    try:
+        from pathlib import Path as _Path
+        tasks_file = _Path(str(workspace_dir)) / "TASKS.md"
+        if not tasks_file.is_file():
+            return ""
+        from .workspace_manager import WorkspaceManager as _WM
+        wm = _WM(str(workspace_dir))
+        _PENDING = {"TODO", "READY", "IN_PROGRESS", "BLOCKED"}
+        pending = [t for t in wm.list_tasks() if t.status in _PENDING]
+        if not pending:
+            return ""
+        lines = ["# Task Ledger (TASKS.md — tarefas pendentes)\n"]
+        for t in pending:
+            lines.append(f"- [{t.status}] #{t.id} {t.title}")
+        lines.append(
+            "\nAtualize o status das tarefas via tools kanban_update_task / "
+            "kanban_mark_done à medida que completar cada item."
+        )
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def run_agent_session(
     client: OllamaClient,
     model_name: str,
@@ -2420,6 +2463,11 @@ def run_agent_session(
         except Exception:
             pass
     _mem_turn_idx = 0
+
+    # P2.2: Task Ledger — injeta tarefas pendentes do TASKS.md no contexto de início de sessão
+    _ledger = _ledger_block(getattr(router, "workspace", None))
+    if _ledger:
+        ctx.add_ephemeral_system(_ledger)
 
     # Carrega historico da sessao se existir
     if session_store is not None and session_id is not None:
@@ -2886,13 +2934,13 @@ def run_agent_session(
                         "neste turno.[/yellow]"
                     )
 
-                def _exec_action(action_dict: dict) -> tuple[str, str]:
+                def _exec_action(action_dict: dict) -> tuple[str, str, str]:
                     """Executa 1 action com dedup e timeout."""
                     _name = action_dict.get("action", "?")
                     _args = action_dict.get("args", {}) or {}
                     _cached = _cli_deduper.check(_name, _args)
                     if _cached is not None:
-                        return _name, _cached
+                        return _name, _cached, _args_sig(_args)
                     _failed = False
                     try:
                         from .tool_timeout import call_with_timeout as _call_to
@@ -2907,14 +2955,14 @@ def run_agent_session(
                         _result = f"[Erro: {_exc}]"
                         _failed = True
                     _cli_deduper.record(_name, _args, _result, failed=_failed)
-                    return _name, _result
+                    return _name, _result, _args_sig(_args)
 
                 # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
                 if len(pending_actions) > 1:
                     from concurrent.futures import ThreadPoolExecutor
                     from concurrent.futures import as_completed as _as_completed
 
-                    ordered_results: list[tuple[str, str]] = [("", "")] * len(pending_actions)
+                    ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(pending_actions)
                     with ThreadPoolExecutor(max_workers=min(len(pending_actions), 8)) as _ex:
                         _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(pending_actions)}
                         for _fut in _as_completed(_fmap):
@@ -2922,7 +2970,7 @@ def run_agent_session(
                 else:
                     ordered_results = [_exec_action(a) for a in pending_actions]
 
-                for action_name, tool_result in ordered_results:
+                for action_name, tool_result, _asig in ordered_results:
                     # Display inteligente — filtra ruído, mostra apenas o relevante
                     display_line = _format_tool_display(action_name, tool_result)
                     console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
@@ -2931,7 +2979,7 @@ def run_agent_session(
                     ctx_result, was_compressed = _ctx_result_for_context(action_name, tool_result)
 
                     combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
-                    cli_tool_log.append({"tool": action_name, "result": tool_result[:300]})
+                    cli_tool_log.append({"tool": action_name, "args_sig": _asig, "result": tool_result[:300]})
                     tool_turns += 1
 
                 if combined_parts:
