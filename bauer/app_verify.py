@@ -1,10 +1,10 @@
-"""P1.1 — verify_app: builda/roda/testa o app gerado e reporta pass/fail.
+"""verify_app: builda/roda/testa o app gerado e reporta pass/fail.
 
 Fecha o maior gargalo de autonomia (auto-verificação): em vez de considerar
 "pronto" só pela presença de arquivos, esta camada DETECTA a stack do projeto,
-roda um plano de verificação (install → build/test/smoke) e devolve um resultado
-estruturado que o agente (e o Delivery Score) podem usar para confiar — ou para
-disparar correção.
+roda um plano de verificação (install → build/test/smoke → serve) e devolve
+um resultado estruturado que o agente (e o Delivery Score) podem usar para
+confiar — ou para disparar correção.
 
 Design:
 - Detecção por markers de arquivo (package.json, pyproject.toml, go.mod, ...).
@@ -12,12 +12,15 @@ Design:
   sem depender de npm/pip/go realmente instalados.
 - Para na primeira falha (build quebrado não adianta testar) e devolve a cauda
   do output para o agente diagnosticar.
+- P1.2: passo "serve" inicia o app e sonda uma porta para confirmar que sobe.
 """
 from __future__ import annotations
 
 import json
 import shutil
+import socket
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -27,6 +30,15 @@ MAX_OUTPUT_CHARS = 2000
 
 #: Assinatura do runner: (cmd, cwd, timeout) -> (returncode, output_combinado).
 Runner = Callable[[List[str], Path, int], Tuple[int, str]]
+
+#: Assinatura do smoke checker: (cmd, cwd, ports, timeout) -> (ok, mensagem).
+SmokeCheck = Callable[[List[str], Path, List[int], int], Tuple[bool, str]]
+
+#: Portas padrão que apps web costumam usar.
+DEFAULT_PROBE_PORTS: List[int] = [3000, 8000, 5000, 8080, 4000]
+
+#: Tempo máximo (s) aguardando o app subir para receber conexão.
+DEFAULT_SERVE_TIMEOUT: int = 10
 
 
 @dataclass
@@ -63,6 +75,110 @@ def _default_runner(cmd: List[str], cwd: Path, timeout: int) -> Tuple[int, str]:
     return proc.returncode, out
 
 
+def _probe_port(port: int, timeout: float = 1.0) -> bool:
+    """Tenta conexão TCP a 127.0.0.1:port. True se algo responder."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _default_smoke_check(
+    cmd: List[str],
+    cwd: Path,
+    ports: List[int],
+    timeout: int,
+) -> Tuple[bool, str]:
+    """Inicia o processo, sonda as portas até timeout, mata o processo."""
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as exc:
+        return False, f"Erro ao iniciar processo: {exc}"
+
+    port_found: Optional[int] = None
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            for port in ports:
+                if _probe_port(port, timeout=0.5):
+                    port_found = port
+                    break
+            if port_found is not None:
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.5)
+
+        if port_found is not None:
+            return True, f"app respondeu na porta {port_found}"
+
+        # captura saída parcial para diagnóstico
+        out = ""
+        if proc.stdout:
+            try:
+                proc.stdout.flush()
+            except Exception:
+                pass
+        if proc.poll() is not None:
+            out = (proc.stdout.read(1000) if proc.stdout else "")
+            return False, f"processo terminou antes de responder (rc={proc.returncode})\n{out}"
+        return False, f"app não respondeu em nenhuma porta ({ports}) em {timeout}s"
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _detect_serve_cmd(root: Path, stack: str, scripts: dict) -> Optional[List[str]]:
+    """Detecta o comando de start para smoke de runtime. None = sem servidor detectado."""
+    if stack == "node":
+        start = str(scripts.get("start", ""))
+        if start and "test" not in start and "jest" not in start and "vitest" not in start:
+            return ["npm", "start"]
+        dev = str(scripts.get("dev", ""))
+        if dev:
+            return ["npm", "run", "dev"]
+        return None
+
+    if stack == "python":
+        # Detecta por arquivo de entrada comum
+        for entry in ("app.py", "main.py", "server.py", "run.py", "api.py"):
+            ep = root / entry
+            if not ep.is_file():
+                continue
+            content = ep.read_text(encoding="utf-8", errors="replace").lower()
+            # Só sugere serve se o arquivo parece iniciar um servidor
+            if any(kw in content for kw in ("flask", "fastapi", "uvicorn", "aiohttp", "tornado", "starlette", "app.run")):
+                return ["python", entry]
+        # Detecta uvicorn/gunicorn nas dependências
+        for dep_file in ("requirements.txt", "pyproject.toml"):
+            dep_path = root / dep_file
+            if dep_path.is_file():
+                content = dep_path.read_text(encoding="utf-8", errors="replace").lower()
+                if "uvicorn" in content or "gunicorn" in content:
+                    # entry point genérico — tenta app:app
+                    for ep in ("app.py", "main.py"):
+                        if (root / ep).is_file():
+                            return ["uvicorn", f"{ep[:-3]}:app", "--port", "8000", "--timeout-keep-alive", "1"]
+        return None
+
+    return None
+
+
 def _read_json(p: Path) -> dict:
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -75,6 +191,7 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
     """Detecta a stack e devolve ``(stack, [(passo, comando), ...])``.
 
     Stack 'unknown' com plano vazio = nada verificável automaticamente.
+    O passo especial "serve" usa SmokeCheck em vez do Runner normal.
     """
     root = Path(project_dir)
 
@@ -92,12 +209,17 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
         _test = str(scripts.get("test", ""))
         if _test and "no test specified" not in _test:
             steps.append(("test", ["npm", "test"]))
+        # P1.2: smoke de runtime se houver comando de start
+        serve_cmd = _detect_serve_cmd(root, "node", scripts)
+        if serve_cmd:
+            steps.append(("serve", serve_cmd))
         return "node", steps
 
     # ── Python ────────────────────────────────────────────────────────────
     pyproject = root / "pyproject.toml"
     reqs = root / "requirements.txt"
     if pyproject.is_file() or reqs.is_file():
+        scripts: dict = {}
         steps = []
         if pyproject.is_file():
             steps.append(("install", ["pip", "install", "-e", "."]))
@@ -113,6 +235,10 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
         else:
             # smoke mínimo: compila tudo (pega SyntaxError sem rodar nada).
             steps.append(("smoke", ["python", "-m", "compileall", "-q", "."]))
+        # P1.2: smoke de runtime se detectar servidor
+        serve_cmd = _detect_serve_cmd(root, "python", scripts)
+        if serve_cmd:
+            steps.append(("serve", serve_cmd))
         return "python", steps
 
     # ── Go ──────────────────────────────────────────────────────────────────
@@ -187,13 +313,21 @@ def verify_project(
     which: Callable[[str], Optional[str]] = shutil.which,
     timeout: int = 300,
     install: bool = True,
+    smoke_check: Optional[SmokeCheck] = None,
+    probe_ports: Optional[List[int]] = None,
+    serve_timeout: int = DEFAULT_SERVE_TIMEOUT,
 ) -> VerifyResult:
-    """Verifica o projeto: detecta stack, roda build/test/smoke, reporta.
+    """Verifica o projeto: detecta stack, roda build/test/smoke/serve, reporta.
 
     Para na PRIMEIRA falha (build quebrado → não testa). Tools ausentes no PATH
     viram passo 'pulado' com ok=False (não dá pra confirmar que roda).
+
+    P1.2: passo "serve" inicia o app e sonda uma porta para confirmar startup.
+    `smoke_check` é injetável para testes; `probe_ports` customiza as portas sondadas.
     """
     runner = runner or _default_runner
+    _smoke = smoke_check or _default_smoke_check
+    _ports = probe_ports or DEFAULT_PROBE_PORTS
     root = Path(project_dir)
     rel = root.name or str(root)
 
@@ -214,12 +348,28 @@ def verify_project(
         if name == "install" and not install:
             steps.append(Step(name, cmd, ok=True, skipped=True, reason="install desativado"))
             continue
+
         exe = cmd[0]
         if which(exe) is None:
             steps.append(Step(name, cmd, ok=False, skipped=True,
                               reason=f"'{exe}' não encontrado no PATH"))
             ok = False
             break
+
+        # ── passo "serve": inicia o app e sonda porta (P1.2) ──────────────
+        if name == "serve":
+            try:
+                srv_ok, srv_out = _smoke(cmd, root, _ports, serve_timeout)
+            except Exception as exc:  # noqa: BLE001
+                srv_ok, srv_out = False, f"Erro no smoke check: {exc}"
+            st = Step(name, cmd, rc=0 if srv_ok else 1, ok=srv_ok,
+                      output=srv_out[-MAX_OUTPUT_CHARS:])
+            steps.append(st)
+            if not srv_ok:
+                ok = False
+            break  # serve é sempre o último passo
+
+        # ── passos normais (runner bloqueante) ─────────────────────────────
         try:
             rc, out = runner(cmd, root, timeout)
         except subprocess.TimeoutExpired:

@@ -223,3 +223,135 @@ class TestDiagnoseFailure:
             which=lambda e: "/bin/" + e,
         )
         assert "pip install" in r.summary or "Dependência" in r.summary
+
+
+# ---------------------------------------------------------------------------
+# Smoke run / serve (P1.2)
+# ---------------------------------------------------------------------------
+
+class TestDetectServeCmd:
+    def test_node_start_script_detectado(self, tmp_path):
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"start": "node server.js"}}), encoding="utf-8"
+        )
+        _, steps = av.plan_verification(tmp_path)
+        names = [n for n, _ in steps]
+        assert "serve" in names
+
+    def test_node_sem_start_sem_serve(self, tmp_path):
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"build": "webpack"}}), encoding="utf-8"
+        )
+        _, steps = av.plan_verification(tmp_path)
+        names = [n for n, _ in steps]
+        assert "serve" not in names
+
+    def test_node_start_de_test_ignorado(self, tmp_path):
+        """scripts.start que é na verdade um test runner não deve gerar serve."""
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"start": "jest --watchAll"}}), encoding="utf-8"
+        )
+        _, steps = av.plan_verification(tmp_path)
+        names = [n for n, _ in steps]
+        assert "serve" not in names
+
+    def test_python_flask_app_detectado(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+        (tmp_path / "app.py").write_text(
+            "from flask import Flask\napp = Flask(__name__)\napp.run()\n", encoding="utf-8"
+        )
+        _, steps = av.plan_verification(tmp_path)
+        names = [n for n, _ in steps]
+        assert "serve" in names
+
+    def test_python_sem_servidor_sem_serve(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("click\n", encoding="utf-8")
+        _, steps = av.plan_verification(tmp_path)
+        names = [n for n, _ in steps]
+        assert "serve" not in names
+
+
+class TestServeStep:
+    @staticmethod
+    def _node_start(tmp_path):
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"start": "node server.js"}}), encoding="utf-8"
+        )
+
+    def test_serve_ok_quando_porta_responde(self, tmp_path):
+        """P1.2: smoke_check retorna True → passo serve ok."""
+        self._node_start(tmp_path)
+        smoke = lambda cmd, cwd, ports, to: (True, "app respondeu na porta 3000")
+        r = av.verify_project(
+            tmp_path,
+            runner=lambda cmd, cwd, to: (0, "ok"),
+            which=lambda e: "/bin/" + e,
+            smoke_check=smoke,
+        )
+        assert r.ok is True
+        serve_steps = [s for s in r.steps if s.name == "serve"]
+        assert serve_steps and serve_steps[0].ok is True
+        assert "3000" in serve_steps[0].output
+
+    def test_serve_falha_quando_porta_nao_responde(self, tmp_path):
+        """P1.2: smoke_check retorna False → verify falha."""
+        self._node_start(tmp_path)
+        smoke = lambda cmd, cwd, ports, to: (False, "app não respondeu em 10s")
+        r = av.verify_project(
+            tmp_path,
+            runner=lambda cmd, cwd, to: (0, "ok"),
+            which=lambda e: "/bin/" + e,
+            smoke_check=smoke,
+        )
+        assert r.ok is False
+        serve_steps = [s for s in r.steps if s.name == "serve"]
+        assert serve_steps and serve_steps[0].ok is False
+
+    def test_serve_e_ultimo_passo(self, tmp_path):
+        """P1.2: serve sempre é executado por último."""
+        self._node_start(tmp_path)
+        smoke = lambda cmd, cwd, ports, to: (True, "porta 8000")
+        r = av.verify_project(
+            tmp_path,
+            runner=lambda cmd, cwd, to: (0, "ok"),
+            which=lambda e: "/bin/" + e,
+            smoke_check=smoke,
+        )
+        assert r.steps[-1].name == "serve"
+
+    def test_serve_nao_roda_se_build_falhou(self, tmp_path):
+        """P1.2: se build falhou, serve não deve rodar."""
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"build": "webpack", "start": "node s.js"}}),
+            encoding="utf-8",
+        )
+        smoke_called = []
+        smoke = lambda cmd, cwd, ports, to: smoke_called.append(1) or (True, "ok")
+        seq = iter([(0, "installed"), (1, "build error")])
+        av.verify_project(
+            tmp_path,
+            runner=lambda cmd, cwd, to: next(seq),
+            which=lambda e: "/bin/" + e,
+            smoke_check=smoke,
+        )
+        assert not smoke_called, "serve não deveria rodar se build falhou"
+
+    def test_probe_port_helper(self):
+        """_probe_port retorna False quando nada está ouvindo na porta."""
+        assert av._probe_port(19999, timeout=0.2) is False
+
+    def test_serve_porta_customizada(self, tmp_path):
+        """P1.2: probe_ports customizável é passado ao smoke_check."""
+        self._node_start(tmp_path)
+        captured = []
+        def smoke(cmd, cwd, ports, to):
+            captured.extend(ports)
+            return (True, f"porta {ports[0]}")
+        av.verify_project(
+            tmp_path,
+            runner=lambda cmd, cwd, to: (0, "ok"),
+            which=lambda e: "/bin/" + e,
+            smoke_check=smoke,
+            probe_ports=[9999],
+        )
+        assert 9999 in captured
