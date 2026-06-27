@@ -409,3 +409,72 @@ class FsToolsMixin:
         if not results:
             return f"Nenhum resultado para regex '{pattern}' em '{base}'"
         return "\n".join(results)
+
+    def _patch_file(self, args: dict) -> str:
+        """Substituição cirúrgica: old_string → new_string.
+
+        Boas práticas implementadas:
+        - Falha se old_string não for encontrado (evita edição silenciosa errada)
+        - Falha se houver mais de 1 ocorrência (ambíguo → exige especificidade)
+        - Retorna diff compacto para rastreabilidade
+        """
+        path = args.get("path")
+        old_string = args.get("old_string")
+        new_string = args.get("new_string", "")
+
+        if not path:
+            raise ToolError("patch requer 'path'.")
+        if old_string is None:
+            raise ToolError("patch requer 'old_string'.")
+
+        p = self._sandbox(str(path))
+        if not p.exists():
+            raise ToolError(f"Arquivo nao encontrado: '{path}'")
+        if p.is_dir():
+            raise ToolError(f"'{path}' e um diretorio — use em arquivos.")
+
+        # Nota (G17.2): patch NAO exige read_file previo — o match exato e unico
+        # de old_string ja e o gate (nao da pra editar as cegas: se nao bater,
+        # falha). Read-before-write fica so no write_file overwrite (sem gate).
+
+        try:
+            original = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise ToolError(f"'{path}' parece ser arquivo binario — patch so funciona em texto.")
+
+        count = original.count(old_string)
+        if count == 0:
+            raise ToolError(
+                f"Trecho nao encontrado em '{path}'.\n"
+                "Verifique espacos, indentacao e quebras de linha exatas."
+            )
+        if count > 1:
+            raise ToolError(
+                f"Trecho encontrado {count} vezes em '{path}' — ambiguo.\n"
+                "Inclua mais contexto em 'old_string' para tornar a substituicao unica."
+            )
+
+        updated = original.replace(old_string, new_string, 1)
+        p.write_text(updated, encoding="utf-8")
+        self._mark_written(p)  # G17.2: conteudo mudou, modelo viu o diff
+
+        # Diff compacto para rastreabilidade
+        diff_lines = list(difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=2,
+        ))
+        diff_str = "".join(diff_lines[:40])  # máx 40 linhas de diff
+        if len(diff_lines) > 40:
+            diff_str += f"\n... (+{len(diff_lines) - 40} linhas)"
+
+        result = f"Arquivo '{path}' atualizado.\n{diff_str}"
+        syntax_err = _syntax_check(p, updated)
+        if syntax_err:
+            result += (
+                f"\n[ATENÇÃO — erro de sintaxe detectado] {syntax_err}\n"
+                "O patch foi aplicado mas quebrou o arquivo — corrija antes de usar."
+            )
+        return result

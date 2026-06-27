@@ -68,3 +68,51 @@ class ChannelToolsMixin:
             state = "on" if c.enabled else "off"
             lines.append(f"- {c.name} [{c.platform}] → {c.target} ({state})")
         return "\n".join(lines)
+
+    def _send_message(self, args: dict) -> str:
+        """Envia mensagem direto pelo bridge vivo do gateway (ou outbox).
+
+        Diferença para channel_send: aqui o destino é um chat_id REAL de um
+        canal inbound (telegram/discord). Com o gateway no mesmo processo a
+        entrega é imediata, incluindo mídia. Sem gateway vivo, enfileira no
+        outbox durável para o próximo `bauer gateway start`.
+        """
+        channel = str(args.get("channel", "")).strip().lower()
+        chat_id = str(args.get("chat_id", "")).strip()
+        text = str(args.get("text", "")).strip()
+        media_path = str(args.get("media_path", "")).strip()
+        if not channel:
+            raise ToolError("send_message requer 'channel' (telegram/discord).")
+        if not chat_id:
+            raise ToolError("send_message requer 'chat_id' (id do chat destino).")
+        if not text and not media_path:
+            raise ToolError("send_message requer 'text' e/ou 'media_path'.")
+
+        from .. import live_bridges
+        bridge = live_bridges.get(channel)
+        if bridge is not None:
+            sent: list[str] = []
+            if text:
+                bridge.send_text(chat_id, text)
+                sent.append("texto")
+            if media_path:
+                send_media = getattr(bridge, "send_media", None)
+                if send_media is None:
+                    raise ToolError(f"Canal '{channel}' não suporta envio de mídia.")
+                if not send_media(chat_id, media_path):
+                    raise ToolError(f"Falha enviando mídia '{media_path}' via {channel}.")
+                sent.append("mídia")
+            return f"Mensagem ({' + '.join(sent)}) entregue em {channel}:{chat_id}."
+
+        # Gateway não está neste processo — outbox durável
+        from ..gateway_outbox import GatewayOutbox
+        payload: dict = {"text": text, "source": "send_message"}
+        if media_path:
+            payload["media_path"] = media_path
+        message = GatewayOutbox(self.workspace).enqueue(
+            channel=channel, target=chat_id, payload=payload, metadata={},
+        )
+        return (
+            f"Gateway não está rodando neste processo — mensagem enfileirada "
+            f"(id={message.message_id}); será entregue quando `bauer gateway start` subir."
+        )
