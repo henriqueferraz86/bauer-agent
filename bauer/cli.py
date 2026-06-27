@@ -58,7 +58,7 @@ app = typer.Typer(
     ),
 )
 
-config_app = typer.Typer(help="Operacoes com config.yaml")
+from bauer.commands.config_cmd import config_app  # noqa: E402
 models_app = typer.Typer(help="Operacoes com models.yaml")
 memory_app = typer.Typer(help="Operacoes com memoria Markdown")
 tools_app = typer.Typer(help="Tool Bridge — ferramentas do agente")
@@ -70,7 +70,7 @@ runtime_app = typer.Typer(help="Supervisor always-on: dispatcher, cron, outbox e
 cron_app = typer.Typer(help="Automacoes duraveis: agenda prompts como tasks READY")
 research_app = typer.Typer(help="Pesquisa e trajectories para avaliacao/treino")
 learning_app = typer.Typer(help="Adaptive Learning Engine — recomendacoes e reset")
-auth_app = typer.Typer(help="Autenticacao com providers cloud (OAuth/API Key)")
+from bauer.commands.auth_cmd import auth_app  # noqa: E402
 orchestrate_app = typer.Typer(help="Orquestrador de agents — tarefas complexas em varios passos")
 agent_app = typer.Typer(
     invoke_without_command=True,
@@ -79,7 +79,7 @@ agent_app = typer.Typer(
 spec_app = typer.Typer(help="Spec-Driven Development — contratos de features em YAML")
 company_app = typer.Typer(help="Gestao multi-empresa — namespaces isolados por empresa")
 migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (Hermes, OpenClaw)")
-boards_app = typer.Typer(help="Multi-board kanban — cada projeto pode ter seu proprio store SQLite")
+from bauer.commands.boards_cmd import boards_app  # noqa: E402
 daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que processam tasks do kanban")
 daemon_service_app = typer.Typer(
     help="Daemon como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
@@ -114,9 +114,7 @@ gateway_app.add_typer(gateway_service_app, name="service")
 plugin_app = typer.Typer(help="Plugin manager — instala e lista plugins Bauer")
 app.add_typer(plugin_app, name="plugin")
 
-factory_app = typer.Typer(
-    help="App Factory — Spec-Driven Development: transforma uma ideia em V1 com gates obrigatórios"
-)
+from bauer.commands.factory_cmd import factory_app  # noqa: E402
 
 app.add_typer(config_app, name="config")
 app.add_typer(models_app, name="models")
@@ -632,377 +630,30 @@ def chat(
     run_chat_session(client, model_name, applied_context, console)
 
 
-@config_app.command("validate")
-def config_validate(
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
-):
-    """Valida o config.yaml sem rodar diagnostico."""
-    ok, msg = validate_config_file(config)
-    if ok:
-        console.print(f"[green]{msg}[/green]")
-    else:
-        console.print(f"[red]{msg}[/red]")
-        raise typer.Exit(code=2)
 
 
-@config_app.command("show")
-def config_show(
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
-    raw: bool = typer.Option(False, "--raw", help="Dump cru do dict validado"),
-):
-    """Dashboard da configuração: paths, providers, modelo, gateway, MCP."""
-    try:
-        cfg = load_config(config)
-    except ConfigError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=2)
-    if raw:
-        console.print(cfg.model_dump())
-        return
-
-    from bauer.config_admin import get_config_path, get_env_path, redact_secret
-    from bauer.provider_profile import env_var_status, get_profile
-
-    console.print(Panel.fit("⚙  Configuração do Bauer", style="cyan"))
-
-    # ── Paths ──
-    paths = Table(show_header=False, box=None, padding=(0, 1))
-    paths.add_row("config.yaml:", f"[dim]{get_config_path(config)}[/dim]")
-    paths.add_row(".env:", f"[dim]{get_env_path()}[/dim]")
-    paths.add_row("workspace:", f"[dim]{Path(cfg.agent.workspace).resolve()}[/dim]")
-    console.print(Panel(paths, title="◆ Paths", border_style="cyan", title_align="left"))
-
-    # ── Modelo ativo ──
-    model_tbl = Table(show_header=False, box=None, padding=(0, 1))
-    prof = get_profile(cfg.model.provider)
-    free = " 🆓" if prof and prof.is_free else ""
-    model_tbl.add_row("Provider:", f"[cyan]{cfg.model.provider}[/cyan]{free}")
-    model_tbl.add_row("Modelo:", f"[cyan]{cfg.model.name}[/cyan]")
-    model_tbl.add_row("Contexto solicitado:", str(cfg.model.requested_context))
-    model_tbl.add_row("Contexto mínimo:", str(cfg.model.minimum_context))
-    console.print(Panel(model_tbl, title="◆ Modelo", border_style="cyan", title_align="left"))
-
-    # ── Providers & API keys (✓/○ por env var) ──
-    prov_tbl = Table(box=None, padding=(0, 1))
-    prov_tbl.add_column("Provider", style="cyan")
-    prov_tbl.add_column("Env var")
-    prov_tbl.add_column("Status")
-    for row in env_var_status():
-        ok = row["set"]
-        mark = "[green]✓ configurado[/green]" if ok else "[dim]○ não definido[/dim]"
-        prov_tbl.add_row(row["display_name"], row["env_var"], mark)
-    console.print(Panel(prov_tbl, title="◆ Providers & API Keys", border_style="cyan", title_align="left"))
-
-    # ── Gateway / canais ──
-    gw = Table(show_header=False, box=None, padding=(0, 1))
-    gw.add_row("Telegram:", "[green]habilitado[/green]" if cfg.telegram.enabled else "[dim]desabilitado[/dim]")
-    gw.add_row("Discord:", "[green]habilitado[/green]" if cfg.discord.enabled else "[dim]desabilitado[/dim]")
-    gw.add_row("Outbox drain:", f"{cfg.gateway.outbox_drain_interval_s}s")
-    console.print(Panel(gw, title="◆ Gateway", border_style="cyan", title_align="left"))
-
-    # ── MCP servers ──
-    servers = getattr(cfg.mcp, "servers", []) or []
-    if servers:
-        mcp_tbl = Table(box=None, padding=(0, 1))
-        mcp_tbl.add_column("Nome", style="cyan")
-        mcp_tbl.add_column("Tipo/Alvo")
-        for s in servers:
-            target = getattr(s, "url", None) or getattr(s, "command", "?")
-            mcp_tbl.add_row(getattr(s, "name", "?"), str(target))
-        console.print(Panel(mcp_tbl, title="◆ MCP Servers", border_style="cyan", title_align="left"))
-
-    console.print(
-        "[dim]bauer config set <chave> <valor>   ·   bauer config check   ·   "
-        "bauer config edit[/dim]"
-    )
 
 
-@config_app.command("path", help="Mostra o caminho absoluto do config.yaml")
-def config_path_cmd(
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    from bauer.config_admin import get_config_path
-    console.print(str(get_config_path(config)))
 
 
-@config_app.command("env-path", help="Mostra o caminho absoluto do .env")
-def config_env_path_cmd():
-    from bauer.config_admin import get_env_path
-    console.print(str(get_env_path()))
 
 
-@config_app.command("get", help="Lê um valor (chave pontilhada ou env var)")
-def config_get_cmd(
-    key: str = typer.Argument(..., help="Ex: model.name, runtime.safety_margin_mb, GROQ_API_KEY"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    from bauer.config_admin import get_config_value, is_env_key, redact_secret
-
-    value = get_config_value(key, config)
-    if value is None:
-        console.print(f"[dim](não definido: {key})[/dim]")
-        raise typer.Exit(code=1)
-    if is_env_key(key):
-        console.print(redact_secret(str(value)))
-    else:
-        console.print(str(value))
 
 
-@config_app.command("set", help="Define um valor — segredos vão pro .env, resto pro config.yaml")
-def config_set_cmd(
-    key: str = typer.Argument(..., help="Ex: model.name qwen2.5:7b  |  GROQ_API_KEY gsk_..."),
-    value: str = typer.Argument(..., help="Valor (bool/int/float são convertidos)"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    from bauer.config_admin import set_config_value
-
-    try:
-        dest, path = set_config_value(key, value, config)
-    except KeyError as exc:
-        console.print(f"[red]Chave inválida:[/red] {exc}")
-        raise typer.Exit(code=2)
-    where = ".env" if dest == "env" else "config.yaml"
-    shown = "•••" if dest == "env" else value
-    console.print(f"[green]✓[/green] {key} = {shown} → [dim]{path}[/dim] ({where})")
-    if dest == "config":
-        ok, msg = validate_config_file(config)
-        if not ok:
-            console.print(f"[yellow]⚠ config.yaml agora não valida:[/yellow] {msg}")
 
 
-@config_app.command("unset", help="Remove um valor do config.yaml ou .env")
-def config_unset_cmd(
-    key: str = typer.Argument(...),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    from bauer.config_admin import unset_config_value
-
-    dest, removed = unset_config_value(key, config)
-    if removed:
-        console.print(f"[green]✓[/green] removido {key} ({'.env' if dest == 'env' else 'config.yaml'})")
-    else:
-        console.print(f"[dim]nada para remover: {key}[/dim]")
 
 
-@config_app.command("edit", help="Abre o config.yaml no editor ($EDITOR/$VISUAL)")
-def config_edit_cmd(
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    import subprocess
-
-    from bauer.config_admin import find_editor
-
-    if not config.exists():
-        console.print(f"[red]config.yaml não existe:[/red] {config}")
-        raise typer.Exit(code=1)
-    editor = find_editor()
-    if not editor:
-        console.print(f"Nenhum editor encontrado. Edite manualmente: [dim]{config.resolve()}[/dim]")
-        raise typer.Exit(code=1)
-    console.print(f"Abrindo {config} em [cyan]{editor}[/cyan]…")
-    subprocess.run([editor, str(config)])
-    ok, msg = validate_config_file(config)
-    color = "green" if ok else "red"
-    console.print(f"[{color}]{msg}[/{color}]")
 
 
-@config_app.command("check", help="Verifica env vars de providers (configuradas/faltando)")
-def config_check_cmd(
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    from bauer.config_admin import env_status_rows
-
-    # Carrega o .env primeiro para o status refletir o arquivo (não só o
-    # ambiente do shell) — uma invocação fresca da CLI não tem o .env no env.
-    try:
-        from bauer.env_loader import load_dotenv
-        load_dotenv()
-    except Exception:  # noqa: BLE001
-        pass
-
-    rows = env_status_rows()
-    if not rows:
-        console.print("[yellow]Não consegui ler os profiles de provider.[/yellow]")
-        raise typer.Exit(code=1)
-
-    configured = [r for r in rows if r["set"]]
-    missing = [r for r in rows if not r["set"]]
-
-    table = Table(title="📋 Status de configuração — providers", show_lines=False)
-    table.add_column("Provider", style="cyan")
-    table.add_column("Env var")
-    table.add_column("Status")
-    for r in configured:
-        table.add_row(r["display_name"], r["env_var"], "[green]✓ configurado[/green]")
-    for r in missing:
-        table.add_row(r["display_name"], r["env_var"], "[dim]○ não definido[/dim]")
-    console.print(table)
-    console.print(
-        f"\n[green]{len(configured)}[/green] configurada(s), "
-        f"[dim]{len(missing)} disponível(is) sem chave[/dim]. "
-        "Defina com: [bold]bauer config set <ENV_VAR> <valor>[/bold]"
-    )
-
-    # Higiene: secrets_scanner aponta chaves coladas no config.yaml
-    try:
-        from bauer.config_admin import get_config_path
-        from bauer.secrets_scanner import scan
-        cfg_text = get_config_path(config).read_text(encoding="utf-8")
-        result = scan(cfg_text, redact=False)
-        if result.found:
-            console.print(
-                f"\n[yellow]⚠ {len(result.matches)} possível segredo embutido no "
-                "config.yaml[/yellow] — mova para o .env com `bauer config set`."
-            )
-    except Exception:  # noqa: BLE001
-        pass
 
 
-@config_app.command("profile")
-def config_profile(
-    action: str = typer.Argument(..., help="Ação: create | list | use | delete"),
-    profile: str = typer.Argument("", help="Nome do perfil (para create/use/delete)"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    force: bool = typer.Option(False, "--force", "-f"),
-):
-    """Gerencia perfis de configuração (dev/staging/prod).
-
-    Exemplos:
-      bauer config profile list
-      bauer config profile create dev
-      bauer config profile use dev
-      bauer config profile delete dev
-    """
-    from .config_profiles import (
-        create_profile, delete_profile, get_active_profile,
-        list_profiles, profile_path, set_active_profile,
-    )
-
-    if action == "list":
-        profiles = list_profiles(config)
-        active = get_active_profile()
-        if not profiles:
-            console.print("[dim]Nenhum perfil encontrado.[/dim]")
-            return
-        for p in profiles:
-            marker = " [green]← ativo[/green]" if p == active else ""
-            pp = profile_path(p, config)
-            console.print(f"  [cyan]{p}[/cyan]{marker}  [dim]{pp}[/dim]")
-
-    elif action == "create":
-        if not profile:
-            console.print("[red]Especifique o nome do perfil: bauer config profile create <nome>[/red]")
-            raise typer.Exit(1)
-        try:
-            p = create_profile(profile, config, overwrite=force)
-            console.print(f"[green]Perfil '{profile}' criado em {p}[/green]")
-        except FileExistsError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(1)
-
-    elif action == "use":
-        if not profile:
-            console.print("[red]Especifique o perfil: bauer config profile use <nome>[/red]")
-            raise typer.Exit(1)
-        if not profile_path(profile, config).exists():
-            console.print(f"[red]Perfil '{profile}' não encontrado. Use 'bauer config profile create {profile}' primeiro.[/red]")
-            raise typer.Exit(1)
-        set_active_profile(profile)
-        console.print(f"[green]Perfil ativo: {profile}[/green]")
-
-    elif action == "delete":
-        if not profile:
-            console.print("[red]Especifique o perfil a remover.[/red]")
-            raise typer.Exit(1)
-        removed = delete_profile(profile, config)
-        if removed:
-            if get_active_profile() == profile:
-                set_active_profile(None)
-            console.print(f"[green]Perfil '{profile}' removido.[/green]")
-        else:
-            console.print(f"[yellow]Perfil '{profile}' não encontrado.[/yellow]")
-
-    else:
-        console.print(f"[red]Ação desconhecida: {action}. Use: create | list | use | delete[/red]")
-        raise typer.Exit(1)
 
 
-@config_app.command("diff")
-def config_diff_cmd(
-    profile_a: str = typer.Argument(..., help="Perfil ou caminho A (ex: 'dev' ou 'config.dev.yaml')"),
-    profile_b: str = typer.Argument("", help="Perfil ou caminho B (default: config.yaml)"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    """Exibe diff entre dois arquivos de config."""
-    from .config_profiles import config_diff, profile_path
-
-    def _resolve(name: str) -> Path:
-        p = Path(name)
-        if p.exists():
-            return p
-        pp = profile_path(name, config)
-        return pp
-
-    path_a = _resolve(profile_a)
-    path_b = _resolve(profile_b) if profile_b else config
-
-    diff_lines = config_diff(path_a, path_b)
-    if not diff_lines:
-        console.print("[green]Arquivos idênticos.[/green]")
-        return
-
-    for line in diff_lines:
-        if line.startswith("+") and not line.startswith("+++"):
-            console.print(f"[green]{line}[/green]")
-        elif line.startswith("-") and not line.startswith("---"):
-            console.print(f"[red]{line}[/red]")
-        elif line.startswith("@@"):
-            console.print(f"[cyan]{line}[/cyan]")
-        else:
-            console.print(line)
 
 
-@config_app.command("migrate")
-def config_migrate_cmd(
-    migration: str = typer.Argument("", help="Chave da migração (vazio = lista disponíveis)"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    apply: bool = typer.Option(False, "--apply", help="Aplica a migração (default: dry-run)"),
-):
-    """Executa migração de versão do config.yaml."""
-    from .config_profiles import list_migrations, run_migration
-
-    if not migration:
-        migrations = list_migrations()
-        if not migrations:
-            console.print("[dim]Nenhuma migração disponível.[/dim]")
-            return
-        for m in migrations:
-            console.print(f"  [cyan]{m['key']}[/cyan]  {m['description']}")
-        return
-
-    changes = run_migration(migration, config_path=config, dry_run=not apply)
-    for change in changes:
-        console.print(f"  {'[green]Aplicado[/green]' if apply else '[yellow]Dry-run[/yellow]'}: {change}")
-
-    if not apply:
-        console.print("\n[dim]Use --apply para aplicar as mudanças.[/dim]")
 
 
-@config_app.command("validate-full")
-def config_validate_full(
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-):
-    """Validação aprofundada do config com Pydantic + verificações extras."""
-    from .config_profiles import validate_config
-
-    errors = validate_config(config_path=config)
-    if not errors:
-        console.print(f"[green]✓ Config válido: {config}[/green]")
-    else:
-        console.print(f"[red]✗ {len(errors)} erro(s) encontrado(s):[/red]")
-        for err in errors:
-            console.print(f"  [red]• {err}[/red]")
-        raise typer.Exit(code=2)
 
 
 @models_app.command("test")
@@ -6961,58 +6612,12 @@ def learning_analyze(
 # --- auth -------------------------------------------------------------------
 
 
-@auth_app.command("login")
-def auth_login(
-    provider: str = typer.Option(
-        "",
-        "--provider", "-p",
-        help=(
-            "Provider a autenticar (omita para menu interativo).\n"
-            "API Key:     openai-api | anthropic | groq | deepseek | openrouter |\n"
-            "             mistral | xai | together | gemini | custom\n"
-            "Device Flow: github | copilot\n"
-            "OAuth:       openai"
-        ),
-    ),
-):
-    """Autentica com um provider cloud.
-
-    Sem --provider: exibe menu interativo com todos os 14 providers.
-
-    Exemplos:
-      bauer auth login                   # menu interativo
-      bauer auth login --provider copilot
-      bauer auth login -p groq
-    """
-    from .auth import cmd_login
-
-    cmd_login(provider if provider else None)
 
 
-@auth_app.command("status")
-def auth_status():
-    """Mostra providers autenticados e status dos tokens."""
-    from .auth import cmd_status
-
-    cmd_status()
 
 
-@auth_app.command("logout")
-def auth_logout(
-    provider: str = typer.Option("", "--provider", "-p", help="Provider especifico (vazio = todos)"),
-):
-    """Remove autenticacao de um provider (ou todos)."""
-    from .auth import cmd_logout
-
-    cmd_logout(provider if provider else None)
 
 
-@auth_app.command("providers")
-def auth_providers():
-    """Lista providers disponíveis para autenticacao."""
-    from .auth import cmd_list_providers
-
-    cmd_list_providers()
 
 
 # --- logs -------------------------------------------------------------------
@@ -7562,94 +7167,12 @@ def company_personas(
 # ── App Factory (Spec-Driven Development) ──────────────────────────────────────
 
 
-@factory_app.command("init")
-def factory_init(
-    idea: str = typer.Argument(..., help="Descrição da ideia/aplicação"),
-    stack: str = typer.Option("", "--stack", "-s", help="Stack preferida (ex: FastAPI+React)"),
-    path: str = typer.Option(".", "--path", "-p", help="Diretório do projeto"),
-    overwrite: bool = typer.Option(False, "--overwrite", help="Sobrescrever docs existentes"),
-):
-    """Inicia a governança da App Factory e cria os esqueletos dos docs."""
-    from pathlib import Path as _P
-    from . import app_factory as af
-
-    project = _P(path).resolve()
-    project.mkdir(parents=True, exist_ok=True)
-    res = af.init_project(project, idea=idea, stack=stack, overwrite=overwrite)
-    console.print(f"[bold green]App Factory iniciada[/bold green] em [cyan]{project}[/cyan]")
-    console.print(f"  Gate atual: [yellow]{res['gate']}[/yellow]")
-    console.print(f"  {len(res['written'])} arquivo(s) criado(s).")
-    console.print(
-        "\n[dim]Próximo passo:[/dim] preencha os 7 docs em [cyan]docs/[/cyan] "
-        "(comece por SPEC.md). A escrita de código fica bloqueada até o planejamento "
-        "estar completo. Acompanhe com [bold]bauer factory status[/bold]."
-    )
 
 
-@factory_app.command("status")
-def factory_status(
-    path: str = typer.Option(".", "--path", "-p", help="Diretório do projeto"),
-):
-    """Mostra o gate atual, docs pendentes e o Delivery Score parcial."""
-    from pathlib import Path as _P
-    from . import app_factory as af
-
-    project = _P(path).resolve()
-    st = af.status(project)
-    if not st["governed"]:
-        console.print("[yellow]Projeto não está sob governança da App Factory.[/yellow]")
-        console.print("Use [bold]bauer factory init \"<ideia>\"[/bold] para iniciar.")
-        raise typer.Exit(code=1)
-    console.print(f"[bold]Gate:[/bold] [cyan]{st['gate']}[/cyan]")
-    console.print(f"  Planejamento completo: {'sim' if st['planning_complete'] else 'não'}")
-    if st["missing_planning_docs"]:
-        console.print(f"  [yellow]Docs pendentes:[/yellow] {', '.join(st['missing_planning_docs'])}")
-    sc = st.get("delivery_score") or {}
-    if sc:
-        console.print(f"  Delivery Score parcial: [bold]{sc.get('score')}/10[/bold] "
-                      f"({sc.get('satisfied')}/{sc.get('total')} itens)")
 
 
-@factory_app.command("score")
-def factory_score(
-    path: str = typer.Option(".", "--path", "-p", help="Diretório do projeto"),
-):
-    """Calcula o Delivery Score objetivo (0–10) da V1."""
-    from pathlib import Path as _P
-    from . import app_factory as af
-
-    project = _P(path).resolve()
-    if not af.is_governed(project):
-        console.print("[yellow]Projeto não governado — sem score.[/yellow]")
-        raise typer.Exit(code=1)
-    sc = af.delivery_score(project)
-    status_txt = "[green]PRONTO[/green]" if sc["ready"] else "[yellow]NÃO pronto[/yellow]"
-    console.print(f"[bold]Delivery Score:[/bold] {sc['score']}/10 — {status_txt} para V1")
-    for item, ok in sc["checks"].items():
-        mark = "[green]✓[/green]" if ok else "[red]✗[/red]"
-        console.print(f"  {mark} {item}")
 
 
-@factory_app.command("gate")
-def factory_gate(
-    path: str = typer.Option(".", "--path", "-p", help="Diretório do projeto"),
-):
-    """Mostra o gate atual e o que falta para avançar."""
-    from pathlib import Path as _P
-    from . import app_factory as af
-
-    project = _P(path).resolve()
-    gate = af.current_gate(project)
-    if gate is None:
-        console.print("[yellow]Projeto não governado.[/yellow]")
-        raise typer.Exit(code=1)
-    console.print(f"[bold]Gate atual:[/bold] [cyan]{gate.slug}[/cyan]")
-    if gate < af.Gate.IMPLEMENTATION:
-        missing = af.missing_planning_docs(project)
-        console.print("  [yellow]Escrita de código bloqueada.[/yellow] "
-                      f"Faltam: {', '.join(missing) or '(preencher SPEC)'}")
-    else:
-        console.print("  [green]Escrita de código liberada.[/green]")
 
 
 def main():
@@ -8302,170 +7825,14 @@ def kanban_migrate_cmd(
         console.print(tbl)
 
 
-@boards_app.command("list")
-def boards_list_cmd():
-    """Lista todos os boards kanban_db existentes em ~/.bauer/kanban/boards/."""
-    from . import kanban_db as _kb
-    from rich.table import Table
-
-    boards = _kb.list_boards()
-    active = _kb.get_active_board()
-    if not boards:
-        console.print("[dim]Nenhum board encontrado. Crie com [bold]bauer boards create <nome>[/bold].[/dim]")
-        return
-
-    tbl = Table(title=f"Kanban boards ({len(boards)})", show_header=True,
-                header_style="bold cyan")
-    tbl.add_column("Nome", no_wrap=True)
-    tbl.add_column("Ativo", justify="center")
-    tbl.add_column("Tasks", justify="right")
-    tbl.add_column("Path", style="dim")
-    for name in boards:
-        with _kb.connect(name) as conn:
-            try:
-                row = conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()
-                count = row["c"] if row else 0
-            except Exception:
-                count = 0
-        is_active = "★" if name == active else ""
-        tbl.add_row(name, is_active, str(count), str(_kb.board_path(name)))
-    console.print(tbl)
 
 
-@boards_app.command("create")
-def boards_create_cmd(
-    name: str = typer.Argument(..., help="Nome do board (alnum/dash/underscore)"),
-    activate: bool = typer.Option(
-        False, "--activate", "-a",
-        help="Define este board como o ativo apos criar",
-    ),
-):
-    """Cria um novo board kanban_db (DB SQLite vazia)."""
-    from . import kanban_db as _kb
-
-    if not name.strip():
-        console.print("[red]Nome do board nao pode ser vazio.[/red]")
-        raise typer.Exit(code=1)
-
-    if name in _kb.list_boards():
-        console.print(f"[yellow]Board '[bold]{name}[/bold]' ja existe.[/yellow]")
-        if not activate:
-            raise typer.Exit(code=0)
-
-    with _kb.connect(name) as conn:
-        _kb.init_db(conn)
-    console.print(f"[green]✓[/green] Board criado: [bold]{name}[/bold]")
-    console.print(f"  Path: [dim]{_kb.board_path(name)}[/dim]")
-
-    if activate:
-        _kb.set_active_board(name)
-        console.print(f"[green]✓[/green] Board ativo agora: [bold]{name}[/bold]")
 
 
-@boards_app.command("switch")
-def boards_switch_cmd(
-    name: str = typer.Argument(..., help="Nome do board a ativar"),
-):
-    """Define o board ativo (escreve em ~/.bauer/kanban/active_board)."""
-    from . import kanban_db as _kb
-
-    if name not in _kb.list_boards():
-        console.print(f"[red]Board '[bold]{name}[/bold]' nao existe.[/red]")
-        existing = ", ".join(_kb.list_boards()) or "(nenhum)"
-        console.print(f"[dim]Boards disponiveis: {existing}[/dim]")
-        raise typer.Exit(code=1)
-
-    _kb.set_active_board(name)
-    console.print(f"[green]✓[/green] Board ativo: [bold]{name}[/bold]")
 
 
-@boards_app.command("show")
-def boards_show_cmd(
-    name: str = typer.Argument("", help="Nome do board (vazio = ativo)"),
-):
-    """Mostra estatisticas e tasks de um board."""
-    from . import kanban_db as _kb
-    from rich.table import Table
-
-    target = name or _kb.get_active_board()
-    if target not in _kb.list_boards():
-        console.print(f"[red]Board '[bold]{target}[/bold]' nao existe.[/red]")
-        raise typer.Exit(code=1)
-
-    with _kb.connect(target) as conn:
-        tasks = _kb.list_tasks(conn)
-        counts: dict[str, int] = {}
-        for t in tasks:
-            counts[t.status] = counts.get(t.status, 0) + 1
-
-    console.print(f"[bold]Board:[/bold] {target}")
-    console.print(f"[dim]Path:[/dim] {_kb.board_path(target)}")
-    console.print()
-    if not tasks:
-        console.print("[dim]Sem tasks.[/dim]")
-        return
-
-    summary = Table(show_header=True, header_style="bold cyan")
-    summary.add_column("Status")
-    summary.add_column("Tasks", justify="right")
-    for status in sorted(counts):
-        summary.add_row(status, str(counts[status]))
-    console.print(summary)
-    console.print()
-
-    tbl = Table(title=f"Tasks ({len(tasks)})", show_header=True,
-                header_style="bold")
-    tbl.add_column("ID", style="dim", no_wrap=True)
-    tbl.add_column("Status", no_wrap=True)
-    tbl.add_column("Prioridade", no_wrap=True)
-    tbl.add_column("Titulo")
-    for t in tasks[:25]:
-        tbl.add_row(t.id[:12], t.status, t.priority, t.title[:60])
-    console.print(tbl)
-    if len(tasks) > 25:
-        console.print(f"[dim]... +{len(tasks) - 25} tasks (use boards-show "
-                      f"com filtros para ver tudo).[/dim]")
 
 
-@boards_app.command("rm")
-def boards_rm_cmd(
-    name: str = typer.Argument(..., help="Nome do board a remover"),
-    force: bool = typer.Option(False, "--force", "-f",
-                                help="Nao pede confirmacao"),
-):
-    """Remove um board (apaga o arquivo SQLite). Operacao IRREVERSIVEL."""
-    from . import kanban_db as _kb
-
-    if name not in _kb.list_boards():
-        console.print(f"[yellow]Board '[bold]{name}[/bold]' nao existe.[/yellow]")
-        raise typer.Exit(code=1)
-
-    path = _kb.board_path(name)
-    if not force:
-        if not typer.confirm(
-            f"Remover board '{name}' definitivamente? Path: {path}",
-            default=False,
-        ):
-            console.print("[dim]Cancelado.[/dim]")
-            return
-
-    try:
-        path.unlink(missing_ok=True)
-        # Remove o diretorio do board se estiver vazio (mas mantem workspaces/logs).
-        try:
-            path.parent.rmdir()
-        except OSError:
-            pass
-    except OSError as exc:
-        console.print(f"[red]Erro removendo {path}:[/red] {exc}")
-        raise typer.Exit(code=1)
-
-    # Se era o board ativo, reseta o marcador.
-    if _kb.get_active_board() == name:
-        _kb.active_board_marker_path().unlink(missing_ok=True)
-        console.print(f"[yellow]Marcador 'active_board' removido — proximo "
-                      f"comando usara 'default'.[/yellow]")
-    console.print(f"[green]✓[/green] Board removido: [bold]{name}[/bold]")
 
 
 # ============================================================================
@@ -8998,195 +8365,33 @@ def skill_render_cmd(
 # Skills Hub — catálogo built-in de skills por categoria
 # ---------------------------------------------------------------------------
 
-skills_hub_app = typer.Typer(help="Skills Hub — catálogo built-in de skills curadas.")
+from bauer.commands.skills_hub_cmd import skills_hub_app  # noqa: E402
 app.add_typer(skills_hub_app, name="skills-hub")
 
-skills_bundle_app = typer.Typer(help="Skill bundles — grupos de skills sob um único nome.")
+from bauer.commands.skills_bundle_cmd import skills_bundle_app  # noqa: E402
 app.add_typer(skills_bundle_app, name="skills-bundle")
 
 
-@skills_hub_app.command("list")
-def hub_list_cmd(
-    category: str | None = typer.Option(None, "--category", "-c", help="Filtrar por categoria"),
-) -> None:
-    """Lista todas as skills disponíveis no hub built-in."""
-    from .skills_hub import get_default_hub
-    from rich.table import Table
-
-    hub = get_default_hub()
-    skills = hub.list_skills(category=category)
-    if not skills:
-        console.print("[yellow]Nenhuma skill encontrada.[/yellow]")
-        raise typer.Exit()
-
-    table = Table(title=f"Skills Hub ({len(skills)} skills)", show_lines=False, box=None)
-    table.add_column("Slug", style="cyan", no_wrap=True)
-    table.add_column("Nome", style="bold")
-    table.add_column("Categoria", style="dim")
-    table.add_column("Descrição")
-    for s in skills:
-        table.add_row(s.slug, s.name, s.category, s.description)
-    console.print(table)
 
 
-@skills_hub_app.command("search")
-def hub_search_cmd(
-    query: str = typer.Argument(..., help="Termos de busca"),
-) -> None:
-    """Busca skills no hub por nome e descrição."""
-    from .skills_hub import get_default_hub
-    from rich.table import Table
-
-    hub = get_default_hub()
-    results = hub.search(query)
-    if not results:
-        console.print("[yellow]Nenhuma skill encontrada.[/yellow]")
-        raise typer.Exit()
-
-    table = Table(title=f"Resultados para '{query}'", show_lines=False, box=None)
-    table.add_column("Slug", style="cyan", no_wrap=True)
-    table.add_column("Categoria", style="dim")
-    table.add_column("Descrição")
-    for s in results:
-        table.add_row(s.slug, s.category, s.description)
-    console.print(table)
 
 
-@skills_hub_app.command("install")
-def hub_install_cmd(
-    slug: str = typer.Argument(..., help="Slug da skill a instalar"),
-) -> None:
-    """Instala uma skill do hub em ~/.bauer/skills/."""
-    from .skills_hub import get_default_hub
-
-    hub = get_default_hub()
-    ok = hub.install(slug)
-    if ok:
-        console.print(f"[green]✓[/green] Skill '{slug}' instalada em ~/.bauer/skills/")
-    else:
-        console.print(f"[red]Skill '{slug}' não encontrada no hub.[/red]")
-        raise typer.Exit(1)
 
 
-@skills_hub_app.command("show")
-def hub_show_cmd(
-    slug: str = typer.Argument(..., help="Slug da skill"),
-) -> None:
-    """Exibe o conteúdo de uma skill do hub."""
-    from .skills_hub import get_default_hub
-
-    hub = get_default_hub()
-    content = hub.read_content(slug)
-    if content is None:
-        console.print(f"[red]Skill '{slug}' não encontrada.[/red]")
-        raise typer.Exit(1)
-    console.print(content)
 
 
-@skills_hub_app.command("categories")
-def hub_categories_cmd() -> None:
-    """Lista as categorias de skills disponíveis."""
-    from .skills_hub import get_default_hub
-
-    hub = get_default_hub()
-    cats = hub.categories()
-    if not cats:
-        console.print("[yellow]Nenhuma categoria encontrada.[/yellow]")
-        raise typer.Exit()
-    for c in cats:
-        console.print(f"  [cyan]{c}[/cyan]")
 
 
 # ---------------------------------------------------------------------------
 # Skill bundles
 # ---------------------------------------------------------------------------
 
-@skills_bundle_app.command("list")
-def bundle_list_cmd() -> None:
-    """Lista bundles salvos em ~/.bauer/skill-bundles/."""
-    from .skill_bundles import get_default_bundle_manager
-    from rich.table import Table
-
-    mgr = get_default_bundle_manager()
-    bundles = mgr.list_bundles()
-    if not bundles:
-        console.print("[yellow]Nenhum bundle criado. Use 'bauer skills-bundle new'.[/yellow]")
-        raise typer.Exit()
-
-    table = Table(title="Skill Bundles", show_lines=False, box=None)
-    table.add_column("Slug", style="cyan", no_wrap=True)
-    table.add_column("Nome", style="bold")
-    table.add_column("Skills")
-    table.add_column("Descrição")
-    for b in bundles:
-        table.add_row(b.slug, b.name, ", ".join(b.skills), b.description)
-    console.print(table)
 
 
-@skills_bundle_app.command("new")
-def bundle_new_cmd(
-    name: str = typer.Argument(..., help="Nome do bundle"),
-    skills: list[str] = typer.Option([], "--skill", "-s", help="Skill slug (repetível)"),
-    description: str = typer.Option("", "--desc", "-d", help="Descrição do bundle"),
-    instruction: str = typer.Option("", "--instruction", "-i", help="Instrução extra"),
-) -> None:
-    """Cria um novo skill bundle."""
-    from .skill_bundles import SkillBundle, get_default_bundle_manager
-
-    if not skills:
-        console.print("[red]Informe ao menos uma skill com --skill <slug>[/red]")
-        raise typer.Exit(1)
-
-    mgr = get_default_bundle_manager()
-    bundle = SkillBundle(
-        name=name,
-        description=description,
-        skills=list(skills),
-        instruction=instruction,
-    )
-    path = mgr.save(bundle)
-    console.print(f"[green]✓[/green] Bundle '{bundle.slug}' salvo em {path}")
-    console.print(f"  Skills: {', '.join(skills)}")
 
 
-@skills_bundle_app.command("delete")
-def bundle_delete_cmd(
-    name: str = typer.Argument(..., help="Nome ou slug do bundle"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Confirmar sem perguntar"),
-) -> None:
-    """Remove um skill bundle."""
-    from .skill_bundles import get_default_bundle_manager
-
-    mgr = get_default_bundle_manager()
-    if not yes:
-        typer.confirm(f"Remover bundle '{name}'?", abort=True)
-    ok = mgr.delete(name)
-    if ok:
-        console.print(f"[green]✓[/green] Bundle '{name}' removido.")
-    else:
-        console.print(f"[red]Bundle '{name}' não encontrado.[/red]")
-        raise typer.Exit(1)
 
 
-@skills_bundle_app.command("show")
-def bundle_show_cmd(
-    name: str = typer.Argument(..., help="Nome ou slug do bundle"),
-) -> None:
-    """Mostra as skills de um bundle e seu conteúdo combinado."""
-    from .skill_bundles import get_default_bundle_manager
-
-    mgr = get_default_bundle_manager()
-    bundle = mgr.get(name)
-    if bundle is None:
-        console.print(f"[red]Bundle '{name}' não encontrado.[/red]")
-        raise typer.Exit(1)
-
-    console.print(f"[bold]{bundle.name}[/bold]  [dim]{bundle.slug}[/dim]")
-    if bundle.description:
-        console.print(f"[dim]{bundle.description}[/dim]")
-    console.print(f"Skills: [cyan]{', '.join(bundle.skills)}[/cyan]")
-    if bundle.instruction:
-        console.print(f"\nInstrução:\n{bundle.instruction}")
 
 
 # --- Bauer Gateway: telegram / discord / gateway -----------------------------
@@ -10089,62 +9294,16 @@ def gateway_init(
 
 # ── G11: bauer credential ────────────────────────────────────────────────────
 
-credential_app = typer.Typer(help="Gerenciador seguro de credenciais (keychain → Fernet → config).")
+from bauer.commands.credential_cmd import credential_app  # noqa: E402
 app.add_typer(credential_app, name="credential")
 
 
-@credential_app.command("set")
-def credential_set(
-    provider: str = typer.Argument(..., help="Nome do provider (ex: groq, openai)"),
-) -> None:
-    """Salva uma credencial no keychain ou arquivo encriptado."""
-    import getpass
-    secret = getpass.getpass(f"API key para '{provider}': ")
-    if not secret:
-        console.print("[red]Nenhum valor fornecido.[/red]")
-        raise typer.Exit(1)
-    from .credential_pool import _cpool
-    _cpool().set(provider, secret)
-    console.print(f"[green]✓ Credencial de '{provider}' salva.[/green]")
 
 
-@credential_app.command("get")
-def credential_get(
-    provider: str = typer.Argument(..., help="Nome do provider"),
-) -> None:
-    """Mostra os últimos 4 caracteres da credencial armazenada."""
-    from .credential_pool import _cpool
-    val = _cpool().get(provider)
-    if not val:
-        console.print(f"[yellow]Nenhuma credencial armazenada para '{provider}'.[/yellow]")
-    else:
-        masked = "*" * (len(val) - 4) + val[-4:]
-        console.print(f"[dim]{provider}:[/dim] {masked}")
 
 
-@credential_app.command("list")
-def credential_list() -> None:
-    """Lista providers com credencial armazenada."""
-    from .credential_pool import _cpool
-    providers = _cpool().list_providers()
-    if not providers:
-        console.print("[dim]Nenhuma credencial armazenada.[/dim]")
-    else:
-        for p in providers:
-            console.print(f"  [cyan]•[/cyan] {p}")
 
 
-@credential_app.command("delete")
-def credential_delete(
-    provider: str = typer.Argument(..., help="Nome do provider"),
-) -> None:
-    """Remove credencial do keychain e/ou arquivo encriptado."""
-    from .credential_pool import _cpool
-    removed = _cpool().delete(provider)
-    if removed:
-        console.print(f"[green]✓ Credencial de '{provider}' removida.[/green]")
-    else:
-        console.print(f"[yellow]Nenhuma credencial encontrada para '{provider}'.[/yellow]")
 
 
 # --- home --------------------------------------------------------------------
