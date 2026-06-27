@@ -73,6 +73,10 @@ from .tools.execution import ExecToolsMixin
 from .tools.factory import FactoryToolsMixin
 from .tools.fs import FsToolsMixin
 from .tools.kanban import KanbanToolsMixin
+from .tools.mcp import McpToolsMixin
+from .tools.memory import MemoryToolsMixin
+from .tools.session import SessionToolsMixin
+from .tools.skills import SkillsToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
@@ -98,7 +102,6 @@ try:
 except ImportError:
     _APPROVAL_AVAILABLE = False
 
-
 def _package_available(name: str) -> bool:
     """Verifica se um pacote Python está disponível sem importá-lo."""
     import sys
@@ -110,12 +113,10 @@ def _package_available(name: str) -> bool:
     except (ValueError, ModuleNotFoundError):
         return False
 
-
 # P4: exceções e tipos compartilhados moram em tools/base.py para evitar import
 # circular com os mixins. Re-exportadas aqui — `from bauer.tool_router import
 # ToolError, SandboxError, DryRunResult` continua funcionando.
 from .tools.base import DryRunResult, SandboxError, ToolError  # noqa: E402
-
 
 # Níveis de permissão: do menos ao mais privilegiado
 _PERMISSION_LEVELS = ("read", "write", "execute", "network", "system")
@@ -263,7 +264,6 @@ try:
 except Exception:
     pass
 
-
 _TOOL_CONTEXTS = ("supervisor", "orchestrator", "chat", "worker")
 _TOOL_CONTEXT_ALIASES = {
     "": "supervisor",
@@ -348,18 +348,15 @@ _MULTIMODAL_PATTERNS = (
     "internvl", "phi-3-vision", "phi-3.5-vision", "vision",
 )
 
-
 def _looks_multimodal(model_name: str) -> bool:
     """Heurística: o nome do modelo parece suportar visão? (G18.4)"""
     m = (model_name or "").lower()
     return any(p in m for p in _MULTIMODAL_PATTERNS)
 
-
 def _normalize_tool_context(value: str | None) -> str:
     raw = (value if value is not None else os.environ.get("BAUER_TOOL_CONTEXT", "supervisor"))
     context = _TOOL_CONTEXT_ALIASES.get(str(raw).strip().lower(), str(raw).strip().lower())
     return context if context in _TOOL_CONTEXTS else "supervisor"
-
 
 class ToolRouter(
     BrowserToolsMixin,
@@ -370,6 +367,10 @@ class ToolRouter(
     FactoryToolsMixin,
     FsToolsMixin,
     KanbanToolsMixin,
+    McpToolsMixin,
+    MemoryToolsMixin,
+    SessionToolsMixin,
+    SkillsToolsMixin,
     UtilityToolsMixin,
     WebToolsMixin,
 ):
@@ -1349,7 +1350,6 @@ class ToolRouter(
         """G4: Store recent conversation for LLM approval context."""
         self._recent_messages = messages[-max_messages:] if len(messages) > max_messages else list(messages)
 
-
     def _resolve_vision_client(self, tool: str):
         """Resolve o cliente para tools de visão (G18.4).
 
@@ -1964,98 +1964,7 @@ class ToolRouter(
         else:
             raise ToolError(f"Acao desconhecida: '{action}'. Use: add | list | done | remove | clear.")
 
-    # --- memory ----------------------------------------------------------------
-
-    _MEMORY_FILE = ".bauer_memory.json"
-    _MAX_VALUE_LEN = 10_000  # chars por valor
-    _MAX_KEYS = 500
-
-    def _memory_path(self) -> Path:
-        return self.workspace / self._MEMORY_FILE
-
-    def _memory_load(self) -> dict:
-        p = self._memory_path()
-        if not p.exists():
-            return {}
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-
-    def _memory_save(self, data: dict) -> None:
-        self._memory_path().write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _memory(self, args: dict) -> str:
-        """Key-value persistente em .bauer_memory.json dentro do workspace."""
-        from datetime import datetime, timezone as _tz
-
-        action = str(args.get("action", "")).lower()
-        if not action:
-            raise ToolError("memory requer 'action': set | get | list | delete.")
-
-        if action == "set":
-            key = args.get("key", "").strip()
-            value = args.get("value")
-            if not key:
-                raise ToolError("memory set requer 'key'.")
-            if value is None:
-                raise ToolError("memory set requer 'value'.")
-            value_str = str(value)
-            if len(value_str) > self._MAX_VALUE_LEN:
-                raise ToolError(
-                    f"Valor muito grande ({len(value_str)} chars). "
-                    f"Limite: {self._MAX_VALUE_LEN} chars."
-                )
-            data = self._memory_load()
-            if len(data) >= self._MAX_KEYS and key not in data:
-                raise ToolError(
-                    f"Limite de {self._MAX_KEYS} chaves atingido. "
-                    "Use memory delete para liberar espaco."
-                )
-            ts = datetime.now(_tz.utc).isoformat()
-            data[key] = {"value": value_str, "updated_at": ts}
-            self._memory_save(data)
-            return f"Memory['{key}'] = {value_str[:80]}{'...' if len(value_str) > 80 else ''}"
-
-        elif action == "get":
-            key = args.get("key", "").strip()
-            if not key:
-                raise ToolError("memory get requer 'key'.")
-            data = self._memory_load()
-            if key not in data:
-                return f"Chave '{key}' nao encontrada na memory."
-            entry = data[key]
-            val = entry["value"] if isinstance(entry, dict) else str(entry)
-            ts = entry.get("updated_at", "") if isinstance(entry, dict) else ""
-            return f"Memory['{key}'] = {val}\n(atualizado: {ts})"
-
-        elif action == "list":
-            data = self._memory_load()
-            if not data:
-                return "Memory vazia."
-            lines = [f"Memory ({len(data)} chaves):"]
-            for k, v in sorted(data.items()):
-                val = v["value"] if isinstance(v, dict) else str(v)
-                preview = val[:60].replace("\n", " ") + ("..." if len(val) > 60 else "")
-                lines.append(f"  {k}: {preview}")
-            return "\n".join(lines)
-
-        elif action == "delete":
-            key = args.get("key", "").strip()
-            if not key:
-                raise ToolError("memory delete requer 'key'.")
-            data = self._memory_load()
-            if key not in data:
-                return f"Chave '{key}' nao encontrada — nada removido."
-            del data[key]
-            self._memory_save(data)
-            return f"Memory['{key}'] removido."
-
-        else:
-            raise ToolError(f"Acao desconhecida: '{action}'. Use: set | get | list | delete.")
+    # --- memory/session/skills/mcp → bauer/tools/{memory,session,skills,mcp}.py -
 
     # --- clarify ---------------------------------------------------------------
 
@@ -2189,7 +2098,6 @@ class ToolRouter(
 
     # --- channel_send / channel_list — Bauer Gateway ----------------------------
 
-
     def _send_message(self, args: dict) -> str:
         """Envia mensagem direto pelo bridge vivo do gateway (ou outbox).
 
@@ -2250,339 +2158,6 @@ class ToolRouter(
         return f"[{result.get('provider')}] {result['transcript']}"
 
     # --- code-intel + LSP → bauer/tools/code_intel.py --------------------------
-
-    # --- mcp_call --------------------------------------------------------------
-
-    def _mcp_call(self, args: dict) -> str:
-        """Chama tool em servidor MCP via stdio (JSON-RPC 2.0 puro — sem pacote 'mcp').
-
-        Usa McpClient nativo do Bauer. Não requer pip install mcp.
-
-        Configuração em config.yaml:
-            mcp:
-              servers:
-                meu_servidor:
-                  command: ["python", "-m", "meu_mcp_server"]
-                  timeout: 30
-
-        Ou via variável de ambiente:
-            MCP_SERVER_MEU_SERVIDOR="python -m meu_mcp_server"
-        """
-        server_name = args.get("server", "").strip()
-        tool_name = args.get("tool", "").strip()
-        arguments = args.get("arguments", {})
-
-        if not server_name:
-            raise ToolError("mcp_call requer 'server'.")
-        if not tool_name:
-            raise ToolError("mcp_call requer 'tool'.")
-        if not isinstance(arguments, dict):
-            try:
-                arguments = json.loads(str(arguments))
-            except Exception:
-                raise ToolError("mcp_call: 'arguments' deve ser um objeto JSON.")
-
-        # Resolve configuração do servidor
-        if "_get_mcp_server_cmd" in self.__dict__:
-            import asyncio
-            server_cmd = self._get_mcp_server_cmd(server_name)
-            legacy_call = self._mcp_call_legacy_async(server_cmd, tool_name, arguments)
-            try:
-                return asyncio.run(legacy_call)
-            finally:
-                legacy_call.close()
-
-        server_cmd, server_env, server_timeout = self._resolve_mcp_server(server_name)
-
-        from .mcp_client import McpClient, McpServerConfig, McpError, McpToolError, McpTimeoutError
-        cfg = McpServerConfig(
-            name=server_name,
-            command=server_cmd,
-            env=server_env,
-            timeout=server_timeout,
-        )
-        try:
-            with McpClient(cfg) as client:
-                return client.call_tool(tool_name, arguments)
-        except McpToolError as exc:
-            raise ToolError(str(exc)) from exc
-        except McpTimeoutError as exc:
-            raise ToolError(str(exc)) from exc
-        except McpError as exc:
-            raise ToolError(
-                f"mcp_call: erro de conexao com '{server_name}': {exc}"
-            ) from exc
-        except Exception as exc:
-            raise ToolError(
-                f"mcp_call: erro inesperado chamando '{tool_name}' em '{server_name}': {exc}"
-            ) from exc
-
-    def _get_mcp_server_cmd(self, server_name: str) -> list[str]:
-        """Compatibilidade com a API MCP anterior que retornava apenas o comando."""
-        server_cmd, _, _ = self._resolve_mcp_server(server_name)
-        return server_cmd
-
-    async def _mcp_call_legacy_async(
-        self,
-        server_cmd: list[str],
-        tool_name: str,
-        arguments: dict,
-    ) -> str:
-        """Ponte para testes/extensoes que ainda sobrescrevem o cliente MCP legado."""
-        raise ToolError(
-            "mcp_call legado nao esta disponivel; use a configuracao MCP nativa do Bauer."
-        )
-
-    def _resolve_mcp_server(
-        self, server_name: str
-    ) -> tuple[list[str], dict[str, str], float]:
-        """Resolve comando, env e timeout de um servidor MCP.
-
-        Ordem de busca:
-        1. Variável de ambiente: MCP_SERVER_<NAME>="python -m meu_servidor"
-        2. config.yaml → mcp.servers.<name>
-        3. Atributo legado self._mcp_config (compat)
-
-        Returns:
-            (command, env, timeout)
-        """
-        import os
-
-        env_key = f"MCP_SERVER_{server_name.upper().replace('-', '_')}"
-        env_val = os.environ.get(env_key, "")
-        if env_val:
-            return env_val.split(), {}, 30.0
-
-        # Tenta McpSection do config_loader (injetado via self._mcp_config)
-        mcp_config = getattr(self, "_mcp_config", None)
-        if mcp_config is not None:
-            servers = getattr(mcp_config, "servers", None) or {}
-            if server_name in servers:
-                srv = servers[server_name]
-                if hasattr(srv, "command"):
-                    # McpServerEntry (Pydantic)
-                    cmd = srv.command if isinstance(srv.command, list) else srv.command.split()
-                    env = dict(getattr(srv, "env", {}) or {})
-                    timeout = float(getattr(srv, "timeout", 30))
-                    return cmd, env, timeout
-                elif isinstance(srv, dict) and "command" in srv:
-                    cmd = srv["command"]
-                    if isinstance(cmd, str):
-                        cmd = cmd.split()
-                    env = dict(srv.get("env", {}) or {})
-                    timeout = float(srv.get("timeout", 30))
-                    return cmd, env, timeout
-
-        raise ToolError(
-            f"Servidor MCP '{server_name}' nao configurado.\n"
-            "Configure via:\n"
-            f"  1. Variavel de ambiente: {env_key}=python -m meu_servidor\n"
-            "  2. config.yaml:\n"
-            "       mcp:\n"
-            "         servers:\n"
-            f"           {server_name}:\n"
-            "             command: [\"python\", \"-m\", \"meu_servidor\"]\n"
-            "             timeout: 30"
-        )
-
-    # ==========================================================================
-    # CRONJOB
-    # ==========================================================================
-
-    _CRONJOB_FILE = ".bauer_cronjobs.json"
-
-
-    def _parse_schedule(self, schedule: str) -> dict:
-        """Parseia schedule string para dict normalizado.
-
-        Formatos suportados:
-          every 30m / every 2h / every 1d
-          daily 09:00
-          cron: */5 * * * *
-        """
-        s = schedule.strip().lower()
-
-        if s.startswith("every "):
-            rest = s[6:].strip()
-            unit_map = {"m": "minutes", "h": "hours", "d": "days",
-                        "min": "minutes", "hour": "hours", "day": "days",
-                        "mins": "minutes", "hours": "hours", "days": "days"}
-            for suffix, unit in sorted(unit_map.items(), key=lambda x: -len(x[0])):
-                if rest.endswith(suffix):
-                    try:
-                        n = int(rest[: -len(suffix)].strip())
-                        return {"type": "interval", "unit": unit, "value": n}
-                    except ValueError:
-                        pass
-            raise ToolError(
-                f"Schedule '{schedule}' invalido. Exemplos: 'every 30m', 'every 2h', 'every 1d'."
-            )
-
-        if s.startswith("daily "):
-            time_str = schedule.strip()[6:].strip()
-            try:
-                h, m_str = time_str.split(":")
-                return {"type": "daily", "hour": int(h), "minute": int(m_str)}
-            except Exception:
-                raise ToolError(
-                    f"Schedule '{schedule}' invalido. Formato: 'daily HH:MM' (ex: 'daily 09:00')."
-                )
-
-        if s.startswith("cron:") or s.startswith("cron "):
-            expr = schedule.strip()[5:].strip()
-            parts = expr.split()
-            if len(parts) != 5:
-                raise ToolError(
-                    f"Expressao cron invalida: '{expr}'. Formato: '*/5 * * * *' (5 campos)."
-                )
-            return {"type": "cron", "expression": expr}
-
-        raise ToolError(
-            f"Schedule '{schedule}' nao reconhecido.\n"
-            "Formatos suportados:\n"
-            "  every 30m | every 2h | every 1d\n"
-            "  daily 09:00\n"
-            "  cron: */5 * * * *"
-        )
-
-
-    # ==========================================================================
-    # SESSION_SEARCH
-    # ==========================================================================
-
-    def _session_search(self, args: dict) -> str:
-        """Busca full-text/regex em memória persistente e logs de sessão.
-
-        Fontes:
-          memory   — .bauer_memory.json (chaves + valores)
-          sessions — arquivos .jsonl / .json de sessão no workspace
-          all      — ambas (padrão)
-        """
-        import re as _re
-
-        action = str(args.get("action", "search")).lower().strip()
-        source = str(args.get("source", "all")).lower().strip()
-
-        if action == "recent":
-            n = int(args.get("n", 10))
-            return self._session_search_recent(n, source)
-
-        if action != "search":
-            raise ToolError("session_search: action deve ser 'search' ou 'recent'.")
-
-        query = str(args.get("query", "")).strip()
-        if not query:
-            raise ToolError("session_search search requer 'query'.")
-
-        results: list[str] = []
-
-        # ── Busca em memory ───────────────────────────────────────────────
-        if source in ("memory", "all"):
-            mem = self._memory_load()
-            try:
-                pattern = _re.compile(query, _re.IGNORECASE)
-            except _re.error:
-                pattern = _re.compile(_re.escape(query), _re.IGNORECASE)
-
-            mem_hits = []
-            for key, entry in mem.items():
-                val = entry["value"] if isinstance(entry, dict) else str(entry)
-                ts = entry.get("updated_at", "") if isinstance(entry, dict) else ""
-                if pattern.search(key) or pattern.search(val):
-                    preview = val[:120].replace("\n", " ")
-                    mem_hits.append(f"  [memory] {key}: {preview} ({ts[:10]})")
-
-            if mem_hits:
-                results.append(f"Memory ({len(mem_hits)} resultado(s)):")
-                results.extend(mem_hits)
-
-        # ── Busca em logs de sessão ───────────────────────────────────────
-        if source in ("sessions", "all"):
-            session_hits = self._search_session_files(query)
-            if session_hits:
-                results.append(f"\nSessoes ({len(session_hits)} resultado(s)):")
-                results.extend(session_hits)
-
-        if not results:
-            return f"Nenhum resultado para '{query}' em '{source}'."
-
-        header = f"session_search '{query}' em [{source}]:\n"
-        return header + "\n".join(results)
-
-    def _session_search_recent(self, n: int, source: str) -> str:
-        """Retorna as N entradas mais recentes da memória/sessões."""
-        results: list[str] = []
-        n = max(1, min(n, 100))
-
-        if source in ("memory", "all"):
-            mem = self._memory_load()
-            sorted_entries = sorted(
-                mem.items(),
-                key=lambda x: x[1].get("updated_at", "") if isinstance(x[1], dict) else "",
-                reverse=True,
-            )[:n]
-            if sorted_entries:
-                results.append(f"Memory (mais recentes {len(sorted_entries)}):")
-                for key, entry in sorted_entries:
-                    val = entry["value"] if isinstance(entry, dict) else str(entry)
-                    ts = entry.get("updated_at", "")[:10] if isinstance(entry, dict) else ""
-                    results.append(f"  [{ts}] {key}: {val[:80].replace(chr(10), ' ')}")
-
-        return "\n".join(results) if results else "Nenhuma entrada recente encontrada."
-
-    def _search_session_files(self, query: str, top_k: int = 20) -> list[str]:
-        """Busca em sessões salvas — usa FTS5 (SqliteSessionStore) ou fallback JSONL.
-
-        Tenta SqliteSessionStore primeiro (FTS5 semântico).
-        Se o banco não existir, cai para busca linear em .jsonl.
-        """
-        # ── Caminho 1: SqliteSessionStore (FTS5) ──────────────────────────
-        sessions_db_candidates = [
-            self.workspace.parent / "memory" / "sessions" / "sessions.db",
-            self.workspace / "memory" / "sessions" / "sessions.db",
-        ]
-        for db_path in sessions_db_candidates:
-            if db_path.exists():
-                try:
-                    from .sqlite_session_store import SqliteSessionStore as _SqliteStore
-                    store = _SqliteStore(db_path.parent)
-                    results = store.search_sessions(query, top_k=top_k)
-                    if results:
-                        return [
-                            f"  [session:{r['session_id']}] [{r['role']}] {r['snippet']}"
-                            for r in results
-                        ]
-                    return []  # banco existe mas sem resultados
-                except Exception:
-                    pass  # fallback para JSONL
-
-        # ── Caminho 2: fallback linear em .jsonl ──────────────────────────
-        import re as _re
-        hits: list[str] = []
-        try:
-            pattern = _re.compile(query, _re.IGNORECASE)
-        except _re.error:
-            pattern = _re.compile(_re.escape(query), _re.IGNORECASE)
-
-        search_dirs = [self.workspace, self.workspace.parent]
-        for d in search_dirs:
-            if not d.exists():
-                continue
-            for ext in ("*.jsonl", "*.json"):
-                for fpath in list(d.glob(ext))[:20]:
-                    if fpath.name.startswith(".bauer_"):
-                        continue
-                    try:
-                        text = fpath.read_text(encoding="utf-8", errors="ignore")
-                        for i, line in enumerate(text.splitlines()):
-                            if pattern.search(line):
-                                preview = line[:100].strip()
-                                hits.append(f"  [{fpath.name}:{i+1}] {preview}")
-                                if len(hits) >= top_k:
-                                    return hits
-                    except Exception:
-                        continue
-        return hits
 
     # ==========================================================================
     # MIXTURE_OF_AGENTS
@@ -2923,115 +2498,9 @@ class ToolRouter(
     # Skills system
     # =========================================================================
 
-    def _load_skills(self) -> dict:
-        p = self.workspace / self._SKILLS_FILE
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                return {}
-        return {}
-
-    def _save_skills(self, skills: dict) -> None:
-        p = self.workspace / self._SKILLS_FILE
-        p.write_text(json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _skill_manage(self, args: dict) -> str:
-        action = str(args.get("action", "")).strip().lower()
-        name = str(args.get("name", "")).strip()
-        if not action:
-            raise ToolError("skill_manage: 'action' é obrigatório (create|update|delete).")
-        if not name:
-            raise ToolError("skill_manage: 'name' é obrigatório.")
-
-        skills = self._load_skills()
-
-        if action == "delete":
-            if name not in skills:
-                raise ToolError(f"skill_manage: skill '{name}' não encontrada.")
-            del skills[name]
-            self._save_skills(skills)
-            return f"[skill_manage] Skill '{name}' removida."
-
-        if action in ("create", "update"):
-            description = str(args.get("description", "")).strip()
-            content = str(args.get("content", "")).strip()
-            if not description:
-                raise ToolError("skill_manage: 'description' é obrigatório para create/update.")
-            if not content:
-                raise ToolError("skill_manage: 'content' é obrigatório para create/update.")
-            if action == "create" and name in skills:
-                raise ToolError(
-                    f"skill_manage: skill '{name}' já existe. Use action='update' para editar."
-                )
-            tags = args.get("tags", [])
-            if not isinstance(tags, list):
-                tags = [str(tags)]
-            import time as _time
-            now = _time.time()
-            existing = skills.get(name, {})
-            skills[name] = {
-                "name": name,
-                "description": description,
-                "content": content,
-                "tags": tags,
-                "created_at": existing.get("created_at", now),
-                "updated_at": now,
-            }
-            self._save_skills(skills)
-            verb = "criada" if action == "create" else "atualizada"
-            return f"[skill_manage] Skill '{name}' {verb}. Tags: {tags or '—'}."
-
-        raise ToolError(f"skill_manage: action '{action}' inválida. Use create|update|delete.")
-
-    def _skill_view(self, args: dict) -> str:
-        name = str(args.get("name", "")).strip()
-        if not name:
-            raise ToolError("skill_view: 'name' é obrigatório.")
-        skills = self._load_skills()
-        if name not in skills:
-            available = ", ".join(sorted(skills.keys())) or "(nenhuma)"
-            raise ToolError(f"skill_view: skill '{name}' não encontrada. Disponíveis: {available}")
-        s = skills[name]
-        import time as _time
-        lines = [
-            f"[skill] {s['name']}",
-            f"Descrição: {s['description']}",
-            f"Tags: {', '.join(s.get('tags', [])) or '—'}",
-            f"Criada: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(s.get('created_at', 0)))}",
-            f"Atualizada: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(s.get('updated_at', 0)))}",
-            "",
-            "─── Conteúdo ───",
-            s["content"],
-        ]
-        return "\n".join(lines)
-
-    def _skills_list(self, args: dict) -> str:
-        skills = self._load_skills()
-        if not skills:
-            return "[skills_list] Nenhuma skill registrada."
-        filt = str(args.get("filter", "")).strip().lower()
-        results = []
-        for s in skills.values():
-            if filt:
-                tag_match = any(filt in t.lower() for t in s.get("tags", []))
-                name_match = filt in s["name"].lower()
-                desc_match = filt in s.get("description", "").lower()
-                if not (tag_match or name_match or desc_match):
-                    continue
-            results.append(s)
-        if not results:
-            return f"[skills_list] Nenhuma skill encontrada para filtro '{filt}'."
-        lines = [f"[skills_list] {len(results)} skill(s):"]
-        for s in sorted(results, key=lambda x: x["name"]):
-            tags = ", ".join(s.get("tags", [])) or "—"
-            lines.append(f"  • {s['name']} [{tags}] — {s.get('description', '')[:80]}")
-        return "\n".join(lines)
-
     # =========================================================================
     # App Factory (Spec-Driven Development)
     # =========================================================================
-
 
     # =========================================================================
     # Process manager
@@ -3290,5 +2759,4 @@ class ToolRouter(
         )
 
     # --- kanban → tools/kanban.py | browser → tools/browser.py -----------------
-
 

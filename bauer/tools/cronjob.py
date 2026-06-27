@@ -15,6 +15,8 @@ from .base import ToolError
 class CronjobToolsMixin:
     """Agendamento simples de jobs recorrentes no workspace."""
 
+    _CRONJOB_FILE = ".bauer_cronjobs.json"
+
     def _cronjob_path(self) -> Path:
         return self.workspace / self._CRONJOB_FILE
 
@@ -205,3 +207,56 @@ class CronjobToolsMixin:
             raise ToolError(
                 f"Acao '{action}' desconhecida. Use: create | list | delete | run | pause | resume."
             )
+
+    def _parse_schedule(self, schedule: str) -> dict:
+        """Parseia schedule string para dict normalizado.
+
+        Formatos suportados:
+          every 30m / every 2h / every 1d
+          daily 09:00
+          cron: */5 * * * *
+        """
+        s = schedule.strip().lower()
+
+        if s.startswith("every "):
+            rest = s[6:].strip()
+            unit_map = {"m": "minutes", "h": "hours", "d": "days",
+                        "min": "minutes", "hour": "hours", "day": "days",
+                        "mins": "minutes", "hours": "hours", "days": "days"}
+            for suffix, unit in sorted(unit_map.items(), key=lambda x: -len(x[0])):
+                if rest.endswith(suffix):
+                    try:
+                        n = int(rest[: -len(suffix)].strip())
+                        return {"type": "interval", "unit": unit, "value": n}
+                    except ValueError:
+                        pass
+            raise ToolError(
+                f"Schedule '{schedule}' invalido. Exemplos: 'every 30m', 'every 2h', 'every 1d'."
+            )
+
+        if s.startswith("daily "):
+            time_str = schedule.strip()[6:].strip()
+            try:
+                h, m_str = time_str.split(":")
+                return {"type": "daily", "hour": int(h), "minute": int(m_str)}
+            except Exception:
+                raise ToolError(
+                    f"Schedule '{schedule}' invalido. Formato: 'daily HH:MM' (ex: 'daily 09:00')."
+                )
+
+        if s.startswith("cron:") or s.startswith("cron "):
+            expr = schedule.strip()[5:].strip()
+            parts = expr.split()
+            if len(parts) != 5:
+                raise ToolError(
+                    f"Expressao cron invalida: '{expr}'. Formato: '*/5 * * * *' (5 campos)."
+                )
+            return {"type": "cron", "expression": expr}
+
+        raise ToolError(
+            f"Schedule '{schedule}' nao reconhecido.\n"
+            "Formatos suportados:\n"
+            "  every 30m | every 2h | every 1d\n"
+            "  daily 09:00\n"
+            "  cron: */5 * * * *"
+        )
