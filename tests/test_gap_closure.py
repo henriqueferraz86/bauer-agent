@@ -396,15 +396,19 @@ class TestMemoryCleanupTTL:
         return mem_dir
 
     def test_removes_old_entries(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
         from bauer.memory_manager import MemoryManager
         mem_dir = self._make_memory_dir(tmp_path)
+
+        # Data "recente" relativa ao agora (evita time-bomb: datas fixas vencem o TTL).
+        recente = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d %H:%M UTC")
 
         # Cria arquivo com entradas antigas e recentes
         content = (
             "# MEMORY.md — cabeçalho do arquivo\n\n"
             "## [2020-01-01 10:00 UTC] Entrada antiga\n"
             "- campo: valor antigo\n\n"
-            "## [2026-05-28 10:00 UTC] Entrada recente\n"
+            f"## [{recente}] Entrada recente\n"
             "- campo: valor recente\n\n"
         )
         (mem_dir / "MEMORY.md").write_text(content, encoding="utf-8")
@@ -455,10 +459,13 @@ class TestMemoryCleanupTTL:
         assert "Entrada velha" not in result
 
     def test_no_entries_old_enough_returns_zero(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
         from bauer.memory_manager import MemoryManager
         mem_dir = self._make_memory_dir(tmp_path)
 
-        content = "# Cabeçalho\n\n## [2026-05-28 10:00 UTC] Recente\n- x: y\n\n"
+        # Data "recente" relativa ao agora (evita time-bomb: datas fixas vencem o TTL).
+        recente = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d %H:%M UTC")
+        content = f"# Cabeçalho\n\n## [{recente}] Recente\n- x: y\n\n"
         (mem_dir / "MEMORY.md").write_text(content, encoding="utf-8")
 
         mm = MemoryManager(mem_dir)

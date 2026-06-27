@@ -116,7 +116,8 @@ jobs:
         run: |
           uv run python -c "from bauer.cli import app"
           uv run python -c "from bauer.orchestrator import AgentOrchestrator"
-          uv run python -c "from bauer.agent import Agent"
+          uv run python -c "from bauer.agent import run_agent_session"
+          uv run python -c "from bauer.tool_router import ToolRouter"
 
       - name: Coleta de testes sem erro de plugin
         run: uv run pytest --collect-only -q
