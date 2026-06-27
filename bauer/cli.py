@@ -62,13 +62,13 @@ from bauer.commands.config_cmd import config_app  # noqa: E402
 models_app = typer.Typer(help="Operacoes com models.yaml")
 memory_app = typer.Typer(help="Operacoes com memoria Markdown")
 tools_app = typer.Typer(help="Tool Bridge — ferramentas do agente")
-project_app = typer.Typer(help="Gerenciamento de projeto (PROJECT.md)")
+from bauer.commands.project_cmd import project_app  # noqa: E402
 task_app = typer.Typer(help="Gerenciamento de tarefas (TASKS.md)")
-dispatch_app = typer.Typer(help="Dispatcher hibrido durable para tasks READY")
-ops_app = typer.Typer(help="Operacao do runtime: filas, lanes, claims e runs")
+from bauer.commands.dispatch_cmd import dispatch_app  # noqa: E402
+from bauer.commands.ops_cmd import ops_app  # noqa: E402
 runtime_app = typer.Typer(help="Supervisor always-on: dispatcher, cron, outbox e kanban")
-cron_app = typer.Typer(help="Automacoes duraveis: agenda prompts como tasks READY")
-research_app = typer.Typer(help="Pesquisa e trajectories para avaliacao/treino")
+from bauer.commands.cron_cmd import cron_app  # noqa: E402
+from bauer.commands.research_cmd import research_app  # noqa: E402
 learning_app = typer.Typer(help="Adaptive Learning Engine — recomendacoes e reset")
 from bauer.commands.auth_cmd import auth_app  # noqa: E402
 orchestrate_app = typer.Typer(help="Orquestrador de agents — tarefas complexas em varios passos")
@@ -76,7 +76,7 @@ agent_app = typer.Typer(
     invoke_without_command=True,
     help="Agente interativo — use sem sub-comando para chat, ou: create/list/run/delete.",
 )
-spec_app = typer.Typer(help="Spec-Driven Development — contratos de features em YAML")
+from bauer.commands.spec_cmd import spec_app  # noqa: E402
 company_app = typer.Typer(help="Gestao multi-empresa — namespaces isolados por empresa")
 migrate_app = typer.Typer(help="Importa configuracoes e dados de outros agents (Hermes, OpenClaw)")
 from bauer.commands.boards_cmd import boards_app  # noqa: E402
@@ -3975,122 +3975,14 @@ def orchestrate_events(
 
 # --- project ----------------------------------------------------------------
 
-_PROJECT_WORKSPACE = Path("workspace")
+# P4: movido p/ bauer/commands/_common.py (compartilhado com grupos extraídos).
+from bauer.commands._common import _PROJECT_WORKSPACE  # noqa: E402
 
 
-@project_app.command("init")
-def project_init(
-    name: str = typer.Argument(..., help="Nome do projeto"),
-    description: str = typer.Option("", "--desc", help="Descricao do projeto"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    """Inicializa o workspace com PROJECT.md e TASKS.md."""
-    wm = WorkspaceManager(workspace)
-    created = wm.init_project(name, description)
-    if created:
-        for p in created:
-            console.print(f"[green]criado:[/green] {p}")
-    else:
-        console.print(f"[dim]Projeto ja inicializado em {workspace}/[/dim]")
 
 
-@project_app.command("status")
-def project_status(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    """Mostra PROJECT.md e resumo de tarefas."""
-    wm = WorkspaceManager(workspace)
-    console.print(wm.get_project_info())
-
-    tasks = wm.list_tasks()
-    if not tasks:
-        console.print("[dim]Nenhuma tarefa registrada ainda.[/dim]")
-        return
-
-    from collections import Counter
-    counts = Counter(t.status for t in tasks)
-    summary = "  ".join(f"{s}: {n}" for s, n in sorted(counts.items()))
-    console.print(f"[dim]Tarefas — {summary} | Total: {len(tasks)}[/dim]")
 
 
-@project_app.command("board")
-def project_board(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    refresh: int = typer.Option(3, "--refresh", "-r", help="Intervalo de atualizacao em segundos"),
-):
-    """Kanban ao vivo no terminal — atualiza automaticamente via Rich Live.
-
-    Exibe as tarefas do TASKS.md em colunas por status.
-    Pressione Ctrl+C para sair.
-    """
-    import time
-    from collections import Counter
-    from rich.live import Live
-    from rich.panel import Panel as RPanel
-    from rich.columns import Columns
-    from rich.text import Text
-
-    _STATUS_ORDER = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"]
-    _STATUS_LABEL = {
-        "TODO":        ("TODO",          "blue"),
-        "IN_PROGRESS": ("EM PROGRESSO",  "yellow"),
-        "BLOCKED":     ("BLOQUEADO",     "red"),
-        "DONE":        ("CONCLUIDO",     "green"),
-    }
-    _COMPACT_THRESHOLD = 8
-
-    def _build_board():
-        wm = WorkspaceManager(workspace)
-        tasks = wm.list_tasks()
-        by_status: dict[str, list] = {s: [] for s in _STATUS_ORDER}
-        for t in tasks:
-            if t.status in by_status:
-                by_status[t.status].append(t)
-
-        panels = []
-        for status in _STATUS_ORDER:
-            label, color = _STATUS_LABEL[status]
-            col_tasks = by_status[status]
-            compact = len(col_tasks) > _COMPACT_THRESHOLD
-            # Para DONE compacto: mostra só os 8 mais recentes
-            visible = col_tasks[-_COMPACT_THRESHOLD:] if compact else col_tasks
-            hidden = len(col_tasks) - len(visible)
-
-            lines = Text()
-            if hidden > 0:
-                lines.append(f"  + {hidden} anteriores...\n", style="dim")
-            if not col_tasks:
-                lines.append("  (vazio)\n", style="dim")
-            for t in visible:
-                lines.append(f"  #{t.id} ", style="dim")
-                title = t.title if len(t.title) <= 38 else t.title[:35] + "..."
-                lines.append(f"{title}\n", style="bold" if status == "IN_PROGRESS" else "")
-
-            count_label = f" ({len(col_tasks)})"
-            panels.append(RPanel(
-                lines,
-                title=f"[{color}]{label}{count_label}[/{color}]",
-                border_style=color,
-                padding=(0, 1),
-            ))
-
-        ts = time.strftime("%H:%M:%S")
-        return Columns(panels, equal=True, expand=True), ts
-
-    console.print(f"\n[dim]Kanban ao vivo — {workspace}/TASKS.md "
-                  f"(atualiza a cada {refresh}s — Ctrl+C para sair)[/dim]\n")
-
-    with Live(console=console, refresh_per_second=1, screen=False) as live:
-        while True:
-            try:
-                board, ts = _build_board()
-                from rich.console import Group
-                live.update(Group(board, Text(f"  Atualizado: {ts}", style="dim")))
-                time.sleep(refresh)
-            except KeyboardInterrupt:
-                break
-
-    console.print("\n[dim]Board encerrado.[/dim]")
 
 
 
@@ -4503,206 +4395,10 @@ def task_board(
 # --- ops --------------------------------------------------------------------
 
 
-@ops_app.command("status")
-def ops_status_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    limit: int = typer.Option(10, "--limit", help="Numero de runs/eventos recentes"),
-    as_json: bool = typer.Option(False, "--json", help="Imprime JSON bruto para automacao"),
-):
-    """Mostra saude operacional: filas, lanes, claims ativos, runs e eventos."""
-    import json as _json
-
-    from .ops_status import build_ops_status
-
-    status = build_ops_status(workspace, limit=limit)
-    if as_json:
-        console.print(_json.dumps(status, ensure_ascii=False, indent=2), soft_wrap=True)
-        return
-
-    counts = status["status_counts"]
-    summary = Table(title=f"Ops status - {workspace}", show_lines=False)
-    summary.add_column("Status", style="cyan")
-    summary.add_column("Qtd", justify="right")
-    for name in ("READY", "IN_PROGRESS", "FAILED", "BLOCKED", "TODO", "DONE"):
-        summary.add_row(name, str(counts.get(name, 0)))
-    console.print(summary)
-
-    lanes = status.get("lanes", [])
-    if lanes:
-        lane_table = Table(title="Lanes", show_lines=False)
-        lane_table.add_column("Lane", style="cyan")
-        lane_table.add_column("Agent")
-        lane_table.add_column("Capacidade", justify="right")
-        lane_table.add_column("Ready", justify="right")
-        lane_table.add_column("Running", justify="right")
-        lane_table.add_column("Failed", justify="right")
-        lane_table.add_column("Blocked", justify="right")
-        for lane in lanes:
-            lane_table.add_row(
-                str(lane.get("lane", "")),
-                str(lane.get("agent", "")),
-                str(lane.get("max_concurrent", "")),
-                str(lane.get("ready", 0)),
-                str(lane.get("running", 0)),
-                str(lane.get("failed", 0)),
-                str(lane.get("blocked", 0)),
-            )
-        console.print(lane_table)
-
-    claims = status.get("active_claims", [])
-    if claims:
-        claim_table = Table(title="Claims ativos", show_lines=False)
-        claim_table.add_column("Task", style="cyan")
-        claim_table.add_column("Lane")
-        claim_table.add_column("Run", style="dim")
-        claim_table.add_column("PID", justify="right")
-        claim_table.add_column("Alive")
-        claim_table.add_column("Lease", justify="right")
-        for claim in claims:
-            lease = claim.get("claim_seconds_left")
-            claim_table.add_row(
-                str(claim.get("public_id", "")),
-                str(claim.get("lane", "")),
-                str(claim.get("run_id", "")),
-                str(claim.get("worker_pid") or ""),
-                str(claim.get("worker_alive")),
-                "" if lease is None else f"{lease}s",
-            )
-        console.print(claim_table)
-    else:
-        console.print("[dim]Nenhum claim ativo.[/dim]")
-
-    runs = status.get("recent_runs", [])
-    if runs:
-        run_table = Table(title="Runs recentes", show_lines=False)
-        run_table.add_column("Run", style="dim")
-        run_table.add_column("Task")
-        run_table.add_column("Status")
-        run_table.add_column("Lane")
-        run_table.add_column("Heartbeat", style="dim")
-        for run in runs:
-            metadata = run.get("metadata", {}) or {}
-            run_table.add_row(
-                str(run.get("run_id", "")),
-                str(run.get("task_id", "")),
-                str(run.get("status", "")),
-                str(metadata.get("lane", "")),
-                str(run.get("heartbeat_at", "")),
-            )
-        console.print(run_table)
-
-    orchestrations = status.get("recent_orchestrations", [])
-    if orchestrations:
-        orch_table = Table(title="Orquestracoes duraveis", show_lines=False)
-        orch_table.add_column("Run", style="cyan")
-        orch_table.add_column("Status")
-        orch_table.add_column("Mode")
-        orch_table.add_column("Steps", justify="right")
-        orch_table.add_column("Objetivo")
-        for run in orchestrations:
-            orch_table.add_row(
-                str(run.get("run_id", "")),
-                str(run.get("status", "")),
-                str(run.get("mode", "")),
-                str(len(run.get("plan", []) or [])),
-                str(run.get("objective", ""))[:70],
-            )
-        console.print(orch_table)
-
-    automation_jobs = status.get("automation_jobs", [])
-    if automation_jobs:
-        cron_table = Table(title="Automacoes cron", show_lines=False)
-        cron_table.add_column("Nome", style="cyan")
-        cron_table.add_column("Status")
-        cron_table.add_column("Schedule")
-        cron_table.add_column("Next", style="dim")
-        cron_table.add_column("Runs", justify="right")
-        for job in automation_jobs:
-            cron_table.add_row(
-                str(job.get("name", "")),
-                str(job.get("status", "")),
-                str(job.get("schedule_str", "")),
-                str(job.get("next_run_at", "")),
-                str(job.get("run_count", 0)),
-            )
-        console.print(cron_table)
-
-    events = status.get("recent_events", [])
-    if events:
-        event_table = Table(title="Eventos recentes", show_lines=False)
-        event_table.add_column("ID", justify="right", style="dim")
-        event_table.add_column("Task")
-        event_table.add_column("Evento")
-        event_table.add_column("Mensagem")
-        for event in events:
-            event_table.add_row(
-                str(event.get("id", "")),
-                str(event.get("task_id", "")),
-                str(event.get("event_type", "")),
-                str(event.get("message", ""))[:80],
-            )
-        console.print(event_table)
 
 
-@ops_app.command("migrations")
-def ops_migrations_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    apply: bool = typer.Option(True, "--apply/--list-only", help="Registra baseline se ainda nao existir"),
-):
-    """Mostra/aplica ledger de schema migrations dos sidecars Bauer."""
-    from .schema_migrations import MigrationLedger, ensure_level8_migrations
-
-    records = ensure_level8_migrations(workspace) if apply else MigrationLedger(workspace).list_records()
-    if not records:
-        console.print("[dim]Nenhuma migration registrada.[/dim]")
-        return
-    table = Table(title=f"Schema migrations - {workspace}", show_lines=False)
-    table.add_column("Store", style="cyan")
-    table.add_column("Version", justify="right")
-    table.add_column("Name")
-    table.add_column("Applied", style="dim")
-    for record in records:
-        table.add_row(record.store, str(record.version), record.name, record.applied_at)
-    console.print(table)
 
 
-@ops_app.command("watch")
-def ops_watch_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    interval: float = typer.Option(2.0, "--interval"),
-    iterations: int = typer.Option(0, "--iterations", help="0 = infinito"),
-):
-    """TUI simples de observabilidade operacional com auto-refresh."""
-    import time as _time
-
-    from rich.live import Live
-    from rich.panel import Panel as _Panel
-
-    from .ops_status import build_ops_status
-
-    def _render():
-        status = build_ops_status(workspace, limit=5)
-        counts = status["status_counts"]
-        lines = [
-            f"Workspace: {status['workspace']}",
-            f"READY={counts.get('READY', 0)} IN_PROGRESS={counts.get('IN_PROGRESS', 0)} "
-            f"FAILED={counts.get('FAILED', 0)} BLOCKED={counts.get('BLOCKED', 0)}",
-            f"Claims ativos: {len(status.get('active_claims', []))}",
-            f"Automacoes: {len(status.get('automation_jobs', []))} | "
-            f"Outbox: {len(status.get('gateway_outbox', []))} | "
-            f"Orquestracoes: {len(status.get('recent_orchestrations', []))}",
-            f"Atualizado: {status['generated_at']}",
-        ]
-        return _Panel("\n".join(lines), title="Bauer Ops Watch", border_style="cyan")
-
-    count = 0
-    with Live(_render(), refresh_per_second=1, console=console) as live:
-        while True:
-            _time.sleep(max(0.5, float(interval)))
-            live.update(_render())
-            count += 1
-            if iterations and count >= iterations:
-                break
 
 
 # --- runtime supervisor -------------------------------------------------------
@@ -5443,514 +5139,44 @@ def daemon_logs_cmd(
 # --- cron -------------------------------------------------------------------
 
 
-@cron_app.command("create")
-def cron_create_cmd(
-    name: str = typer.Argument(..., help="Nome unico do job"),
-    prompt: str = typer.Argument(..., help="Prompt a executar quando o job vencer"),
-    schedule: str = typer.Option(..., "--schedule", "-s", help="every 30m | every 2h | daily 09:00 | at ISO | cron: */15 * * * *"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    assignee: str = typer.Option("", "--assignee", help="Agent/lane preferido para a task"),
-    priority: str = typer.Option("medium", "--priority"),
-    max_retries: int = typer.Option(2, "--max-retries"),
-    max_runtime_seconds: int = typer.Option(0, "--max-runtime-seconds"),
-    deliver: str = typer.Option("", "--deliver", help="Entrega outbox: channel:<name> ou plataforma:<target>"),
-):
-    """Cria uma automacao duravel que enfileira tasks no dispatcher."""
-    from .automation_store import AutomationStore
-
-    metadata = {
-        "assignee": assignee,
-        "priority": priority,
-        "max_retries": max(1, int(max_retries)),
-    }
-    if max_runtime_seconds > 0:
-        metadata["max_runtime_seconds"] = int(max_runtime_seconds)
-    if deliver:
-        metadata["delivery"] = deliver
-    try:
-        job = AutomationStore(workspace).create_job(
-            name=name,
-            prompt=prompt,
-            schedule=schedule,
-            metadata=metadata,
-        )
-    except Exception as exc:
-        console.print(f"[red]Erro criando cron job:[/red] {exc}")
-        raise typer.Exit(code=1)
-    console.print(
-        f"[green]cron criado[/green] [cyan]{job.name}[/cyan] "
-        f"schedule={job.schedule_str} next={job.next_run_at}"
-    )
 
 
-@cron_app.command("list")
-def cron_list_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    limit: int = typer.Option(50, "--limit"),
-    as_json: bool = typer.Option(False, "--json"),
-):
-    """Lista automacoes configuradas."""
-    import json as _json
-    from dataclasses import asdict
-
-    from .automation_store import AutomationStore
-
-    jobs = AutomationStore(workspace).list_jobs(limit=limit)
-    if as_json:
-        console.print(_json.dumps([asdict(job) for job in jobs], ensure_ascii=False, indent=2))
-        return
-    if not jobs:
-        console.print("[dim]Nenhuma automacao cron configurada.[/dim]")
-        return
-    table = Table(title=f"Cron jobs - {workspace}", show_lines=False)
-    table.add_column("Nome", style="cyan")
-    table.add_column("Status")
-    table.add_column("Schedule")
-    table.add_column("Next", style="dim")
-    table.add_column("Runs", justify="right")
-    for job in jobs:
-        table.add_row(job.name, job.status, job.schedule_str, job.next_run_at, str(job.run_count))
-    console.print(table)
 
 
-@cron_app.command("tick")
-def cron_tick_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    max_jobs: int = typer.Option(10, "--max-jobs"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
-):
-    """Executa um tick do scheduler: jobs vencidos viram tasks READY."""
-    from .automation_scheduler import AutomationScheduler
-
-    result = AutomationScheduler(workspace).tick(max_jobs=max_jobs, dry_run=dry_run)
-    console.print(
-        "[bold]cron tick[/bold] "
-        f"due={len(result.due)} queued={len(result.queued)} "
-        f"skipped={len(result.skipped)} failed={len(result.failed)} dry={result.dry_run}"
-    )
-    for label, items in (
-        ("due", result.due),
-        ("queued", result.queued),
-        ("skipped", result.skipped),
-        ("failed", result.failed),
-    ):
-        if items:
-            console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
 
 
-@cron_app.command("run")
-def cron_run_cmd(
-    name: str = typer.Argument(..., help="Nome ou job_id"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
-):
-    """Enfileira uma automacao imediatamente, independente do next_run_at."""
-    from .automation_scheduler import AutomationScheduler
-
-    try:
-        run = AutomationScheduler(workspace).run_now(name, dry_run=dry_run)
-    except Exception as exc:
-        console.print(f"[red]Erro executando cron job:[/red] {exc}")
-        raise typer.Exit(code=1)
-    if dry_run:
-        console.print(f"[yellow]dry-run[/yellow] cron run {name}")
-        return
-    console.print(f"[green]cron queued[/green] run={run.run_id} task={run.task_id}")  # type: ignore[union-attr]
 
 
-@cron_app.command("pause")
-def cron_pause_cmd(
-    name: str = typer.Argument(..., help="Nome ou job_id"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    """Pausa uma automacao."""
-    from .automation_store import AutomationStore
-
-    job = AutomationStore(workspace).update_job(name, status="paused")
-    if job is None:
-        console.print(f"[red]Cron job nao encontrado:[/red] {name}")
-        raise typer.Exit(code=1)
-    console.print(f"[yellow]cron paused[/yellow] {job.name}")
 
 
-@cron_app.command("resume")
-def cron_resume_cmd(
-    name: str = typer.Argument(..., help="Nome ou job_id"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    """Reativa uma automacao pausada/completed, recalculando next_run_at se necessario."""
-    from .automation_store import AutomationStore, next_run_after
-
-    store = AutomationStore(workspace)
-    job = store.get_job(name)
-    if job is None:
-        console.print(f"[red]Cron job nao encontrado:[/red] {name}")
-        raise typer.Exit(code=1)
-    next_run = job.next_run_at or next_run_after(job.schedule)
-    updated = store.update_job(job.job_id, status="active", next_run_at=next_run)
-    console.print(f"[green]cron active[/green] {updated.name} next={updated.next_run_at}")  # type: ignore[union-attr]
 
 
-@cron_app.command("delete")
-def cron_delete_cmd(
-    name: str = typer.Argument(..., help="Nome ou job_id"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    yes: bool = typer.Option(False, "--yes", "-y"),
-):
-    """Remove uma automacao."""
-    from .automation_store import AutomationStore
-
-    if not yes and not typer.confirm(f"Remover cron job '{name}'?", default=False):
-        console.print("[dim]Cancelado.[/dim]")
-        return
-    if not AutomationStore(workspace).delete_job(name):
-        console.print(f"[red]Cron job nao encontrado:[/red] {name}")
-        raise typer.Exit(code=1)
-    console.print(f"[green]cron deleted[/green] {name}")
 
 
-@cron_app.command("daemon")
-def cron_daemon_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    interval: int = typer.Option(60, "--interval", help="Segundos entre ticks"),
-    max_jobs: int = typer.Option(10, "--max-jobs"),
-):
-    """Loop simples do scheduler. Use junto com dispatch daemon para executar."""
-    import time as _time
-
-    from .automation_scheduler import AutomationScheduler
-
-    scheduler = AutomationScheduler(workspace)
-    console.print(f"[green]Cron scheduler iniciado[/green] workspace={workspace} interval={interval}s")
-    try:
-        while True:
-            result = scheduler.tick(max_jobs=max_jobs)
-            if result.queued or result.failed:
-                console.print(
-                    f"[dim]tick[/dim] due={len(result.due)} "
-                    f"queued={len(result.queued)} failed={len(result.failed)}"
-                )
-            _time.sleep(max(1, int(interval)))
-    except KeyboardInterrupt:
-        console.print("\n[dim]Cron scheduler encerrado.[/dim]")
 
 
 # --- research ---------------------------------------------------------------
 
 
-@research_app.command("trajectory-add")
-def research_trajectory_add_cmd(
-    objective: str = typer.Argument(..., help="Objetivo ou tarefa da trajetória"),
-    kind: str = typer.Option("manual", "--kind"),
-    input_json: str = typer.Option("{}", "--input-json"),
-    output_json: str = typer.Option("{}", "--output-json"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    """Registra uma trajetória JSONL append-only para avaliação/treino."""
-    import json as _json
-
-    from .trajectory_store import TrajectoryStore
-
-    try:
-        input_data = _json.loads(input_json)
-        output_data = _json.loads(output_json)
-        if not isinstance(input_data, dict) or not isinstance(output_data, dict):
-            raise ValueError("input-json/output-json devem ser objetos JSON")
-    except Exception as exc:
-        console.print(f"[red]JSON invalido:[/red] {exc}")
-        raise typer.Exit(code=2)
-    record = TrajectoryStore(workspace).append(
-        kind=kind,
-        objective=objective,
-        input=input_data,
-        output=output_data,
-    )
-    console.print(f"[green]trajectory registrada[/green] {record.trajectory_id}")
 
 
-@research_app.command("trajectory-list")
-def research_trajectory_list_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    limit: int = typer.Option(20, "--limit"),
-    kind: str = typer.Option("", "--kind"),
-    as_json: bool = typer.Option(False, "--json"),
-):
-    """Lista trajetórias recentes."""
-    import json as _json
-    from dataclasses import asdict
-
-    from .trajectory_store import TrajectoryStore
-
-    records = TrajectoryStore(workspace).list(limit=limit, kind=kind)
-    if as_json:
-        console.print(_json.dumps([asdict(record) for record in records], ensure_ascii=False, indent=2))
-        return
-    if not records:
-        console.print("[dim]Nenhuma trajectory registrada.[/dim]")
-        return
-    table = Table(title=f"Trajectories - {workspace}", show_lines=False)
-    table.add_column("ID", style="cyan")
-    table.add_column("Kind")
-    table.add_column("Objetivo")
-    table.add_column("Criado", style="dim")
-    for record in records:
-        table.add_row(record.trajectory_id, record.kind, record.objective[:80], record.created_at)
-    console.print(table)
 
 
 # --- dispatch ---------------------------------------------------------------
 
 
-@dispatch_app.command("once")
-def dispatch_once_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-    max_spawn: int = typer.Option(1, "--max-spawn", help="Maximo de novas tasks neste tick"),
-    max_in_progress: int = typer.Option(1, "--max-in-progress", help="Limite global de tasks em execucao"),
-    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds", help="TTL do claim"),
-    stale_seconds: int = typer.Option(1800, "--stale-seconds", help="Sem heartbeat por este tempo vira stale"),
-    max_retries: int = typer.Option(2, "--max-retries", help="Tentativas antes de FAILED"),
-    foreground: bool = typer.Option(False, "--foreground", help="Executa worker neste processo e aguarda fim"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria claimed sem alterar"),
-):
-    """Executa um tick do dispatcher hibrido."""
-    from .task_dispatcher import TaskDispatcher
-
-    dispatcher = TaskDispatcher(
-        workspace,
-        claim_ttl_seconds=claim_ttl_seconds,
-        stale_seconds=stale_seconds,
-        max_retries=max_retries,
-    )
-    result = dispatcher.dispatch_once(
-        dry_run=dry_run,
-        max_spawn=max_spawn,
-        max_in_progress=max_in_progress,
-        spawn_background=not foreground,
-        config=config,
-        models=models,
-    )
-    console.print(
-        "[bold]dispatch once[/bold] "
-        f"crashed={len(result.crashed)} reclaimed={len(result.reclaimed)} claimed={len(result.claimed)} "
-        f"spawned={len(result.spawned)} completed={len(result.completed)} "
-        f"failed={len(result.failed)} dry={len(result.dry_run)}"
-    )
-    for label, items in (
-        ("crashed", result.crashed),
-        ("reclaimed", result.reclaimed),
-        ("claimed", result.claimed),
-        ("spawned", result.spawned),
-        ("completed", result.completed),
-        ("failed", result.failed),
-        ("dry", result.dry_run),
-        ("skipped", result.skipped),
-    ):
-        if items:
-            console.print(f"[dim]{label}:[/dim] {', '.join(items)}")
 
 
-@dispatch_app.command("status")
-def dispatch_status_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    limit: int = typer.Option(10, "--limit", help="Numero de runs/eventos recentes"),
-):
-    """Mostra fila, runs e eventos recentes do dispatcher."""
-    from collections import Counter
-
-    from .kanban_store import KanbanStore
-
-    wm = WorkspaceManager(workspace)
-    store = KanbanStore(workspace)
-    tasks = wm.list_tasks()
-    counts = Counter(t.status for t in tasks)
-
-    table = Table(title=f"Dispatcher status - {workspace}", show_lines=False)
-    table.add_column("Status", style="cyan")
-    table.add_column("Qtd", justify="right")
-    for status in ("READY", "IN_PROGRESS", "FAILED", "DONE", "BLOCKED", "TODO"):
-        table.add_row(status, str(counts.get(status, 0)))
-    console.print(table)
-
-    runs = store.list_runs(limit=limit)
-    if runs:
-        run_table = Table(title="Runs recentes", show_lines=False)
-        run_table.add_column("Run", style="dim")
-        run_table.add_column("Task")
-        run_table.add_column("Status")
-        run_table.add_column("Tent.", justify="right")
-        run_table.add_column("Worker")
-        run_table.add_column("Heartbeat", style="dim")
-        for run in runs:
-            run_table.add_row(
-                run.run_id,
-                run.task_id,
-                run.status,
-                str(run.attempt),
-                str(run.worker_pid or run.runner or ""),
-                run.heartbeat_at,
-            )
-        console.print(run_table)
-    else:
-        console.print("[dim]Nenhum task_run registrado ainda.[/dim]")
-
-    events = store.list_events(limit=limit)
-    if events:
-        event_table = Table(title="Eventos recentes", show_lines=False)
-        event_table.add_column("ID", justify="right", style="dim")
-        event_table.add_column("Task")
-        event_table.add_column("Evento")
-        event_table.add_column("Ator")
-        event_table.add_column("Mensagem")
-        for event in events:
-            event_table.add_row(
-                str(event.id),
-                event.task_id,
-                event.event_type,
-                event.actor,
-                event.message[:80],
-            )
-        console.print(event_table)
 
 
-@dispatch_app.command("reclaim")
-def dispatch_reclaim_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds"),
-    stale_seconds: int = typer.Option(1800, "--stale-seconds"),
-):
-    """Detecta workers mortos e devolve claims stale para READY."""
-    from .task_dispatcher import TaskDispatcher
-
-    dispatcher = TaskDispatcher(
-        workspace,
-        claim_ttl_seconds=claim_ttl_seconds,
-        stale_seconds=stale_seconds,
-    )
-    crashed = dispatcher.detect_crashed_workers()
-    reclaimed = dispatcher.reclaim_stale()
-    console.print(
-        f"[bold]dispatch reclaim[/bold] crashed={len(crashed)} reclaimed={len(reclaimed)}"
-    )
-    if crashed:
-        console.print(f"[dim]crashed:[/dim] {', '.join(crashed)}")
-    if reclaimed:
-        console.print(f"[dim]reclaimed:[/dim] {', '.join(reclaimed)}")
 
 
-@dispatch_app.command("cancel")
-def dispatch_cancel_cmd(
-    task_id: str = typer.Argument(..., help="ID da task"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    reason: str = typer.Option("cancelled by operator", "--reason", "-r"),
-    terminate_worker: bool = typer.Option(False, "--terminate-worker", help="Tenta encerrar PID do worker"),
-):
-    """Cancela uma task em execucao e fecha o run como cancelled."""
-    from .task_dispatcher import TaskDispatcher
-
-    task = TaskDispatcher(workspace).cancel_task(
-        task_id,
-        reason=reason,
-        terminate_worker=terminate_worker,
-    )
-    console.print(f"[yellow]{task.id}[/yellow] -> [BLOCKED] {task.title}")
 
 
-@dispatch_app.command("retry")
-def dispatch_retry_cmd(
-    task_id: str = typer.Argument(..., help="ID da task"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    reason: str = typer.Option("manual retry", "--reason", "-r"),
-):
-    """Retorna uma task FAILED/BLOCKED para READY."""
-    from .task_dispatcher import TaskDispatcher
-
-    task = TaskDispatcher(workspace).retry_failed(task_id, reason=reason)
-    console.print(f"[cyan]{task.id}[/cyan] -> [READY] {task.title}")
 
 
-@dispatch_app.command("daemon")
-def dispatch_daemon_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-    interval: int = typer.Option(30, "--interval", help="Segundos entre ticks"),
-    max_spawn: int = typer.Option(1, "--max-spawn"),
-    max_in_progress: int = typer.Option(1, "--max-in-progress"),
-    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds"),
-    stale_seconds: int = typer.Option(1800, "--stale-seconds"),
-    max_retries: int = typer.Option(2, "--max-retries"),
-):
-    """Loop duravel do dispatcher. Ctrl+C para parar."""
-    import time as _time
-    from .task_dispatcher import TaskDispatcher
-
-    dispatcher = TaskDispatcher(
-        workspace,
-        claim_ttl_seconds=claim_ttl_seconds,
-        stale_seconds=stale_seconds,
-        max_retries=max_retries,
-    )
-    console.print(f"[green]Dispatcher iniciado[/green] workspace={workspace} interval={interval}s")
-    dispatcher.record_daemon_started(
-        interval=interval,
-        max_spawn=max_spawn,
-        max_in_progress=max_in_progress,
-    )
-    try:
-        while True:
-            result = dispatcher.watchdog_tick(
-                max_spawn=max_spawn,
-                max_in_progress=max_in_progress,
-                config=config,
-                models=models,
-            )
-            if result.crashed or result.reclaimed or result.claimed or result.spawned or result.failed:
-                console.print(
-                    f"[dim]tick[/dim] crashed={len(result.crashed)} reclaimed={len(result.reclaimed)} "
-                    f"claimed={len(result.claimed)} spawned={len(result.spawned)} "
-                    f"failed={len(result.failed)}"
-                )
-            _time.sleep(max(1, interval))
-    except KeyboardInterrupt:
-        dispatcher.record_daemon_stopped(reason="KeyboardInterrupt")
-        console.print("\n[dim]Dispatcher encerrado.[/dim]")
 
 
-@dispatch_app.command("worker")
-def dispatch_worker_cmd(
-    task_id: str = typer.Argument(..., help="ID da task"),
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-    claim_id: str = typer.Option("", "--claim-id", help="Claim esperado"),
-    claim_ttl_seconds: int = typer.Option(900, "--claim-ttl-seconds"),
-    stale_seconds: int = typer.Option(1800, "--stale-seconds"),
-):
-    """Worker interno do dispatcher. Normalmente chamado por dispatch once/daemon."""
-    from .task_dispatcher import TaskDispatcher, TaskDispatcherError
-
-    dispatcher = TaskDispatcher(
-        workspace,
-        claim_ttl_seconds=claim_ttl_seconds,
-        stale_seconds=stale_seconds,
-    )
-    try:
-        result = dispatcher.run_claimed_worker(
-            task_id,
-            claim_id=claim_id,
-            config=config,
-            models=models,
-        )
-    except TaskDispatcherError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
-    if result.success:
-        console.print(f"[green]Task {task_id} concluida.[/green]")
-    else:
-        console.print(f"[red]Task {task_id} falhou:[/red] {result.error}")
-        raise typer.Exit(code=1)
 
 
 # --- desktop ----------------------------------------------------------------
@@ -6667,205 +5893,20 @@ def logs(
 
 # --- spec (spec-driven development) ----------------------------------------
 
-_SPECS_DIR = Path("specs")
+# P4: movido p/ bauer/commands/_common.py (compartilhado com grupos extraídos).
+from bauer.commands._common import _SPECS_DIR  # noqa: E402
 
 
-@spec_app.command("new")
-def spec_new(
-    spec_id: str = typer.Argument("", help="ID do spec — omita para modo entrevista"),
-    specs_dir: Path = typer.Option(_SPECS_DIR, "--dir", help="Diretório de specs"),
-):
-    """Cria um novo spec interativamente (spec-driven development).
-
-    Escreva o CONTRATO (purpose, behavior, ACs) antes de qualquer linha de código.
-
-    Exemplo:
-      bauer spec new orchestrator-dag
-      bauer spec new
-    """
-    from .spec_manager import Spec, SpecManager
-    from .spec_wizard import wizard_create_spec
-
-    mgr = SpecManager(specs_dir)
-
-    if spec_id:
-        # ID fornecido — lança o wizard já com o id pre-preenchido
-        if not Spec.valid_id(spec_id):
-            console.print(f"[red]ID inválido:[/red] '{spec_id}'. Use letras minúsculas, números e hífens.")
-            raise typer.Exit(code=1)
-
-    wizard_create_spec(mgr)
 
 
-@spec_app.command("list")
-def spec_list(
-    specs_dir: Path = typer.Option(_SPECS_DIR, "--dir"),
-    status_filter: str = typer.Option("", "--status", "-s", help="Filtrar por status (draft/approved/implemented/...)"),
-):
-    """Lista todos os specs do projeto com status e resumo."""
-    from .spec_manager import SpecManager
-
-    mgr = SpecManager(specs_dir)
-    specs = mgr.list_specs()
-
-    if not specs:
-        console.print("[dim]Nenhum spec encontrado. Crie com: bauer spec new[/dim]")
-        return
-
-    if status_filter:
-        specs = [s for s in specs if s.status == status_filter]
-        if not specs:
-            console.print(f"[dim]Nenhum spec com status '{status_filter}'.[/dim]")
-            return
-
-    from rich.table import Table
-    table = Table(title=f"Specs ({len(specs)})", show_lines=False)
-    table.add_column("id", style="cyan", no_wrap=True)
-    table.add_column("title")
-    table.add_column("status")
-    table.add_column("v", style="dim", width=7)
-    table.add_column("ACs", style="dim", width=4)
-    table.add_column("purpose", style="dim")
-
-    status_colors = {
-        "draft": "dim",
-        "review": "yellow",
-        "approved": "blue",
-        "implemented": "green",
-        "deprecated": "red",
-    }
-    for s in specs:
-        color = status_colors.get(s.status, "white")
-        purpose_preview = s.purpose.split("\n")[0][:60] + ("…" if len(s.purpose) > 60 else "")
-        table.add_row(
-            s.id,
-            s.title,
-            f"[{color}]{s.status}[/{color}]",
-            s.version,
-            str(len(s.acceptance_criteria)),
-            purpose_preview,
-        )
-
-    console.print(table)
 
 
-@spec_app.command("show")
-def spec_show(
-    spec_id: str = typer.Argument(..., help="ID do spec"),
-    specs_dir: Path = typer.Option(_SPECS_DIR, "--dir"),
-    raw: bool = typer.Option(False, "--raw", help="Exibe YAML bruto"),
-):
-    """Exibe o spec completo formatado."""
-    from .spec_manager import SpecManager
-
-    mgr = SpecManager(specs_dir)
-    spec = mgr.get(spec_id)
-
-    if not spec:
-        console.print(f"[yellow]Spec '[cyan]{spec_id}[/cyan]' nao encontrado.[/yellow]")
-        if typer.confirm(f"Criar o spec '{spec_id}' agora?", default=True):
-            from .spec_wizard import wizard_create_spec
-            created = wizard_create_spec(mgr)
-            if created is None:
-                raise typer.Exit(code=0)
-            spec = created
-        else:
-            console.print(f"[dim]Crie com: [bold]bauer spec new {spec_id}[/bold][/dim]")
-            raise typer.Exit(code=1)
-
-    if raw:
-        import yaml
-        from rich.syntax import Syntax
-        console.print(Syntax(
-            yaml.dump(spec.to_dict(), allow_unicode=True, sort_keys=False, default_flow_style=False),
-            "yaml", theme="monokai",
-        ))
-    else:
-        from rich.panel import Panel
-        console.print(Panel(
-            spec.to_context(compact=False),
-            title=f"[bold cyan]{spec.id}[/bold cyan]",
-            border_style="cyan",
-        ))
 
 
-@spec_app.command("status")
-def spec_status_cmd(
-    spec_id: str = typer.Argument(..., help="ID do spec"),
-    new_status: str = typer.Argument(..., help="draft | review | approved | implemented | deprecated"),
-    specs_dir: Path = typer.Option(_SPECS_DIR, "--dir"),
-):
-    """Atualiza o status de um spec.
-
-    Exemplo:
-      bauer spec status orchestrator-dag implemented
-    """
-    from .spec_manager import SpecManager, _VALID_STATUSES
-
-    if new_status not in _VALID_STATUSES:
-        console.print(f"[red]Status inválido:[/red] '{new_status}'. Válidos: {', '.join(sorted(_VALID_STATUSES))}")
-        raise typer.Exit(code=1)
-
-    mgr = SpecManager(specs_dir)
-    spec = mgr.get(spec_id)
-    if not spec:
-        console.print(f"[yellow]Spec '[cyan]{spec_id}[/cyan]' nao encontrado.[/yellow]")
-        if typer.confirm(f"Criar o spec '{spec_id}' agora?", default=True):
-            from .spec_wizard import wizard_create_spec
-            created = wizard_create_spec(mgr)
-            if created is None:
-                raise typer.Exit(code=0)
-            spec = created
-        else:
-            raise typer.Exit(code=1)
-
-    spec.status = new_status
-    mgr.save(spec)
-    console.print(f"[green]✓[/green] Spec [cyan]{spec_id}[/cyan] → status: [bold]{new_status}[/bold]")
 
 
-@spec_app.command("delete")
-def spec_delete(
-    spec_id: str = typer.Argument(..., help="ID do spec"),
-    specs_dir: Path = typer.Option(_SPECS_DIR, "--dir"),
-    force: bool = typer.Option(False, "--force", "-f"),
-):
-    """Remove um spec."""
-    from .spec_manager import SpecManager
-
-    mgr = SpecManager(specs_dir)
-    if not mgr.get(spec_id):
-        console.print(f"[red]Spec '[cyan]{spec_id}[/cyan]' nao encontrado.[/red]")
-        console.print(f"[dim]Liste os specs: [bold]bauer spec list[/bold][/dim]")
-        raise typer.Exit(code=1)
-
-    if not force:
-        if not typer.confirm(f"Remover spec '{spec_id}'?", default=False):
-            console.print("[dim]Cancelado.[/dim]")
-            return
-
-    mgr.delete(spec_id)
-    console.print(f"[green]✓[/green] Spec [cyan]{spec_id}[/cyan] removido.")
 
 
-@spec_app.command("context")
-def spec_context(
-    query: str = typer.Argument("", help="Query para filtrar specs relevantes"),
-    specs_dir: Path = typer.Option(_SPECS_DIR, "--dir"),
-    compact: bool = typer.Option(True, "--compact/--full"),
-):
-    """Exibe o texto de contexto que seria injetado no agente.
-
-    Útil para depurar o que o agente está recebendo como contratos do projeto.
-    """
-    from .spec_manager import SpecManager
-
-    mgr = SpecManager(specs_dir)
-    ctx = mgr.specs_context(query=query, compact=compact)
-    if not ctx:
-        console.print("[dim]Nenhum spec aprovado/implementado encontrado.[/dim]")
-    else:
-        console.print(ctx)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

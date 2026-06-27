@@ -7,7 +7,13 @@ Mantém um único `console` para formatação consistente em toda a CLI.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.console import Console
 
 # Console único da CLI — mesma configuração que o cli.py usava.
 console = Console(highlight=False, legacy_windows=False)
+
+# Diretórios-padrão relativos ao CWD, usados como default em vários comandos.
+_PROJECT_WORKSPACE = Path("workspace")
+_SPECS_DIR = Path("specs")
