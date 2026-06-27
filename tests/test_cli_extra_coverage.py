@@ -154,9 +154,9 @@ class TestGetOrRunState:
         reg = load_registry(mdl_file)
 
         report = _make_doctor_report()
-        with patch("bauer.cli.read_state", return_value=None), \
-             patch("bauer.cli.run_doctor", return_value=report), \
-             patch("bauer.cli.write_state", return_value=tmp_path / "state.json"):
+        with patch("bauer.commands._runtime.read_state", return_value=None), \
+             patch("bauer.commands._runtime.run_doctor", return_value=report), \
+             patch("bauer.commands._runtime.write_state", return_value=tmp_path / "state.json"):
             state = _get_or_run_state(cfg, reg, tmp_path / "state.json")
 
         assert state is not None
@@ -178,9 +178,9 @@ class TestGetOrRunState:
         }
 
         report = _make_doctor_report()
-        with patch("bauer.cli.read_state", return_value=existing_state), \
-             patch("bauer.cli.run_doctor", return_value=report), \
-             patch("bauer.cli.write_state", return_value=tmp_path / "state.json"):
+        with patch("bauer.commands._runtime.read_state", return_value=existing_state), \
+             patch("bauer.commands._runtime.run_doctor", return_value=report), \
+             patch("bauer.commands._runtime.write_state", return_value=tmp_path / "state.json"):
             state = _get_or_run_state(cfg, reg, tmp_path / "state.json")
 
         assert state is not None
@@ -203,8 +203,8 @@ class TestGetOrRunState:
             "context": {"applied": 4096, "requested": 4096, "reason": "ok"},
         }
 
-        with patch("bauer.cli.read_state", return_value=fresh_state), \
-             patch("bauer.cli.run_doctor") as mock_doctor:
+        with patch("bauer.commands._runtime.read_state", return_value=fresh_state), \
+             patch("bauer.commands._runtime.run_doctor") as mock_doctor:
             state = _get_or_run_state(cfg, reg, tmp_path / "state.json")
 
         mock_doctor.assert_not_called()
