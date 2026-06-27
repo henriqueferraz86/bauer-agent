@@ -59,9 +59,9 @@ app = typer.Typer(
 )
 
 from bauer.commands.config_cmd import config_app  # noqa: E402
-models_app = typer.Typer(help="Operacoes com models.yaml")
+from bauer.commands.models_cmd import models_app  # noqa: E402
 from bauer.commands.memory_cmd import memory_app  # noqa: E402
-tools_app = typer.Typer(help="Tool Bridge — ferramentas do agente")
+from bauer.commands.tools_cmd import tools_app  # noqa: E402
 from bauer.commands.project_cmd import project_app  # noqa: E402
 task_app = typer.Typer(help="Gerenciamento de tarefas (TASKS.md)")
 from bauer.commands.dispatch_cmd import dispatch_app  # noqa: E402
@@ -103,7 +103,7 @@ serve_service_app = typer.Typer(
 )
 serve_app.add_typer(serve_service_app, name="service")
 
-telegram_app = typer.Typer(help="Telegram Bridge — agente Bauer via Telegram")
+from bauer.commands.telegram_cmd import telegram_app  # noqa: E402
 from bauer.commands.discord_cmd import discord_app  # noqa: E402
 gateway_app = typer.Typer(help="Bauer Gateway — todos os canais de chat + entrega do outbox")
 gateway_service_app = typer.Typer(
@@ -609,213 +609,12 @@ def chat(
 
 
 
-@models_app.command("test")
-def models_test(
-    model_name: str = typer.Argument(..., help="Nome do modelo (ex: qwen2.5-coder:7b)"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-):
-    """Testa um modelo específico: disponibilidade, RAM, contexto e tool mode."""
-    cfg, reg = _load_or_die(config, models)
-    from .machine_id import machine_summary
-    from .model_registry import contexto_seguro
-    from .ollama_client import OllamaError
-
-    machine = machine_summary()
-    ram_available = int(machine["ram_available_mb"])
-    client = _build_client(cfg)
-
-    alive, _ = client.is_alive()
-    available = alive and client.has_model(model_name)
-    info = reg.get(model_name)
-
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_row("Modelo:", f"[cyan]{model_name}[/cyan]")
-    table.add_row("Ollama:", "[green]ativo[/green]" if alive else "[red]offline[/red]")
-    table.add_row(
-        "Disponivel:",
-        "[green]sim[/green]" if available else f"[red]nao[/red] — rode: ollama pull {model_name}",
-    )
-
-    if info:
-        safe_ctx = contexto_seguro(info, ram_available, cfg.runtime.safety_margin_mb)
-        ram_ok = ram_available >= info.ram_base_mb + cfg.runtime.safety_margin_mb
-        table.add_row("RAM necessaria:", f"~{info.ram_base_mb} MB")
-        table.add_row("RAM disponivel:", f"{ram_available} MB")
-        table.add_row(
-            "RAM suficiente:",
-            "[green]sim[/green]" if ram_ok else f"[red]nao[/red] — faltam {info.ram_base_mb - ram_available + cfg.runtime.safety_margin_mb} MB",
-        )
-        table.add_row("Contexto solicitado:", str(cfg.model.requested_context))
-        table.add_row("Contexto seguro:", str(safe_ctx) if safe_ctx > 0 else "[red]0 — nao cabe na RAM[/red]")
-        table.add_row("Tool mode:", "native" if info.supports_tools is True else "bridge")
-        table.add_row("Profile:", info.ram_profile)
-    else:
-        table.add_row("[yellow]Aviso:[/yellow]", f"'{model_name}' nao esta em models.yaml — adicione para calculo de RAM.")
-
-    modelfile_ctx = None
-    if available:
-        try:
-            params = client.show_model(model_name)
-            modelfile_ctx = params.num_ctx
-            if modelfile_ctx:
-                table.add_row("Modelfile num_ctx:", str(modelfile_ctx))
-        except Exception:
-            pass
-
-    status = "pronto" if available and (info is None or contexto_seguro(info, ram_available, cfg.runtime.safety_margin_mb) > 0) else "nao pronto"
-    color = "green" if status == "pronto" else "red"
-    table.add_row("Status:", f"[{color}]{status}[/{color}]")
-
-    console.print(Panel(table, title=f"bauer models test — {model_name}", border_style=color))
 
 
-@models_app.command("list")
-def models_list(
-    models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
-):
-    """Lista os modelos do models.yaml com seus perfis e contextos seguros."""
-    try:
-        reg = load_registry(models)
-    except ModelRegistryError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=2)
-
-    table = Table(title="Modelos conhecidos (models.yaml)")
-    table.add_column("nome", style="cyan")
-    table.add_column("provider")
-    table.add_column("ram_base_mb", justify="right")
-    table.add_column("ram_per_1k_ctx_mb", justify="right")
-    table.add_column("max_context_safe", justify="right")
-    table.add_column("tools")
-    table.add_column("profile")
-
-    for name in reg.names():
-        info = reg.models[name]
-        table.add_row(
-            name,
-            info.provider,
-            str(info.ram_base_mb),
-            f"{info.ram_per_1k_ctx_mb:g}",
-            str(info.max_context_safe),
-            str(info.supports_tools),
-            info.ram_profile,
-        )
-    console.print(table)
 
 
-@models_app.command("catalog")
-def models_catalog(
-    provider: str = typer.Option("", "--provider", "-p", help="Filtrar por provider (ex: openai, anthropic)"),
-    capability: str = typer.Option("", "--capability", "-c", help="Filtrar por capability (tools, vision, reasoning)"),
-    max_cost: float = typer.Option(0.0, "--max-cost", help="Custo máximo USD/M tokens de input (0 = sem filtro)"),
-    limit: int = typer.Option(20, "--limit", "-n", help="Número máximo de modelos a exibir"),
-):
-    """Lista modelos do catálogo dinâmico models.dev com filtros."""
-    try:
-        from .models_dev import catalog_models
-    except ImportError:
-        console.print("[red]models_dev não disponível.[/red]")
-        raise typer.Exit(code=1)
-
-    prov_filter = provider.strip() or None
-    cap_filter = capability.strip() or None
-    cost_filter = max_cost if max_cost > 0 else None
-
-    results = catalog_models(
-        provider=prov_filter,
-        capability=cap_filter,
-        max_cost_per_m=cost_filter,
-    )
-
-    if not results:
-        console.print("[yellow]Nenhum modelo encontrado com os filtros aplicados.[/yellow]")
-        console.print("[dim]Dica: tente sem filtros ou com filtros menos restritivos.[/dim]")
-        return
-
-    results = results[:limit]
-
-    table = Table(title=f"Catálogo models.dev ({len(results)} modelos)")
-    table.add_column("provider", style="cyan", no_wrap=True)
-    table.add_column("modelo", style="bold")
-    table.add_column("ctx", justify="right")
-    table.add_column("$in/M", justify="right")
-    table.add_column("capabilities")
-
-    for m in results:
-        ctx = f"{m['context_window']:,}" if m["context_window"] else "—"
-        cost_in = f"${m['cost_in']:.2f}" if m["cost_in"] else "—"
-        caps = " ".join(f"[green]{c}[/green]" for c in m["capabilities"]) or "[dim]—[/dim]"
-        table.add_row(m["provider"], m["id"], ctx, cost_in, caps)
-
-    console.print(table)
-    if len(results) == limit:
-        console.print(f"[dim]Mostrando {limit} de muitos resultados. Use --limit N para mais.[/dim]")
 
 
-@models_app.command("set-fallbacks")
-def models_set_fallbacks(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra os modelos sem salvar no config."),
-    config_path: "Path | None" = typer.Option(None, "--config", help="Caminho alternativo para config.yaml"),
-):
-    """Preenche fallback_models no config.yaml com todos os modelos gratuitos disponíveis.
-
-    Consulta o catálogo models.dev + OpenRouter + lista curada (Groq, GitHub)
-    e salva todos os pares (provider, name) em model.fallback_models.
-    O modelo primário configurado é automaticamente excluído da lista.
-    """
-    try:
-        from .models_dev import free_models_for_fallback
-    except ImportError:
-        console.print("[red]models_dev não disponível.[/red]")
-        raise typer.Exit(code=1)
-
-    # Resolve config path
-    from .paths import config_path as _cfg_path_fn
-    cfg_path = config_path or _cfg_path_fn()
-    if not cfg_path.exists():
-        console.print(f"[red]Config não encontrado: {cfg_path}[/red]")
-        raise typer.Exit(code=1)
-
-    # Lê config atual para saber o modelo primário (evitar duplicata no fallback)
-    import yaml as _yaml
-    raw = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    primary_provider = (raw.get("model") or {}).get("provider", "")
-    primary_name = (raw.get("model") or {}).get("name", "")
-
-    console.print("[bold]Consultando catálogo de modelos gratuitos…[/bold] [dim](pode levar alguns segundos)[/dim]")
-
-    with console.status("[cyan]Baixando catálogo…[/cyan]"):
-        free_list = free_models_for_fallback(
-            skip_provider=primary_provider,
-            skip_name=primary_name,
-        )
-
-    if not free_list:
-        console.print("[yellow]Nenhum modelo gratuito encontrado no catálogo.[/yellow]")
-        raise typer.Exit(code=1)
-
-    # Exibe prévia
-    table = Table(title=f"{len(free_list)} modelos gratuitos para fallback")
-    table.add_column("provider", style="cyan", no_wrap=True)
-    table.add_column("modelo", style="bold")
-    for m in free_list:
-        table.add_row(m["provider"], m["name"])
-    console.print(table)
-
-    if dry_run:
-        console.print("[yellow]--dry-run: nada salvo.[/yellow]")
-        return
-
-    # Salva no config.yaml
-    raw.setdefault("model", {})
-    raw["model"]["fallback_models"] = free_list
-    # Remove campo legado se presente
-    raw["model"].pop("fallback_providers", None)
-    cfg_path.write_text(_yaml.dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
-
-    console.print(f"\n[green]✓[/green] {len(free_list)} modelos salvos em [bold]{cfg_path}[/bold]")
-    console.print("[dim]O switch automático usará essa lista quando o modelo primário falhar.[/dim]")
 
 
 # --- memory -----------------------------------------------------------------
@@ -918,62 +717,8 @@ def _build_fallback_clients(cfg, *, console=None) -> list:
 
 
 
-@tools_app.command("list")
-def tools_list(
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
-    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-):
-    """Lista as tools disponíveis no Tool Bridge."""
-    try:
-        cfg = load_config(config)
-    except ConfigError:
-        cfg = None
-
-    router = _build_router(cfg, workspace)
-
-    shell_enabled = cfg and cfg.tools.shell_enabled
-    shell_status = (
-        f"[green]habilitado[/green] (safe_mode={'on' if cfg and cfg.tools.safe_mode else 'off'})"
-        if shell_enabled
-        else "[red]desabilitado[/red] (tools.shell_enabled: false)"
-    )
-    web_status = "[green]habilitado[/green]" if cfg and cfg.tools.web_enabled else "[red]desabilitado[/red]"
-    table = Table(title="Tool Bridge — tools disponíveis")
-    table.add_column("tool", style="cyan")
-    table.add_column("descricao")
-    for name in router.available_tools():
-        info = router.tool_info(name)
-        table.add_row(name, info["description"])
-    console.print(table)
-    console.print(f"\n[dim]Workspace: {workspace.resolve()} | Shell: {shell_status} | Web: {web_status}[/dim]")
 
 
-@tools_app.command("plugins")
-def tools_plugins(
-    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-):
-    """Lista plugins de hooks descobertos sem importá-los."""
-    from .plugin_registry import PluginRegistry
-
-    plugins = PluginRegistry(workspace).list_plugins()
-    if not plugins:
-        console.print("[dim]Nenhum plugin encontrado em workspace/.bauer/plugins ou ~/.bauer/plugins.[/dim]")
-        return
-    table = Table(title="Plugins Bauer", show_lines=False)
-    table.add_column("Plugin", style="cyan")
-    table.add_column("Enabled")
-    table.add_column("Hooks")
-    table.add_column("Descricao")
-    table.add_column("Erro")
-    for plugin in plugins:
-        table.add_row(
-            plugin.name,
-            str(plugin.enabled),
-            ", ".join(plugin.hooks) or "-",
-            plugin.description,
-            plugin.error,
-        )
-    console.print(table)
 
 
 # ---------------------------------------------------------------------------
@@ -986,52 +731,6 @@ def tools_plugins(
 
 
 
-@tools_app.command("run")
-def tools_run(
-    action: str = typer.Argument(
-        ...,
-        help=(
-            "JSON da action ou caminho para arquivo .json.\n\n"
-            "Linux/Mac:  bauer tools run '{\"action\":\"list_dir\",\"args\":{\"path\":\".\"}}\'\n"
-            "Windows:    Crie um arquivo e passe o caminho (evita problema de quoting):\n"
-            "            bauer tools run action.json"
-        ),
-    ),
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
-    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-):
-    """Executa uma tool action JSON diretamente (para debug e teste manual).
-
-    Aceita JSON direto ou caminho para arquivo .json.
-    No Windows, use um arquivo para evitar problemas de quoting do PowerShell.
-    """
-    if not workspace.exists():
-        console.print(f"[yellow]Workspace '{workspace}' nao existe — criando.[/yellow]")
-        workspace.mkdir(parents=True, exist_ok=True)
-
-    # Se o argumento é um arquivo existente, lê o conteúdo.
-    action_path = Path(action)
-    if action_path.suffix == ".json" and action_path.exists():
-        action_json = action_path.read_text(encoding="utf-8-sig").strip()  # utf-8-sig remove BOM do PowerShell
-        console.print(f"[dim]Lendo action de {action_path}[/dim]")
-    else:
-        action_json = action
-
-    try:
-        cfg = load_config(config)
-    except ConfigError:
-        cfg = None
-
-    router = _build_router(cfg, workspace)
-    try:
-        result = router.execute(action_json)
-        console.print(result)
-    except SandboxError as exc:
-        console.print(f"[red]Sandbox bloqueou:[/red]\n{exc}")
-        raise typer.Exit(code=1)
-    except ToolError as exc:
-        console.print(f"[red]Erro na tool:[/red]\n{exc}")
-        raise typer.Exit(code=1)
 
 
 # --- agent ------------------------------------------------------------------
@@ -5694,30 +5393,10 @@ def _gateway_start_background(config: Path) -> None:
     )
 
 
-@telegram_app.command("start", help="Inicia o canal Telegram (foreground)")
-def telegram_start(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
-):
-    """Sobe só o bridge Telegram. Para todos os canais use `bauer gateway start`."""
-    from bauer.telegram_bridge import run_bridge
-
-    console.print("[green]Telegram bridge — foreground (Ctrl+C para parar)[/green]")
-    try:
-        run_bridge(config)
-    except RuntimeError as exc:
-        console.print(f"[red]ERRO:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
 
 
-@telegram_app.command("stop", help="Para bridges Telegram em execução (inclusive antigos)")
-def telegram_stop():
-    killed = _kill_bridge_processes("telegram_bridge")
-    if killed:
-        console.print(f"[green]✓ {killed} processo(s) de bridge encerrado(s).[/green]")
-    else:
-        console.print("[yellow]Nenhum bridge Telegram em execução.[/yellow]")
 
 
 @gateway_app.command("stop", help="Para o Bauer Gateway em execução")
@@ -5748,31 +5427,6 @@ def gateway_stop(
         console.print("[yellow]Nenhum gateway em execução.[/yellow]")
 
 
-@telegram_app.command("test", help="Valida o token do bot (getMe)")
-def telegram_test(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
-):
-    from bauer.channel_base import resolve_token
-    from bauer.config_loader import load_config as _load_cfg
-
-    cfg = _load_cfg(config)
-    token = resolve_token(cfg.telegram.bot_token, "TELEGRAM_BOT_TOKEN")
-    if not token:
-        console.print("[red]Token ausente.[/red] Defina TELEGRAM_BOT_TOKEN no .env "
-                      "ou rode `bauer gateway init`.")
-        raise typer.Exit(code=1)
-    import httpx
-    try:
-        r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
-        bot = r.json().get("result", {})
-        if r.json().get("ok"):
-            console.print(f"[green]✓ Bot @{bot.get('username')} conectado.[/green]")
-        else:
-            console.print(f"[red]Token inválido:[/red] {r.json().get('description')}")
-            raise typer.Exit(code=1)
-    except httpx.HTTPError as exc:
-        console.print(f"[red]Erro de rede:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
 
