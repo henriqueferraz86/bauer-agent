@@ -66,7 +66,7 @@ from bauer.commands.project_cmd import project_app  # noqa: E402
 task_app = typer.Typer(help="Gerenciamento de tarefas (TASKS.md)")
 from bauer.commands.dispatch_cmd import dispatch_app  # noqa: E402
 from bauer.commands.ops_cmd import ops_app  # noqa: E402
-runtime_app = typer.Typer(help="Supervisor always-on: dispatcher, cron, outbox e kanban")
+from bauer.commands.runtime_cmd import runtime_app  # noqa: E402
 from bauer.commands.cron_cmd import cron_app  # noqa: E402
 from bauer.commands.research_cmd import research_app  # noqa: E402
 from bauer.commands.learning_cmd import learning_app  # noqa: E402
@@ -77,36 +77,17 @@ from bauer.commands.spec_cmd import spec_app  # noqa: E402
 from bauer.commands.company_cmd import company_app  # noqa: E402
 from bauer.commands.migrate_cmd import migrate_app  # noqa: E402
 from bauer.commands.boards_cmd import boards_app  # noqa: E402
-daemon_app = typer.Typer(help="BauerDaemon — pool de workers autonomos que processam tasks do kanban")
-daemon_service_app = typer.Typer(
-    help="Daemon como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
-)
-daemon_app.add_typer(daemon_service_app, name="service")
+from bauer.commands.daemon_cmd import daemon_app  # noqa: E402
 
 from bauer.commands.traces_cmd import traces_app  # noqa: E402
 from bauer.commands.cost_cmd import cost_app  # noqa: E402
 
-runtime_service_app = typer.Typer(
-    help="Runtime como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
-)
-runtime_app.add_typer(runtime_service_app, name="service")
 
-serve_app = typer.Typer(
-    invoke_without_command=True,
-    help="Bauer Agent como servidor HTTP (REST + SSE) — ou 'serve service' para servico do sistema",
-)
-serve_service_app = typer.Typer(
-    help="Serve como SERVICO do sistema (systemd/launchd/Task Scheduler) — sobe no boot, reinicia em crash"
-)
-serve_app.add_typer(serve_service_app, name="service")
+from bauer.commands.serve_cmd import serve_app  # noqa: E402
 
 from bauer.commands.telegram_cmd import telegram_app  # noqa: E402
 from bauer.commands.discord_cmd import discord_app  # noqa: E402
-gateway_app = typer.Typer(help="Bauer Gateway — todos os canais de chat + entrega do outbox")
-gateway_service_app = typer.Typer(
-    help="Gateway como SERVIÇO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
-)
-gateway_app.add_typer(gateway_service_app, name="service")
+from bauer.commands.gateway_cmd import gateway_app  # noqa: E402
 
 from bauer.commands.plugin_cmd import plugin_app  # noqa: E402
 app.add_typer(plugin_app, name="plugin")
@@ -1168,736 +1149,43 @@ def task_board(
 # --- runtime supervisor -------------------------------------------------------
 
 
-def _runtime_supervise_args(
-    *,
-    workspace: Path,
-    config: Path,
-    models: Path,
-    dispatcher: bool,
-    cron: bool,
-    outbox: bool,
-    kanban: bool,
-    dispatch_interval: int,
-    cron_interval: int,
-    outbox_interval: int,
-    supervisor_interval: int,
-    kanban_host: str,
-    kanban_port: int,
-    max_spawn: int,
-    max_in_progress: int,
-    max_jobs: int,
-    delivery_limit: int,
-) -> list[str]:
-    args = [
-        "--workspace", str(workspace),
-        "--config", str(config),
-        "--models", str(models),
-        "--dispatch-interval", str(dispatch_interval),
-        "--cron-interval", str(cron_interval),
-        "--outbox-interval", str(outbox_interval),
-        "--supervisor-interval", str(supervisor_interval),
-        "--kanban-host", kanban_host,
-        "--kanban-port", str(kanban_port),
-        "--max-spawn", str(max_spawn),
-        "--max-in-progress", str(max_in_progress),
-        "--max-jobs", str(max_jobs),
-        "--delivery-limit", str(delivery_limit),
-    ]
-    args.append("--dispatcher" if dispatcher else "--no-dispatcher")
-    args.append("--cron" if cron else "--no-cron")
-    args.append("--outbox" if outbox else "--no-outbox")
-    args.append("--kanban" if kanban else "--no-kanban")
-    return args
 
 
-def _runtime_specs_table(specs) -> Table:
-    table = Table(title="Bauer Runtime Services", show_lines=False)
-    table.add_column("Service", style="cyan")
-    table.add_column("Enabled")
-    table.add_column("Restart")
-    table.add_column("Command")
-    for spec in specs:
-        table.add_row(
-            spec.name,
-            "yes" if spec.enabled else "no",
-            "yes" if spec.restart else "no",
-            " ".join(spec.command),
-        )
-    return table
 
 
-@runtime_app.command("start")
-def runtime_start_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-    background: bool = typer.Option(True, "--background/--foreground", help="Roda supervisor em background ou prende este terminal"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria iniciado sem subir processos"),
-    dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
-    cron: bool = typer.Option(True, "--cron/--no-cron"),
-    outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
-    kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
-    dispatch_interval: int = typer.Option(30, "--dispatch-interval"),
-    cron_interval: int = typer.Option(60, "--cron-interval"),
-    outbox_interval: int = typer.Option(30, "--outbox-interval"),
-    supervisor_interval: int = typer.Option(5, "--supervisor-interval"),
-    kanban_host: str = typer.Option("127.0.0.1", "--kanban-host"),
-    kanban_port: int = typer.Option(8765, "--kanban-port"),
-    max_spawn: int = typer.Option(1, "--max-spawn"),
-    max_in_progress: int = typer.Option(1, "--max-in-progress"),
-    max_jobs: int = typer.Option(10, "--max-jobs"),
-    delivery_limit: int = typer.Option(20, "--delivery-limit"),
-):
-    """Sobe o runtime always-on: dispatcher, cron, outbox e kanban."""
-    import json as _json
-
-    from .supervisor import RuntimeSupervisor
-
-    supervisor = RuntimeSupervisor(workspace, config=config, models=models)
-    specs = supervisor.build_service_specs(
-        dispatcher=dispatcher,
-        cron=cron,
-        outbox=outbox,
-        kanban=kanban,
-        dispatch_interval=dispatch_interval,
-        cron_interval=cron_interval,
-        outbox_interval=outbox_interval,
-        kanban_host=kanban_host,
-        kanban_port=kanban_port,
-        max_spawn=max_spawn,
-        max_in_progress=max_in_progress,
-        max_jobs=max_jobs,
-        delivery_limit=delivery_limit,
-    )
-    if dry_run and not background:
-        console.print(_runtime_specs_table(specs))
-        return
-    args = _runtime_supervise_args(
-        workspace=workspace,
-        config=config,
-        models=models,
-        dispatcher=dispatcher,
-        cron=cron,
-        outbox=outbox,
-        kanban=kanban,
-        dispatch_interval=dispatch_interval,
-        cron_interval=cron_interval,
-        outbox_interval=outbox_interval,
-        supervisor_interval=supervisor_interval,
-        kanban_host=kanban_host,
-        kanban_port=kanban_port,
-        max_spawn=max_spawn,
-        max_in_progress=max_in_progress,
-        max_jobs=max_jobs,
-        delivery_limit=delivery_limit,
-    )
-    if background:
-        result = supervisor.start_background(args, dry_run=dry_run)
-        if dry_run:
-            console.print(_runtime_specs_table(specs))
-            console.print(_json.dumps(result, ensure_ascii=False, indent=2), soft_wrap=True)
-            return
-        console.print(f"[green]Runtime supervisor iniciado[/green] pid={result['pid']}")
-        console.print(f"[dim]Logs: {result['log_path']}[/dim]")
-        return
-
-    console.print("[green]Runtime supervisor iniciado em foreground[/green] Ctrl+C para parar.")
-    supervisor.run_forever(specs, supervisor_interval=supervisor_interval)
 
 
-@runtime_app.command("supervise", hidden=True)
-def runtime_supervise_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-    dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
-    cron: bool = typer.Option(True, "--cron/--no-cron"),
-    outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
-    kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
-    dispatch_interval: int = typer.Option(30, "--dispatch-interval"),
-    cron_interval: int = typer.Option(60, "--cron-interval"),
-    outbox_interval: int = typer.Option(30, "--outbox-interval"),
-    supervisor_interval: int = typer.Option(5, "--supervisor-interval"),
-    kanban_host: str = typer.Option("127.0.0.1", "--kanban-host"),
-    kanban_port: int = typer.Option(8765, "--kanban-port"),
-    max_spawn: int = typer.Option(1, "--max-spawn"),
-    max_in_progress: int = typer.Option(1, "--max-in-progress"),
-    max_jobs: int = typer.Option(10, "--max-jobs"),
-    delivery_limit: int = typer.Option(20, "--delivery-limit"),
-):
-    """Processo interno que supervisiona os servicos do runtime."""
-    from .supervisor import RuntimeSupervisor
-
-    supervisor = RuntimeSupervisor(workspace, config=config, models=models)
-    specs = supervisor.build_service_specs(
-        dispatcher=dispatcher,
-        cron=cron,
-        outbox=outbox,
-        kanban=kanban,
-        dispatch_interval=dispatch_interval,
-        cron_interval=cron_interval,
-        outbox_interval=outbox_interval,
-        kanban_host=kanban_host,
-        kanban_port=kanban_port,
-        max_spawn=max_spawn,
-        max_in_progress=max_in_progress,
-        max_jobs=max_jobs,
-        delivery_limit=delivery_limit,
-    )
-    supervisor.run_forever(specs, supervisor_interval=supervisor_interval)
 
 
-@runtime_app.command("status")
-def runtime_status_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    as_json: bool = typer.Option(False, "--json"),
-):
-    """Mostra estado do supervisor e dos servicos supervisionados."""
-    import json as _json
-
-    from .supervisor import RuntimeSupervisor
-
-    status = RuntimeSupervisor(workspace).status().to_public_dict()
-    if as_json:
-        console.print(_json.dumps(status, ensure_ascii=False, indent=2), soft_wrap=True)
-        return
-    table = Table(title=f"Bauer Runtime - {workspace}", show_lines=False)
-    table.add_column("Service", style="cyan")
-    table.add_column("State")
-    table.add_column("PID", justify="right")
-    table.add_column("Alive")
-    table.add_column("Restarts", justify="right")
-    table.add_column("Log")
-    console.print(
-        f"[bold]Supervisor:[/bold] state={status['state']} "
-        f"pid={status.get('supervisor_pid') or '-'} alive={status.get('supervisor_alive')}"
-    )
-    for service in status.get("services", []):
-        table.add_row(
-            str(service.get("name", "")),
-            str(service.get("state", "")),
-            str(service.get("pid") or "-"),
-            "yes" if service.get("alive") else "no",
-            str(service.get("restarts", 0)),
-            str(service.get("log_path", "")),
-        )
-    console.print(table)
 
 
-@runtime_app.command("stop")
-def runtime_stop_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    no_terminate: bool = typer.Option(False, "--no-terminate", help="Apenas escreve STOP; nao envia SIGTERM"),
-):
-    """Solicita parada do supervisor e encerra servicos supervisionados."""
-    from .supervisor import RuntimeSupervisor
-
-    status = RuntimeSupervisor(workspace).request_stop(terminate=not no_terminate)
-    console.print(f"[green]Stop solicitado[/green] state={status.get('state')} workspace={workspace}")
 
 
-@runtime_app.command("restart")
-def runtime_restart_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
-    dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
-    cron: bool = typer.Option(True, "--cron/--no-cron"),
-    outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
-    kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
-):
-    """Para o runtime atual e sobe um novo supervisor em background."""
-    from .supervisor import RuntimeSupervisor
-
-    supervisor = RuntimeSupervisor(workspace, config=config, models=models)
-    if not dry_run:
-        supervisor.request_stop(terminate=True)
-    args = _runtime_supervise_args(
-        workspace=workspace,
-        config=config,
-        models=models,
-        dispatcher=dispatcher,
-        cron=cron,
-        outbox=outbox,
-        kanban=kanban,
-        dispatch_interval=30,
-        cron_interval=60,
-        outbox_interval=30,
-        supervisor_interval=5,
-        kanban_host="127.0.0.1",
-        kanban_port=8765,
-        max_spawn=1,
-        max_in_progress=1,
-        max_jobs=10,
-        delivery_limit=20,
-    )
-    result = supervisor.start_background(args, dry_run=dry_run)
-    console.print(f"[green]Runtime restart solicitado[/green] pid={result.get('pid') or '-'}")
 
 
-@runtime_app.command("logs")
-def runtime_logs_cmd(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    service: str = typer.Option("supervisor", "--service", "-s"),
-    lines: int = typer.Option(80, "--lines", "-n"),
-):
-    """Mostra as ultimas linhas de log do supervisor ou de um servico."""
-    from .supervisor import RuntimeSupervisor, tail_log
-
-    supervisor = RuntimeSupervisor(workspace)
-    status = supervisor.status().to_public_dict()
-    if service == "supervisor":
-        log_path = Path(status["runtime_dir"]) / "logs" / "supervisor.log"
-    else:
-        matches = [svc for svc in status.get("services", []) if svc.get("name") == service]
-        if not matches:
-            console.print(f"[red]Servico nao encontrado:[/red] {service}")
-            raise typer.Exit(code=1)
-        log_path = Path(str(matches[0].get("log_path", "")))
-    for line in tail_log(log_path, lines=lines):
-        console.print(line)
 
 
 # --- daemon -----------------------------------------------------------------
 
 
-def _daemon_state_dir() -> "Path":
-    """Return the default daemon state directory (~/.bauer/daemon)."""
-    import os as _os
-    home = _os.environ.get("BAUER_HOME")
-    base = Path(home).expanduser() if home else Path.home() / ".bauer"
-    return base / "daemon"
 
 
-def _daemon_log_path() -> "Path":
-    return _daemon_state_dir() / "daemon.log"
 
 
-def _daemon_pid_path() -> "Path":
-    return _daemon_state_dir() / "daemon.pid"
 
 
-def _read_daemon_pid() -> "int | None":
-    pid_path = _daemon_pid_path()
-    if not pid_path.exists():
-        return None
-    try:
-        return int(pid_path.read_text().strip())
-    except Exception:
-        return None
 
 
-def _daemon_pid_alive(pid: int) -> bool:
-    """Return True if a process with *pid* is currently running."""
-    import psutil
-    try:
-        return psutil.pid_exists(pid)
-    except Exception:
-        pass
-    # Fallback: os.kill(pid, 0) — works on Unix; skip on Windows
-    import os as _os
-    try:
-        _os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
-    except Exception:
-        return False
 
 
-@daemon_app.command("start")
-def daemon_start_cmd(
-    board: str = typer.Option("default", "--board", "-b", help="Kanban board slug"),
-    workers: int = typer.Option(2, "--workers", "-w", help="Numero de workers paralelos"),
-    budget_usd: float = typer.Option(5.0, "--budget-usd", help="Limite de custo USD por sessao"),
-    budget_hours: float = typer.Option(1.0, "--budget-hours", help="Limite de tempo em horas"),
-    max_llm_calls: int = typer.Option(200, "--max-llm-calls"),
-    max_tool_calls: int = typer.Option(500, "--max-tool-calls"),
-    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Segundos de sleep quando sem task"),
-    profile: str = typer.Option("low", "--profile", help="Perfil do modelo: low/medium/high"),
-    headless_mode: str = typer.Option(
-        "threshold", "--headless-mode",
-        help="Modo de aprovacao: threshold | yolo | deny_all",
-    ),
-    detach: bool = typer.Option(True, "--detach/--foreground", help="Roda em background (detach) ou prende o terminal"),
-    log_level: str = typer.Option("INFO", "--log-level", help="DEBUG | INFO | WARNING | ERROR"),
-):
-    """Inicia o BauerDaemon — pool de workers que executam tasks do kanban autonomamente."""
-    import subprocess as _sp
-    import sys as _sys
-    import logging as _logging
-
-    state_dir = _daemon_state_dir()
-
-    if detach:
-        # Check for existing alive daemon
-        existing_pid = _read_daemon_pid()
-        if existing_pid and _daemon_pid_alive(existing_pid):
-            console.print(
-                f"[yellow]Daemon ja rodando[/yellow] pid={existing_pid} "
-                f"board={board}. Use [bold]bauer daemon status[/bold] para ver detalhes."
-            )
-            raise typer.Exit(code=0)
-
-        state_dir.mkdir(parents=True, exist_ok=True)
-        log_path = _daemon_log_path()
-        log_handle = log_path.open("ab")
-
-        cmd = [
-            _sys.executable, "-m", "bauer.cli", "daemon", "_run",
-            "--board", board,
-            "--workers", str(workers),
-            "--budget-usd", str(budget_usd),
-            "--budget-hours", str(budget_hours),
-            "--max-llm-calls", str(max_llm_calls),
-            "--max-tool-calls", str(max_tool_calls),
-            "--poll-interval", str(poll_interval),
-            "--profile", profile,
-            "--headless-mode", headless_mode,
-            "--log-level", log_level,
-        ]
-
-        import os as _os
-        popen_kwargs: dict = {
-            "stdout": log_handle,
-            "stderr": _sp.STDOUT,
-            "stdin": _sp.DEVNULL,
-            "close_fds": True,
-        }
-        if _os.name == "nt":
-            popen_kwargs["creationflags"] = (
-                getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
-                | getattr(_sp, "DETACHED_PROCESS", 0)
-            )
-        else:
-            popen_kwargs["start_new_session"] = True
-
-        try:
-            proc = _sp.Popen(cmd, **popen_kwargs)
-        finally:
-            log_handle.close()
-
-        console.print(
-            f"[green]BauerDaemon iniciado em background[/green] pid={proc.pid} "
-            f"board={board} workers={workers} budget=${budget_usd:.2f}"
-        )
-        console.print(f"[dim]Log: {log_path}[/dim]")
-        console.print("[dim]Use [bold]bauer daemon status[/bold] e [bold]bauer daemon logs[/bold] para monitorar.[/dim]")
-        return
-
-    # ── foreground mode ──────────────────────────────────────────────────────
-    import asyncio as _asyncio
-    _logging.basicConfig(
-        level=getattr(_logging, log_level.upper(), _logging.INFO),
-        format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
-    )
-
-    from .daemon import BauerDaemon, DaemonConfig
-
-    cfg = DaemonConfig(
-        board=board,
-        workers=workers,
-        max_cost_usd=budget_usd,
-        max_wall_seconds=int(budget_hours * 3600),
-        max_llm_calls=max_llm_calls,
-        max_tool_calls=max_tool_calls,
-        poll_interval_seconds=poll_interval,
-        profile=profile,
-        headless_mode=headless_mode,
-        state_dir=state_dir,
-    )
-    console.print(
-        f"[green]BauerDaemon iniciando em foreground[/green] "
-        f"board={board} workers={workers} budget=${budget_usd:.2f} Ctrl+C para parar."
-    )
-    exit_code = _asyncio.run(BauerDaemon(cfg).start())
-    raise typer.Exit(code=exit_code)
 
 
-@daemon_app.command("_run", hidden=True)
-def daemon_run_internal_cmd(
-    board: str = typer.Option("default", "--board"),
-    workers: int = typer.Option(2, "--workers"),
-    budget_usd: float = typer.Option(5.0, "--budget-usd"),
-    budget_hours: float = typer.Option(1.0, "--budget-hours"),
-    max_llm_calls: int = typer.Option(200, "--max-llm-calls"),
-    max_tool_calls: int = typer.Option(500, "--max-tool-calls"),
-    poll_interval: float = typer.Option(5.0, "--poll-interval"),
-    profile: str = typer.Option("low", "--profile"),
-    headless_mode: str = typer.Option("threshold", "--headless-mode"),
-    log_level: str = typer.Option("INFO", "--log-level"),
-):
-    """Processo interno chamado por 'daemon start --detach'. Nao chamar diretamente."""
-    import asyncio as _asyncio
-    import logging as _logging
-
-    _logging.basicConfig(
-        level=getattr(_logging, log_level.upper(), _logging.INFO),
-        format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
-    )
-
-    from .daemon import BauerDaemon, DaemonConfig
-
-    cfg = DaemonConfig(
-        board=board,
-        workers=workers,
-        max_cost_usd=budget_usd,
-        max_wall_seconds=int(budget_hours * 3600),
-        max_llm_calls=max_llm_calls,
-        max_tool_calls=max_tool_calls,
-        poll_interval_seconds=poll_interval,
-        profile=profile,
-        headless_mode=headless_mode,
-        state_dir=_daemon_state_dir(),
-    )
-    exit_code = _asyncio.run(BauerDaemon(cfg).start())
-    raise typer.Exit(code=exit_code)
 
 
-@daemon_app.command("stop")
-def daemon_stop_cmd(
-    force: bool = typer.Option(False, "--force", "-f", help="Envia SIGKILL apos timeout"),
-    timeout: int = typer.Option(10, "--timeout", help="Segundos para aguardar parada graceful"),
-):
-    """Para o daemon em execucao (envia SIGTERM; aguarda parada graceful)."""
-    import os as _os
-    import signal as _signal
-    import time as _time
-    import subprocess as _sp
-
-    def _kill_pid(pid: int, hard: bool = False) -> bool:
-        """Kill a PID. Returns True if the signal was sent."""
-        try:
-            if _os.name == "nt":
-                flags = ["/F"] if hard else []
-                _sp.call(["taskkill", *flags, "/PID", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-            else:
-                sig = _signal.SIGKILL if hard else _signal.SIGTERM
-                _os.kill(pid, sig)
-            return True
-        except (ProcessLookupError, OSError):
-            return False
-
-    def _cleanup_stale_sessions(reason: str = "daemon_stopped") -> int:
-        """Mark running DB sessions as stopped; returns count of sessions cleaned."""
-        state_db_path = _daemon_state_dir() / "daemon_state.db"
-        if not state_db_path.exists():
-            return 0
-        from .daemon import DaemonStateDB
-        db = DaemonStateDB(state_db_path)
-        sessions = db.get_running()
-        count = 0
-        for s in sessions:
-            db.mark_stopped(s["id"], reason=reason)
-            count += 1
-        return count
-
-    def _kill_db_session_pids(hard: bool = False) -> list[int]:
-        """Kill PIDs of all running DB sessions. Returns list of killed PIDs."""
-        state_db_path = _daemon_state_dir() / "daemon_state.db"
-        if not state_db_path.exists():
-            return []
-        from .daemon import DaemonStateDB
-        db = DaemonStateDB(state_db_path)
-        killed = []
-        for s in db.get_running():
-            pid = s.get("pid")
-            if pid and _daemon_pid_alive(pid):
-                _kill_pid(pid, hard=hard)
-                killed.append(pid)
-        return killed
-
-    pid = _read_daemon_pid()
-
-    # ── No daemon.pid: check DB for orphaned running sessions ─────────────────
-    if pid is None:
-        orphan_pids = _kill_db_session_pids(hard=force)
-        cleaned = _cleanup_stale_sessions(reason="force_stop_orphan")
-        if cleaned:
-            console.print(
-                f"[yellow]daemon.pid nao encontrado, mas {cleaned} sessao(oes) ativa(s) no DB.[/yellow]"
-            )
-            if orphan_pids:
-                console.print(f"[green]PIDs encerrados: {orphan_pids}[/green]")
-            else:
-                console.print("[dim]PIDs ja estavam mortos — estado do DB corrigido.[/dim]")
-            _daemon_pid_path().unlink(missing_ok=True)
-        else:
-            console.print("[yellow]Nenhum daemon.pid encontrado. Daemon nao esta rodando.[/yellow]")
-        raise typer.Exit(code=0)
-
-    # ── daemon.pid exists but process is already dead ─────────────────────────
-    if not _daemon_pid_alive(pid):
-        console.print(f"[yellow]PID {pid} nao esta mais ativo. Limpando estado.[/yellow]")
-        _daemon_pid_path().unlink(missing_ok=True)
-        _cleanup_stale_sessions(reason="stale_pid_cleanup")
-        raise typer.Exit(code=0)
-
-    # ── Send SIGTERM and wait ─────────────────────────────────────────────────
-    console.print(f"[cyan]Enviando SIGTERM para pid={pid}...[/cyan]")
-    _kill_pid(pid, hard=False)
-
-    deadline = _time.time() + timeout
-    while _time.time() < deadline:
-        if not _daemon_pid_alive(pid):
-            console.print(f"[green]Daemon encerrado graciosamente[/green] pid={pid}")
-            _cleanup_stale_sessions(reason="graceful_stop")
-            raise typer.Exit(code=0)
-        _time.sleep(0.5)
-
-    # ── Timeout: force kill or warn ───────────────────────────────────────────
-    if force:
-        console.print(f"[yellow]Timeout — enviando SIGKILL para pid={pid}[/yellow]")
-        _kill_pid(pid, hard=True)
-        _cleanup_stale_sessions(reason="force_kill")
-        console.print("[green]Daemon encerrado forcosamente.[/green]")
-    else:
-        console.print(
-            f"[yellow]Daemon ainda ativo apos {timeout}s. "
-            f"Use --force para SIGKILL.[/yellow]"
-        )
-        raise typer.Exit(code=1)
 
 
-@daemon_app.command("status")
-def daemon_status_cmd(
-    as_json: bool = typer.Option(False, "--json", help="Saida em JSON"),
-    all_sessions: bool = typer.Option(False, "--all", "-a", help="Mostra todas as sessoes, nao so as ativas"),
-):
-    """Mostra estado atual do daemon (sessoes ativas, budget, workers)."""
-    import json as _json
-    import time as _time
-
-    state_db_path = _daemon_state_dir() / "daemon_state.db"
-    pid = _read_daemon_pid()
-    alive = pid is not None and _daemon_pid_alive(pid)
-
-    if not state_db_path.exists():
-        if as_json:
-            console.print(_json.dumps({"running": False, "pid": None, "sessions": []}, indent=2))
-        else:
-            console.print("[dim]Nenhuma sessao de daemon encontrada.[/dim]")
-            console.print(f"[dim]Use [bold]bauer daemon start[/bold] para iniciar.[/dim]")
-        raise typer.Exit(code=0)
-
-    from .daemon import DaemonStateDB
-
-    db = DaemonStateDB(state_db_path)
-    if all_sessions:
-        import sqlite3 as _sqlite3
-        conn = _sqlite3.connect(str(state_db_path), timeout=5.0)
-        conn.row_factory = _sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM daemon_sessions ORDER BY started_at DESC LIMIT 20"
-        ).fetchall()
-        sessions = [dict(r) for r in rows]
-        conn.close()
-    else:
-        sessions = db.get_running()
-        # Also include the latest if nothing is running
-        if not sessions:
-            latest = db.get_latest()
-            if latest:
-                sessions = [latest]
-
-    if as_json:
-        console.print(_json.dumps(
-            {"running": alive, "pid": pid, "sessions": sessions},
-            indent=2, ensure_ascii=False,
-        ))
-        raise typer.Exit(code=0)
-
-    # Pretty table
-    console.print(
-        f"\n[bold]BauerDaemon[/bold]  "
-        + ("[green]RODANDO[/green]" if alive else "[red]PARADO[/red]")
-        + (f"  pid={pid}" if pid else "")
-    )
-    if not sessions:
-        console.print("[dim]Nenhuma sessao registrada.[/dim]")
-        raise typer.Exit(code=0)
-
-    table = Table(show_lines=False, box=None)
-    table.add_column("Sessao", style="cyan", no_wrap=True)
-    table.add_column("Board")
-    table.add_column("Workers", justify="right")
-    table.add_column("Status")
-    table.add_column("Uptime")
-    table.add_column("Budget")
-    table.add_column("Shutdown")
-
-    now = _time.time()
-    for s in sessions:
-        uptime_s = now - (s.get("started_at") or now)
-        uptime_str = (
-            f"{int(uptime_s // 3600)}h{int(uptime_s % 3600 // 60)}m"
-            if uptime_s >= 60 else f"{int(uptime_s)}s"
-        )
-        budget_info = ""
-        if s.get("budget_json"):
-            try:
-                b = _json.loads(s["budget_json"])
-                cost = b.get("cost_usd", 0)
-                pct = b.get("cost_pct", 0)
-                budget_info = f"${cost:.3f} ({pct:.0f}%)"
-            except Exception:
-                pass
-        status_color = "green" if s.get("status") == "running" else "dim"
-        table.add_row(
-            s.get("id", "")[:24],
-            s.get("board", ""),
-            str(s.get("workers", "")),
-            f"[{status_color}]{s.get('status', '')}[/{status_color}]",
-            uptime_str,
-            budget_info or "-",
-            s.get("shutdown_reason") or "-",
-        )
-    console.print(table)
-    console.print()
 
 
-@daemon_app.command("logs")
-def daemon_logs_cmd(
-    lines: int = typer.Option(50, "--lines", "-n", help="Numero de linhas iniciais"),
-    follow: bool = typer.Option(False, "--follow", "-f", help="Segue o arquivo de log (tail -f)"),
-):
-    """Exibe o log do daemon (tail). Use --follow para acompanhar em tempo real."""
-    import time as _time
-
-    log_path = _daemon_log_path()
-    if not log_path.exists():
-        console.print(f"[dim]Nenhum log encontrado em {log_path}[/dim]")
-        console.print("[dim]Inicie o daemon com [bold]bauer daemon start[/bold] primeiro.[/dim]")
-        raise typer.Exit(code=0)
-
-    # Print last N lines
-    try:
-        content = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception as exc:
-        console.print(f"[red]Erro ao ler log:[/red] {exc}")
-        raise typer.Exit(code=1)
-
-    for line in content[-lines:]:
-        console.print(line)
-
-    if not follow:
-        return
-
-    # Follow mode — poll for new content
-    console.print(f"\n[dim]--- seguindo {log_path} (Ctrl+C para parar) ---[/dim]")
-    offset = log_path.stat().st_size
-    try:
-        with log_path.open("r", encoding="utf-8", errors="replace") as fh:
-            fh.seek(offset)
-            while True:
-                line = fh.readline()
-                if line:
-                    console.print(line, end="")
-                else:
-                    _time.sleep(0.25)
-    except KeyboardInterrupt:
-        console.print("\n[dim]Log encerrado.[/dim]")
 
 
 # --- cron -------------------------------------------------------------------
@@ -2011,123 +1299,6 @@ def desktop(
 # --- serve ------------------------------------------------------------------
 
 
-@serve_app.callback()
-def serve(
-    ctx: typer.Context,
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
-    models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
-    workspace: Path = typer.Option(_WORKSPACE_DIR, "--workspace"),
-    state_file: Path = typer.Option(_RUNTIME_STATE_DEFAULT, "--state-file"),
-    host: str = typer.Option("", "--host", help="Host de escuta (padrao: config serve.host)"),
-    port: int = typer.Option(0, "--port", help="Porta (padrao: config serve.port)"),
-    model: str = typer.Option("", "--model", help="Sobrescreve modelo do config"),
-    api_key: str = typer.Option("", "--api-key", help="Sobrescreve serve.api_key do config"),
-    sessions_dir: Path = typer.Option(Path("memory/sessions"), "--sessions-dir"),
-    gateway_port: int = typer.Option(
-        0, "--gateway-port", "-g",
-        help="Porta do gateway WebSocket Claw3D (0 = desabilitado). Ex: --gateway-port 18789",
-    ),
-):
-    """Inicia o Bauer Agent como servidor HTTP (REST + SSE).
-
-    Requer: pip install 'bauer-agent[server]'
-
-    Endpoints disponiveis apos iniciar:
-      GET  /health        — liveness
-      GET  /status        — modelo e tools
-      POST /chat          — envia mensagem, recebe resposta
-      GET  /stream        — resposta em tempo real (SSE)
-      GET  /sessions      — lista sessoes (requer auth)
-      GET  /docs          — documentacao interativa (Swagger)
-
-    Use 'bauer serve service install' para rodar como servico do sistema.
-    """
-    if ctx.invoked_subcommand is not None:
-        return
-    try:
-        from .server import create_app, run_server
-    except ImportError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
-
-    cfg, reg = _load_or_die(config, models)
-    setup_logging(cfg.logging.level, cfg.logging.file)
-
-    state = _get_or_run_state(cfg, reg, state_file)
-
-    if not state.get("ollama_alive"):
-        console.print("[red]Ollama offline.[/red] Verifique se o Ollama esta rodando.")
-        raise typer.Exit(code=1)
-
-    if not workspace.exists():
-        workspace.mkdir(parents=True, exist_ok=True)
-
-    _client = _build_client(cfg)
-
-    model_name = model or _resolve_model_with_ram_check(
-        state["configured_model"], reg, _client,
-        state["ram_available_mb"], cfg.runtime.safety_margin_mb, _MEMORY_DIR,
-    )
-    if not _client.has_model(model_name):
-        console.print(
-            f"[red]Modelo '{model_name}' nao encontrado no Ollama.[/red]\n"
-            f"Rode: [bold]ollama pull {model_name}[/bold]"
-        )
-        raise typer.Exit(code=1)
-
-    applied_context = state["context"]["applied"]
-    router = _build_router(cfg, workspace)
-
-    from .agent import _build_system_prompt
-    system_prompt = _build_system_prompt(router)
-
-    serve_host = host or cfg.serve.host
-    serve_port = port or cfg.serve.port
-    serve_key = api_key or cfg.serve.api_key
-
-    fastapi_app = create_app(
-        model_name=model_name,
-        applied_context=applied_context,
-        router=router,
-        client=_client,
-        system_prompt=system_prompt,
-        sessions_dir=sessions_dir,
-        api_key=serve_key,
-        rate_limit_requests=cfg.serve.rate_limit_requests,
-        rate_limit_window_s=cfg.serve.rate_limit_window_s,
-        rate_limit_per_key=cfg.serve.rate_limit_per_key,
-        cors_origins=list(cfg.serve.cors_origins) or None,
-        enable_gzip=cfg.serve.enable_gzip,
-        enable_access_log=cfg.serve.enable_access_log,
-        config_path=config,
-    )
-
-    auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"
-    base_url = f"http://{serve_host}:{serve_port}"
-    console.print(f"\n[bold]Bauer Agent Server[/bold] — {model_name}")
-    console.print(f"  HTTP:       {base_url}")
-    console.print(f"  Docs:       {base_url}/docs")
-    console.print(f"  Auth:       {auth_status}")
-    console.print(f"  Tools:      {', '.join(router.available_tools())}")
-    console.print(f"[dim]  OpenAI-compat:  POST {base_url}/v1/chat/completions[/dim]")
-
-    # Gateway WebSocket opcional
-    if gateway_port > 0:
-        _start_gateway_thread_cli(
-            bauer_url=base_url,
-            host=serve_host or "0.0.0.0",
-            port=gateway_port,
-            api_key=serve_key,
-            console=console,
-        )
-    else:
-        console.print(
-            f"[dim]  Claw3D Gateway: desabilitado (use --gateway-port 18789 para ativar)[/dim]"
-        )
-
-    console.print()
-    pid_file = workspace / ".bauer_serve" / "serve.pid"
-    run_server(fastapi_app, host=serve_host, port=serve_port, pid_file=pid_file)
 
 
 # --- learning ---------------------------------------------------------------
@@ -3253,90 +2424,6 @@ app.add_typer(skills_bundle_app, name="skills-bundle")
 
 # --- Bauer Gateway: telegram / discord / gateway -----------------------------
 
-def _gateway_pid_file(workspace: Path) -> Path:
-    return workspace / ".bauer_gateway" / "gateway.pid"
-
-
-
-
-def _gateway_workspace(config: Path) -> Path:
-    try:
-        from bauer.config_loader import load_config as _load_cfg
-        return Path(_load_cfg(config).agent.workspace)
-    except Exception:
-        return Path("workspace")
-
-
-def _gateway_start_background(config: Path) -> None:
-    """Sobe o gateway destacado (detach) e libera o terminal. Log em arquivo."""
-    import os as _os
-    import subprocess as _sp
-
-    workspace = _gateway_workspace(config)
-    pid_file = _gateway_pid_file(workspace)
-
-    # Já rodando? Não sobe outro.
-    if pid_file.exists():
-        try:
-            import psutil
-            pid = int(pid_file.read_text(encoding="utf-8").strip())
-            if psutil.pid_exists(pid):
-                console.print(
-                    f"[yellow]Gateway já rodando[/yellow] pid={pid}. "
-                    f"Use [bold]bauer gateway status[/bold] ou [bold]bauer gateway stop[/bold]."
-                )
-                return
-        except Exception:
-            pass  # PID stale — segue e sobe um novo
-
-    log_path = workspace / ".bauer_gateway" / "gateway.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_handle = log_path.open("ab")
-
-    # O filho roda a versão FOREGROUND (sem --background) e escreve o próprio PID.
-    cmd = [
-        sys.executable, "-m", "bauer.cli", "gateway", "start",
-        "--config", str(Path(config).resolve()),
-    ]
-    popen_kwargs: dict = {
-        "stdout": log_handle,
-        "stderr": _sp.STDOUT,
-        "stdin": _sp.DEVNULL,
-        "close_fds": True,
-        "cwd": str(Path(__file__).resolve().parent.parent),
-    }
-    if _os.name == "nt":
-        popen_kwargs["creationflags"] = (
-            getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(_sp, "DETACHED_PROCESS", 0)
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    try:
-        proc = _sp.Popen(cmd, **popen_kwargs)
-    finally:
-        log_handle.close()
-
-    # O filho grava o próprio pid no pid_file; aguarda um instante e lê o real.
-    import time as _time
-    real_pid = proc.pid
-    for _ in range(20):
-        _time.sleep(0.1)
-        try:
-            real_pid = int(pid_file.read_text(encoding="utf-8").strip())
-            break
-        except Exception:
-            continue
-
-    console.print(
-        f"[green]✓ Bauer Gateway iniciado em background[/green] pid={real_pid}"
-    )
-    console.print(f"[dim]Log:[/dim] {log_path}")
-    console.print(
-        "[dim]Monitorar: [/dim][bold]bauer gateway status[/bold]"
-        "[dim]  ·  Parar: [/dim][bold]bauer gateway stop[/bold]"
-    )
 
 
 
@@ -3345,691 +2432,100 @@ def _gateway_start_background(config: Path) -> None:
 
 
 
-@gateway_app.command("stop", help="Para o Bauer Gateway em execução")
-def gateway_stop(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
-):
-    from bauer.config_loader import load_config as _load_cfg
-
-    try:
-        workspace = Path(_load_cfg(config).agent.workspace)
-    except Exception:
-        workspace = Path("workspace")
-    pid_file = _gateway_pid_file(workspace)
-    killed = 0
-    if pid_file.exists():
-        try:
-            import psutil
-            pid = int(pid_file.read_text().strip())
-            psutil.Process(pid).terminate()
-            killed += 1
-        except Exception:
-            pass
-        pid_file.unlink(missing_ok=True)
-    killed += _kill_bridge_processes("gateway_runtime", "telegram_bridge", "discord_bridge")
-    if killed:
-        console.print(f"[green]✓ Gateway parado ({killed} processo(s)).[/green]")
-    else:
-        console.print("[yellow]Nenhum gateway em execução.[/yellow]")
 
 
 
 
 
 
-@gateway_app.command("start", help="Inicia todos os canais habilitados + outbox pump")
-def gateway_start(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
-    background: bool = typer.Option(
-        False, "--background", "-b",
-        help="Roda em background (detach) e libera o terminal",
-    ),
-):
-    """Bauer Gateway: canais do config.yaml (telegram/discord) + entrega do outbox.
-
-    Use --background / -b para rodar destacado (log em workspace/.bauer_gateway/
-    gateway.log). Pare com `bauer gateway stop`.
-    """
-    if background:
-        _gateway_start_background(config)
-        return
-
-    import logging
-    import os
-
-    from bauer.gateway_runtime import BauerGatewayRuntime
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    runtime = BauerGatewayRuntime.from_config(config)
-    if not runtime.bridges:
-        console.print(
-            "[yellow]Nenhum canal habilitado.[/yellow] Habilite telegram/discord no "
-            "config.yaml ou rode [bold]bauer gateway init[/bold]."
-        )
-    names = ", ".join(b.name for b in runtime.bridges) or "nenhum canal"
-    console.print(f"[green]Bauer Gateway no ar[/green] — {names} + outbox pump. Ctrl+C para parar.")
-    pid_file = _gateway_pid_file(Path(runtime.workspace))
-    try:
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError:
-        pass
-    try:
-        runtime.start(block=True)
-    finally:
-        try:
-            pid_file.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
-@gateway_app.command("status", help="Status dos canais e do outbox")
-def gateway_status(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
-):
-    from bauer.channel_base import resolve_token
-    from bauer.config_loader import load_config as _load_cfg
-    from bauer.gateway_outbox import GatewayOutbox
 
-    cfg = _load_cfg(config)
-    table = Table(title="Bauer Gateway", show_lines=False)
-    table.add_column("Canal")
-    table.add_column("Habilitado")
-    table.add_column("Token")
-    table.add_column("Allowlist")
 
-    tg_token = resolve_token(cfg.telegram.bot_token, "TELEGRAM_BOT_TOKEN")
-    dc_token = resolve_token(cfg.discord.bot_token, "DISCORD_BOT_TOKEN")
-    table.add_row(
-        "telegram",
-        "[green]sim[/green]" if cfg.telegram.enabled else "[dim]não[/dim]",
-        "[green]ok[/green]" if tg_token else "[red]ausente[/red]",
-        f"{len(cfg.telegram.allowed_users)} usuários"
-        + (" [yellow](allow_all!)[/yellow]" if cfg.telegram.allow_all else ""),
-    )
-    table.add_row(
-        "discord",
-        "[green]sim[/green]" if cfg.discord.enabled else "[dim]não[/dim]",
-        "[green]ok[/green]" if dc_token else "[red]ausente[/red]",
-        f"{len(cfg.discord.allowed_users)} usuários"
-        + (" [yellow](allow_all!)[/yellow]" if cfg.discord.allow_all else ""),
-    )
-    console.print(table)
 
-    workspace = Path(cfg.agent.workspace)
-    try:
-        pending = len(GatewayOutbox(workspace).pending(limit=100))
-        console.print(f"Outbox: [bold]{pending}[/bold] mensagem(ns) pendente(s)")
-    except Exception:
-        console.print("Outbox: [dim]vazio/indisponível[/dim]")
 
-    # Estado real do processo (PID vivo? uptime? memória?) — não só PID file
-    from bauer.gateway_service import format_uptime, read_process_status
-    pid, uptime, mem = read_process_status(Path.cwd())
-    if pid is not None:
-        console.print(
-            f"Runtime: [green]ativo[/green] — PID {pid}, "
-            f"uptime {format_uptime(uptime or 0)}, {mem:.0f}MB"
-        )
-    else:
-        console.print(
-            "Runtime: [dim]parado[/dim] — `bauer gateway start` (foreground) "
-            "ou `bauer gateway service install` (serviço)"
-        )
+
+
 
 
 # ── bauer gateway service — serviço do sistema (paridade hermes-gateway) ─────
 
 
-def _service_manager():
-    from bauer.gateway_service import GatewayServiceManager
-    return GatewayServiceManager()  # usa ~/.bauer/ como working dir
 
 
-@gateway_service_app.command("install", help="Instala E inicia o serviço (systemd/Task Scheduler)")
-def gateway_service_install():
-    try:
-        msg = _service_manager().install()
-        console.print(f"[green]✓[/green] {msg}")
-        console.print("Acompanhe: [bold]bauer gateway service status[/bold] | logs: [bold]bauer gateway service logs[/bold]")
-    except RuntimeError as exc:
-        console.print(f"[red]ERRO:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@gateway_service_app.command("uninstall", help="Para e remove o serviço")
-def gateway_service_uninstall():
-    try:
-        console.print(f"[green]✓[/green] {_service_manager().uninstall()}")
-    except RuntimeError as exc:
-        console.print(f"[red]ERRO:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@gateway_service_app.command("start", help="Inicia o serviço instalado")
-def gateway_service_start():
-    try:
-        console.print(f"[green]✓[/green] {_service_manager().start()}")
-    except RuntimeError as exc:
-        console.print(f"[red]ERRO:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@gateway_service_app.command("stop", help="Para o serviço (a tarefa/unit continua instalada)")
-def gateway_service_stop():
-    try:
-        console.print(f"[green]✓[/green] {_service_manager().stop()}")
-    except RuntimeError as exc:
-        console.print(f"[red]ERRO:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@gateway_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime, memória")
-def gateway_service_status():
-    from bauer.gateway_service import SERVICE_NAME, TASK_NAME, format_uptime
-
-    mgr = _service_manager()
-    st = mgr.status()
-    name = SERVICE_NAME if st.platform == "systemd" else TASK_NAME
-    table = Table(title=f"Bauer Gateway Service — {name}", show_lines=False)
-    table.add_column("Campo")
-    table.add_column("Valor")
-    table.add_row("Plataforma", st.platform)
-    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
-    table.add_row(
-        "Inicia no boot/logon",
-        "[green]sim[/green]" if st.enabled else "[dim]não[/dim]",
-    )
-    table.add_row(
-        "Em execução",
-        "[green]sim[/green]" if st.running else "[red]não[/red]",
-    )
-    if st.pid is not None:
-        table.add_row("PID", str(st.pid))
-        table.add_row("Uptime", format_uptime(st.uptime_s or 0))
-        table.add_row("Memória", f"{st.memory_mb:.0f} MB" if st.memory_mb else "—")
-    if st.detail:
-        table.add_row("Obs", st.detail)
-    console.print(table)
-    if not st.installed:
-        console.print("Instale com: [bold]bauer gateway service install[/bold]")
 
 
-@gateway_service_app.command("logs", help="Últimas linhas de log do gateway")
-def gateway_service_logs(
-    lines: int = typer.Option(50, "--lines", "-n", help="Quantidade de linhas"),
-):
-    console.print(_service_manager().logs(lines=lines))
 
 
 # ── bauer daemon service — serviço do sistema ────────────────────────────────
 
 
-def _daemon_service_cfg(
-    board: str = "default",
-    workers: int = 2,
-    budget_usd: float = 5.0,
-    budget_hours: float = 24.0,
-) -> "ProcessServiceConfig":  # noqa: F821
-    from bauer.process_service import ProcessServiceConfig, pid_reader_from_file
-    return ProcessServiceConfig(
-        service_name="bauer-daemon",
-        task_name="BauerDaemon",
-        description="Bauer Daemon — pool de workers autônomos (kanban tasks)",
-        entry_args=[
-            "daemon", "_run",
-            "--board", board,
-            "--workers", str(workers),
-            "--budget-usd", str(budget_usd),
-            "--budget-hours", str(budget_hours),
-        ],
-        log_file=Path("logs") / "daemon.log",
-        pid_reader=pid_reader_from_file(
-            lambda _: _daemon_pid_path(),
-            keyword="daemon",
-        ),
-        cmdline_keyword="daemon",
-    )
 
 
-def _daemon_svc_manager(
-    board: str = "default",
-    workers: int = 2,
-    budget_usd: float = 5.0,
-    budget_hours: float = 24.0,
-) -> "ProcessServiceManager":  # noqa: F821
-    from bauer.process_service import ProcessServiceManager
-    from .paths import get_bauer_home
-    return ProcessServiceManager(_daemon_service_cfg(board, workers, budget_usd, budget_hours), project_dir=get_bauer_home())
 
 
-@daemon_service_app.command("install", help="Instala E inicia o daemon como serviço do sistema")
-def daemon_service_install(
-    board: str = typer.Option("default", "--board", "-b"),
-    workers: int = typer.Option(2, "--workers", "-w"),
-    budget_usd: float = typer.Option(5.0, "--budget-usd"),
-    budget_hours: float = typer.Option(24.0, "--budget-hours"),
-):
-    try:
-        msg = _daemon_svc_manager(board, workers, budget_usd, budget_hours).install()
-        console.print(f"[green]✓[/green] {msg}")
-        console.print("Acompanhe: [bold]bauer daemon service status[/bold] | [bold]bauer daemon service logs[/bold]")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@daemon_service_app.command("uninstall", help="Para e remove o serviço do daemon")
-def daemon_service_uninstall():
-    try:
-        console.print(f"[green]✓[/green] {_daemon_svc_manager().uninstall()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@daemon_service_app.command("start", help="Inicia o serviço instalado do daemon")
-def daemon_service_start():
-    try:
-        console.print(f"[green]✓[/green] {_daemon_svc_manager().start()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@daemon_service_app.command("stop", help="Para o serviço do daemon (mantém instalado)")
-def daemon_service_stop():
-    try:
-        console.print(f"[green]✓[/green] {_daemon_svc_manager().stop()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@daemon_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
-def daemon_service_status():
-    from bauer.process_service import format_uptime
-    st = _daemon_svc_manager().status()
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style="dim", width=14)
-    table.add_column()
-    table.add_row("Plataforma", st.platform)
-    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
-    table.add_row("Ativo", "[green]sim[/green]" if st.running else "[red]não[/red]")
-    if st.pid:
-        table.add_row("PID", str(st.pid))
-    if st.uptime_s is not None:
-        table.add_row("Uptime", format_uptime(st.uptime_s))
-    if st.memory_mb is not None:
-        table.add_row("Memória", f"{st.memory_mb:.0f} MB")
-    if st.detail:
-        table.add_row("Obs", st.detail)
-    console.print(Panel(table, title="bauer-daemon", border_style="cyan"))
-    if not st.installed:
-        console.print("Instale com: [bold]bauer daemon service install[/bold]")
 
 
-@daemon_service_app.command("logs", help="Últimas linhas de log do daemon")
-def daemon_service_logs(
-    lines: int = typer.Option(50, "--lines", "-n"),
-):
-    console.print(_daemon_svc_manager().logs(lines=lines))
 
 
 # ── bauer runtime service — serviço do sistema ───────────────────────────────
 
 
-def _runtime_service_cfg(workspace: "Path | None" = None) -> "ProcessServiceConfig":  # noqa: F821
-    from bauer.process_service import ProcessServiceConfig, pid_reader_from_supervisor_json
-    ws = workspace or _PROJECT_WORKSPACE
-
-    def _ws_fn(project_dir: "Path") -> "Path":
-        p = Path(ws)
-        return p if p.is_absolute() else project_dir / p
-
-    entry_args = ["runtime", "supervise", "--workspace", str(ws)]
-    return ProcessServiceConfig(
-        service_name="bauer-runtime",
-        task_name="BauerRuntime",
-        description="Bauer Runtime — supervisor always-on (dispatcher, cron, outbox)",
-        entry_args=entry_args,
-        log_file=Path(ws) / ".bauer_runtime" / "logs" / "supervisor.log",
-        pid_reader=pid_reader_from_supervisor_json(_ws_fn),
-        cmdline_keyword="supervise",
-    )
 
 
-def _runtime_svc_manager(workspace: "Path | None" = None) -> "ProcessServiceManager":  # noqa: F821
-    from bauer.process_service import ProcessServiceManager
-    from .paths import get_bauer_home
-    return ProcessServiceManager(_runtime_service_cfg(workspace), project_dir=get_bauer_home())
 
 
-@runtime_service_app.command("install", help="Instala E inicia o runtime como serviço do sistema")
-def runtime_service_install(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    try:
-        msg = _runtime_svc_manager(workspace).install()
-        console.print(f"[green]✓[/green] {msg}")
-        console.print("Acompanhe: [bold]bauer runtime service status[/bold] | [bold]bauer runtime service logs[/bold]")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@runtime_service_app.command("uninstall", help="Para e remove o serviço do runtime")
-def runtime_service_uninstall(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    try:
-        console.print(f"[green]✓[/green] {_runtime_svc_manager(workspace).uninstall()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@runtime_service_app.command("start", help="Inicia o serviço instalado do runtime")
-def runtime_service_start(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    try:
-        console.print(f"[green]✓[/green] {_runtime_svc_manager(workspace).start()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@runtime_service_app.command("stop", help="Para o serviço do runtime (mantém instalado)")
-def runtime_service_stop(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    try:
-        console.print(f"[green]✓[/green] {_runtime_svc_manager(workspace).stop()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@runtime_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
-def runtime_service_status(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-):
-    from bauer.process_service import format_uptime
-    st = _runtime_svc_manager(workspace).status()
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style="dim", width=14)
-    table.add_column()
-    table.add_row("Plataforma", st.platform)
-    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
-    table.add_row("Ativo", "[green]sim[/green]" if st.running else "[red]não[/red]")
-    if st.pid:
-        table.add_row("PID", str(st.pid))
-    if st.uptime_s is not None:
-        table.add_row("Uptime", format_uptime(st.uptime_s))
-    if st.memory_mb is not None:
-        table.add_row("Memória", f"{st.memory_mb:.0f} MB")
-    if st.detail:
-        table.add_row("Obs", st.detail)
-    console.print(Panel(table, title="bauer-runtime", border_style="blue"))
-    if not st.installed:
-        console.print("Instale com: [bold]bauer runtime service install[/bold]")
 
 
-@runtime_service_app.command("logs", help="Últimas linhas de log do runtime supervisor")
-def runtime_service_logs(
-    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    lines: int = typer.Option(50, "--lines", "-n"),
-):
-    console.print(_runtime_svc_manager(workspace).logs(lines=lines))
 
 
 # ── bauer serve service — serviço do sistema ─────────────────────────────────
 
 
-def _serve_pid_path(project_dir: "Path") -> "Path":
-    """PID file do servidor HTTP — workspace/.bauer_serve/serve.pid."""
-    ws: "Path" = Path("workspace")
-    try:
-        from .config_loader import load_config
-        cfg = load_config(project_dir / "config.yaml")
-        loaded = Path(cfg.agent.workspace)
-        ws = loaded if loaded.is_absolute() else project_dir / loaded
-    except Exception:  # noqa: BLE001
-        pass
-    return ws / ".bauer_serve" / "serve.pid"
 
 
-def _serve_service_cfg() -> "ProcessServiceConfig":  # noqa: F821
-    from bauer.process_service import ProcessServiceConfig, pid_reader_from_file
-    return ProcessServiceConfig(
-        service_name="bauer-serve",
-        task_name="BauerServe",
-        description="Bauer Agent HTTP Server — REST API e interface web",
-        entry_args=["serve"],
-        log_file=Path("logs") / "serve.log",
-        pid_reader=pid_reader_from_file(_serve_pid_path, keyword="server"),
-        cmdline_keyword="serve",
-    )
 
 
-def _serve_svc_manager() -> "ProcessServiceManager":  # noqa: F821
-    from bauer.process_service import ProcessServiceManager
-    return ProcessServiceManager(_serve_service_cfg())
 
 
-@serve_service_app.command("install", help="Instala E inicia o servidor HTTP como serviço do sistema")
-def serve_service_install():
-    try:
-        msg = _serve_svc_manager().install()
-        console.print(f"[green]✓[/green] {msg}")
-        console.print(
-            "Acesse: [bold]http://localhost:8000[/bold]  |  "
-            "Acompanhe: [bold]bauer serve service status[/bold]"
-        )
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@serve_service_app.command("uninstall", help="Para e remove o serviço do servidor HTTP")
-def serve_service_uninstall():
-    try:
-        console.print(f"[green]✓[/green] {_serve_svc_manager().uninstall()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@serve_service_app.command("start", help="Inicia o serviço instalado do servidor HTTP")
-def serve_service_start():
-    try:
-        console.print(f"[green]✓[/green] {_serve_svc_manager().start()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@serve_service_app.command("stop", help="Para o servidor HTTP (mantém instalado)")
-def serve_service_stop():
-    try:
-        console.print(f"[green]✓[/green] {_serve_svc_manager().stop()}")
-    except Exception as exc:
-        console.print(f"[red]Erro:[/red] {exc}")
-        raise typer.Exit(code=1)
 
 
-@serve_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
-def serve_service_status():
-    from bauer.process_service import format_uptime
-    st = _serve_svc_manager().status()
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style="dim", width=14)
-    table.add_column()
-    table.add_row("Plataforma", st.platform)
-    table.add_row("Instalado", "[green]sim[/green]" if st.installed else "[red]não[/red]")
-    table.add_row("Ativo", "[green]sim[/green]" if st.running else "[red]não[/red]")
-    if st.pid:
-        table.add_row("PID", str(st.pid))
-    if st.uptime_s is not None:
-        table.add_row("Uptime", format_uptime(st.uptime_s))
-    if st.memory_mb is not None:
-        table.add_row("Memória", f"{st.memory_mb:.0f} MB")
-    if st.detail:
-        table.add_row("Obs", st.detail)
-    console.print(Panel(table, title="bauer-serve", border_style="yellow"))
-    if not st.installed:
-        console.print("Instale com: [bold]bauer serve service install[/bold]")
 
 
-@serve_service_app.command("logs", help="Últimas linhas de log do servidor HTTP")
-def serve_service_logs(
-    lines: int = typer.Option(50, "--lines", "-n"),
-):
-    console.print(_serve_svc_manager().logs(lines=lines))
 
 
 # ── bauer gateway init ────────────────────────────────────────────────────────
 
-@gateway_app.command("init", help="Wizard interativo: configura Telegram/Discord")
-def gateway_init(
-    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
-):
-    """Configura canais passo a passo: token, validação live, allowlist, .env."""
-    import os
-    import time
-
-    import httpx
-    import yaml as _yaml
-    from rich.prompt import Confirm, Prompt
-
-    console.print(Panel.fit("[bold]Bauer Gateway — setup de canais[/bold]\n"
-                            "Tokens vão para o [cyan].env[/cyan]; o resto para o config.yaml."))
-
-    if not config.exists():
-        console.print(f"[red]{config} não encontrado.[/red]")
-        raise typer.Exit(code=1)
-    raw = _yaml.safe_load(config.read_text(encoding="utf-8")) or {}
-    env_lines: list[str] = []
-
-    def _ask_token(label: str, env_var: str) -> str:
-        """Pede um token com colagem funcionando.
-
-        password=True (getpass) bloqueia paste em vários terminais Windows —
-        usuário relatou não conseguir colar. Entrada visível resolve; quem
-        já exportou a env var nem precisa digitar.
-        """
-        existing = os.environ.get(env_var, "").strip()
-        if existing:
-            masked = existing[:6] + "…" + existing[-4:] if len(existing) > 12 else "***"
-            if Confirm.ask(f"{env_var} já está definido ({masked}). Usar esse?", default=True):
-                return existing
-        console.print("[dim](entrada visível para permitir colar — Ctrl+V / botão direito)[/dim]")
-        return Prompt.ask(label, default="").strip()
-
-    # ── Telegram ───────────────────────────────────────────────────────────
-    if Confirm.ask("Configurar [bold]Telegram[/bold]?", default=True):
-        console.print("\nCrie um bot com o [bold]@BotFather[/bold] no Telegram e copie o token.")
-        token = _ask_token("Token do bot", "TELEGRAM_BOT_TOKEN")
-        bot_name = ""
-        if token:
-            try:
-                r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
-                if r.json().get("ok"):
-                    bot_name = r.json()["result"].get("username", "")
-                    console.print(f"[green]✓ Token válido — bot @{bot_name}[/green]")
-                else:
-                    console.print(f"[red]Token rejeitado:[/red] {r.json().get('description')}")
-                    token = ""
-            except httpx.HTTPError as exc:
-                console.print(f"[yellow]Não validou (rede): {exc} — salvando assim mesmo.[/yellow]")
-        allowed: list[int] = list((raw.get("telegram") or {}).get("allowed_users", []))
-        if token and Confirm.ask(
-            "Descobrir seu user id agora? (envie /start ao bot)", default=True
-        ):
-            console.print(f"[cyan]Aguardando mensagem para @{bot_name} (60s)…[/cyan]")
-            deadline = time.time() + 60
-            found: set[int] = set()
-            offset = 0
-            while time.time() < deadline and not found:
-                try:
-                    r = httpx.get(
-                        f"https://api.telegram.org/bot{token}/getUpdates",
-                        params={"timeout": 10, "offset": offset + 1}, timeout=20,
-                    )
-                    for up in r.json().get("result", []):
-                        offset = max(offset, up.get("update_id", 0))
-                        uid = ((up.get("message") or {}).get("from") or {}).get("id")
-                        uname = ((up.get("message") or {}).get("from") or {}).get("username", "?")
-                        if uid:
-                            found.add(int(uid))
-                            console.print(f"[green]✓ Detectado: @{uname} (id {uid})[/green]")
-                except httpx.HTTPError:
-                    time.sleep(2)
-            allowed = sorted(set(allowed) | found)
-            if not found:
-                console.print("[yellow]Nenhuma mensagem recebida — adicione seu id depois "
-                              "em telegram.allowed_users.[/yellow]")
-        if token:
-            env_lines.append(f"TELEGRAM_BOT_TOKEN={token}")
-        tg = raw.setdefault("telegram", {})
-        tg["enabled"] = True
-        tg["allowed_users"] = allowed
-
-    # ── Discord ────────────────────────────────────────────────────────────
-    if Confirm.ask("\nConfigurar [bold]Discord[/bold]?", default=False):
-        console.print(
-            "\n1. https://discord.com/developers/applications → New Application → Bot\n"
-            "2. Copie o token; habilite [bold]MESSAGE CONTENT INTENT[/bold] na aba Bot\n"
-            "3. Convide o bot: OAuth2 → URL Generator → scope 'bot' → Send Messages"
-        )
-        token = _ask_token("Token do bot", "DISCORD_BOT_TOKEN")
-        if token:
-            try:
-                r = httpx.get(
-                    "https://discord.com/api/v10/users/@me",
-                    headers={"Authorization": f"Bot {token}"}, timeout=10,
-                )
-                if r.status_code == 200:
-                    console.print(f"[green]✓ Token válido — bot {r.json().get('username')}[/green]")
-                else:
-                    console.print(f"[red]Token rejeitado (HTTP {r.status_code}).[/red]")
-                    token = ""
-            except httpx.HTTPError as exc:
-                console.print(f"[yellow]Não validou (rede): {exc} — salvando assim mesmo.[/yellow]")
-        user_id = Prompt.ask(
-            "Seu user id do Discord (Configurações → Avançado → Modo desenvolvedor → "
-            "botão direito no seu nome → Copiar ID)", default=""
-        ).strip()
-        if token:
-            env_lines.append(f"DISCORD_BOT_TOKEN={token}")
-        dc = raw.setdefault("discord", {})
-        dc["enabled"] = True
-        if user_id:
-            existing = set(dc.get("allowed_users", []))
-            existing.add(user_id)
-            dc["allowed_users"] = sorted(existing)
-
-    # ── Persistência ───────────────────────────────────────────────────────
-    if env_lines:
-        env_path = Path(".env")
-        current = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-        new_content = current.rstrip("\n")
-        for line in env_lines:
-            key = line.split("=", 1)[0]
-            if f"{key}=" in current:
-                console.print(f"[yellow]{key} já existe no .env — não sobrescrevi.[/yellow]")
-                continue
-            new_content += ("\n" if new_content else "") + line
-        env_path.write_text(new_content + "\n", encoding="utf-8")
-        console.print(f"[green]✓ Tokens gravados no {env_path}[/green]")
-
-    config.write_text(
-        _yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
-        encoding="utf-8",
-    )
-    console.print(f"[green]✓ Seções atualizadas no {config}[/green]")
-    console.print("\nPróximo passo: [bold]bauer gateway start[/bold]")
 
 
 # ── G11: bauer credential ────────────────────────────────────────────────────
