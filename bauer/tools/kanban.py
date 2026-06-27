@@ -13,6 +13,25 @@ from .base import ToolError
 
 
 class KanbanToolsMixin:
+
+    _KANBAN_FILE = ".bauer_kanban.json"  # legacy file; TASKS.md is now authoritative.
+    _KANBAN_TO_WORKSPACE_STATUS = {
+        "todo": "TODO",
+        "ready": "READY",
+        "in_progress": "IN_PROGRESS",
+        "blocked": "BLOCKED",
+        "failed": "FAILED",
+        "done": "DONE",
+    }
+    _WORKSPACE_TO_KANBAN_STATUS = {
+        "TODO": "todo",
+        "READY": "ready",
+        "IN_PROGRESS": "in_progress",
+        "BLOCKED": "blocked",
+        "FAILED": "failed",
+        "DONE": "done",
+    }
+    _KANBAN_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     """Ferramentas de gestao de tasks no kanban (SQLite/Markdown)."""
 
     def _load_kanban(self) -> dict:

@@ -9,6 +9,8 @@ from .base import ToolError
 
 class SkillsToolsMixin:
 
+    _SKILLS_FILE = ".bauer_skills.json"
+
     def _load_skills(self) -> dict:
         p = self.workspace / self._SKILLS_FILE
         if p.exists():

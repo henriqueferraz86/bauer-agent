@@ -538,7 +538,7 @@ class TestVideoAnalyze:
         cv2_backup = sys.modules.pop("cv2", None)
         pil_backup = sys.modules.pop("PIL", None)
         try:
-            with patch("bauer.tool_router._package_available", return_value=False):
+            with patch("bauer.tools.media._package_available", return_value=False):
                 with pytest.raises(ToolError, match="opencv"):
                     router_with_client._video_analyze({
                         "video": "test.mp4",
@@ -570,7 +570,7 @@ class TestVideoAnalyze:
         fake_pil.Image = fake_pil_image
 
         with patch.dict(sys.modules, {"PIL": fake_pil, "PIL.Image": fake_pil_image}):
-            with patch("bauer.tool_router._package_available") as mock_avail:
+            with patch("bauer.tools.media._package_available") as mock_avail:
                 mock_avail.side_effect = lambda name: name == "PIL"
                 with patch("bauer.tool_router.ToolRouter._llm_single_turn", return_value="Frame analisado."):
                     result = router_with_client._video_analyze({
