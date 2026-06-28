@@ -42,7 +42,7 @@ class ChatGPTBackendClient(OpenAIClient):
         *,
         base_url: str = DEFAULT_CHATGPT_BASE,
         timeout_seconds: int = 60,
-        model: str = "gpt-4o",
+        model: str = "codex-mini-latest",
     ):
         super().__init__(
             host=base_url,
@@ -64,16 +64,11 @@ class ChatGPTBackendClient(OpenAIClient):
         return True, ""
 
     def list_models(self) -> list[str]:
-        # O backend ChatGPT não expõe /v1/models — retorna lista estática dos
-        # modelos conhecidos disponíveis via assinatura ChatGPT Plus/Pro/Team.
+        # O endpoint /backend-api/codex/responses só aceita modelos Codex.
         return [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o1",
-            "o1-mini",
-            "o3",
-            "o3-mini",
+            "codex-mini-latest",
             "o4-mini",
+            "o3-mini",
         ]
 
     def has_model(self, name: str) -> bool:

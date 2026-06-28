@@ -68,16 +68,13 @@ OPENAI_MODELS: list[tuple[str, str]] = [
     # gpt-3.5-turbo removido: descontinuado em jan/2025
 ]
 
-# Modelos aceitos pelo backend ChatGPT (login via browser / assinatura Plus/Pro).
+# Modelos aceitos pelo backend Codex do ChatGPT (login via browser).
+# O endpoint /backend-api/codex/responses só aceita modelos Codex — não GPT genérico.
 CHATGPT_CODEX_MODELS: list[tuple[str, str]] = [
-    ("gpt-4o",      "GPT-4o — multimodal, recomendado"),
-    ("gpt-4o-mini", "GPT-4o mini — rápido e econômico"),
-    ("o4-mini",     "o4-mini — raciocínio econômico"),
-    ("o3",          "o3 — raciocínio profundo"),
-    ("o3-mini",     "o3-mini — raciocínio rápido"),
-    ("o1",          "o1 — raciocínio (dez/2024)"),
-    ("o1-mini",     "o1-mini — raciocínio leve"),
-    ("__custom__",  ">> outro modelo (digitar nome)"),
+    ("codex-mini-latest", "Codex Mini — padrão do Codex CLI (recomendado)"),
+    ("o4-mini",           "o4-mini — raciocínio, disponível em contas Pro"),
+    ("o3-mini",           "o3-mini — raciocínio, disponível em contas Pro"),
+    ("__custom__",        ">> outro modelo (digitar nome)"),
 ]
 
 GROQ_MODELS: list[tuple[str, str]] = [
