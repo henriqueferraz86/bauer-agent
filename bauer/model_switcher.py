@@ -68,13 +68,16 @@ OPENAI_MODELS: list[tuple[str, str]] = [
     # gpt-3.5-turbo removido: descontinuado em jan/2025
 ]
 
-# Modelos aceitos pelo backend Codex/ChatGPT (login via browser).
-# O backend NÃO aceita gpt-5/gpt-4o "puros" — só os modelos do Codex.
+# Modelos aceitos pelo backend ChatGPT (login via browser / assinatura Plus/Pro).
 CHATGPT_CODEX_MODELS: list[tuple[str, str]] = [
-    ("gpt-5-codex",     "GPT-5 Codex — modelo do Codex (recomendado)"),
-    ("gpt-5",           "GPT-5 — pode não ser aceito em todas as contas"),
-    ("codex-mini-latest", "Codex mini — leve"),
-    ("__custom__",      ">> outro modelo (digitar nome)"),
+    ("gpt-4o",      "GPT-4o — multimodal, recomendado"),
+    ("gpt-4o-mini", "GPT-4o mini — rápido e econômico"),
+    ("o4-mini",     "o4-mini — raciocínio econômico"),
+    ("o3",          "o3 — raciocínio profundo"),
+    ("o3-mini",     "o3-mini — raciocínio rápido"),
+    ("o1",          "o1 — raciocínio (dez/2024)"),
+    ("o1-mini",     "o1-mini — raciocínio leve"),
+    ("__custom__",  ">> outro modelo (digitar nome)"),
 ]
 
 GROQ_MODELS: list[tuple[str, str]] = [
@@ -438,9 +441,9 @@ def run_model_switcher(config_path: Path) -> None:
                 return
 
         console.print(
-            "[dim]Modelos do Codex (o backend ChatGPT não aceita gpt-5/gpt-4o puros).[/dim]"
+            "[dim]Modelos disponíveis via assinatura ChatGPT Plus/Pro (sem API key).[/dim]"
         )
-        model_name = _pick_from_list(CHATGPT_CODEX_MODELS, "Modelos ChatGPT (Codex)")
+        model_name = _pick_from_list(CHATGPT_CODEX_MODELS, "Modelos ChatGPT (assinatura)")
         if not model_name:
             console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
             return run_model_switcher(config_path)
