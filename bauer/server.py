@@ -176,6 +176,7 @@ def create_app(
     from .session_store import SessionStore
 
     _access_logger = logging.getLogger("bauer.access")
+    _log = logging.getLogger("bauer.server")
 
     # --- schemas (definidas fora de qualquer função para Pydantic resolver corretamente) ---
 
@@ -457,7 +458,8 @@ def create_app(
         try:
             response, tool_log = run_one_turn(ctx, router, _state["client"], _state["model"])
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            _log.exception("Erro interno em /chat: %s", exc)
+            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
         store.save(session_id, ctx.messages)
@@ -670,7 +672,8 @@ def create_app(
         try:
             response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            _log.exception("Erro interno em /v1/chat/completions: %s", exc)
+            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
         store.save(sid, ctx.messages)

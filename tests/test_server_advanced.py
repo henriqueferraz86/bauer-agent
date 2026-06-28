@@ -314,3 +314,43 @@ class TestStaticSpaAssets:
         app = _make_app(tmp_path)
         mounts = {getattr(r, "path", "") for r in app.routes}
         assert "/assets" in mounts
+
+
+# ---------------------------------------------------------------------------
+# SEC-01: Detalhes de exceção não devem vazar para clientes HTTP
+# ---------------------------------------------------------------------------
+
+class TestExceptionDetailHidden:
+    """SEC-01: detail=str(exc) não deve vazar para clientes HTTP."""
+
+    def test_chat_500_hides_exception_detail(self, tmp_path):
+        from unittest.mock import patch
+
+        with patch("bauer.agent.run_one_turn", side_effect=RuntimeError("path=/home/user/.bauer/auth.json token=sk-abc123")):
+            app = _make_app(tmp_path)
+            client = _client(app)
+            resp = client.post(
+                "/chat",
+                json={"message": "oi"},
+                headers={"X-API-Key": ""},
+            )
+        assert resp.status_code == 500
+        assert "path=" not in resp.json()["detail"]
+        assert "token=" not in resp.json()["detail"]
+        assert "sk-" not in resp.json()["detail"]
+        assert "logs" in resp.json()["detail"].lower()
+
+    def test_v1_completions_500_hides_exception_detail(self, tmp_path):
+        from unittest.mock import patch
+
+        with patch("bauer.agent.run_one_turn", side_effect=ValueError("internal api key sk-secret")):
+            app = _make_app(tmp_path)
+            client = _client(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "test-model", "messages": [{"role": "user", "content": "oi"}]},
+                headers={"X-API-Key": ""},
+            )
+        assert resp.status_code == 500
+        body = resp.json()
+        assert "sk-secret" not in str(body)
