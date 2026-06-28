@@ -75,18 +75,12 @@ def test_agent_subcommands_registered():
 # ─── agent list (sem agentes criados) ─────────────────────────────────────────
 
 
-def test_agent_list_empty(cfg_path: Path, tmp_path: Path):
-    """bauer agent list com workspace vazio deve listar 0 agentes sem traceback."""
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    result = runner.invoke(app, [
-        "agent", "list",
-        "--config", str(cfg_path),
-        "--workspace", str(workspace),
-    ])
+def test_agent_list_empty(tmp_path: Path):
+    """bauer agent list sem agents.yaml deve mostrar mensagem de lista vazia sem traceback."""
+    agents_file = tmp_path / "agents.yaml"  # não existe — registry vazio
+    result = runner.invoke(app, ["agent", "list", "--agents", str(agents_file)])
     assert result.exception is None
-    # Pode sair com 0 (lista vazia) ou diferente de 0 (sem agentes registrados)
-    # O importante é não levantar exceção não tratada
+    assert result.exit_code == 0
     assert "Traceback" not in result.output
 
 
