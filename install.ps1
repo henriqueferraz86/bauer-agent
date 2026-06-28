@@ -44,7 +44,7 @@ if ($NoExtra) { $Extra = "" }
 function Write-Info  { param($msg) Write-Host "[bauer] $msg" -ForegroundColor Cyan }
 function Write-Ok    { param($msg) Write-Host "[bauer] v $msg" -ForegroundColor Green }
 function Write-Warn  { param($msg) Write-Host "[bauer] ! $msg" -ForegroundColor Yellow }
-function Write-Err   { param($msg) Write-Host "[bauer] x $msg" -ForegroundColor Red; exit 1 }
+function Write-Err   { param($msg) Write-Host "[bauer] x $msg" -ForegroundColor Red; throw $msg }
 
 # ─── Uninstall ───────────────────────────────────────────────────────────────
 if ($Uninstall) {
@@ -60,7 +60,7 @@ if ($Uninstall) {
     }
     Write-Ok "Bauer Agent removido."
     Write-Warn "Workspace em %USERPROFILE%\bauer-workspace\ (se existir) não foi tocado."
-    exit 0
+    return
 }
 
 # ─── Checks ──────────────────────────────────────────────────────────────────
@@ -100,14 +100,13 @@ if ($Update) {
 
     Write-Ok "Bauer Agent atualizado!"
     try { & $BauerCmd --version } catch {}
-    exit 0
+    return
 }
 
 # ─── Fresh install ───────────────────────────────────────────────────────────
 if (Test-Path $InstallDir) {
     Write-Warn "$InstallDir ja existe."
-    Write-Warn "Use -Update para atualizar ou -Uninstall para remover antes de reinstalar."
-    exit 1
+    throw "Use -Update para atualizar ou -Uninstall para remover antes de reinstalar."
 }
 
 Write-Host ""
