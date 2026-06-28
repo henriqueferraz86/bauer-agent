@@ -13,7 +13,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [002](002-fix-api-key-timing-attack.md) | Substituir comparação de API key por hmac.compare_digest | P1 | S | — | DONE |
 | [003](003-fix-info-endpoints-auth.md) | Adicionar guarda de auth nos endpoints informativos | P1 | S | — | DONE |
 | [004](004-fix-xor-fallback.md) | Eliminar o fallback XOR silencioso em auth.py | P1 | S | — | DONE |
-| [005](005-commands-integration-tests.md) | Testes de integração para os 35 módulos de bauer/commands/ | P1 | M | — | TODO |
+| [005](005-commands-integration-tests.md) | Testes de integração para os 35 módulos de bauer/commands/ | P1 | M | — | DONE |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
