@@ -65,7 +65,7 @@ def test_client_headers_and_defaults():
     # Usa bridge de tools por texto, não native
     assert c.supports_native_tools is False
     assert c.is_alive() == (True, "")
-    assert c.list_models() == []
+    assert c.list_models() == ["codex-mini-latest", "o4-mini", "o3-mini"]
     assert c.has_model("qualquer") is True
 
 
