@@ -354,3 +354,35 @@ class TestExceptionDetailHidden:
         assert resp.status_code == 500
         body = resp.json()
         assert "sk-secret" not in str(body)
+
+
+# ---------------------------------------------------------------------------
+# SEC-05: comparação de API key deve usar hmac.compare_digest
+# ---------------------------------------------------------------------------
+
+class TestApiKeyComparison:
+    """SEC-05: comparação de API key deve usar hmac.compare_digest."""
+
+    def test_valid_key_grants_access(self, tmp_path):
+        app = _make_app(tmp_path, api_key="secret-key-abc")
+        client = _client(app)
+        resp = client.get("/health", headers={"X-API-Key": "secret-key-abc"})
+        assert resp.status_code == 200
+
+    def test_invalid_key_returns_401(self, tmp_path):
+        app = _make_app(tmp_path, api_key="secret-key-abc")
+        client = _client(app)
+        resp = client.post(
+            "/chat",
+            json={"message": "oi"},
+            headers={"X-API-Key": "wrong-key"},
+        )
+        assert resp.status_code == 401
+
+    def test_hmac_compare_digest_used(self):
+        """Guarda de regressão: _verify_key usa compare_digest, não ==."""
+        import inspect
+        import bauer.server as srv
+        src = inspect.getsource(srv)
+        assert "hmac.compare_digest" in src
+        assert "incoming != api_key" not in src

@@ -32,6 +32,7 @@ Claw3D / Virtual Office:
   Header X-Hermes-Session-Id é honrado para retomada de sessão.
 """
 
+import hmac
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -302,7 +303,7 @@ def create_app(
         if not api_key:
             return
         incoming = _extract_incoming_key(request)
-        if incoming != api_key:
+        if not hmac.compare_digest(incoming or "", api_key):
             raise HTTPException(status_code=401, detail="API key invalida ou ausente.")
 
     # --- endpoints --------------------------------------------------------------
