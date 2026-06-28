@@ -386,3 +386,48 @@ class TestApiKeyComparison:
         src = inspect.getsource(srv)
         assert "hmac.compare_digest" in src
         assert "incoming != api_key" not in src
+
+
+# ---------------------------------------------------------------------------
+# SEC-03: auth guard em endpoints informativos
+# ---------------------------------------------------------------------------
+
+class TestInfoEndpointsAuth:
+    """SEC-03: endpoints informativos exigem auth quando api_key está configurada."""
+
+    PROTECTED = ["/status", "/tools", "/metrics", "/models"]
+
+    def test_info_endpoints_require_auth_when_key_configured(self, tmp_path):
+        app = _make_app(tmp_path, api_key="test-secret")
+        client = _client(app)
+        for path in self.PROTECTED:
+            resp = client.get(path)
+            assert resp.status_code == 401, (
+                f"{path} deve retornar 401 sem API key quando auth está ativo"
+            )
+
+    def test_info_endpoints_accept_valid_key(self, tmp_path):
+        app = _make_app(tmp_path, api_key="test-secret")
+        client = _client(app)
+        for path in self.PROTECTED:
+            resp = client.get(path, headers={"X-API-Key": "test-secret"})
+            assert resp.status_code == 200, (
+                f"{path} deve aceitar key válida"
+            )
+
+    def test_health_remains_public(self, tmp_path):
+        """GET /health deve responder sem autenticação mesmo com api_key configurada."""
+        app = _make_app(tmp_path, api_key="test-secret")
+        client = _client(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_info_endpoints_accessible_without_auth_config(self, tmp_path):
+        """Sem api_key configurada, todos os endpoints devem responder livremente."""
+        app = _make_app(tmp_path)  # api_key="" por padrão
+        client = _client(app)
+        for path in self.PROTECTED + ["/health"]:
+            resp = client.get(path)
+            assert resp.status_code == 200, (
+                f"{path} deve ser acessível sem api_key configurada"
+            )

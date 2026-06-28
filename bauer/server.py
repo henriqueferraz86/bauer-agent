@@ -359,7 +359,7 @@ def create_app(
         return {"status": "ok", "model": _state["model"]}
 
     @app.get("/status")
-    def status():
+    def status(_: None = Depends(_verify_key)):
         return {
             "model": _state["model"],
             "provider": _state["provider"],
@@ -369,18 +369,18 @@ def create_app(
         }
 
     @app.get("/metrics", include_in_schema=False)
-    def metrics():
+    def metrics(_: None = Depends(_verify_key)):
         """Endpoint Prometheus — retorna métricas em text exposition format."""
         from fastapi.responses import PlainTextResponse
         text = _metrics.to_prometheus(model=_state["model"], provider=_provider_name)
         return PlainTextResponse(content=text, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/tools")
-    def tools_list():
+    def tools_list(_: None = Depends(_verify_key)):
         return [router.tool_info(name) for name in router.available_tools()]
 
     @app.get("/models")
-    def models_list():
+    def models_list(_: None = Depends(_verify_key)):
         try:
             installed = client.list_models()
         except Exception:

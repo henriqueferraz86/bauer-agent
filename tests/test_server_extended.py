@@ -74,7 +74,7 @@ def test_status_returns_model_and_tools(tmp_path: Path):
 
 def test_status_auth_enabled_with_key(tmp_path: Path):
     client = _make_app(tmp_path, api_key="secret123")
-    resp = client.get("/status")
+    resp = client.get("/status", headers={"X-API-Key": "secret123"})
     assert resp.json()["auth_enabled"] is True
 
 
