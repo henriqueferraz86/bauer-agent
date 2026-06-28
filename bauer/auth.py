@@ -173,13 +173,16 @@ def _derive_fernet_key(raw_key: str) -> bytes:
 
 
 def _try_get_fernet(raw_key: str):
-    """Retorna objeto Fernet ou None se cryptography não instalado."""
+    """Retorna objeto Fernet. Lança ImportError com mensagem clara se biblioteca ausente."""
     try:
         from cryptography.fernet import Fernet
-        key = _derive_fernet_key(raw_key)
-        return Fernet(key)
-    except ImportError:
-        return None
+    except ImportError as exc:
+        raise ImportError(
+            "A biblioteca 'cryptography' é necessária para armazenar tokens de forma segura. "
+            "Instale com: pip install 'bauer-agent[keychain]' ou pip install cryptography>=41.0"
+        ) from exc
+    key = _derive_fernet_key(raw_key)
+    return Fernet(key)
 
 
 def _xor_encrypt(token: str, key: str) -> str:
@@ -197,13 +200,11 @@ def _xor_decrypt(encrypted: str, key: str) -> str:
 
 
 def _encrypt_token(token: str, key: str) -> str:
-    """Encripta token com Fernet (AES-CBC + HMAC) ou XOR como fallback."""
+    """Encripta token com Fernet (AES-CBC + HMAC). Requer biblioteca 'cryptography'."""
     if not key or not token:
         return token
-    fernet = _try_get_fernet(key)
-    if fernet is not None:
-        return _FERNET_PREFIX + fernet.encrypt(token.encode()).decode()
-    return _xor_encrypt(token, key)
+    fernet = _try_get_fernet(key)  # lança ImportError se cryptography ausente
+    return _FERNET_PREFIX + fernet.encrypt(token.encode()).decode()
 
 
 def _decrypt_token(encrypted: str, key: str) -> str:
