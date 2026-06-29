@@ -1,6 +1,7 @@
 # Planos de Implementação — BauerAgent
 
 Gerado pelo skill `/improve` em 2026-06-27 (commit `820322b`).
+Plano 006 adicionado em 2026-06-29 (commit `1f6292e`).
 Execute na ordem abaixo, salvo dependências indicadas.
 Cada executor: leia o plano completo antes de iniciar, respeite as condições
 de STOP, e atualize sua linha de status ao concluir.
@@ -14,6 +15,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [003](003-fix-info-endpoints-auth.md) | Adicionar guarda de auth nos endpoints informativos | P1 | S | — | DONE |
 | [004](004-fix-xor-fallback.md) | Eliminar o fallback XOR silencioso em auth.py | P1 | S | — | DONE |
 | [005](005-commands-integration-tests.md) | Testes de integração para os 35 módulos de bauer/commands/ | P1 | M | — | DONE |
+| [006](006-distributed-agents-mvp.md) | Agentes Distribuídos MVP — dispatch remoto HTTP entre instâncias bauer serve | P2 | M | — | DONE |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
