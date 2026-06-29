@@ -620,6 +620,8 @@ class AgentDef:
     priority_weight: int = 1
     model: str = ""          # vazio = usa config.yaml
     provider: str = ""       # vazio = usa config.yaml
+    url: str = ""            # endpoint remoto: http://host:port (vazio = local)
+    api_key: str = ""        # X-API-Key para o servidor remoto (vazio = sem auth)
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
@@ -644,6 +646,10 @@ class AgentDef:
             d["model"] = self.model
         if self.provider:
             d["provider"] = self.provider
+        if self.url:
+            d["url"] = self.url
+        if self.api_key:
+            d["api_key"] = self.api_key
         return d
 
     @classmethod
@@ -672,8 +678,10 @@ class AgentDef:
             lane=str(d.get("lane", "")).strip(),
             max_concurrent=max_concurrent,
             priority_weight=priority_weight,
-            model=d.get("model", ""),
-            provider=d.get("provider", ""),
+            model=str(d.get("model", "") or ""),
+            provider=str(d.get("provider", "") or ""),
+            url=str(d.get("url", "") or ""),           # NOVO
+            api_key=str(d.get("api_key", "") or ""),   # NOVO
             created_at=d.get("created_at", ""),
         )
 
