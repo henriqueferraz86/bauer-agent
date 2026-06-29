@@ -607,12 +607,15 @@ class ToolRouter(
         self._tools["delegate_task"] = {
             "fn": self._delegate_task,
             "description": (
-                "Delega uma subtarefa a um sub-agente isolado e retorna o resultado. "
-                "Use para tarefas independentes que nao precisam do contexto atual."
+                "Delega uma subtarefa a um sub-agente e retorna o resultado. "
+                "Se 'agent_name' for fornecido e o agente tiver URL configurada no "
+                "registry, dispatcha via HTTP para aquela instância bauer serve remota. "
+                "Sem agent_name, executa localmente no mesmo processo."
             ),
             "args": {
                 "task": "str — descricao completa da tarefa a delegar (obrigatorio)",
                 "context": "str — contexto adicional para o sub-agente (opcional)",
+                "agent_name": "str — nome do agente no registry (opcional; sem este campo, executa local)",
                 "timeout": "int — timeout em segundos (default: 120, max: 600)",
             },
         }

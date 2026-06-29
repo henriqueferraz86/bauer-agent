@@ -362,13 +362,11 @@ class ExecToolsMixin:
         return "\n".join(lines)
 
     def _delegate_task(self, args: dict) -> str:
-        """Delega subtarefa a sub-agente via subprocess bauer CLI.
+        """Delega subtarefa a sub-agente local ou remoto.
 
-        Boas práticas:
-        - Sub-processo isolado: não compartilha memória, cliente ou contexto
-        - Timeout configurável para evitar travamento
-        - Contexto opcional passa como instrução inicial ao agente
-        - Reutiliza a configuração do Bauer via `bauer agent run-one`
+        Quando `agent_name` é fornecido e o agente tem `url` no registry,
+        despacha via HTTP POST /chat para aquela instância bauer serve.
+        Caso contrário, usa LLM client direto ou subprocess local.
         """
         import subprocess
         import sys
@@ -378,6 +376,7 @@ class ExecToolsMixin:
             raise ToolError("delegate_task requer 'task'.")
 
         context = args.get("context", "").strip()
+        agent_name = str(args.get("agent_name", "") or "").strip()
         timeout = int(args.get("timeout", 120))
         timeout = max(10, min(timeout, 600))
 
@@ -386,6 +385,51 @@ class ExecToolsMixin:
         full_task = full_task.replace("\x00", "").strip()
         if len(full_task) > 4096:
             full_task = full_task[:4096]
+
+        # ── Dispatch remoto via agent registry ────────────────────────────────
+        if agent_name:
+            try:
+                from ..agent_registry import AgentRegistry
+                import httpx as _httpx
+
+                _home = getattr(self, "_bauer_home", None)
+                _agents_file = str(_home / "agents.yaml") if _home else "agents.yaml"
+                _reg = AgentRegistry(_agents_file)
+                _ag = _reg.get(agent_name)
+                if _ag and _ag.url:
+                    endpoint = _ag.url.rstrip("/") + "/chat"
+                    _headers: dict[str, str] = {}
+                    if _ag.api_key:
+                        _headers["X-API-Key"] = _ag.api_key
+                    try:
+                        resp = _httpx.post(
+                            endpoint,
+                            json={"message": full_task},
+                            headers=_headers,
+                            timeout=_httpx.Timeout(connect=10.0, read=float(timeout),
+                                                   write=10.0, pool=5.0),
+                        )
+                        resp.raise_for_status()
+                        return f"[agente remoto: {agent_name}]\n{resp.json().get('response', '')}"
+                    except _httpx.TimeoutException:
+                        raise ToolError(
+                            f"delegate_task: timeout ({timeout}s) aguardando {agent_name} "
+                            f"em {endpoint}."
+                        )
+                    except _httpx.HTTPStatusError as exc:
+                        raise ToolError(
+                            f"delegate_task: agente remoto {agent_name} retornou "
+                            f"HTTP {exc.response.status_code}."
+                        ) from exc
+                    except _httpx.ConnectError:
+                        raise ToolError(
+                            f"delegate_task: não foi possível conectar a {agent_name} "
+                            f"em {endpoint}. Verifique se o bauer serve está rodando."
+                        )
+            except ToolError:
+                raise
+            except Exception:
+                pass  # registry não disponível — continua com delegate local
 
         # Usa o cliente LLM diretamente se disponível — single-turn sem tools
         if self._llm_client is not None:

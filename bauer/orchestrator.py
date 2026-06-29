@@ -353,6 +353,59 @@ class AgentOrchestrator:
         except Exception:
             return ""
 
+    def _remote_dispatch(
+        self,
+        url: str,
+        api_key: str,
+        task: str,
+        timeout: float = 120.0,
+    ) -> str:
+        """Dispatcha tarefa para uma instância remota bauer serve via POST /chat.
+
+        Args:
+            url:     Base URL do servidor remoto, ex: 'http://192.168.1.5:8000'.
+            api_key: X-API-Key do servidor remoto ('' = sem autenticação).
+            task:    Texto completo da tarefa a executar.
+            timeout: Timeout HTTP em segundos.
+
+        Returns:
+            Texto da resposta do agente remoto.
+
+        Raises:
+            RuntimeError: Se o servidor retornar erro HTTP ou timeout.
+        """
+        import httpx  # importação lazy — não penaliza quem não usa dispatch remoto
+
+        endpoint = url.rstrip("/") + "/chat"
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+
+        try:
+            resp = httpx.post(
+                endpoint,
+                json={"message": task},
+                headers=headers,
+                timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=5.0),
+            )
+            resp.raise_for_status()
+        except httpx.TimeoutException:
+            raise RuntimeError(
+                f"Timeout ({timeout}s) ao aguardar resposta de {endpoint}."
+            )
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Agente remoto {endpoint} retornou HTTP {exc.response.status_code}."
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise RuntimeError(
+                f"Não foi possível conectar a {endpoint}. "
+                "Verifique se o bauer serve está rodando e acessível."
+            ) from exc
+
+        data = resp.json()
+        return data.get("response", "")
+
     def execute_step(
         self,
         step: dict,
@@ -383,6 +436,43 @@ class AgentOrchestrator:
         context_text = "\n".join(context_lines)
 
         stream_prefix = f"[passo {step_id}]"
+
+        # ── Dispatch remoto ────────────────────────────────────────────────────
+        # Se o agente designado para este passo tiver `url` no registry, envia
+        # a tarefa via HTTP para aquela instância bauer serve em vez de executar
+        # localmente. Não passa pelo SSRF guard — URL vem do registry confiável.
+        if agent_name:
+            try:
+                from .agent_registry import AgentRegistry
+                _reg = AgentRegistry(self.config.agents_file)
+                _ag = _reg.get(agent_name)
+                if _ag and _ag.url:
+                    if self.console:
+                        self.console.print(
+                            f"[dim][passo {step_id}] → dispatch remoto: {_ag.url}[/dim]"
+                        )
+                    full_task = (goal + "\n\n" + context_text).strip()
+                    _timeout = getattr(self.config, "remote_timeout_s", 120.0)
+                    response = self._remote_dispatch(
+                        url=_ag.url,
+                        api_key=_ag.api_key,
+                        task=full_task,
+                        timeout=_timeout,
+                    )
+                    return StepResult(
+                        id=step_id,
+                        goal=goal,
+                        model_used=f"remote:{_ag.url}",
+                        response=response,
+                        tool_log=[],
+                    )
+            except Exception as _dispatch_err:
+                if self.console:
+                    self.console.print(
+                        f"[yellow][passo {step_id}] Dispatch remoto falhou "
+                        f"({_dispatch_err}); executando localmente.[/yellow]"
+                    )
+                # fallthrough — executa local normalmente
 
         # Execução usa self.client (provider principal: Groq, OpenAI, Ollama…).
         # self._planner_client é reservado exclusivamente para planejamento (qwen3:0.6b).
