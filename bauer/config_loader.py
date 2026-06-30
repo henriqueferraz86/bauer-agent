@@ -560,6 +560,7 @@ class ToolsSection(_StrictSection):
     safe_mode: bool = True
     timeout_seconds: int = Field(ge=1, le=300, default=30)
     max_output_kb: int = Field(ge=1, le=1000, default=50)
+    max_tool_calls: int = Field(ge=1, default=500)
 
 
 class McpServerEntry(_StrictSection):

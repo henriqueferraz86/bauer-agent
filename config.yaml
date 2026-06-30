@@ -39,6 +39,7 @@ serve:
   workers: 1
 tools:
   max_output_kb: 50
+  max_tool_calls: 2000
   safe_mode: false
   shell_enabled: true
   timeout_seconds: 300
