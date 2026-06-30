@@ -46,12 +46,18 @@ web = [
     "ddgs>=6.0",             # DuckDuckGo (MIT) — busca web geral open-source
     "beautifulsoup4>=4.12",  # extração de conteúdo limpo no web_fetch
 ]
+voice = [
+    # STT local offline — pesos open-source do Whisper (large-v3-turbo) via
+    # CTranslate2. Sem nuvem, sem API key. Baixa ~1.5GB no primeiro uso.
+    "faster-whisper>=1.0.0",
+]
 all = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
     "ddgs>=6.0",
     "beautifulsoup4>=4.12",
+    "faster-whisper>=1.0.0",
 ]
 
 [project.scripts]

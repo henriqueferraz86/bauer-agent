@@ -56,6 +56,8 @@ class TestProviders:
     def test_sem_keys_da_erro_claro(self, audio_file, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("STT_PROVIDER", raising=False)
+        monkeypatch.setattr(transcription, "_faster_whisper_available", lambda: False)
         result = transcribe_audio(audio_file)
         assert not result["success"]
         assert "GROQ_API_KEY" in result["error"]
@@ -133,4 +135,59 @@ class TestAvailableProvider:
     def test_nenhum(self, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("STT_PROVIDER", raising=False)
+        monkeypatch.setattr(transcription, "_faster_whisper_available", lambda: False)
         assert available_stt_provider() is None
+
+
+class TestLocalProvider:
+    """STT local offline (faster-whisper) — modelo open-source na máquina."""
+
+    def test_available_local_quando_instalado(self, monkeypatch):
+        monkeypatch.setenv("STT_PROVIDER", "local")
+        monkeypatch.setattr(transcription, "_faster_whisper_available", lambda: True)
+        assert available_stt_provider() == "local"
+
+    def test_available_local_sem_pacote_e_none(self, monkeypatch):
+        monkeypatch.setenv("STT_PROVIDER", "local")
+        monkeypatch.setattr(transcription, "_faster_whisper_available", lambda: False)
+        assert available_stt_provider() is None
+
+    def test_auto_cai_no_local_sem_keys(self, monkeypatch):
+        monkeypatch.delenv("STT_PROVIDER", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(transcription, "_faster_whisper_available", lambda: True)
+        assert available_stt_provider() == "local"
+
+    def test_transcribe_usa_local(self, audio_file, monkeypatch):
+        monkeypatch.setenv("STT_PROVIDER", "local")
+
+        called = {}
+
+        def fake_local(path, model=None):
+            called["model"] = model
+            return {"success": True, "transcript": "olá mundo"}
+
+        monkeypatch.setattr(transcription, "_transcribe_local", fake_local)
+        result = transcribe_audio(audio_file)
+        assert result["success"]
+        assert result["provider"] == "local"
+        assert result["transcript"] == "olá mundo"
+        assert called["model"] == transcription.LOCAL_STT_MODEL
+
+    def test_transcribe_local_sem_pacote_erro_amigavel(self, audio_file, monkeypatch):
+        """Sem faster-whisper instalado, STT_PROVIDER=local dá erro com dica de install."""
+        monkeypatch.setenv("STT_PROVIDER", "local")
+        import builtins
+        real_import = builtins.__import__
+
+        def no_faster_whisper(name, *args, **kwargs):
+            if name == "faster_whisper":
+                raise ImportError("No module named 'faster_whisper'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_faster_whisper)
+        result = transcribe_audio(audio_file)
+        assert not result["success"]
+        assert "faster-whisper" in result["error"]
