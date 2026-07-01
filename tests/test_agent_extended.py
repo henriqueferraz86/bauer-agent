@@ -119,6 +119,35 @@ def test_try_parse_tool_not_dict(router: ToolRouter):
     assert result is None
 
 
+def test_try_parse_tool_prose_glued_before_json(router: ToolRouter):
+    """Modelo narra antes de chamar a tool, sem quebra de linha (bug real reportado):
+    'Vou verificar o diretório...{"action": "list_dir", "args": {"path": "."}}'
+    Nem estratégia 1 (resposta inteira é JSON) nem estratégia 2 (JSON no início)
+    cobrem esse caso — regressão da estratégia 3 (JSON embutido)."""
+    payload = (
+        'Vou verificar o diretório atual e também tentar localizar o executável '
+        '(caso esteja no PATH).{"action": "list_dir", "args": {"path": "."}}'
+    )
+    result = _try_parse_tool(payload, router)
+    assert result is not None
+    assert result["action"] == "list_dir"
+    assert result["args"] == {"path": "."}
+
+
+def test_try_parse_tool_prose_before_json_unknown_action_is_none(router: ToolRouter):
+    """JSON embutido mas com action desconhecida não deve ser tratado como tool call."""
+    payload = 'Deixa eu pensar.{"action": "fly_to_moon", "args": {}}'
+    result = _try_parse_tool(payload, router)
+    assert result is None
+
+
+def test_try_parse_tool_plain_text_with_braces_but_no_action(router: ToolRouter):
+    """Texto com chaves soltas (ex.: exemplo de código) sem action válida não vira tool call."""
+    payload = "Um dicionário em Python se parece com {'chave': 'valor'} — sem mais nada aqui."
+    result = _try_parse_tool(payload, router)
+    assert result is None
+
+
 # ─── _collect_response ────────────────────────────────────────────────────────
 
 

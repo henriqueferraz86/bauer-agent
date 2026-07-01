@@ -515,13 +515,40 @@ def _extract_text_from_pseudo_json(response: str) -> str | None:
     return None
 
 
+def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None:
+    """Acha o primeiro objeto JSON `{"action": ..., ...}` embutido em qualquer
+    posição do texto — não só no início.
+
+    Modelos sem tool calling nativo (bridge) às vezes ignoram a instrução de
+    responder SOMENTE com o JSON e escrevem uma frase de narração antes,
+    colado sem quebra de linha (ex.: "Vou verificar o diretório.{\"action\":
+    ...}"). ``JSONDecoder.raw_decode`` a partir de cada ``{`` encontrado lida
+    com chaves aninhadas corretamente, ao contrário de um regex ganancioso.
+    """
+    import json as _json
+
+    decoder = _json.JSONDecoder()
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict) and obj.get("action") in available:
+                return obj
+        except _json.JSONDecodeError:
+            pass
+        idx = text.find("{", idx + 1)
+    return None
+
+
 def _try_parse_tool(response: str, router: ToolRouter) -> dict | None:
     """Tenta parsear a resposta como tool action. Retorna dict ou None.
 
     Estratégias (em ordem):
     1. JSON puro ou bloco markdown — resposta inteira é a action
     2. JSON no início da resposta (modelo misturou JSON + texto) — extrai só o JSON
-    Em ambos os casos, só retorna se a action for uma tool conhecida.
+    3. JSON embutido em qualquer posição (modelo narrou antes de chamar) — ver
+       _extract_embedded_json_action
+    Em todos os casos, só retorna se a action for uma tool conhecida.
     """
     import json as _json
 
@@ -546,7 +573,8 @@ def _try_parse_tool(response: str, router: ToolRouter) -> dict | None:
         except Exception:
             pass
 
-    return None
+    # Estratégia 3: JSON embutido após texto de narração
+    return _extract_embedded_json_action(stripped, available)
 
 
 def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | None:
