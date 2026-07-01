@@ -398,14 +398,15 @@ class RuntimeSupervisor:
         handle = log_path.open("ab")
         try:
             _write_log_banner(handle, f"starting {service.name}: {' '.join(service.command)}")
-            process = subprocess.Popen(
-                service.command,
-                cwd=str(self.cwd),
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            popen_kwargs: dict[str, Any] = {
+                "cwd": str(self.cwd),
+                "stdout": handle,
+                "stderr": subprocess.STDOUT,
+                "stdin": subprocess.DEVNULL,
+                "close_fds": True,
+                **_no_console_window_kwargs(),
+            }
+            process = subprocess.Popen(service.command, **popen_kwargs)
         except Exception as exc:
             handle.close()
             service.state = "failed"
@@ -442,6 +443,19 @@ class RuntimeSupervisor:
             "services": [service.to_public_dict() for service in self._services.values()],
         }
         self.store.write(payload)
+
+
+def _no_console_window_kwargs() -> dict[str, Any]:
+    """Kwargs extras p/ subprocess.Popen suprimir a janela de console no Windows.
+
+    Sem isso, cada servico filho (dispatcher/cron/outbox/kanban) que _start_service
+    sobe abre sua propria janela de console visivel — o stdout/stderr ja vai pro
+    log file, a janela nao serve pra nada e so polui a area de trabalho. Vazio
+    (sem efeito) em outros SOs, onde creationflags nem existe em subprocess.
+    """
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
 
 
 def tail_log(path: str | Path, *, lines: int = 80) -> list[str]:

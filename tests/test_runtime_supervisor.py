@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 pytest.importorskip("typer")
 from typer.testing import CliRunner
 
+from bauer import supervisor as supervisor_module
 from bauer.cli import app
-from bauer.supervisor import RuntimeStateStore, RuntimeSupervisor
+from bauer.supervisor import RuntimeStateStore, RuntimeSupervisor, ServiceRuntime, ServiceSpec
 
 
 def test_runtime_supervisor_builds_default_services(tmp_path: Path):
@@ -72,6 +75,57 @@ def test_runtime_start_dry_run_cli(tmp_path: Path):
     assert "dispatcher" in result.output
     assert "runtime" in result.output
     assert "--dispatch-interval" in result.output
+
+
+def _fake_popen(pid: int = 4242) -> MagicMock:
+    proc = MagicMock()
+    proc.pid = pid
+    proc.poll.return_value = None
+    return proc
+
+
+# ─── _no_console_window_kwargs ─────────────────────────────────────────────
+# Testa a logica pura isolada de os.name, sem tocar em Path — instanciar
+# WindowsPath/PosixPath fora do SO real levanta NotImplementedError, entao
+# essa funcao foi extraida especificamente pra ser testavel nos dois sentidos
+# a partir de qualquer SO.
+
+
+def test_no_console_window_kwargs_on_windows():
+    """Regressao: `bauer runtime start` enchia a tela de prompts porque
+    _start_service nao suprimia a janela de console dos servicos filhos
+    (dispatcher/cron/outbox/kanban) no Windows — so start_background (o
+    processo supervisor em si) tinha esse tratamento."""
+    with patch.object(supervisor_module, "subprocess") as mock_subprocess, \
+         patch.object(supervisor_module.os, "name", "nt"):
+        mock_subprocess.CREATE_NO_WINDOW = 0x08000000
+        kwargs = supervisor_module._no_console_window_kwargs()
+    assert kwargs == {"creationflags": 0x08000000}
+
+
+def test_no_console_window_kwargs_on_posix():
+    """Fora do Windows, creationflags nem existe em subprocess — sem efeito."""
+    with patch.object(supervisor_module.os, "name", "posix"):
+        kwargs = supervisor_module._no_console_window_kwargs()
+    assert kwargs == {}
+
+
+def test_start_service_applies_no_console_window_kwargs(tmp_path: Path):
+    """_start_service de fato repassa _no_console_window_kwargs() pro Popen."""
+    supervisor = RuntimeSupervisor(tmp_path / "workspace", python="python")
+    spec = ServiceSpec(name="dispatcher", command=["python", "-m", "bauer.cli", "dispatch", "daemon"])
+    service = ServiceRuntime.from_spec(spec, tmp_path / "workspace" / ".bauer_runtime" / "logs" / "dispatcher.log")
+
+    with patch.object(supervisor_module, "subprocess") as mock_subprocess, \
+         patch.object(supervisor_module, "_no_console_window_kwargs", return_value={"creationflags": 999}):
+        mock_subprocess.STDOUT = subprocess.STDOUT
+        mock_subprocess.DEVNULL = subprocess.DEVNULL
+        mock_subprocess.Popen.return_value = _fake_popen()
+
+        supervisor._start_service(service)
+
+        _, kwargs = mock_subprocess.Popen.call_args
+        assert kwargs.get("creationflags") == 999
 
 
 def test_runtime_status_json_cli_reads_state(tmp_path: Path):
