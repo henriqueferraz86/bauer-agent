@@ -23,6 +23,41 @@ def router(ws: Path) -> ToolRouter:
     return ToolRouter(workspace=ws)
 
 
+# ─── tool_allowlist (toolset enxuto) ──────────────────────────────────────────
+
+
+def test_tool_allowlist_restringe_available_tools(ws: Path):
+    """Com allowlist, available_tools() expõe SÓ as tools listadas."""
+    r = ToolRouter(workspace=ws, tool_allowlist=["read_file", "list_dir", "calculate"])
+    tools = set(r.available_tools())
+    assert tools == {"read_file", "list_dir", "calculate"}
+    assert "web_search" not in tools
+    assert "delegate_task" not in tools
+
+
+def test_tool_allowlist_encolhe_schemas(ws: Path):
+    """get_tool_schemas() (schema OpenAI native) respeita o allowlist."""
+    r = ToolRouter(workspace=ws, tool_allowlist=["read_file", "list_dir"])
+    names = {s["function"]["name"] for s in r.get_tool_schemas()}
+    assert names == {"read_file", "list_dir"}
+
+
+def test_tool_allowlist_bloqueia_execucao_fora_da_lista(ws: Path):
+    """Tool fora do allowlist não executa (denied), mesmo se o modelo tentar."""
+    r = ToolRouter(workspace=ws, tool_allowlist=["list_dir"])
+    with pytest.raises(ToolError, match="denied|nao permitido|não permitido"):
+        r.execute('{"action": "read_file", "args": {"path": "texto.txt"}}')
+
+
+def test_tool_allowlist_vazio_mantem_todas(ws: Path):
+    """Allowlist vazio (default) = todas as tools disponíveis (sem regressão)."""
+    r_none = ToolRouter(workspace=ws)
+    r_empty = ToolRouter(workspace=ws, tool_allowlist=[])
+    assert "web_fetch" not in r_none.available_tools()  # web_enabled=False por padrão
+    assert len(r_empty.available_tools()) == len(r_none.available_tools())
+    assert "list_dir" in r_empty.available_tools()
+
+
 # ─── tool_info ────────────────────────────────────────────────────────────────
 
 

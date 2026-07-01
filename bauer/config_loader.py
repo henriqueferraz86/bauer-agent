@@ -561,6 +561,11 @@ class ToolsSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=300, default=30)
     max_output_kb: int = Field(ge=1, le=1000, default=50)
     max_tool_calls: int = Field(ge=1, default=500)
+    # Toolset enxuto: se não-vazio, SÓ estas tools são expostas ao modelo.
+    # Encolhe o prompt (as 79 tools = ~14k tokens) — essencial p/ modelos locais
+    # em CPU. Vazio = todas as tools. Ex.: [web_search, web_fetch, read_file,
+    # list_dir, run_command, datetime_now, calculate].
+    tool_allowlist: list[str] = Field(default_factory=list)
 
 
 class McpServerEntry(_StrictSection):

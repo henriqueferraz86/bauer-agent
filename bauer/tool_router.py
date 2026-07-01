@@ -381,8 +381,14 @@ class ToolRouter(
         session_id: str = "",
         tool_context: str | None = None,
         tool_policy_path: str | Path | None = None,
+        tool_allowlist: "list[str] | set[str] | None" = None,
     ):
         self.workspace = Path(workspace).resolve()
+        # Modo "toolset enxuto": quando não-vazio, SÓ estas tools são expostas
+        # (schema OpenAI, system prompt, parsing do bridge) e executáveis. Encolhe
+        # o prompt drasticamente — essencial para modelos locais (Ollama/CPU) onde
+        # avaliar ~14k tokens das 79 tools leva ~100s. Vazio/None = todas as tools.
+        self._tool_allowlist: set[str] = set(tool_allowlist or ())
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
         self._model_name = model_name  # nome do modelo configurado (para delegate_task)
         # G18.4: cliente multimodal dedicado (auxiliary.vision_model). As tools de
@@ -1234,6 +1240,10 @@ class ToolRouter(
     # --- API pública -----------------------------------------------------------
 
     def _is_tool_allowed_in_context(self, name: str, context: str | None = None) -> bool:
+        # Toolset enxuto tem prioridade: fora do allowlist = indisponível em
+        # qualquer contexto (não aparece no schema/prompt nem executa).
+        if self._tool_allowlist and name not in self._tool_allowlist:
+            return False
         context = _normalize_tool_context(context or self.tool_context)
         return self._tool_policy.allows(context, name)
 
