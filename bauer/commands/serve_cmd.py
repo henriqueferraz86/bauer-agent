@@ -9,7 +9,7 @@ from ..logging_config import setup_logging
 import typer
 
 from ._common import _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, _WORKSPACE_DIR, console
-from ._runtime import _build_client, _build_router, _get_or_run_state, _load_or_die, _resolve_model_with_ram_check, _start_gateway_thread_cli
+from ._runtime import _build_client, _build_router, _get_or_run_state, _load_or_die, _resolve_model_with_ram_check, _start_gateway_thread_cli, build_fallback_clients
 
 serve_app = typer.Typer(
     invoke_without_command=True,
@@ -93,6 +93,12 @@ def serve(
     from ..agent import _build_system_prompt
     system_prompt = _build_system_prompt(router)
 
+    # Fallback de provider (429/5xx) — paridade com o CLI `bauer agent`.
+    try:
+        _fallback_clients = build_fallback_clients(cfg)
+    except Exception:  # noqa: BLE001 — best-effort, nunca impede o serve de subir
+        _fallback_clients = []
+
     serve_host = host or cfg.serve.host
     serve_port = port or cfg.serve.port
     serve_key = api_key or cfg.serve.api_key
@@ -112,6 +118,7 @@ def serve(
         enable_gzip=cfg.serve.enable_gzip,
         enable_access_log=cfg.serve.enable_access_log,
         config_path=config,
+        fallback_clients=_fallback_clients,
     )
 
     auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"

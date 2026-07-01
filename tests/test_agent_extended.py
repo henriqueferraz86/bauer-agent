@@ -14,7 +14,9 @@ from bauer.agent import (
     _run_orchestrator_inline,
     _try_parse_tool,
     run_one_turn,
+    run_one_turn_with_fallback,
 )
+from bauer.openai_client import OpenAIClientError
 from bauer.tool_router import ToolRouter
 
 
@@ -192,6 +194,68 @@ def test_run_one_turn_text_response(router: ToolRouter):
     response, tool_log = run_one_turn(ctx, router, client, "phi4-mini")
     assert response == "Olá! Como posso ajudar?"
     assert tool_log == []
+
+
+# ─── run_one_turn_with_fallback ───────────────────────────────────────────────
+
+
+def test_fallback_primary_429_cai_no_proximo(router: ToolRouter):
+    """Primário dá 429 (retryável) → wrapper cai no fallback e responde."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    fb = _client(["resposta do fallback"])
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+
+    response, _ = run_one_turn_with_fallback(
+        ctx, router, primary, "primary-model", [(fb, "fallback-model")],
+    )
+    assert response == "resposta do fallback"
+    fb.chat_stream.assert_called()
+
+
+def test_fallback_sem_lista_propaga_erro(router: ToolRouter):
+    """Sem fallback configurado, o erro do primário propaga (comportamento antigo)."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+
+    with pytest.raises(OpenAIClientError):
+        run_one_turn_with_fallback(ctx, router, primary, "primary-model", [])
+
+
+def test_fallback_erro_nao_retryavel_nao_cascateia(router: ToolRouter):
+    """Erro não-retryável (ex.: 401 auth) NÃO deve queimar fallbacks — propaga direto."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 401 API key invalida")
+    fb = _client(["nao deveria chegar aqui"])
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+
+    with pytest.raises(OpenAIClientError):
+        run_one_turn_with_fallback(
+            ctx, router, primary, "primary-model", [(fb, "fallback-model")],
+        )
+    fb.chat_stream.assert_not_called()
+
+
+def test_fallback_restaura_ctx_entre_tentativas(router: ToolRouter):
+    """ctx.messages volta ao estado pré-turno antes de tentar o fallback (sem lixo)."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 500 server error")
+    fb = _client(["ok"])
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+    n_antes = len(ctx.messages)
+
+    run_one_turn_with_fallback(ctx, router, primary, "m", [(fb, "m2")])
+    # fallback adicionou 1 assistant; não deve haver acúmulo do turno que falhou
+    assert len(ctx.messages) == n_antes + 1
 
 
 def test_run_one_turn_tool_call_then_text(ws: Path, router: ToolRouter):

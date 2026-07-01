@@ -664,6 +664,44 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
     )
 
 
+def build_fallback_clients(cfg) -> list:
+    """Constrói clientes de fallback de cfg.model.fallback_models (sem console).
+
+    Versão compartilhada (gateway/serve) do que o CLI faz em
+    agent_cmd._build_fallback_clients: para cada fallback, monta um cfg
+    derivado (mesmas credenciais, provider/model trocados, sem recursão) e um
+    client. Dedup contra o primário e entradas repetidas. Falha de montagem é
+    tolerável (pula). Retorna lista de ``(client, model_name)``.
+    """
+    import logging as _logging
+    _log = _logging.getLogger("bauer.fallback")
+    clients: list = []
+    if cfg is None:
+        return clients
+    fb_models = getattr(cfg.model, "fallback_models", []) or []
+    seen: set = {(cfg.model.provider, cfg.model.name)}
+    for fb in fb_models:
+        prov = fb.provider if hasattr(fb, "provider") else (fb or {}).get("provider", "")
+        name = fb.name if hasattr(fb, "name") else (fb or {}).get("name", "")
+        if not prov or not name or (prov, name) in seen:
+            continue
+        seen.add((prov, name))
+        try:
+            raw = cfg.model_dump()
+            raw["model"]["provider"] = prov
+            raw["model"]["name"] = name
+            raw["model"]["fallback_models"] = []
+            raw["model"]["fallback_providers"] = []
+            from ..config_loader import BauerConfig as _BauerCfg
+            fb_cfg = _BauerCfg(**raw)
+            from ..env_loader import apply_env_to_config as _aenv
+            _aenv(fb_cfg)
+            clients.append((_build_client(fb_cfg), name))
+        except Exception as exc:  # noqa: BLE001 — fallback mal configurado é tolerável
+            _log.debug("build_fallback_clients: pulou %s/%s: %s", prov, name, exc)
+    return clients
+
+
 def _resolve_model_with_ram_check(
     model_name: str,
     reg,

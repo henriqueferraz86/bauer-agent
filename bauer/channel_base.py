@@ -159,6 +159,7 @@ class AgentBackend:
         self._applied_context: int = 0
         self._router: Any = None
         self._store: Any = None
+        self._fallback_clients: list = []  # (client, model) p/ fallback em 429/5xx
         self._system_prompt: str = ""
         self._init_error: str = ""
         self._config_mtime: float = 0.0  # hot-reload: detecta `bauer model` etc.
@@ -237,8 +238,14 @@ class AgentBackend:
                 # ToolRouter aqui na mao deixava essas flags sempre False,
                 # ignorando o config.yaml (bug: web_search/run_command nunca
                 # apareciam no gateway mesmo com web_enabled=true configurado).
-                from .commands._runtime import _build_router
+                from .commands._runtime import _build_router, build_fallback_clients
                 self._router = _build_router(cfg, workspace, llm_client=self._client, session_id="gateway")
+                # Fallback de provider (429/5xx) — paridade com o CLI. Falha ao
+                # montar um fallback é tolerável (best-effort, nunca bloqueia o boot).
+                try:
+                    self._fallback_clients = build_fallback_clients(cfg)
+                except Exception:  # noqa: BLE001
+                    self._fallback_clients = []
                 self._store = SqliteSessionStore(self.sessions_dir)
                 self._system_prompt = _build_system_prompt(self._router)
                 self._init_error = ""
@@ -529,7 +536,7 @@ class AgentBackend:
         O sink de streaming é instalado DENTRO da thread do turno (ContextVar não
         cruza threads).
         """
-        from .agent import run_one_turn
+        from .agent import run_one_turn_with_fallback
 
         result: dict[str, Any] = {}
 
@@ -543,7 +550,9 @@ class AgentBackend:
                     token = None
             try:
                 ctx.add_user(text)
-                resp, _tool_log = run_one_turn(ctx, self._router, client, model)
+                resp, _tool_log = run_one_turn_with_fallback(
+                    ctx, self._router, client, model, self._fallback_clients,
+                )
                 result["response"] = resp
             except BaseException as exc:  # noqa: BLE001 — repassa à thread chamadora
                 result["error"] = exc

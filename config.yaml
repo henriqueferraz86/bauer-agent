@@ -11,6 +11,11 @@ model:
   provider: opencode
   requested_context: 4096
   think: false
+  # Fallback automático em 429/5xx do provider primário: adicione aqui modelos
+  # de providers para os quais VOCÊ tem credencial (ex.: OPENROUTER_API_KEY no
+  # .env). Sem chave, o fallback só faz tentativas que falham em auth — por isso
+  # fica vazio por padrão. O gateway (~/.bauer/config.yaml) já traz uma lista.
+  fallback_models: []
 ollama:
   api_key: ''
   host: http://localhost:11434

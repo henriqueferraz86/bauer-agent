@@ -170,6 +170,7 @@ def create_app(
     enable_gzip: bool = True,
     enable_access_log: bool = False,
     config_path: Optional[Path] = None,
+    fallback_clients: list | None = None,
 ):
     """Cria e retorna o app FastAPI configurado."""
     _require_fastapi()
@@ -182,7 +183,9 @@ def create_app(
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel
 
-    from .agent import _build_system_prompt, run_one_turn
+    from .agent import _build_system_prompt, run_one_turn, run_one_turn_with_fallback
+
+    _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
     from .session_store import SessionStore
 
@@ -467,7 +470,9 @@ def create_app(
         ctx.add_user(req.message)
 
         try:
-            response, tool_log = run_one_turn(ctx, router, _state["client"], _state["model"])
+            response, tool_log = run_one_turn_with_fallback(
+                ctx, router, _state["client"], _state["model"], _fallback_clients,
+            )
         except Exception as exc:
             _log.exception("Erro interno em /chat: %s", exc)
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
@@ -531,6 +536,12 @@ def create_app(
             tool_count = 0
             tool_log: list[dict] = []
             turn_started = time.monotonic()
+            # Fallback de provider (429/5xx): client/model correntes avançam pela
+            # lista quando o primário falha ANTES de começar a stremar. _fb_idx
+            # sobrevive entre iterações do loop de tool calls (não reinicia no 0).
+            stream_client = _state["client"]
+            stream_model = _state["model"]
+            _fb_idx = 0
 
             while True:
                 if time.monotonic() - turn_started > _STREAM_TURN_TIMEOUT_SECONDS:
@@ -547,7 +558,7 @@ def create_app(
                 buffering = False   # True quando response pode ser JSON (aguarda completar)
 
                 try:
-                    for chunk in _state["client"].chat_stream(_state["model"], ctx.get_payload()):
+                    for chunk in stream_client.chat_stream(stream_model, ctx.get_payload()):
                         parts.append(chunk)
 
                         if streaming:
@@ -561,6 +572,24 @@ def create_app(
                                     yield f"data: {p}\n\n"
                                 streaming = True
                 except Exception as exc:
+                    # Fallback: se o provider falhou ANTES de qualquer chunk sair
+                    # (caso típico do 429 — request rejeitado de cara) e há
+                    # provider alternativo, troca e re-tenta o mesmo turno. Se já
+                    # streamamos algo, não dá pra reiniciar limpo → mostra o erro.
+                    _retryable = False
+                    if not streaming and not parts and _fb_idx < len(_fallback_clients):
+                        try:
+                            from .error_classifier import classify_api_error
+                            _retryable = classify_api_error(exc).should_fallback
+                        except Exception:
+                            _retryable = True
+                    if _retryable:
+                        _fb = _fallback_clients[_fb_idx]
+                        _fb_idx += 1
+                        stream_client, stream_model = (
+                            (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple)) else (_fb, stream_model)
+                        )
+                        continue  # re-tenta com o próximo provider (ctx intacto)
                     yield f"data: [Erro: {exc}]\n\n"
                     store.save(sid, ctx.messages)
                     yield f"event: done\ndata: {sid}\n\n"

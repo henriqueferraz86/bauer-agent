@@ -1565,6 +1565,65 @@ def run_one_turn(
     return response, tool_log
 
 
+def run_one_turn_with_fallback(
+    ctx,
+    router: ToolRouter,
+    client: OllamaClient,
+    model_name: str,
+    fallback_clients: "list | None" = None,
+    **kwargs,
+) -> tuple[str, list[dict]]:
+    """run_one_turn + cascata de fallback de provider em erro retryável (429/5xx).
+
+    Sem isto, o gateway e o ``bauer serve`` (que chamam run_one_turn direto)
+    devolvem o 429/5xx cru quando o provider primário está rate-limited — ao
+    contrário do CLI ``bauer agent``, que já cascateia. Aqui replicamos essa
+    resiliência para os dois.
+
+    ``fallback_clients``: lista de ``(client, model_name)`` (o formato de
+    ``_build_fallback_clients``). Em falha classificada como ``should_fallback``
+    no primário, tenta o próximo; restaura ``ctx.messages`` ao estado pré-turno
+    entre tentativas para não acumular lixo (um 429 estoura na 1ª chamada LLM,
+    antes de qualquer tool rodar, então a restauração costuma ser no-op).
+
+    Levanta a exceção do último provider quando todos falham.
+    """
+    attempts: list[tuple[Any, str]] = [(client, model_name)]
+    for fb in (fallback_clients or []):
+        if isinstance(fb, (list, tuple)) and len(fb) >= 2:
+            attempts.append((fb[0], fb[1]))
+        else:
+            attempts.append((fb, model_name))
+
+    _snapshot = list(ctx.messages)
+    last_exc: Exception | None = None
+    for idx, (_client, _model) in enumerate(attempts):
+        if idx > 0:
+            # Desfaz mutações parciais do turno que falhou antes de re-tentar.
+            ctx.messages = list(_snapshot)
+        try:
+            return run_one_turn(ctx, router, _client, _model, **kwargs)
+        except (OllamaError, OpenAIClientError) as exc:
+            last_exc = exc
+            # Última tentativa ou erro não-retryável → propaga.
+            if idx >= len(attempts) - 1:
+                raise
+            try:
+                from .error_classifier import classify_api_error
+                if not classify_api_error(exc).should_fallback:
+                    raise
+            except ImportError:
+                pass  # sem classifier: assume retryável e tenta o próximo
+            import logging as _logging
+            _logging.getLogger("bauer.agent").info(
+                "run_one_turn: provider falhou (%s) — fallback %d/%d",
+                exc.__class__.__name__, idx + 1, len(attempts) - 1,
+            )
+    if last_exc is not None:
+        raise last_exc
+    return "", []  # inalcançável (attempts sempre tem ≥1), satisfaz o type checker
+
+
 def _run_orchestrator_inline(
     user_input: str,
     orchestrator: "AgentOrchestrator",

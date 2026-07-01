@@ -339,6 +339,12 @@ class OpenAIClient:
                 except Exception:
                     pass
 
+                # Coerção para str: alguns providers (openrouter) devolvem
+                # error.code como INT (ex.: 429) — sem isto, `"x" in _error_type`
+                # levanta TypeError: argument of type 'int' is not iterable.
+                _error_type = str(_error_type)
+                body = str(body)
+
                 if "insufficient_quota" in _error_type or "insufficient_quota" in body:
                     _hint = (
                         "Sem creditos na conta OpenAI API.\n"

@@ -427,6 +427,57 @@ def test_stream_turn_timeout_returns_friendly_message(tmp_path: Path):
     assert mock_client.chat_stream.call_count == 1
 
 
+def test_stream_falls_back_on_provider_429(tmp_path: Path):
+    """Primário dá 429 antes de qualquer chunk → /stream cai no fallback e
+    entrega a resposta do provider alternativo (paridade com o CLI)."""
+    from bauer.openai_client import OpenAIClientError
+    from bauer.tool_router import ToolRouter
+
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    fb = MagicMock()
+    fb.chat_stream.side_effect = lambda *a, **k: iter(["resposta ", "do fallback"])
+    router = ToolRouter(workspace=tmp_path)
+
+    with patch("bauer.agent._try_parse_tool", return_value=None):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=primary,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+            fallback_clients=[(fb, "fallback-model")],
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=oi")
+
+    assert resp.status_code == 200
+    assert "resposta do fallback" in resp.text.replace("data: ", "").replace("\n", "")
+    assert "event: done" in resp.text
+    fb.chat_stream.assert_called()
+
+
+def test_stream_no_fallback_shows_error(tmp_path: Path):
+    """Sem fallback, um erro de provider vira mensagem de erro (comportamento antigo)."""
+    from bauer.openai_client import OpenAIClientError
+    from bauer.tool_router import ToolRouter
+
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=primary,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+    resp = tc.get("/stream?message=oi")
+
+    assert resp.status_code == 200
+    assert "[Erro:" in resp.text
+
+
 def test_stream_tool_loop_hard_stop(tmp_path: Path):
     """Mesma tool com os mesmos args e resultado 5x seguidas -> interrompe
     automaticamente (mesma protecao de _detect_loop que run_one_turn ja tem,
