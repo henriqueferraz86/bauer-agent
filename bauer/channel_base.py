@@ -42,6 +42,16 @@ _MAX_PENDING_PER_SESSION = 5
 # considerado travado e a sessão ser reiniciada automaticamente.
 _MAX_TURN_SECONDS = 300
 
+# Timeout DURO por turno: se run_one_turn não retornar nesse tempo (ex.: LLM
+# lento/fora do ar sem timeout de socket, carga de modelo), o gateway responde
+# ao usuário em vez de ficar em "typing" eterno. A thread do turno é daemon —
+# a órfã segue e morre sozinha (quando o LLM enfim responde ou o processo sai).
+_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_GATEWAY_TURN_TIMEOUT", "120"))
+
+
+class TurnTimeout(Exception):
+    """Turno excedeu _TURN_TIMEOUT_SECONDS — vira resposta amigável ao usuário."""
+
 HELP_TEXT = (
     "🤖 *Bauer Agent*\n\n"
     "Mande qualquer mensagem e eu respondo usando o modelo configurado.\n\n"
@@ -334,6 +344,16 @@ class AgentBackend:
         except Exception:
             logger.warning("Falha ao apagar sessão %s do store", key)
 
+    def _evict_session(self, key: str) -> None:
+        """Despeja só o ctx em memória (NÃO apaga o store).
+
+        Usado após timeout de turno: a thread órfã ainda referencia o ctx antigo
+        e pode mutá-lo; ao removê-lo do cache, a próxima mensagem recarrega um
+        ctx limpo do SQLite (histórico anterior ao turno travado intacto).
+        """
+        with self._sessions_lock:
+            self._sessions.pop(key, None)
+
     # ── Processamento ──────────────────────────────────────────────────────
 
     def process(self, msg: ChannelMessage, on_delta: Any = None,
@@ -395,6 +415,12 @@ class AgentBackend:
         e o usuário não sabia se era para esperar, corrigir ou desistir.
         """
         detail = str(exc)[:200]
+        if isinstance(exc, TurnTimeout):
+            return (
+                "⏱ Demorei demais e cancelei este turno — o modelo pode estar "
+                "lento ou fora do ar. Tente de novo, troque com /model, ou "
+                "verifique o provider no servidor (`bauer doctor -p`)."
+            )
         try:
             from .error_classifier import FailReason, classify_api_error
             reason = classify_api_error(exc).reason
@@ -482,6 +508,11 @@ class AgentBackend:
                         logger.warning("send_fn falhou entregando resposta da fila")
                 else:
                     response = f"{response}\n\n{extra}"
+        except TurnTimeout:
+            # Turno travado: descarta o ctx em memória (a órfã não corrompe o
+            # histórico) e repassa — o process() vira resposta amigável.
+            self._evict_session(key)
+            raise
         finally:
             with self._turn_ts_lock:
                 self._turn_started_at.pop(key, None)
@@ -490,32 +521,59 @@ class AgentBackend:
 
     def _execute_turn(self, ctx: Any, key: str, client: Any, model: str,
                       text: str, on_delta: Any = None) -> str:
-        """Um turno do agente com sink de streaming instalado (se houver)."""
+        """Um turno do agente com timeout DURO — nunca deixa o usuário sem resposta.
+
+        run_one_turn roda numa thread daemon; se não terminar em
+        _TURN_TIMEOUT_SECONDS, levanta TurnTimeout (a órfã segue e morre sozinha).
+        O sink de streaming é instalado DENTRO da thread do turno (ContextVar não
+        cruza threads).
+        """
         from .agent import run_one_turn
 
-        token = None
-        if on_delta is not None:
-            try:
-                from .delta_stream import set_sink
-                token = set_sink(on_delta)
-            except Exception:  # noqa: BLE001
-                token = None
-        try:
-            ctx.add_user(text)
-            response, _tool_log = run_one_turn(ctx, self._router, client, model)
-        finally:
-            if token is not None:
+        result: dict[str, Any] = {}
+
+        def _do() -> None:
+            token = None
+            if on_delta is not None:
                 try:
-                    from .delta_stream import reset_sink
-                    reset_sink(token)
+                    from .delta_stream import set_sink
+                    token = set_sink(on_delta)
                 except Exception:  # noqa: BLE001
-                    pass
+                    token = None
+            try:
+                ctx.add_user(text)
+                resp, _tool_log = run_one_turn(ctx, self._router, client, model)
+                result["response"] = resp
+            except BaseException as exc:  # noqa: BLE001 — repassa à thread chamadora
+                result["error"] = exc
+            finally:
+                if token is not None:
+                    try:
+                        from .delta_stream import reset_sink
+                        reset_sink(token)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        worker = threading.Thread(target=_do, name=f"bauer-turn:{key}", daemon=True)
+        worker.start()
+        worker.join(timeout=_TURN_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            logger.warning(
+                "Turno da sessão %s excedeu %ds (modelo %s) — respondendo timeout.",
+                key, _TURN_TIMEOUT_SECONDS, model,
+            )
+            raise TurnTimeout(
+                f"turno excedeu {_TURN_TIMEOUT_SECONDS}s — modelo {model} não respondeu"
+            )
+        if "error" in result:
+            raise result["error"]
+        response = result.get("response", "")
         try:
             self._store.save(key, ctx.messages)
         except Exception:
             logger.warning("Falha ao persistir sessão %s", key)
         self.msgs_processed += 1
-        return response.strip() or "🤔 O modelo não retornou resposta. Tente reformular."
+        return (response or "").strip() or "🤔 O modelo não retornou resposta. Tente reformular."
 
     # ── /model — listar providers + modelos e trocar por conversa ─────────────
 

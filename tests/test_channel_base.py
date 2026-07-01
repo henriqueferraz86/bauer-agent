@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -485,3 +486,47 @@ class TestBaseBridge:
         assert s["running"] is True
         bridge.stop()
         assert bridge.status()["running"] is False
+
+
+class TestTurnTimeout:
+    """Confiabilidade estilo Hermes: turno travado vira resposta, não typing eterno."""
+
+    def test_turno_travado_responde_rapido(self, tmp_path, monkeypatch):
+        import bauer.agent
+        import bauer.channel_base as cb
+
+        monkeypatch.setattr(cb, "_TURN_TIMEOUT_SECONDS", 0.4)
+
+        def _hang(ctx, router, client, model):
+            time.sleep(3.0)  # simula LLM travado sem timeout
+            return "tarde demais", []
+
+        monkeypatch.setattr(bauer.agent, "run_one_turn", _hang)
+        backend = _make_backend(tmp_path)
+
+        t0 = time.monotonic()
+        resp = backend.process(_msg("oi"))
+        elapsed = time.monotonic() - t0
+
+        assert "⏱" in resp, f"esperava msg de timeout, veio: {resp!r}"
+        assert elapsed < 2.0, f"deveria responder ~0.4s, levou {elapsed:.1f}s"
+
+    def test_turno_normal_continua_funcionando(self, tmp_path, monkeypatch):
+        # Regressão: o wrapper de thread+timeout não quebra o turno rápido normal.
+        import bauer.channel_base as cb
+
+        monkeypatch.setattr(cb, "_TURN_TIMEOUT_SECONDS", 5)
+        backend = _make_backend(tmp_path)
+        resp = backend.process(_msg("olá"))
+        assert "eco:" in resp
+
+    def test_evict_session_preserva_store(self, tmp_path):
+        # Timeout despeja o ctx da memória mas NÃO apaga o histórico do store.
+        backend = _make_backend(tmp_path)
+        backend._get_session("tg:1")
+        backend._store.save("tg:1", [{"role": "user", "content": "oi"}])
+        assert "tg:1" in backend._sessions
+
+        backend._evict_session("tg:1")
+        assert "tg:1" not in backend._sessions          # fora da memória
+        assert backend._store.load("tg:1")              # store intacto (≠ _clear_session)

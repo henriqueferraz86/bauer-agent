@@ -119,12 +119,11 @@ def _faster_whisper_available() -> bool:
         return False
 
 
-def _transcribe_local(path: Path, model: str | None = None) -> dict[str, Any]:
-    """Transcreve localmente com faster-whisper (offline, open-source).
+def _load_local_model(model: str | None = None):
+    """Carrega (ou reusa do cache) o WhisperModel local. Baixa os pesos na 1ª vez.
 
-    Carrega o modelo uma vez por (modelo, device, compute) e mantém em cache.
-    O primeiro uso baixa os pesos do HuggingFace (~1.5GB para large-v3-turbo);
-    depois roda 100% offline.
+    Separado de _transcribe_local para o preload no boot do gateway poder aquecer
+    o cache sem transcrever nada.
     """
     try:
         from faster_whisper import WhisperModel
@@ -140,12 +139,46 @@ def _transcribe_local(path: Path, model: str | None = None) -> dict[str, Any]:
     if wm is None:
         wm = WhisperModel(mdl_name, device=LOCAL_STT_DEVICE, compute_type=LOCAL_STT_COMPUTE)
         _LOCAL_MODEL_CACHE[key] = wm
+    return wm
 
+
+def _transcribe_local(path: Path, model: str | None = None) -> dict[str, Any]:
+    """Transcreve localmente com faster-whisper (offline, open-source).
+
+    Carrega o modelo uma vez por (modelo, device, compute) e mantém em cache.
+    O primeiro uso baixa os pesos do HuggingFace (~1.5GB para large-v3-turbo);
+    depois roda 100% offline.
+    """
+    wm = _load_local_model(model)
     segments, _info = wm.transcribe(str(path))
     text = "".join(seg.text for seg in segments).strip()
     if not text:
         raise RuntimeError("transcrição vazia")
     return {"success": True, "transcript": text}
+
+
+def preload_local_model() -> bool:
+    """Aquece o modelo Whisper local em background, se o provider ativo for local.
+
+    Chamado no boot do gateway para a 1ª voice note não pagar os ~86s de carga
+    no meio do turno (o que estourava o typing e travava a resposta). Não bloqueia:
+    dispara uma thread daemon. Retorna True se disparou o preload.
+    """
+    if available_stt_provider() != "local":
+        return False
+
+    import threading
+
+    def _warm() -> None:
+        try:
+            _load_local_model(LOCAL_STT_MODEL)
+            logger.info("Whisper local (%s) pré-carregado — voice notes prontas.", LOCAL_STT_MODEL)
+        except Exception as exc:  # noqa: BLE001 — preload é best-effort
+            logger.warning("preload do Whisper local falhou (%s); carrega on-demand.", exc)
+
+    threading.Thread(target=_warm, name="whisper-preload", daemon=True).start()
+    logger.info("Aquecendo modelo Whisper local (%s) em background…", LOCAL_STT_MODEL)
+    return True
 
 
 def available_stt_provider() -> str | None:

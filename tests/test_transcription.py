@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import httpx
 import pytest
@@ -191,3 +193,25 @@ class TestLocalProvider:
         result = transcribe_audio(audio_file)
         assert not result["success"]
         assert "faster-whisper" in result["error"]
+
+
+class TestPreload:
+    """preload_local_model — warm-up do boot do gateway (só se provider=local)."""
+
+    def test_preload_nao_dispara_p_cloud(self, monkeypatch):
+        monkeypatch.setattr(transcription, "available_stt_provider", lambda: "groq")
+        chamou = {"n": 0}
+        monkeypatch.setattr(transcription, "_load_local_model", lambda m=None: chamou.__setitem__("n", chamou["n"] + 1))
+        assert transcription.preload_local_model() is False
+        time.sleep(0.05)
+        assert chamou["n"] == 0  # não carregou nada
+
+    def test_preload_dispara_p_local(self, monkeypatch):
+        monkeypatch.setattr(transcription, "available_stt_provider", lambda: "local")
+        carregou = threading.Event()
+        monkeypatch.setattr(
+            transcription, "_load_local_model",
+            lambda m=None: carregou.set(),
+        )
+        assert transcription.preload_local_model() is True
+        assert carregou.wait(timeout=2.0), "preload deveria ter chamado _load_local_model em background"

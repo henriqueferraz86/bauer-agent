@@ -96,6 +96,15 @@ class BauerGatewayRuntime:
         pump.start()
         self._threads.append(pump)
 
+        # Aquece o modelo Whisper local (se STT_PROVIDER resolver p/ 'local') em
+        # background — p/ a 1ª voice note não pagar os ~86s de carga no meio do
+        # turno (o que estourava o typing e travava a resposta). Auto-gated.
+        try:
+            from .transcription import preload_local_model
+            preload_local_model()
+        except Exception:  # noqa: BLE001 — preload nunca deve impedir o boot
+            logger.debug("preload do Whisper pulado", exc_info=True)
+
         logger.info(
             "Bauer Gateway no ar — canais: %s | outbox a cada %ds",
             ", ".join(b.name for b in self.bridges) or "nenhum",
