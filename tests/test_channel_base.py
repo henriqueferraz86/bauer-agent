@@ -58,6 +58,49 @@ def _msg(text: str, user="42", chat="42", channel="telegram") -> ChannelMessage:
     return ChannelMessage(channel=channel, user_id=user, chat_id=chat, text=text)
 
 
+_CONFIG_WITH_WEB_ENABLED = """
+agent:
+  name: Bauer Agent
+  workspace: ./workspace
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:3b
+  requested_context: 16384
+
+ollama:
+  host: http://localhost:11434
+  timeout_seconds: 30
+
+tools:
+  web_enabled: true
+  shell_enabled: true
+"""
+
+
+class TestInitializeRespeitaConfigDeTools:
+    """Regressao: AgentBackend.initialize() construia o ToolRouter na mao,
+    sem ler tools.web_enabled/shell_enabled do config.yaml — web_search,
+    web_fetch e run_command nunca apareciam no gateway, mesmo com esses
+    flags habilitados no config (bauer agent/bauer serve, que ja usavam o
+    helper _build_router, respeitavam o config normalmente)."""
+
+    def test_gateway_expoe_web_search_quando_habilitado_no_config(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(_CONFIG_WITH_WEB_ENABLED, encoding="utf-8")
+
+        backend = AgentBackend(
+            config_path=config_path,
+            sessions_dir=tmp_path / "sessions",
+        )
+        backend.initialize()
+
+        tools = backend._router.available_tools()
+        assert "web_search" in tools
+        assert "web_fetch" in tools
+        assert "run_command" in tools
+
+
 class TestChannelMessage:
     def test_session_key_telegram(self):
         assert _msg("oi").session_key == "tg:42"

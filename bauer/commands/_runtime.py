@@ -616,7 +616,7 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     )
 
 
-def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
+def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -> ToolRouter:
     """Cria ToolRouter com shell_runner, web e llm_client a partir da config.
 
     Se llm_client não for passado, constrói um a partir da config (best-effort).
@@ -625,6 +625,11 @@ def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
     'cérebro' em TODOS os fluxos da CLI, não só no chat/agent. Sem isso, esses
     comandos caíam com 'llm_client não configurado'. Construir o client não faz
     rede (só instancia o objeto); falha silenciosa → degrada para None.
+
+    Helper ÚNICO/compartilhado para ler shell_enabled/web_enabled do config —
+    qualquer caller que monte ToolRouter por fora disso (ex.: o gateway antes
+    desta função ganhar o parâmetro session_id) fica com essas flags sempre
+    False, ignorando o config.yaml silenciosamente.
     """
     if llm_client is None and cfg is not None:
         try:
@@ -655,6 +660,7 @@ def _build_router(cfg, workspace: Path, llm_client=None) -> ToolRouter:
         vision_client=vision_client,
         model_name=cfg.model.name if cfg is not None else "",
         max_tool_calls=cfg.tools.max_tool_calls if cfg is not None else 500,
+        session_id=session_id,
     )
 
 

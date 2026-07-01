@@ -219,7 +219,6 @@ class AgentBackend:
             from .context_manager import ContextManager  # noqa: F401 (valida import)
             from .provider_profile import get_default_context
             from .sqlite_session_store import SqliteSessionStore
-            from .tool_router import ToolRouter
 
             try:
                 cfg = load_config(self.config_path)
@@ -233,11 +232,13 @@ class AgentBackend:
                     self._applied_context = max(cfg.model.requested_context, default_ctx)
                 workspace = Path(cfg.agent.workspace)
                 workspace.mkdir(parents=True, exist_ok=True)
-                self._router = ToolRouter(
-                    workspace=workspace,
-                    llm_client=self._client,
-                    session_id="gateway",
-                )
+                # _build_router (não ToolRouter direto) — é o único lugar que le
+                # tools.web_enabled/shell_enabled do config.yaml; construir o
+                # ToolRouter aqui na mao deixava essas flags sempre False,
+                # ignorando o config.yaml (bug: web_search/run_command nunca
+                # apareciam no gateway mesmo com web_enabled=true configurado).
+                from .commands._runtime import _build_router
+                self._router = _build_router(cfg, workspace, llm_client=self._client, session_id="gateway")
                 self._store = SqliteSessionStore(self.sessions_dir)
                 self._system_prompt = _build_system_prompt(self._router)
                 self._init_error = ""
