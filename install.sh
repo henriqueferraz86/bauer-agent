@@ -102,8 +102,57 @@ echo ""
 info "Clonando bauer-agent em $INSTALL_DIR ..."
 git clone --depth=1 "$REPO" "$INSTALL_DIR" 2>&1 | sed 's/^/  /'
 
+# ─── venv (com auto-instalação do pacote do sistema se faltar ensurepip) ─────
+SUDO=""
+[ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+
+install_venv_system_package() {
+    # Debian/Ubuntu separam o módulo venv do python3 em pacote próprio
+    # (python3.X-venv); sem ele, `python3 -m venv` falha com "ensurepip is
+    # not available". Detecta o gerenciador de pacotes e instala.
+    if command -v apt-get >/dev/null 2>&1; then
+        local pkg="python${PYVER}-venv"
+        info "Instalando $pkg via apt..."
+        export DEBIAN_FRONTEND=noninteractive
+        $SUDO apt-get update -qq || true
+        if $SUDO apt-get install -y -qq "$pkg"; then
+            return 0
+        fi
+        warn "$pkg indisponível no repositório — tentando python3-venv..."
+        $SUDO apt-get install -y -qq python3-venv
+    elif command -v dnf >/dev/null 2>&1; then
+        info "Instalando python3-pip via dnf (traz o ensurepip)..."
+        $SUDO dnf install -y -q python3-pip
+    elif command -v yum >/dev/null 2>&1; then
+        info "Instalando python3-pip via yum (traz o ensurepip)..."
+        $SUDO yum install -y -q python3-pip
+    elif command -v pacman >/dev/null 2>&1; then
+        info "Instalando python-virtualenv via pacman..."
+        $SUDO pacman -Sy --noconfirm python-virtualenv
+    elif command -v apk >/dev/null 2>&1; then
+        info "Instalando py3-virtualenv via apk..."
+        $SUDO apk add --no-cache py3-virtualenv
+    else
+        return 1
+    fi
+}
+
 info "Criando ambiente virtual..."
-"$PYTHON" -m venv "$INSTALL_DIR/.venv"
+venv_err=$("$PYTHON" -m venv "$INSTALL_DIR/.venv" 2>&1) || {
+    echo "$venv_err" | sed 's/^/  /' >&2
+    if echo "$venv_err" | grep -qi "ensurepip is not available"; then
+        warn "Módulo venv do sistema ausente — instalando automaticamente..."
+        if install_venv_system_package; then
+            rm -rf "$INSTALL_DIR/.venv"
+            "$PYTHON" -m venv "$INSTALL_DIR/.venv" || die "Ainda falhou após instalar o pacote. Rode manualmente: $PYTHON -m venv $INSTALL_DIR/.venv"
+            ok "Ambiente virtual criado."
+        else
+            die "Não consegui instalar o módulo venv automaticamente (gerenciador de pacotes não reconhecido). Instale manualmente (ex.: sudo apt install python${PYVER}-venv) e rode o instalador de novo."
+        fi
+    else
+        die "Falha ao criar ambiente virtual."
+    fi
+}
 
 info "Atualizando pip..."
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
