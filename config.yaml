@@ -7,8 +7,8 @@ logging:
 model:
   auto_downgrade_context: true
   minimum_context: 4096
-  name: gpt-4.1-mini
-  provider: openai
+  name: deepseek-v4-flash-free
+  provider: opencode
   requested_context: 4096
   think: false
 ollama:
