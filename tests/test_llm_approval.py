@@ -132,12 +132,30 @@ class TestToolRouterApprovalIntegration:
         assert router._recent_messages[-1]["content"] == "msg9"
 
     def test_approval_denies_high_risk_tool(self, tmp_path):
-        router = self._make_router(tmp_path)
+        from bauer.tool_router import ToolRouter
+        # Approval só roda quando o router tem um llm_client (um "cérebro") —
+        # um router sem LLM pula a checagem (fail-open). Passa um dummy.
+        router = ToolRouter(workspace=tmp_path, audit_enabled=False, llm_client=object())
         deny_json = '{"approved": false, "confidence": 0.9, "reason": "risky", "suggestion": "backup first"}'
         with patch("bauer.llm_approval.call_aux_text", return_value=deny_json):
             result = router.execute('{"action": "delete_file", "args": {"path": "important.txt"}}')
         assert "LLM Approval Negado" in result
         assert "risky" in result
+
+    def test_no_llm_client_skips_approval(self, tmp_path):
+        """Router sem llm_client NÃO deve disparar approval (fail-open) — mesmo
+        que call_aux_text fosse negar. Regressão do flake de CI: delete_file/
+        run_command em fixtures sem LLM faziam chamada de approval resolvida do
+        config.yaml do CWD e podiam ser negados."""
+        from bauer.tool_router import ToolError, ToolRouter
+        router = ToolRouter(workspace=tmp_path, audit_enabled=False)  # sem llm_client
+        deny_json = '{"approved": false, "confidence": 0.9, "reason": "risky"}'
+        with patch("bauer.llm_approval.call_aux_text", return_value=deny_json) as mock_aux:
+            # delete_file sem confirm deve chegar na validação e levantar ToolError,
+            # NÃO ser negado pelo approval (que nem deve ser chamado).
+            with pytest.raises(ToolError, match="confirm"):
+                router.execute('{"action": "delete_file", "args": {"path": "x.txt"}}')
+        mock_aux.assert_not_called()
 
     def test_dry_run_skips_approval(self, tmp_path):
         from bauer.tool_router import ToolRouter

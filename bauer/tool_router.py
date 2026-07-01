@@ -1518,8 +1518,17 @@ class ToolRouter(
                     return f"[App Factory] {_why}"
 
         # G4: LLM approval for high-risk tools (fail-open if aux unavailable)
+        #
+        # Só roda quando o router tem um llm_client (um "cérebro"). Um router
+        # montado só para executar tools, sem LLM (fixtures de teste de fs/shell,
+        # utilitários da CLI), não deve disparar uma chamada de aprovação — o
+        # llm_evaluate_tool resolveria o approval_model do config.yaml do CWD e
+        # faria uma chamada de rede não-determinística que pode NEGAR a tool
+        # (retornando string em vez de levantar ToolError). Era a raiz de um
+        # flake de CI onde delete_file/run_command "DID NOT RAISE ToolError"
+        # dependendo do config.yaml ambiente e da resposta do modelo.
         _sec = _TOOL_SECURITY.get(name, {})
-        if _sec.get("approval") and not self._dry_run:
+        if _sec.get("approval") and not self._dry_run and self._llm_client is not None:
             try:
                 from .llm_approval import llm_evaluate_tool
                 _approval = llm_evaluate_tool(name, args, self._recent_messages)
