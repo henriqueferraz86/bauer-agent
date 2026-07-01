@@ -722,9 +722,19 @@ def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
 
 _NOISE_PATTERNS: re.Pattern = re.compile(
     r"-tts\b|embedding|live-|-(preview|exp)-\d{2,4}[-_]|"
-    r"-image\b|-image-preview\b|-customtools\b",
+    r"-image\b|-image-preview\b|-customtools\b|whisper|-stt\b",
     re.IGNORECASE,
 )
+
+
+def is_noise_model_id(model_id: str) -> bool:
+    """True se o id parece um modelo não-chat (TTS, embedding, STT/whisper, etc.).
+
+    Usado tanto no filtro do catálogo (list_agentic_models) quanto na listagem
+    via API ao vivo dos providers (fetch_models), onde não há metadado
+    tool_call disponível — só o padrão do nome do modelo.
+    """
+    return bool(_NOISE_PATTERNS.search(model_id))
 
 
 def _should_hide_from_catalog(provider: str, model_id: str) -> bool:

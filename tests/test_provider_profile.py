@@ -108,6 +108,46 @@ def test_every_profile_has_display_name():
         assert p.display_name, f"Provider '{p.name}' missing display_name"
 
 
+# ---------------------------------------------------------------------------
+# fetch_models — filtro de ruído (Whisper/STT/TTS não são modelos de chat)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_models_filtra_whisper_da_api_ao_vivo(monkeypatch):
+    """API viva do Groq mistura chat + STT/TTS — /model nunca deve oferecer Whisper."""
+    p = get_profile("groq")
+    assert p is not None
+
+    payload = {
+        "data": [
+            {"id": "llama-3.3-70b-versatile"},
+            {"id": "whisper-large-v3"},
+            {"id": "whisper-large-v3-turbo"},
+            {"id": "distil-whisper-large-v3-en"},
+            {"id": "playai-tts"},
+        ]
+    }
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse(200, payload)
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    models = p.fetch_models(api_key="gsk_test")
+    assert "llama-3.3-70b-versatile" in models
+    assert not any("whisper" in m for m in models)
+    assert "playai-tts" not in models
+
+
 def test_every_profile_has_description():
     for p in list_providers():
         assert p.description, f"Provider '{p.name}' missing description"

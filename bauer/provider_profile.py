@@ -164,6 +164,8 @@ class ProviderProfile:
                 ]
             elif isinstance(data, list):
                 result = [m.get("id") or m.get("name", "") for m in data if isinstance(m, dict)]
+            from .models_dev import is_noise_model_id
+            result = [mid for mid in result if mid and not is_noise_model_id(mid)]
             return self.sort_models_for_display(result) or self._fetch_models_from_catalog()
         except Exception:
             pass
@@ -172,8 +174,9 @@ class ProviderProfile:
     def _fetch_models_from_catalog(self) -> list[str]:
         """Busca modelos do catálogo models.dev (offline-first). Fallback silencioso."""
         try:
-            from .models_dev import list_provider_models
-            return self.sort_models_for_display(list_provider_models(self.name))
+            from .models_dev import is_noise_model_id, list_provider_models
+            models = [m for m in list_provider_models(self.name) if not is_noise_model_id(m)]
+            return self.sort_models_for_display(models)
         except Exception:
             return []
 
