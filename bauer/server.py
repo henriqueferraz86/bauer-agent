@@ -8,6 +8,7 @@ Endpoints:
   GET  /sessions               — lista sessões ativas  [auth]
   DELETE /sessions/{id}        — remove sessão         [auth]
   POST /chat                   — envia mensagem, recebe resposta completa [auth]
+  POST /transcribe             — transcreve áudio (multipart) em texto [auth]
   GET  /stream?message=&session_id=  — resposta em tempo real via SSE [auth]
 
   # OpenAI-compatible (Claw3D / virtual office integration)
@@ -167,7 +168,7 @@ def create_app(
     import json
     import logging
 
-    from fastapi import Depends, FastAPI, HTTPException, Query, Request
+    from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel
@@ -471,6 +472,28 @@ def create_app(
             model=_state["model"],
             tool_calls=[ToolCallLog(**t) for t in tool_log],
         )
+
+    @app.post("/transcribe")
+    async def transcribe(file: UploadFile = File(...), _: None = Depends(_verify_key)):
+        """Transcreve áudio (gravado no microfone da UI) usando o mesmo pipeline
+        STT do gateway (Groq/OpenAI Whisper ou faster-whisper local, conforme
+        STT_PROVIDER) — ver bauer/transcription.py."""
+        import tempfile
+
+        from .transcription import transcribe_audio
+
+        suffix = Path(file.filename or "audio.webm").suffix or ".webm"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(await file.read())
+            tmp_path = Path(tmp.name)
+        try:
+            result = transcribe_audio(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        if not result["success"]:
+            raise HTTPException(status_code=422, detail=result["error"])
+        return {"transcript": result["transcript"], "provider": result["provider"]}
 
     @app.get("/stream")
     def stream(

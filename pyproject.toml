@@ -32,15 +32,18 @@ dev = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
+    "python-multipart>=0.0.9",
 ]
 server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
 ]
 gateway = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
+    "python-multipart>=0.0.9",
 ]
 web = [
     "ddgs>=6.0",             # DuckDuckGo (MIT) — busca web geral open-source
@@ -55,6 +58,7 @@ all = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
+    "python-multipart>=0.0.9",
     "ddgs>=6.0",
     "beautifulsoup4>=4.12",
     "faster-whisper>=1.0.0",

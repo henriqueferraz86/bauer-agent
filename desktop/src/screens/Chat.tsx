@@ -22,8 +22,12 @@ export default function Chat() {
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState<string>("");
   const [palIdx, setPalIdx] = useState(0);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
 
@@ -114,8 +118,8 @@ export default function Chat() {
     void c.run(arg);
   }
 
-  async function send() {
-    const text = input.trim();
+  async function send(overrideText?: string) {
+    const text = (overrideText ?? input).trim();
     if (!text || busy) return;
     setInput("");
     setBusy(true);
@@ -157,6 +161,42 @@ export default function Chat() {
         return copy;
       });
       setBusy(false);
+    }
+  }
+
+  // ── Microfone: grava, transcreve (STT default do gateway) e envia ─────────
+  async function toggleRecording() {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    if (busy || transcribing) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: mime || "audio/webm" });
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        try {
+          const r = await api.upload<{ transcript: string; provider: string }>("/transcribe", blob, "voice.webm");
+          if (r.transcript?.trim()) await send(r.transcript);
+        } catch (e) {
+          appendInfo(`[Erro na transcrição: ${e}]`);
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch (e) {
+      appendInfo(`[Não consegui acessar o microfone: ${e}]`);
     }
   }
 
@@ -233,14 +273,25 @@ export default function Chat() {
         )}
         <div className="box">
           <textarea
-            placeholder="Mensagem para Bauer… (digite / para comandos · Enter envia · Shift+Enter quebra linha)"
+            placeholder={
+              recording
+                ? "Gravando… clique no microfone de novo para enviar"
+                : "Mensagem para Bauer… (digite / para comandos · Enter envia · Shift+Enter quebra linha)"
+            }
             value={input}
             rows={1}
             onChange={(e) => { setInput(e.target.value); setPalIdx(0); }}
             onKeyDown={onKey}
-            disabled={busy}
+            disabled={busy || recording || transcribing}
           />
-          <div className="send-btn" onClick={send}>
+          <div
+            className={"send-btn" + (recording ? " recording" : "")}
+            onClick={toggleRecording}
+            title={recording ? "Parar e enviar" : "Gravar áudio"}
+          >
+            <i className={"ti " + (transcribing ? "ti-loader-2 spin" : recording ? "ti-player-stop" : "ti-microphone")} />
+          </div>
+          <div className="send-btn" onClick={() => send()}>
             <i className={"ti " + (busy ? "ti-loader-2 spin" : "ti-arrow-up")} />
           </div>
         </div>

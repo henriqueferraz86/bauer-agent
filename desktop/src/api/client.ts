@@ -40,6 +40,14 @@ export const api = {
   put: <T>(path: string, body: unknown) =>
     fetch(path, { method: "PUT", headers: headers(), body: JSON.stringify(body) }).then((r) => handle<T>(r)),
   del: <T>(path: string) => fetch(path, { method: "DELETE", headers: headers() }).then((r) => handle<T>(r)),
+  // multipart — sem Content-Type manual: o browser define o boundary sozinho.
+  upload: <T>(path: string, blob: Blob, filename: string) => {
+    const form = new FormData();
+    form.append("file", blob, filename);
+    const h = headers();
+    delete h["Content-Type"];
+    return fetch(path, { method: "POST", headers: h, body: form }).then((r) => handle<T>(r));
+  },
 };
 
 export interface SSEEvent {

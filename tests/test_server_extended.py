@@ -282,6 +282,62 @@ def test_chat_error_returns_500(tmp_path: Path):
     assert resp.status_code == 500
 
 
+# ─── /transcribe ─────────────────────────────────────────────────────────────
+
+
+def test_transcribe_success(tmp_path: Path):
+    with patch("bauer.transcription.transcribe_audio") as mock_stt:
+        mock_stt.return_value = {"success": True, "transcript": "oi bauer", "provider": "local"}
+        client = _make_app(tmp_path)
+        resp = client.post(
+            "/transcribe",
+            files={"file": ("voice.webm", b"fake-audio-bytes", "audio/webm")},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["transcript"] == "oi bauer"
+    assert data["provider"] == "local"
+    called_path = mock_stt.call_args[0][0]
+    assert str(called_path).endswith(".webm")
+
+
+def test_transcribe_failure_returns_422(tmp_path: Path):
+    with patch("bauer.transcription.transcribe_audio") as mock_stt:
+        mock_stt.return_value = {"success": False, "transcript": "", "error": "sem provider STT"}
+        client = _make_app(tmp_path)
+        resp = client.post(
+            "/transcribe",
+            files={"file": ("voice.webm", b"fake-audio-bytes", "audio/webm")},
+        )
+
+    assert resp.status_code == 422
+    assert "sem provider STT" in resp.json()["detail"]
+
+
+def test_transcribe_requires_auth(tmp_path: Path):
+    client = _make_app(tmp_path, api_key="secret")
+    resp = client.post("/transcribe", files={"file": ("voice.webm", b"abc", "audio/webm")})
+    assert resp.status_code == 401
+
+
+def test_transcribe_cleans_up_temp_file(tmp_path: Path):
+    """O arquivo temporário não deve sobreviver após a transcrição."""
+    captured: dict = {}
+
+    def _fake_transcribe(path, model=None):
+        captured["path"] = Path(path)
+        assert captured["path"].exists()
+        return {"success": True, "transcript": "ok", "provider": "local"}
+
+    with patch("bauer.transcription.transcribe_audio", side_effect=_fake_transcribe):
+        client = _make_app(tmp_path)
+        resp = client.post("/transcribe", files={"file": ("voice.ogg", b"abc", "audio/ogg")})
+
+    assert resp.status_code == 200
+    assert not captured["path"].exists()
+
+
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 
