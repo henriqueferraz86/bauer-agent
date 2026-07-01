@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -385,6 +386,72 @@ def test_stream_response_sse_format(tmp_path: Path):
 
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
+
+
+def test_stream_turn_timeout_returns_friendly_message(tmp_path: Path):
+    """Turno que estoura o timeout de wall-clock retorna mensagem amigavel em
+    vez de ficar pendurado pra sempre (regressao: /stream nao tinha paridade
+    com o TurnTimeout ja existente no gateway/Telegram).
+
+    Usa um time.sleep real (curto) em vez de mockar time.monotonic — mockar o
+    relogio globalmente via "bauer.server.time.monotonic" afeta o modulo time
+    inteiro (o mesmo objeto usado pelo scheduling interno do asyncio/uvicorn),
+    o que trava o event loop em vez de so afetar o codigo sob teste.
+    """
+    from bauer.tool_router import ToolRouter
+
+    def _slow_response(*_a, **_k):
+        time.sleep(0.05)
+        return iter(['{"action": "datetime_now", "args": {}}'])
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = _slow_response
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+
+    with patch("bauer.server._STREAM_TURN_TIMEOUT_SECONDS", 0.03):
+        resp = tc.get("/stream?message=que horas sao")
+
+    assert resp.status_code == 200
+    assert "Demorei demais" in resp.text
+    assert "event: done" in resp.text
+    # 1o tool call ainda cabe no prazo (checagem eh no TOPO do loop); o
+    # timeout so dispara na 2a volta, antes de chamar o modelo de novo.
+    assert mock_client.chat_stream.call_count == 1
+
+
+def test_stream_tool_loop_hard_stop(tmp_path: Path):
+    """Mesma tool com os mesmos args e resultado 5x seguidas -> interrompe
+    automaticamente (mesma protecao de _detect_loop que run_one_turn ja tem,
+    agora tambem em /stream)."""
+    from bauer.tool_router import ToolRouter
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = (
+        lambda *a, **k: iter(['{"action": "calculate", "args": {"expression": "1+1"}}'])
+    )
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+    resp = tc.get("/stream?message=calcule 1+1 varias vezes")
+
+    assert resp.status_code == 200
+    assert "Loop detectado" in resp.text
+    assert "event: done" in resp.text
+    # hard-stop em 5 repeticoes consecutivas — nao deve ter rodado ate MAX_TOOL_TURNS
+    assert mock_client.chat_stream.call_count <= 6
 
 
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────

@@ -34,10 +34,19 @@ Claw3D / Virtual Office:
 """
 
 import hmac
+import os
 import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
+
+# Timeout de turno (wall-clock) do loop de tool-calling em /stream — sem isso,
+# uma sessao que entra num loop de tool calls (ou uma chamada de LLM/tool
+# travada) fica pendurada pra sempre: a SSE nunca fecha, a UI mostra
+# "gerando..." indefinidamente e nao ha nenhum sinal de erro. Mesma logica do
+# BAUER_GATEWAY_TURN_TIMEOUT do gateway (channel_base.py), aplicada aqui pro
+# /stream do bauer serve.
+_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "120"))
 
 
 # ─── Métricas globais em memória (Prometheus-style) ───────────────────────────
@@ -511,11 +520,28 @@ def create_app(
 
         def _event_stream():
             from .tool_router import SandboxError, ToolError
-            from .agent import _try_parse_tool, _extract_text_from_pseudo_json, MAX_TOOL_TURNS
+            from .agent import (
+                _args_sig,
+                _detect_loop,
+                _extract_text_from_pseudo_json,
+                _try_parse_tool,
+                MAX_TOOL_TURNS,
+            )
 
             tool_count = 0
+            tool_log: list[dict] = []
+            turn_started = time.monotonic()
 
             while True:
+                if time.monotonic() - turn_started > _STREAM_TURN_TIMEOUT_SECONDS:
+                    yield (
+                        "data: ⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
+                        "turno. Tente reformular ou dividir em passos menores.\n\n"
+                    )
+                    store.save(sid, ctx.messages)
+                    yield f"event: done\ndata: {sid}\n\n"
+                    return
+
                 parts: list[str] = []
                 streaming = False   # True quando ja comecamos a enviar chunks ao cliente
                 buffering = False   # True quando response pode ser JSON (aguarda completar)
@@ -546,6 +572,7 @@ def create_app(
                 action_dict = _try_parse_tool(response, router)
                 if action_dict and tool_count < MAX_TOOL_TURNS:
                     action_name = action_dict.get("action", "?")
+                    action_args = action_dict.get("args", {}) or {}
                     try:
                         tool_result = router.execute(action_dict)
                     except (ToolError, SandboxError) as exc:
@@ -555,6 +582,20 @@ def create_app(
                     ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
                     tool_count += 1
                     _metrics.tool_calls_total += 1
+
+                    tool_log.append({
+                        "tool": action_name,
+                        "args_sig": _args_sig(action_args),
+                        "result": str(tool_result)[:300],
+                    })
+                    loop_warn, hard_stop = _detect_loop(tool_log)
+                    if loop_warn:
+                        ctx.add_user(loop_warn)
+                    if hard_stop:
+                        yield "data: [Loop detectado — tarefa interrompida automaticamente]\n\n"
+                        store.save(sid, ctx.messages)
+                        yield f"event: done\ndata: {sid}\n\n"
+                        return
                 else:
                     # Se estava bufferizando JSON de conversa, envia o texto extraído
                     if buffering:
