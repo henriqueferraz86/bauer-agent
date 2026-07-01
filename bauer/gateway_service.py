@@ -125,6 +125,12 @@ def build_windows_task_xml(python_path: str, project_dir: Path, user_id: str) ->
     ``ExecutionTimeLimit=PT0S`` desliga o limite de 72h default (o gateway
     roda para sempre). ``RestartOnFailure`` cobre crash do processo;
     ``StartWhenAvailable`` cobre logon perdido.
+
+    ``LogonType=S4U`` (não ``InteractiveToken``): a tarefa roda com um token
+    de batch-logon independente de sessão interativa. Isso importa porque em
+    ambientes com sandbox de sessão (ex.: Claude Desktop recicla a sessão
+    interativa quando fica ociosa) uma tarefa ``InteractiveToken`` morre
+    junto com a sessão e o LogonTrigger não reagenda — S4U sobrevive.
     """
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -140,7 +146,7 @@ def build_windows_task_xml(python_path: str, project_dir: Path, user_id: str) ->
   <Principals>
     <Principal id="Author">
       <UserId>{user_id}</UserId>
-      <LogonType>InteractiveToken</LogonType>
+      <LogonType>S4U</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>

@@ -193,6 +193,9 @@ def build_windows_task_xml(
     user_id: str,
     cfg: ProcessServiceConfig,
 ) -> str:
+    """``LogonType=S4U`` (não ``InteractiveToken``): batch-logon independente de
+    sessão interativa — ver docstring irmã em gateway_service.build_windows_task_xml.
+    """
     args_str = "-m bauer.cli " + " ".join(cfg.entry_args)
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -208,7 +211,7 @@ def build_windows_task_xml(
   <Principals>
     <Principal id="Author">
       <UserId>{user_id}</UserId>
-      <LogonType>InteractiveToken</LogonType>
+      <LogonType>S4U</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
