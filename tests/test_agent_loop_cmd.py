@@ -935,3 +935,40 @@ def test_tool_loop_overflow_compress_attempted_only_once(ws: Path):
     assert outcome.kind == "provider_error"
     # 1 chamada original + 1 retry pós-compressão = 2 (não infinito)
     assert client.chat_stream.call_count == 2
+
+
+# ─── loop_hard_stop: mensagem visível + fingerprint ignora args no erro ────
+# Regressão 2026-07-02: erro idêntico repetido com args diferentes nunca
+# hard-stopava (args_sig entrava incondicionalmente na fingerprint — ver
+# tests/test_loop_detection.py). Mesmo corrigido o fingerprint, o turno
+# terminava em silêncio total — sem NENHUMA mensagem explicando o motivo.
+
+
+def test_bridge_loop_hard_stop_prints_warning_and_stops(ws: Path):
+    """Reprodução do incidente real: run_command sem 'command', repetido com
+    args irrelevantes DIFERENTES a cada tentativa (a mesma variação que um
+    modelo pequeno faz tentando acertar o schema) — deve hard-stop E avisar
+    visivelmente, não terminar em silêncio."""
+    from bauer.agent import _run_tool_loop_body
+    from bauer.shell_runner import ShellRunner
+
+    responses = [
+        f'{{"action": "run_command", "args": {{"n": {i}}}}}'
+        for i in range(5)
+    ]
+    client = _fixed_response_client(*responses)
+    ctx, console, _unused_router, stats, state = _driver_env(client, ws)
+    router = ToolRouter(workspace=ws, shell_runner=ShellRunner(workspace=ws, safe_mode=False))
+    ctx.add_user("faca algo")
+
+    outcome = _run_tool_loop_body(
+        ctx=ctx, router=router, state=state, console=console,
+        fallback_clients=None, stats=stats, tool_timeout_s=5.0,
+        session_store=None, session_id=None, active_workspace=str(ws),
+        turn_input_text="faca algo", memprov=None,
+    )
+
+    assert outcome.kind == "loop_hard_stop"
+    output = console.file.getvalue()
+    assert "Loop detectado" in output
+    assert "run_command" in output

@@ -254,8 +254,11 @@ MAX_TOOL_TURNS = 150
 
 # ─── Loop detection ────────────────────────────────────────────────────────────
 # Protege contra modelos que ficam chamando a mesma tool repetidamente.
-# Usa fingerprint = tool_name + primeiros 100 chars do resultado para detectar
-# chamadas idênticas consecutivas, independente dos args (que não ficam no log).
+# Fingerprint = tool_name + primeiros 100 chars do resultado; para chamadas
+# BEM-SUCEDIDAS, inclui também o hash dos args (evita falso-positivo em
+# list_dir("a"), list_dir("b")...). Para chamadas com ERRO, ignora os args —
+# um modelo preso tentando args diferentes pro mesmo erro ainda conta como
+# repetição (ver _loop_fp).
 _LOOP_REPEAT_HARD  = 5   # N° de repetições consecutivas → hard stop imediato
 _LOOP_OSCIL_WINDOW = 6   # Janela de calls para detectar padrão A→B→A→B
 
@@ -269,10 +272,34 @@ def _args_sig(args: object) -> str:
         return ""
 
 
+def _is_failed_result(result: str) -> bool:
+    """True se o resultado de uma tool indica erro/bloqueio — mesma convenção
+    de prefixo usada em toda a base ("[Erro: ...]", "[BLOCKED] ...")."""
+    return result.startswith("[Erro:") or result.startswith("[BLOCKED]")
+
+
 def _loop_fp(entry: dict) -> str:
-    """Fingerprint: nome + hash dos args + primeiros 100 chars do resultado."""
+    """Fingerprint de loop: nome + primeiros 100 chars do resultado, com
+    args_sig incluído SÓ quando o resultado foi bem-sucedido.
+
+    Motivo da distinção (bug real, 2026-07-02): um modelo pequeno preso
+    tentando a mesma tool sem conseguir montar os args certos varia os args
+    a cada tentativa (às vezes {}, às vezes um nome de campo errado) — mas o
+    ERRO é sempre o mesmo ("run_command requer 'command'."). Incluir
+    args_sig incondicionalmente (P2.1, commit 5047d34) fazia cada tentativa
+    malformada gerar uma fingerprint DIFERENTE, nunca acumulando as 5
+    repetições consecutivas necessárias pro hard-stop — o modelo repetia o
+    mesmo erro indefinidamente sem nenhuma proteção.
+    Para resultados de SUCESSO, args_sig continua incluído — é o que evita o
+    falso-positivo original que motivou adicioná-lo (list_dir("a"),
+    list_dir("b"), list_dir("c") são legítimos mesmo com resultado inicial
+    parecido; aí SIM os args diferentes devem contar como tentativas distintas).
+    """
+    result = entry.get("result", "")
+    if _is_failed_result(result):
+        return f"{entry['tool']}:{result[:100]}"
     sig = entry.get("args_sig", "")
-    return f"{entry['tool']}:{sig}:{entry['result'][:100]}"
+    return f"{entry['tool']}:{sig}:{result[:100]}"
 
 
 def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
@@ -2859,6 +2886,11 @@ def _run_tool_loop_body(
                         if loop_warn:
                             ctx.add_user(loop_warn)
                         if hard_stop:
+                            console.print(
+                                f"[yellow]⚠ Loop detectado — '{cli_tool_log[-1]['tool']}' "
+                                f"repetiu o mesmo resultado {_LOOP_REPEAT_HARD}x seguidas. "
+                                "Turno interrompido.[/yellow]"
+                            )
                             return _TurnOutcome(kind="loop_hard_stop", tool_log=cli_tool_log)
                         # Cap de rounds (antes feito pelo slice em
                         # _native_turn_interactive, removido p/ não quebrar
@@ -3115,6 +3147,11 @@ def _run_tool_loop_body(
             if loop_warn:
                 ctx.add_user(loop_warn)
             if hard_stop:
+                console.print(
+                    f"[yellow]⚠ Loop detectado — '{cli_tool_log[-1]['tool']}' "
+                    f"repetiu o mesmo resultado {_LOOP_REPEAT_HARD}x seguidas. "
+                    "Turno interrompido.[/yellow]"
+                )
                 return _TurnOutcome(kind="loop_hard_stop", tool_log=cli_tool_log)
             continue
 

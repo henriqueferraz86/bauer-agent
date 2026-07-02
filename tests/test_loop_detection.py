@@ -246,3 +246,76 @@ def test_hard_stop_takes_priority_over_oscillation():
     warn, hard = _detect_loop(log)
     assert warn is None  # hard stop é silencioso
     assert hard is True
+
+
+# ─── Regressão 2026-07-02: erro repetido com args diferentes não hard-stopava ──
+#
+# Incidente real: modelo pequeno (llama-3.1-8b) preso chamando run_command
+# sem o arg 'command' — cada tentativa variava os args (às vezes {}, às
+# vezes um campo errado), mas o ERRO era sempre idêntico
+# ("run_command requer 'command'."). Como args_sig (P2.1) entrava na
+# fingerprint incondicionalmente, cada tentativa malformada virava uma
+# fingerprint DIFERENTE — a proteção de hard-stop nunca acumulava as 5
+# repetições consecutivas e o modelo repetiu o erro 13+ vezes seguidas
+# sem nenhuma interrupção.
+
+
+def test_is_failed_result_detects_erro_prefix():
+    from bauer.agent import _is_failed_result
+
+    assert _is_failed_result("[Erro: run_command requer 'command'.]") is True
+
+
+def test_is_failed_result_detects_blocked_prefix():
+    from bauer.agent import _is_failed_result
+
+    assert _is_failed_result("[BLOCKED] comando perigoso") is True
+
+
+def test_is_failed_result_false_for_success():
+    from bauer.agent import _is_failed_result
+
+    assert _is_failed_result("CONTAINER ID   IMAGE") is False
+
+
+def test_loop_fp_same_error_different_args_are_equal():
+    """O bug em si: erro idêntico + args diferentes deve gerar a MESMA
+    fingerprint — ao contrário do caso de sucesso, onde args diferentes
+    devem contar como tentativas distintas."""
+    e_a = _entry("run_command", "[Erro: run_command requer 'command'.]", args={})
+    e_b = _entry("run_command", "[Erro: run_command requer 'command'.]", args={"cmd": "docker ps"})
+    e_c = _entry("run_command", "[Erro: run_command requer 'command'.]", args={"shell": "docker ps"})
+    assert _loop_fp(e_a) == _loop_fp(e_b) == _loop_fp(e_c)
+
+
+def test_loop_fp_success_case_still_distinguishes_by_args():
+    """Garante que o fix não regrediu o caso original do P2.1 (sucesso com
+    args diferentes continua contando como tentativas distintas)."""
+    e_a = _entry("read_file", "# Header\nContent", args={"path": "a.py"})
+    e_b = _entry("read_file", "# Header\nContent", args={"path": "b.py"})
+    assert _loop_fp(e_a) != _loop_fp(e_b)
+
+
+def test_detect_loop_hard_stops_on_repeated_error_with_varying_args():
+    """Reprodução direta do incidente: 5 chamadas ao mesmo tool, MESMO erro,
+    args diferentes a cada vez — deve hard-stop (antes: nunca parava)."""
+    log = [
+        _entry("run_command", "[Erro: run_command requer 'command'.]", args={}),
+        _entry("run_command", "[Erro: run_command requer 'command'.]", args={"cmd": "ps"}),
+        _entry("run_command", "[Erro: run_command requer 'command'.]", args={"x": 1}),
+        _entry("run_command", "[Erro: run_command requer 'command'.]", args={"y": 2}),
+        _entry("run_command", "[Erro: run_command requer 'command'.]", args={"z": "docker"}),
+    ]
+    warn, hard = _detect_loop(log)
+    assert hard is True
+
+
+def test_detect_loop_does_not_falsely_stop_on_varying_successful_calls():
+    """Confirma que o fix é ESPECÍFICO de resultados com erro — 5 chamadas
+    bem-sucedidas com args diferentes continuam sem disparar hard-stop."""
+    log = [
+        _entry("read_file", "conteudo", args={"path": f"file{i}.py"})
+        for i in range(_LOOP_REPEAT_HARD)
+    ]
+    warn, hard = _detect_loop(log)
+    assert hard is False
