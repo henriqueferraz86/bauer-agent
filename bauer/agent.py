@@ -532,6 +532,7 @@ def _build_system_prompt(router: ToolRouter) -> str:
         + TOOL_USE_ENFORCEMENT
         + (("\n" + MINIMAL_CODE_LADDER) if _minimal_code_mode_enabled() else "")
         + (("\n" + KANBAN_WORKER_GUIDANCE) if os.environ.get("BAUER_KANBAN_TASK") else "")
+        + _specialists_block()
         + _specs_section()
     )
 
@@ -547,6 +548,67 @@ def _minimal_code_mode_enabled() -> bool:
         return load_config().agent.minimal_code_mode
     except Exception:
         return True
+
+
+def _specialist_delegation_enabled() -> bool:
+    """Lê config.agent.specialist_delegation — mesma filosofia de
+    _minimal_code_mode_enabled (best-effort, default True)."""
+    try:
+        from .config_loader import load_config
+        return load_config().agent.specialist_delegation
+    except Exception:
+        return True
+
+
+def _specialists_section() -> str:
+    """Lista os agents especialistas do registry (agents.yaml) para o
+    system prompt, instruindo o modelo a delegar via `delegate_task` quando
+    a tarefa combinar com um deles.
+
+    Retorna "" (sem seção) quando o registry está vazio/ausente — não faz
+    sentido instruir sobre delegação sem nenhum especialista cadastrado.
+    Best-effort: qualquer falha de leitura degrada para "" silenciosamente,
+    igual ao padrão de _specs_section.
+    """
+    try:
+        import os as _os
+        from pathlib import Path as _Path
+
+        from .agent_registry import AgentRegistry
+
+        _env_override = _os.environ.get("BAUER_AGENTS_FILE")
+        _agents_file = _env_override or str(_Path("agents.yaml").resolve())
+        agents = AgentRegistry(_agents_file).list_agents()
+        # Só lista agents locais (sem url) — remotos exigem bauer serve rodando
+        # à parte e já são endereçáveis por agent_name sem precisar de aviso
+        # prévio no prompt (o modelo não precisa "descobrir" um agent remoto
+        # específico, isso é decisão de infra do usuário, não de tarefa).
+        local_agents = [a for a in agents if not a.url]
+        if not local_agents:
+            return ""
+
+        lines = [
+            "# ESPECIALISTAS DISPONIVEIS\n"
+            "Estes agents tem system prompt e ferramentas ajustados para suas areas. "
+            "Quando a tarefa do usuario combinar claramente com um deles, delegue "
+            "via delegate_task(agent_name=\"<nome>\", task=\"...\") em vez de "
+            "responder generico. Nao delegue tarefas triviais ou fora dessas areas."
+        ]
+        for a in local_agents:
+            lines.append(f"  - {a.name}: {a.description}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _specialists_block() -> str:
+    """Wrapper de `_specialists_section()` para `_build_system_prompt`: aplica
+    o toggle de config e só prefixa a quebra de linha quando há conteúdo real
+    (registry vazio não deve deixar um "\\n" solto no prompt)."""
+    if not _specialist_delegation_enabled():
+        return ""
+    section = _specialists_section()
+    return f"\n{section}" if section else ""
 
 
 def _extract_text_from_pseudo_json(response: str) -> str | None:

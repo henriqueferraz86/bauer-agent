@@ -901,13 +901,38 @@ def agent_run_one(
     task: str = typer.Argument(..., help="Tarefa para o sub-agente executar"),
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
+    agent: str = typer.Option(
+        "", "--agent", help="Nome do agent especialista (agents.yaml) — aplica o system prompt dele"
+    ),
+    agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
 ):
-    """Executa uma única tarefa e imprime o resultado (usado por delegate_task)."""
+    """Executa uma única tarefa e imprime o resultado (usado por delegate_task).
+
+    Com --agent, carrega o system prompt do especialista do registry — sem
+    isso, é um LLM genérico sem nenhuma especialização.
+    """
     cfg, _ = _load_or_die(config, models)
     client = _build_client(cfg)
-    messages = [{"role": "user", "content": task}]
+
+    system = ""
+    model_name = cfg.model.name
+    if agent:
+        try:
+            from ..agent_registry import AgentRegistry
+            _ag = AgentRegistry(agents_file).get(agent)
+            if _ag:
+                system = _ag.system
+                if _ag.model:
+                    model_name = _ag.model
+        except Exception:
+            pass  # registry indisponível — segue genérico
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": task})
     try:
-        chunks = list(client.chat_stream(cfg.model.name, messages))
+        chunks = list(client.chat_stream(model_name, messages))
         console.print("".join(chunks))
     except Exception as exc:
         console.print(f"[red]run-one: {exc}[/red]", err=True)

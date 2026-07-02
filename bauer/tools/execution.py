@@ -361,12 +361,60 @@ class ExecToolsMixin:
 
         return "\n".join(lines)
 
+    def _resolve_delegate_agent(self, agent_name: str, task: str):
+        """Resolve o AgentDef a usar em `delegate_task`.
+
+        Com `agent_name` explícito: busca exata no registry (None se não achar
+        — nome errado não deve cair silenciosamente num especialista errado).
+        Sem `agent_name`: tenta `auto_select(task)` (keyword/Jaccard match) —
+        fallback determinístico para quando o modelo esquece de escolher um
+        especialista mesmo com a lista disponível no system prompt.
+
+        Retorna (AgentDef | None, matched_by_name: bool, agents_file: str) —
+        o caminho do registry é devolvido (não guardado em self) porque
+        múltiplas `delegate_task` podem rodar em paralelo na mesma thread pool
+        (ver `_exec_action` em agent.py); estado de instância aqui correria
+        risco de uma chamada ler o path resolvido por outra.
+
+        Best-effort: registry ausente/corrompido nunca bloqueia a delegação,
+        só degrada para None.
+        """
+        import os as _os
+        from pathlib import Path as _Path
+
+        # Prioridade: _bauer_home explícito (setado pelo caller/teste) > env var
+        # BAUER_AGENTS_FILE (isolamento hermético — ver tests/conftest.py,
+        # mesmo padrão de BAUER_CONFIG/BAUER_HOME) > CWD-relative (produção).
+        _home = getattr(self, "_bauer_home", None)
+        _env_override = _os.environ.get("BAUER_AGENTS_FILE")
+        if _home:
+            _agents_file = str(_home / "agents.yaml")
+        elif _env_override:
+            _agents_file = _env_override
+        else:
+            _agents_file = str(_Path("agents.yaml").resolve())
+        try:
+            from ..agent_registry import AgentRegistry
+
+            _reg = AgentRegistry(_agents_file)
+            if agent_name:
+                return _reg.get(agent_name), True, _agents_file
+            return _reg.auto_select(task), False, _agents_file
+        except Exception:
+            return None, False, _agents_file
+
     def _delegate_task(self, args: dict) -> str:
         """Delega subtarefa a sub-agente local ou remoto.
 
-        Quando `agent_name` é fornecido e o agente tem `url` no registry,
-        despacha via HTTP POST /chat para aquela instância bauer serve.
-        Caso contrário, usa LLM client direto ou subprocess local.
+        Resolução do agente (nesta ordem):
+          1. `agent_name` explícito → busca exata no registry.
+          2. Sem `agent_name` → `AgentRegistry.auto_select(task)` escolhe o
+             especialista com melhor overlap de palavras (best-effort).
+        Com agente resolvido: `url` no registry → dispatch remoto (HTTP);
+        sem `url` → especialização LOCAL — o `system` prompt do agente (e
+        `model`, se definido) são aplicados na chamada ao LLM. Sem nenhum
+        agente resolvido, cai no comportamento genérico (LLM direto sem
+        especialização, ou subprocess).
         """
         import subprocess
         import sys
@@ -386,62 +434,66 @@ class ExecToolsMixin:
         if len(full_task) > 4096:
             full_task = full_task[:4096]
 
+        _ag, _matched_by_name, _agents_file = self._resolve_delegate_agent(agent_name, full_task)
+        _resolved_name = agent_name if (_ag and _matched_by_name) else (_ag.name if _ag else "")
+
         # ── Dispatch remoto via agent registry ────────────────────────────────
-        if agent_name:
+        if _ag and _ag.url:
             try:
-                from ..agent_registry import AgentRegistry
                 import httpx as _httpx
 
-                _home = getattr(self, "_bauer_home", None)
-                _agents_file = str(_home / "agents.yaml") if _home else "agents.yaml"
-                _reg = AgentRegistry(_agents_file)
-                _ag = _reg.get(agent_name)
-                if _ag and _ag.url:
-                    endpoint = _ag.url.rstrip("/") + "/chat"
-                    _headers: dict[str, str] = {}
-                    if _ag.api_key:
-                        _headers["X-API-Key"] = _ag.api_key
-                    try:
-                        resp = _httpx.post(
-                            endpoint,
-                            json={"message": full_task},
-                            headers=_headers,
-                            timeout=_httpx.Timeout(connect=10.0, read=float(timeout),
-                                                   write=10.0, pool=5.0),
-                        )
-                        resp.raise_for_status()
-                        return f"[agente remoto: {agent_name}]\n{resp.json().get('response', '')}"
-                    except _httpx.TimeoutException:
-                        raise ToolError(
-                            f"delegate_task: timeout ({timeout}s) aguardando {agent_name} "
-                            f"em {endpoint}."
-                        )
-                    except _httpx.HTTPStatusError as exc:
-                        raise ToolError(
-                            f"delegate_task: agente remoto {agent_name} retornou "
-                            f"HTTP {exc.response.status_code}."
-                        ) from exc
-                    except _httpx.ConnectError:
-                        raise ToolError(
-                            f"delegate_task: não foi possível conectar a {agent_name} "
-                            f"em {endpoint}. Verifique se o bauer serve está rodando."
-                        )
+                endpoint = _ag.url.rstrip("/") + "/chat"
+                _headers: dict[str, str] = {}
+                if _ag.api_key:
+                    _headers["X-API-Key"] = _ag.api_key
+                try:
+                    resp = _httpx.post(
+                        endpoint,
+                        json={"message": full_task},
+                        headers=_headers,
+                        timeout=_httpx.Timeout(connect=10.0, read=float(timeout),
+                                               write=10.0, pool=5.0),
+                    )
+                    resp.raise_for_status()
+                    return f"[agente remoto: {_resolved_name}]\n{resp.json().get('response', '')}"
+                except _httpx.TimeoutException:
+                    raise ToolError(
+                        f"delegate_task: timeout ({timeout}s) aguardando {_resolved_name} "
+                        f"em {endpoint}."
+                    )
+                except _httpx.HTTPStatusError as exc:
+                    raise ToolError(
+                        f"delegate_task: agente remoto {_resolved_name} retornou "
+                        f"HTTP {exc.response.status_code}."
+                    ) from exc
+                except _httpx.ConnectError:
+                    raise ToolError(
+                        f"delegate_task: não foi possível conectar a {_resolved_name} "
+                        f"em {endpoint}. Verifique se o bauer serve está rodando."
+                    )
             except ToolError:
                 raise
             except Exception:
-                pass  # registry não disponível — continua com delegate local
+                pass  # falha inesperada no dispatch remoto — continua com delegate local
 
-        # Usa o cliente LLM diretamente se disponível — single-turn sem tools
+        # Especialista LOCAL (agent resolvido, sem url): aplica o system prompt
+        # dele — sem isto, "especialista" não fazia diferença nenhuma na
+        # resposta, era só um rótulo.
         if self._llm_client is not None:
             try:
                 _model = (
-                    self._model_name
+                    (_ag.model if _ag and _ag.model else "")
+                    or self._model_name
                     or getattr(self._llm_client, "default_model", "")
                     or ""
                 )
-                messages = [{"role": "user", "content": full_task}]
+                messages = []
+                if _ag and _ag.system:
+                    messages.append({"role": "system", "content": _ag.system})
+                messages.append({"role": "user", "content": full_task})
                 chunks = list(self._llm_client.chat_stream(_model, messages))
-                return f"[sub-agente]\n{''.join(chunks)}"
+                _label = f"especialista '{_resolved_name}'" if _ag else "sub-agente"
+                return f"[{_label}]\n{''.join(chunks)}"
             except Exception:
                 pass  # fallback para subprocess
 
@@ -450,6 +502,8 @@ class ExecToolsMixin:
         # não como string de shell — sem risco de injeção.
         python = _find_bauer_python(self.workspace)
         cmd = [python, "-m", "bauer.cli", "agent", "run-one", full_task]
+        if _resolved_name:
+            cmd += ["--agent", _resolved_name, "--agents", _agents_file]
         try:
             result = subprocess.run(
                 cmd,

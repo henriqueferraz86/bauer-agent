@@ -370,6 +370,152 @@ class TestDelegateTask:
         assert "Contexto extra" in captured["content"]
         assert "A tarefa" in captured["content"]
 
+    # ── Especialistas locais (registry sem url) ─────────────────────────────
+    # Regressão: antes, mesmo com agent_name resolvendo pra um AgentDef local
+    # (system prompt definido, sem url), a especialização era ignorada — caía
+    # direto no LLM genérico. "Especialista" era só um rótulo sem efeito.
+
+    def _make_registry(self, tmp_path: Path, agents: list[dict]):
+        import yaml
+        from bauer.agent_registry import AgentRegistry, AgentDef
+        agents_file = tmp_path / "agents.yaml"
+        reg = AgentRegistry(path=str(agents_file))
+        for a in agents:
+            reg.save(AgentDef(**a))
+        return agents_file
+
+    def test_agent_name_local_aplica_system_prompt(self, ws, tmp_path):
+        agents_file = self._make_registry(tmp_path, [{
+            "name": "devops-specialist",
+            "description": "DevOps",
+            "system": "Voce e um especialista DevOps.",
+        }])
+        mock_client = MagicMock()
+        mock_client.default_model = "test-model"
+        captured = {}
+        def fake_chat_stream(model, messages):
+            captured["messages"] = messages
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_chat_stream
+
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        router._bauer_home = agents_file.parent
+        result = router._delegate_task({
+            "task": "configure um pipeline",
+            "agent_name": "devops-specialist",
+        })
+
+        assert captured["messages"][0] == {"role": "system", "content": "Voce e um especialista DevOps."}
+        assert captured["messages"][1] == {"role": "user", "content": "configure um pipeline"}
+        assert "devops-specialist" in result
+
+    def test_agent_name_local_com_model_proprio(self, ws, tmp_path):
+        """Agent com `model` definido no registry sobrepõe o modelo da sessão."""
+        agents_file = self._make_registry(tmp_path, [{
+            "name": "especial",
+            "description": "d",
+            "system": "s",
+            "model": "modelo-especial",
+        }])
+        mock_client = MagicMock()
+        mock_client.default_model = "test-model"
+        captured = {}
+        def fake_chat_stream(model, messages):
+            captured["model"] = model
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_chat_stream
+
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        router._bauer_home = agents_file.parent
+        router._delegate_task({"task": "x", "agent_name": "especial"})
+
+        assert captured["model"] == "modelo-especial"
+
+    def test_agent_name_desconhecido_degrada_para_generico(self, ws, tmp_path):
+        agents_file = self._make_registry(tmp_path, [])
+        mock_client = MagicMock()
+        mock_client.default_model = "test-model"
+        captured = {}
+        def fake_chat_stream(model, messages):
+            captured["messages"] = messages
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_chat_stream
+
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        router._bauer_home = agents_file.parent
+        router._delegate_task({"task": "x", "agent_name": "nao-existe"})
+
+        assert captured["messages"] == [{"role": "user", "content": "x"}]
+
+    def test_sem_agent_name_usa_auto_select(self, ws, tmp_path):
+        """Sem agent_name: auto_select escolhe o especialista com melhor match."""
+        agents_file = self._make_registry(tmp_path, [{
+            "name": "devops-specialist",
+            "description": "Docker Kubernetes CI/CD infraestrutura deploy",
+            "system": "Voce e um especialista DevOps.",
+        }, {
+            "name": "finance-specialist",
+            "description": "Financeiro DRE valuation orcamento",
+            "system": "Voce e um especialista financeiro.",
+        }])
+        mock_client = MagicMock()
+        mock_client.default_model = "test-model"
+        captured = {}
+        def fake_chat_stream(model, messages):
+            captured["messages"] = messages
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_chat_stream
+
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        router._bauer_home = agents_file.parent
+        result = router._delegate_task({"task": "configurar Docker container Kubernetes"})
+
+        assert captured["messages"][0]["content"] == "Voce e um especialista DevOps."
+        assert "devops-specialist" in result
+
+    def test_sem_agent_name_sem_match_fica_generico(self, ws, tmp_path):
+        agents_file = self._make_registry(tmp_path, [{
+            "name": "devops-specialist",
+            "description": "Docker Kubernetes CI/CD infraestrutura",
+            "system": "Voce e um especialista DevOps.",
+        }])
+        mock_client = MagicMock()
+        mock_client.default_model = "test-model"
+        captured = {}
+        def fake_chat_stream(model, messages):
+            captured["messages"] = messages
+            return iter(["ok"])
+        mock_client.chat_stream.side_effect = fake_chat_stream
+
+        router = ToolRouter(workspace=ws, llm_client=mock_client, model_name="test-model")
+        router._bauer_home = agents_file.parent
+        router._delegate_task({"task": "oi, como vai?"})
+
+        assert captured["messages"] == [{"role": "user", "content": "oi, como vai?"}]
+
+    def test_subprocess_fallback_passa_agent_flags(self, ws, tmp_path):
+        """Sem llm_client, o fallback subprocess recebe --agent e --agents
+        pra manter a especialização mesmo no caminho de CLI externo."""
+        agents_file = self._make_registry(tmp_path, [{
+            "name": "devops-specialist",
+            "description": "Docker Kubernetes CI/CD",
+            "system": "s",
+        }])
+        router = ToolRouter(workspace=ws)
+        router._bauer_home = agents_file.parent
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+            router._delegate_task({
+                "task": "configurar Docker",
+                "agent_name": "devops-specialist",
+            })
+
+        cmd = mock_run.call_args[0][0]
+        assert "--agent" in cmd
+        assert cmd[cmd.index("--agent") + 1] == "devops-specialist"
+        assert "--agents" in cmd
+
 
 # ===========================================================================
 # VISION_ANALYZE

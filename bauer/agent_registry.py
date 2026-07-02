@@ -754,8 +754,14 @@ class AgentRegistry:
     def match(self, task: str, threshold: float = 0.05) -> "AgentDef | None":
         """Encontra o agente mais adequado para uma tarefa via keyword matching.
 
-        Pontua cada agente pelo overlap de palavras entre a tarefa e
-        o campo description + name do agente.
+        Pontua cada agente pelo overlap coefficient (Szymkiewicz–Simpson:
+        |A∩B| / min(|A|, |B|)) entre os tokens da tarefa e os do agente
+        (description + name + system prompt). Jaccard (|A∩B|/|A∪B|) penaliza
+        agentes com descrição/system rica em palavras-chave — uma tarefa curta
+        de 3 tokens contra um doc de 20 tokens já fica presa a um denominador
+        grande mesmo com boa cobertura real. Overlap coefficient normaliza
+        pelo MENOR conjunto (quase sempre a tarefa do usuário), então "quanto
+        da tarefa está coberta pelo agente" não é diluído pelo tamanho do doc.
         Retorna None se nenhum agente superar o threshold ou se não houver agentes.
 
         Args:
@@ -788,10 +794,10 @@ class AgentRegistry:
             if not doc_tokens:
                 continue
 
-            # Jaccard similarity: |A ∩ B| / |A ∪ B|
+            # Overlap coefficient: |A ∩ B| / min(|A|, |B|)
             intersection = len(task_tokens & doc_tokens)
-            union = len(task_tokens | doc_tokens)
-            score = intersection / union if union > 0 else 0.0
+            smaller = min(len(task_tokens), len(doc_tokens))
+            score = intersection / smaller if smaller > 0 else 0.0
 
             if score > best_score:
                 best_score = score

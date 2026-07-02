@@ -40,3 +40,10 @@ os.environ["BAUER_CONFIG"] = str(
     Path(tempfile.gettempdir()) / "bauer-tests-no-such-config" / "config.yaml"
 )
 os.environ["BAUER_HOME"] = tempfile.mkdtemp(prefix="bauer-tests-home-")
+# Mesma hermeticidade para delegate_task: sem isto, testes rodando com
+# cwd=raiz do repo leriam o agents.yaml REAL do projeto (agents especialistas
+# reais poderiam dar match acidental em tasks de teste genéricas como
+# "Calcule 2+2").
+os.environ["BAUER_AGENTS_FILE"] = str(
+    Path(tempfile.gettempdir()) / "bauer-tests-no-such-agents" / "agents.yaml"
+)

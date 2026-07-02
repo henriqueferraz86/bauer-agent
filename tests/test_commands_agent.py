@@ -97,3 +97,98 @@ def test_agent_missing_config_exits_cleanly(tmp_path: Path, monkeypatch):
     assert result.exit_code != 0
     # Não deve expor traceback Python ao usuário
     assert "Traceback" not in result.output
+
+
+# ─── agent run-one --agent (especialista) ─────────────────────────────────────
+# Regressão: delegate_task passava a tarefa direto pro CLI sem nenhum system
+# prompt, mesmo quando um agent_name apontava pra um especialista LOCAL — a
+# "especialização" não fazia diferença nenhuma na resposta.
+
+
+def test_run_one_without_agent_uses_bare_user_message(monkeypatch, tmp_path: Path):
+    """Sem --agent: comportamento de sempre — só a mensagem do usuário, sem system."""
+    captured = {}
+
+    class _FakeClient:
+        default_model = "fake-model"
+
+        def chat_stream(self, model, messages):
+            captured["model"] = model
+            captured["messages"] = messages
+            return iter(["ok"])
+
+    import bauer.commands.agent_cmd as agent_cmd_mod
+    monkeypatch.setattr(agent_cmd_mod, "_build_client", lambda cfg: _FakeClient())
+    monkeypatch.setattr(agent_cmd_mod, "_load_or_die", lambda config, models: (_FakeCfg(), None))
+
+    result = runner.invoke(app, ["agent", "run-one", "faca algo"])
+    assert result.exit_code == 0
+    assert captured["messages"] == [{"role": "user", "content": "faca algo"}]
+
+
+def test_run_one_with_agent_prepends_system_prompt(monkeypatch, tmp_path: Path):
+    """Com --agent: system prompt do especialista vai como primeira mensagem."""
+    import yaml as _yaml
+
+    agents_file = tmp_path / "agents.yaml"
+    agents_file.write_text(
+        _yaml.dump({"agents": [{
+            "name": "devops-specialist",
+            "description": "DevOps",
+            "system": "Voce e um especialista DevOps.",
+        }]}, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    class _FakeClient:
+        default_model = "fake-model"
+
+        def chat_stream(self, model, messages):
+            captured["model"] = model
+            captured["messages"] = messages
+            return iter(["ok"])
+
+    import bauer.commands.agent_cmd as agent_cmd_mod
+    monkeypatch.setattr(agent_cmd_mod, "_build_client", lambda cfg: _FakeClient())
+    monkeypatch.setattr(agent_cmd_mod, "_load_or_die", lambda config, models: (_FakeCfg(), None))
+
+    result = runner.invoke(app, [
+        "agent", "run-one", "configure um pipeline",
+        "--agent", "devops-specialist", "--agents", str(agents_file),
+    ])
+    assert result.exit_code == 0
+    assert captured["messages"][0] == {"role": "system", "content": "Voce e um especialista DevOps."}
+    assert captured["messages"][1] == {"role": "user", "content": "configure um pipeline"}
+
+
+def test_run_one_unknown_agent_falls_back_to_bare_message(monkeypatch, tmp_path: Path):
+    """--agent apontando pra um nome que não existe no registry não deve quebrar
+    — degrada pro comportamento sem especialização."""
+    agents_file = tmp_path / "agents.yaml"  # vazio/inexistente
+
+    captured = {}
+
+    class _FakeClient:
+        default_model = "fake-model"
+
+        def chat_stream(self, model, messages):
+            captured["messages"] = messages
+            return iter(["ok"])
+
+    import bauer.commands.agent_cmd as agent_cmd_mod
+    monkeypatch.setattr(agent_cmd_mod, "_build_client", lambda cfg: _FakeClient())
+    monkeypatch.setattr(agent_cmd_mod, "_load_or_die", lambda config, models: (_FakeCfg(), None))
+
+    result = runner.invoke(app, [
+        "agent", "run-one", "tarefa",
+        "--agent", "nao-existe", "--agents", str(agents_file),
+    ])
+    assert result.exit_code == 0
+    assert captured["messages"] == [{"role": "user", "content": "tarefa"}]
+
+
+class _FakeCfg:
+    class model:
+        name = "fake-model"

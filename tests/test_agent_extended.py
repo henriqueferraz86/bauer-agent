@@ -214,6 +214,95 @@ def test_build_system_prompt_ladder_defaults_true_on_config_load_failure(router:
     assert "ESCADA DE DECISAO" in prompt
 
 
+# ─── specialist_delegation (delegate_task a agents especialistas) ──────────
+
+
+def _write_agents_yaml(tmp_path, agents: list[dict]) -> str:
+    import yaml as _yaml
+    p = tmp_path / "agents.yaml"
+    p.write_text(_yaml.dump({"agents": agents}, allow_unicode=True), encoding="utf-8")
+    return str(p)
+
+
+def test_agent_section_specialist_delegation_default_true():
+    from bauer.config_loader import AgentSection
+
+    assert AgentSection().specialist_delegation is True
+
+
+def test_build_system_prompt_lists_local_specialists_when_enabled(router: ToolRouter, tmp_path, monkeypatch):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "devops-specialist",
+        "description": "Docker, Kubernetes, CI/CD",
+        "system": "Voce e devops.",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" in prompt
+    assert "devops-specialist" in prompt
+    assert "Docker, Kubernetes, CI/CD" in prompt
+    assert "delegate_task" in prompt
+
+
+def test_build_system_prompt_excludes_specialists_when_disabled(router: ToolRouter, tmp_path, monkeypatch):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "devops-specialist", "description": "d", "system": "s",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=False))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" not in prompt
+    assert "devops-specialist" not in prompt
+
+
+def test_build_system_prompt_no_stray_section_when_registry_empty(router: ToolRouter, tmp_path, monkeypatch):
+    """Toggle ligado mas sem nenhum agent local — não deve sobrar seção vazia."""
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    monkeypatch.setenv("BAUER_AGENTS_FILE", str(tmp_path / "nao-existe.yaml"))
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" not in prompt
+
+
+def test_build_system_prompt_specialists_excludes_remote_agents(router: ToolRouter, tmp_path, monkeypatch):
+    """Agents remotos (com url) não entram na lista — não precisam de aviso
+    prévio no prompt, isso é decisão de infra do usuário."""
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "worker-remoto", "description": "remoto", "system": "s",
+        "url": "http://localhost:9000",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "worker-remoto" not in prompt
+
+
+def test_specialist_delegation_defaults_true_on_config_load_failure(router: ToolRouter, tmp_path, monkeypatch):
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "devops-specialist", "description": "d", "system": "s",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        prompt = _build_system_prompt(router)
+    assert "devops-specialist" in prompt
+
+
 # ─── run_one_turn ─────────────────────────────────────────────────────────────
 
 

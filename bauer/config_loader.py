@@ -65,6 +65,11 @@ class AgentSection(_StrictSection):
     # prompt padrão — prefere reuso/stdlib/uma-linha a abstração nova, sem
     # cortar validação/segurança/acessibilidade. default True = agressivo.
     minimal_code_mode: bool = True
+    # Injeta no system prompt a lista de agents especialistas (agents.yaml)
+    # e instrui o modelo a delegar via `delegate_task(agent_name=...)` quando
+    # a tarefa combinar com um deles. default True = agressivo, mesma
+    # filosofia do minimal_code_mode.
+    specialist_delegation: bool = True
 
 
 class ObservabilitySection(_StrictSection):
