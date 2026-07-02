@@ -1,0 +1,43 @@
+name: Impeccable — fluxo de revisão de design
+description: >
+  Fluxo audit → critique → polish adaptado do sistema de comandos do
+  Impeccable, pra revisar UI antes de considerar uma tarefa de design
+  concluída. Fonte: pbakaus/impeccable (Apache-2.0).
+  https://github.com/pbakaus/impeccable
+content: |
+  # Fluxo de revisão de design: audit → critique → polish
+
+  Adaptado dos comandos `/impeccable audit|critique|polish` do projeto
+  Impeccable — não são slash-commands do Bauer, é o PROCESSO que eles
+  descrevem, útil como checklist mental (ou passos explícitos de uma
+  loop-skill de UI).
+
+  ## 1. Audit — checagem técnica, não de gosto
+
+  Rode checagens técnicas objetivas ANTES de julgar estética: acessibilidade
+  (contraste, foco de teclado, texto alternativo), responsividade (a UI
+  quebra em telas pequenas?), performance (imagens não otimizadas, bundle
+  gigante). Documente os problemas encontrados — não conserte ainda, só
+  registre. Automatize essa parte com `npx impeccable detect --json .`
+  quando disponível (ver docs/integrations/impeccable.md).
+
+  ## 2. Critique — revisão de UX, com intenção declarada
+
+  Depois do audit técnico, revise a experiência: a hierarquia visual guia o
+  olho pro que importa primeiro? O fluxo tem fricção desnecessária? Cada
+  elemento tem um motivo de existir, ou é decoração? Evite crítica vaga
+  ("parece genérico") — aponte o quê especificamente e por quê.
+
+  ## 3. Polish — última passada antes de entregar
+
+  Só depois de audit + critique resolvidos: ajustes finos de espaçamento,
+  tipografia, motion. É a etapa onde cabe usar a lista de anti-padrões da
+  skill "Princípios de design — evitar cara de IA" como checklist final.
+
+  ## Contexto de produto/marca antes de tudo
+
+  Se o projeto ainda não tem um resumo de público-alvo, tom de voz e
+  referências de marca documentado, vale escrever isso ANTES de desenhar
+  qualquer tela — decisões de design sem esse contexto tendem a ficar
+  genéricas por padrão. Não precisa ser formal: um parágrafo curto já ajuda
+  a guiar decisões de cor/tipografia/tom depois.

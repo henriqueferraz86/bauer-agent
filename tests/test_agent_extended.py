@@ -181,6 +181,39 @@ def test_build_system_prompt_is_string(router: ToolRouter):
     assert len(prompt) > 100
 
 
+# ─── minimal_code_mode (escada de decisão "código mínimo") ─────────────────
+
+
+def test_agent_section_minimal_code_mode_default_true():
+    from bauer.config_loader import AgentSection
+
+    assert AgentSection().minimal_code_mode is True
+
+
+def test_build_system_prompt_includes_ladder_when_enabled(router: ToolRouter):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(minimal_code_mode=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+    assert "ESCADA DE DECISAO" in prompt
+
+
+def test_build_system_prompt_excludes_ladder_when_disabled(router: ToolRouter):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(minimal_code_mode=False))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+    assert "ESCADA DE DECISAO" not in prompt
+
+
+def test_build_system_prompt_ladder_defaults_true_on_config_load_failure(router: ToolRouter):
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        prompt = _build_system_prompt(router)
+    assert "ESCADA DE DECISAO" in prompt
+
+
 # ─── run_one_turn ─────────────────────────────────────────────────────────────
 
 

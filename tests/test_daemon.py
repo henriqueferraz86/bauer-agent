@@ -155,7 +155,11 @@ class TestDaemonConfig:
         assert cfg.workers == 2
         assert cfg.max_cost_usd == 5.0
 
-    def test_get_state_dir_default(self):
+    def test_get_state_dir_default(self, monkeypatch: pytest.MonkeyPatch):
+        # "default" = sem BAUER_HOME no ambiente (o conftest.py global seta
+        # BAUER_HOME p/ tmp por hermeticidade — remove aqui pra testar o
+        # fallback real ~/.bauer).
+        monkeypatch.delenv("BAUER_HOME", raising=False)
         cfg = DaemonConfig()
         state_dir = cfg.get_state_dir()
         assert state_dir.name == "daemon"

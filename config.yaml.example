@@ -586,6 +586,17 @@ mcp:
     #   cwd: /tmp/projeto
     #   timeout: 60
 
+    # Exemplo: Graphify — grafo de conhecimento do codebase (9 tools MCP:
+    # query_graph, get_node, get_neighbors, get_community, god_nodes,
+    # graph_stats, shortest_path, list_prs, get_pr_impact, triage_prs).
+    # Requer `pip install "graphifyy[mcp]"` e `graphify .` rodado uma vez
+    # na raiz do repo pra construir o graph.json inicial. `cwd` deve ser a
+    # raiz do repo que se quer consultar. Ver docs/integrations/graphify.md.
+    # graphify:
+    #   command: ["graphify", "serve", "--transport", "stdio"]
+    #   cwd: /caminho/do/seu/repo
+    #   timeout: 30
+
 
 # =============================================================================
 # SERVE — HTTP API REST (bauer serve)

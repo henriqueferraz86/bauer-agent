@@ -1,0 +1,59 @@
+name: Princípios de design — evitar "cara de IA"
+description: >
+  Checklist de anti-padrões visuais que denunciam design gerado por IA
+  (gradiente roxo, fonte Inter genérica, cards aninhados etc.), adaptado das
+  45 regras determinísticas do Impeccable. Fonte: pbakaus/impeccable
+  (Apache-2.0). https://github.com/pbakaus/impeccable
+content: |
+  # Evite o visual genérico de "gerado por IA"
+
+  Interfaces feitas por IA tendem a repetir os MESMOS tiques visuais,
+  independente do modelo ou do projeto. Antes de considerar uma UI pronta,
+  revise contra esta lista (baseada nas 45 regras determinísticas que o
+  `npx impeccable detect` verifica automaticamente — ver skill
+  "Impeccable — fluxo de revisão" pra rodar a checagem de verdade).
+
+  ## Tiques que sempre denunciam IA
+
+  - Borda colorida grossa de um lado só do card ("side-tab accent").
+  - Cards aninhados dentro de cards (nested-cards).
+  - Gradiente roxo-pra-azul em qualquer elemento (ai-color-palette).
+  - Fonte Inter pra tudo, sem hierarquia tipográfica real (overused-font,
+    single-font, flat-type-hierarchy).
+  - Texto em gradiente (gradient-text).
+  - Paleta "creme" genérica sem personalidade (cream-palette).
+  - Espaçamento monótono, sem ritmo visual (monotonous-spacing).
+  - Easing tipo "bounce" em toda transição (bounce-easing).
+  - Brilho escuro/glow decorativo sem função (dark-glow).
+  - Pilha de ícones em "tiles" repetidos (icon-tile-stack).
+  - Display serifado itálico só pra parecer "editorial" (italic-serif-display).
+  - "Eyebrow chip" no hero (texto pequeno colorido acima do título) e
+    marcadores de seção numerados repetidos (hero-eyebrow-chip,
+    repeated-section-kickers, numbered-section-markers).
+  - Uso excessivo de travessão (em-dash-overuse) e jargão de marketing
+    genérico (marketing-buzzword) no copy.
+  - Cadência "aforística" no texto — frases curtas de efeito em sequência
+    (aphoristic-cadence).
+  - H1 desproporcionalmente grande (oversized-h1) com tracking negativo
+    extremo (extreme-negative-tracking).
+
+  ## Qualidade técnica/acessibilidade (não específico de IA, mas sempre checar)
+
+  Contraste (gray-on-color, low-contrast), largura de linha de texto
+  (line-length), padding apertado (cramped-padding), texto colado na borda
+  da viewport (body-text-viewport-edge), leading apertado (tight-leading),
+  hierarquia de heading pulada (skipped-heading), texto justificado
+  (justified-text), texto minúsculo (tiny-text), tudo em maiúsculas no corpo
+  (all-caps-body), tracking largo demais (wide-tracking), overflow de texto
+  não tratado (text-overflow, clipped-overflow-container).
+
+  Se o projeto tem um design system definido (`DESIGN.md` ou equivalente),
+  prefira sempre os tokens dele em vez de fonte/cor/raio arbitrários
+  (design-system-font, design-system-color, design-system-radius).
+
+  ## Como usar isto na prática
+
+  Esta lista é um GUIA pra revisão manual/durante a escrita do código. Pra
+  uma checagem automática e determinística (sem depender de você lembrar de
+  tudo), use `npx impeccable detect --json .` como `verify_command` de uma
+  loop-skill — ver docs/integrations/impeccable.md do Bauer.
