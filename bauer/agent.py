@@ -3841,8 +3841,12 @@ def run_agent_session(
             if _ls_match is not None:
                 _ls_skill, _ls_re = _ls_match
                 _ls_now = time.monotonic()
-                _ls_last = _loop_skill_last_run.get(_ls_skill.name, 0.0)
-                if _ls_now - _ls_last >= _LOOP_SKILL_COOLDOWN_S:
+                # Sentinela None (não 0.0): time.monotonic() tem época
+                # arbitrária — no Linux é uptime, e em VM recém-bootada
+                # (CI!) monotonic() < cooldown fazia o default 0.0 parecer
+                # "rodou agora há pouco", bloqueando o PRIMEIRO disparo.
+                _ls_last = _loop_skill_last_run.get(_ls_skill.name)
+                if _ls_last is None or _ls_now - _ls_last >= _LOOP_SKILL_COOLDOWN_S:
                     _loop_skill_last_run[_ls_skill.name] = _ls_now
                     console.print(
                         f"[cyan]padrão '{_ls_skill.name}' reconhecido[/cyan] "
