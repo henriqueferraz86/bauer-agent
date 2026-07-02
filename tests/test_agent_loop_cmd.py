@@ -283,6 +283,50 @@ def test_loop_provider_error_stops_without_fallback(ws: Path):
     assert "/loop encerrado" in output
 
 
+def test_run_tool_loop_body_except_fallback_branch(ws: Path):
+    """Regressão do F821 pego pelo lint do CI: o branch `except` de fallback
+    dentro de _run_tool_loop_body referencia _OpenAIClientCls — sem o import
+    local, esse branch estourava NameError em runtime (os testes anteriores só
+    exerciam a camada de fallback INTERNA de _collect_with_fallback, nunca o
+    except externo). Força o except: _collect_with_fallback levanta na 1ª
+    chamada, sucede na 2ª — o except troca pro fallback e re-tenta."""
+    import io
+
+    from bauer.agent import _run_tool_loop_body
+    from bauer.openai_client import OpenAIClientError
+
+    fb_client = _fixed_response_client("Resposta via fallback.")
+    calls = {"n": 0}
+
+    def _collect_side_effect(client, model, payload, fallbacks, console):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OpenAIClientError("HTTP 429: rate limit")
+        return "Resposta via fallback.", client, model
+
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    router = ToolRouter(workspace=ws)
+    stats = SessionStats(model="fake", context_tokens=4096, machine_id="x", provider="")
+    primary = MagicMock()
+    primary.last_usage = {}
+    state = _TurnState(client=primary, active_model="fake", native_session_ok=False, fb_idx=0, mem_turn_idx=0)
+    ctx.add_user("oi")
+
+    with patch("bauer.agent._collect_with_fallback", side_effect=_collect_side_effect):
+        outcome = _run_tool_loop_body(
+            ctx=ctx, router=router, state=state, console=console,
+            fallback_clients=[(fb_client, "fallback-model")], stats=stats,
+            tool_timeout_s=5.0, session_store=None, session_id=None,
+            active_workspace=str(ws), turn_input_text="oi", memprov=None,
+        )
+
+    assert outcome.kind == "final"
+    assert outcome.display == "Resposta via fallback."
+    assert state.fb_idx == 1  # except externo consumiu o 1º fallback da lista
+    assert state.active_model == "fallback-model"
+
+
 # ─── _run_loop_mode — guardrail cross-turno ──────────────────────────────────
 
 

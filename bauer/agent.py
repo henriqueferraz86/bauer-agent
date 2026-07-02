@@ -391,6 +391,29 @@ TOOL_USE_ENFORCEMENT = (
     "Uma lista de 'proximos passos' NAO e entrega — a entrega e o artefato concreto.\n"
 )
 
+# Escada de decisão "código mínimo" — inspirada no projeto Ponytail (MIT):
+# https://github.com/DietrichGebert/ponytail. Adaptada (não copiada verbatim);
+# controlada por config.agent.minimal_code_mode (default True — ver
+# _build_system_prompt).
+MINIMAL_CODE_LADDER = (
+    "# ESCADA DE DECISAO — CODIGO MINIMO NECESSARIO\n"
+    "Antes de escrever codigo novo, suba esta escada NA ORDEM e pare no PRIMEIRO\n"
+    "degrau que resolve o problema — isso roda DEPOIS de entender o problema\n"
+    "(leia o codigo ao redor primeiro), nao no lugar disso:\n"
+    "  1. Isso PRECISA existir agora? (YAGNI — nao construa para um caso\n"
+    "     hipotetico futuro que ninguem pediu.)\n"
+    "  2. Ja existe algo assim NESTE codebase? Reuse em vez de duplicar.\n"
+    "  3. Resolve com a biblioteca padrao da linguagem, sem dependencia nova?\n"
+    "  4. E um recurso nativo da plataforma/framework que ja esta em uso?\n"
+    "  5. Uma dependencia ja instalada no projeto ja resolve isso?\n"
+    "  6. Da para fazer em uma linha, sem criar abstracao nova?\n"
+    "  7. So entao: a solucao MINIMA viavel — sem generalizar para casos que\n"
+    "     ninguem pediu.\n"
+    "PREGUICOSO, NAO NEGLIGENTE: validacao de entrada, tratamento de erro em\n"
+    "fronteira de confianca, seguranca e acessibilidade NUNCA saem de escopo por\n"
+    "causa desta escada — cortar essas coisas nao e 'codigo minimo', e bug.\n"
+)
+
 # Protocolo de execução de task — injetado SOMENTE quando o agent roda como
 # worker do kanban (env BAUER_KANBAN_TASK). Espelha o KANBAN_GUIDANCE do Hermes,
 # adaptado às tools reais do Bauer (kanban_show/complete/block/comment/create).
@@ -498,9 +521,23 @@ def _build_system_prompt(router: ToolRouter) -> str:
         "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
         "Responda sempre em portugues.\n\n"
         + TOOL_USE_ENFORCEMENT
+        + (("\n" + MINIMAL_CODE_LADDER) if _minimal_code_mode_enabled() else "")
         + (("\n" + KANBAN_WORKER_GUIDANCE) if os.environ.get("BAUER_KANBAN_TASK") else "")
         + _specs_section()
     )
+
+
+def _minimal_code_mode_enabled() -> bool:
+    """Lê config.agent.minimal_code_mode — best-effort, nunca bloqueia o chat.
+
+    Default True (mesmo valor default de AgentSection) se a config não
+    carregar, mesma filosofia de _resolve_loop_config.
+    """
+    try:
+        from .config_loader import load_config
+        return load_config().agent.minimal_code_mode
+    except Exception:
+        return True
 
 
 def _extract_text_from_pseudo_json(response: str) -> str | None:
@@ -2583,6 +2620,7 @@ def _run_tool_loop_body(
     """
     tool_turns = 0
     cli_tool_log: list[dict] = []
+    from .openai_client import OpenAIClient as _OpenAIClientCls
     from .tool_dedup import ToolCallDeduper as _CliDeduper
     _cli_deduper = _CliDeduper()
 

@@ -61,6 +61,10 @@ class AgentSection(_StrictSection):
     name: str = "Bauer Agent"
     workspace: str = "./workspace"
     tool_timeout_s: float = Field(ge=0.0, le=600.0, default=30.0)
+    # Escada de decisão "código mínimo" (inspirada no Ponytail, MIT) no system
+    # prompt padrão — prefere reuso/stdlib/uma-linha a abstração nova, sem
+    # cortar validação/segurança/acessibilidade. default True = agressivo.
+    minimal_code_mode: bool = True
 
 
 class ObservabilitySection(_StrictSection):

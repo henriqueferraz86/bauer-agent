@@ -252,7 +252,15 @@ def test_agent_tool_result_fed_back(ws: Path, router: ToolRouter):
 
 
 def test_agent_max_tool_turns_protection(ws: Path, router: ToolRouter):
-    """Agente para após MAX_TOOL_TURNS tool calls consecutivos."""
+    """Agente para após MAX_TOOL_TURNS tool calls consecutivos.
+
+    Contexto GRANDE (131072) de propósito: com 4096, a compressão de contexto
+    dispara a cada ~13 rodadas e o fallback dela ("auxiliary primeiro,
+    principal depois") consome respostas do MOCK como sumarizador — antes da
+    hermeticidade do conftest.py isso silenciosamente fazia ~10 chamadas de
+    LLM REAIS por execução deste teste. O teste é sobre o teto de tool calls,
+    não sobre compressão — contexto grande isola o que se quer medir.
+    """
     from bauer.agent import run_agent_session
     from rich.console import Console
 
@@ -264,7 +272,7 @@ def test_agent_max_tool_turns_protection(ws: Path, router: ToolRouter):
     console = Console()
 
     with patch("builtins.input", side_effect=["faça algo", EOFError]):
-        run_agent_session(client, "test-model", 4096, console, router)
+        run_agent_session(client, "test-model", 131072, console, router)
 
     # Não deve ter mais de MAX_TOOL_TURNS + 1 chamadas (MAX tool calls + 1 final)
     assert client.chat_stream.call_count <= MAX_TOOL_TURNS + 1
