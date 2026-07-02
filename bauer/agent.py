@@ -19,7 +19,7 @@ import json
 import os
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1151,20 +1151,22 @@ def _parse_provider_context_cap(error_text: str) -> int | None:
 
 
 @contextmanager
-def _thinking_status(console: Console, model_name: str):
-    """Spinner enquanto o modelo gera a resposta completa.
+def _busy_spinner(console: Console, text: str):
+    """Spinner genérico para qualquer trecho "mudo" do terminal (chamada de
+    LLM, execução de tool). A barra de status fixa do prompt_toolkit
+    (bottom_toolbar) só existe enquanto o prompt está esperando input — some
+    assim que o Enter é pressionado, porque é renderizada pelo mecanismo de
+    prompt, não por um layout persistente. Sem NENHUM indicador nesse meio
+    tempo, um `run_command` demorado (docker build, etc.) parece travado.
+    Este spinner cobre esse vão: sempre há algo visivelmente rodando entre
+    o Enter e a próxima barra de status.
 
-    Sem isto o terminal ficava mudo por vários segundos (a resposta não é
-    streamada ao usuário) — parecia travado. Best-effort: se o console não
-    suportar live display (outro Live ativo, output capturado), segue sem
-    spinner em vez de quebrar o turno.
+    Best-effort: se o console não suportar live display (outro Live ativo,
+    output capturado), segue sem spinner em vez de quebrar o turno.
     """
     _status = None
     try:
-        _status = console.status(
-            f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]",
-            spinner="dots",
-        )
+        _status = console.status(text, spinner="dots")
         _status.__enter__()
     except Exception:
         _status = None
@@ -1176,6 +1178,11 @@ def _thinking_status(console: Console, model_name: str):
                 _status.__exit__(None, None, None)
             except Exception:
                 pass
+
+
+def _thinking_status(console: Console, model_name: str):
+    """Spinner enquanto o modelo gera a resposta completa (sem streaming)."""
+    return _busy_spinner(console, f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]")
 
 
 def _print_assistant_response(console: Console, text: str, cost_line: str = "") -> None:
@@ -1566,7 +1573,8 @@ def _native_turn_interactive(
                 result = _cached
             else:
                 try:
-                    result = router.execute_native_call(name, args)
+                    with _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]"):
+                        result = router.execute_native_call(name, args)
                 except (ToolError, SandboxError) as exc:
                     result = f"[Erro: {exc}]"
                     _failed = True
@@ -3040,18 +3048,32 @@ def _run_tool_loop_body(
                 _cli_deduper.record(_name, _args, _result, failed=_failed)
                 return _name, _result, _args_sig(_args)
 
-            # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
-            if len(_to_execute) > 1:
-                from concurrent.futures import ThreadPoolExecutor
-                from concurrent.futures import as_completed as _as_completed
-
-                ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(_to_execute)
-                with ThreadPoolExecutor(max_workers=min(len(_to_execute), 8)) as _ex:
-                    _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(_to_execute)}
-                    for _fut in _as_completed(_fmap):
-                        ordered_results[_fmap[_fut]] = _fut.result()
+            # Um único spinner cobre o batch inteiro (serial ou paralelo) — não
+            # dá pra abrir um spinner por tool no caminho paralelo, Rich só
+            # permite um Live display ativo por vez (as threads do
+            # ThreadPoolExecutor rodam em background, só a thread principal
+            # mexe no console).
+            if not _to_execute:
+                _busy_label = ""
+            elif len(_to_execute) == 1:
+                _busy_label = f"[dim]executando {_to_execute[0].get('action', '?')}… (Ctrl+C interrompe)[/dim]"
             else:
-                ordered_results = [_exec_action(a) for a in _to_execute]
+                _names = ", ".join(a.get("action", "?") for a in _to_execute)
+                _busy_label = f"[dim]executando {len(_to_execute)} tools ({_names})… (Ctrl+C interrompe)[/dim]"
+
+            with _busy_spinner(console, _busy_label) if _busy_label else nullcontext():
+                # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
+                if len(_to_execute) > 1:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from concurrent.futures import as_completed as _as_completed
+
+                    ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(_to_execute)
+                    with ThreadPoolExecutor(max_workers=min(len(_to_execute), 8)) as _ex:
+                        _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(_to_execute)}
+                        for _fut in _as_completed(_fmap):
+                            ordered_results[_fmap[_fut]] = _fut.result()
+                else:
+                    ordered_results = [_exec_action(a) for a in _to_execute]
 
             for _exec_dict, (action_name, tool_result, _asig) in zip(_to_execute, ordered_results):
                 if budget is not None and not budget.is_exhausted:

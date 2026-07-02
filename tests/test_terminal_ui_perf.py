@@ -5,15 +5,27 @@ Cobre:
     no startup — 17s medidos antes do fix)
   - OllamaClient.is_alive: probe com timeout curto (não o timeout de chat)
   - _print_assistant_response: render Markdown + fallback texto puro
-  - _thinking_status: nunca quebra o turno (best-effort)
+  - _thinking_status/_busy_spinner: nunca quebram o turno (best-effort);
+    spinner cobre tanto a chamada ao LLM quanto a execução de tools (nativo
+    e bridge) — sem isso um run_command demorado ficava sem nenhum
+    indicador visível.
 """
 
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.console import Console
+
+
+@pytest.fixture
+def ws(tmp_path: Path) -> Path:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    return workspace
 
 
 # ─── AuthManager lazy http ────────────────────────────────────────────────────
@@ -126,3 +138,109 @@ def test_thinking_status_enters_and_exits_console_status():
     # segundo uso confirma que o primeiro liberou o live display
     with _thinking_status(console, "modelo-x"):
         pass
+
+
+# ─── _busy_spinner (genérico) + cobertura de execução de tools ──────────────
+# Regressão: "enquanto esta rodando um comando some da parte debaixo o
+# terminal ◆ BAUER..." — a bottom_toolbar do prompt_toolkit só existe
+# durante o prompt() esperando input; um run_command demorado (docker
+# build) ficava sem NENHUM indicador visível, parecendo travado. Fix:
+# spinner também durante execução de tool (nativo e bridge), não só
+# durante a geração do LLM.
+
+
+def test_busy_spinner_yields_even_if_console_status_fails():
+    from bauer.agent import _busy_spinner
+
+    console = MagicMock()
+    console.status.side_effect = RuntimeError("live display já ativo")
+    ran = False
+    with _busy_spinner(console, "[dim]executando algo…[/dim]"):
+        ran = True
+    assert ran
+
+
+def test_busy_spinner_enters_and_exits_cleanly():
+    from bauer.agent import _busy_spinner
+
+    console = _capture_console()
+    with _busy_spinner(console, "[dim]executando algo…[/dim]"):
+        pass
+    with _busy_spinner(console, "[dim]executando outra coisa…[/dim]"):
+        pass
+
+
+def test_native_tool_execution_shows_spinner_with_tool_name():
+    """_native_turn_interactive envolve router.execute_native_call com
+    _busy_spinner — antes só a chamada ao LLM tinha spinner, a execução da
+    tool em si (o run_command demorado) ficava muda."""
+    import json
+    from bauer.agent import _native_turn_interactive
+    from bauer.tool_dedup import ToolCallDeduper
+
+    client = MagicMock()
+    client.chat_with_tools.return_value = {
+        "content": "",
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {"name": "run_command", "arguments": json.dumps({"command": "docker ps"})},
+        }],
+    }
+    router = MagicMock()
+    router.get_tool_schemas.return_value = []
+    router.execute_native_call.return_value = "CONTAINER ID   IMAGE"
+
+    console = MagicMock()
+    ctx = MagicMock()
+    ctx.get_payload.return_value = []
+    ctx.messages = []
+
+    kind, text = _native_turn_interactive(
+        ctx, router, client, "test-model", console,
+        cli_tool_log=[], deduper=ToolCallDeduper(), calls_left=10,
+    )
+
+    assert kind == "continue"
+    status_texts = [c.args[0] for c in console.status.call_args_list]
+    assert any("run_command" in t for t in status_texts)
+
+
+def test_bridge_tool_execution_spinner_shows_single_action_name(ws: Path):
+    """Um único tool call — o rótulo do spinner mostra o nome da action."""
+    from bauer.agent import _run_tool_loop_body, _TurnState
+    from bauer.context_manager import ContextManager
+    from bauer.performance_tracker import SessionStats
+    from bauer.tool_router import ToolRouter
+    from rich.console import Console
+
+    responses = [
+        '{"action": "list_dir", "args": {"path": "."}}',
+        "Feito.",
+    ]
+    calls = {"n": 0}
+
+    def _side_effect(*args, **kwargs):
+        idx = min(calls["n"], len(responses) - 1)
+        calls["n"] += 1
+        return iter([responses[idx]])
+
+    client = MagicMock()
+    client.chat_stream.side_effect = _side_effect
+    client.last_usage = {}
+
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    real_console = Console(file=__import__("io").StringIO(), force_terminal=False, width=120)
+    router = ToolRouter(workspace=ws)
+    stats = SessionStats(model="fake-model", context_tokens=4096, machine_id="x", provider="")
+    state = _TurnState(client=client, active_model="fake-model", native_session_ok=False, fb_idx=0, mem_turn_idx=0)
+
+    with patch.object(real_console, "status", wraps=real_console.status) as mock_status:
+        _run_tool_loop_body(
+            ctx=ctx, router=router, state=state, console=real_console,
+            fallback_clients=None, stats=stats, tool_timeout_s=5.0,
+            session_store=None, session_id=None, active_workspace=str(ws),
+            turn_input_text="liste os arquivos", memprov=None,
+        )
+
+    status_texts = [c.args[0] for c in mock_status.call_args_list]
+    assert any("list_dir" in t for t in status_texts)
