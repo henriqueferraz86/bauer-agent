@@ -570,6 +570,12 @@ class ToolsSection(_StrictSection):
     timeout_seconds: int = Field(ge=1, le=300, default=30)
     max_output_kb: int = Field(ge=1, le=1000, default=50)
     max_tool_calls: int = Field(ge=1, default=500)
+    # Cap de tool calls DENTRO DE UM ÚNICO TURNO do chat interativo (proteção
+    # anti-loop de bauer/agent.py::MAX_TOOL_TURNS) — diferente de
+    # max_tool_calls acima, que é o teto por SESSÃO inteira do ToolRouter.
+    # Mensagem de erro quando estoura: "Limite de N tool calls atingido
+    # neste turno."
+    max_tool_turns: int = Field(ge=1, default=150)
     # Toolset enxuto: se não-vazio, SÓ estas tools são expostas ao modelo.
     # Encolhe o prompt (as 79 tools = ~14k tokens) — essencial p/ modelos locais
     # em CPU. Vazio = todas as tools. Ex.: [web_search, web_fetch, read_file,

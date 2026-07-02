@@ -540,6 +540,13 @@ tools:
   # Exemplo para workflows de DevOps/containers:
   # extra_allowed_commands: [docker, docker-compose, kubectl]
 
+  # Cap de tool calls DENTRO DE UM ÚNICO TURNO do chat interativo (protege
+  # contra o modelo entrar num loop de tool calls sem convergir). Diferente
+  # de max_tool_calls acima, que é o teto por SESSÃO inteira.
+  max_tool_turns: 150
+  # Exemplo para workflows de DevOps/containers:
+  # extra_allowed_commands: [docker, docker-compose, kubectl]
+
 
 # =============================================================================
 # WEB — backends para web_search e web_fetch

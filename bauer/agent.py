@@ -3702,6 +3702,17 @@ def _handle_loop_skill_cmd(
     console.print("[yellow]Uso:[/yellow] /loop-skill list | /loop-skill run <nome> [texto livre]")
 
 
+def _resolve_max_tool_turns() -> int:
+    """Lê config.tools.max_tool_turns — best-effort, default 150 (mesmo
+    valor default de ToolsSection) se a config não carregar, mesma
+    filosofia de _minimal_code_mode_enabled/_resolve_loop_config."""
+    try:
+        from .config_loader import load_config
+        return load_config().tools.max_tool_turns
+    except Exception:
+        return 150
+
+
 def run_agent_session(
     client: OllamaClient,
     model_name: str,
@@ -3735,6 +3746,15 @@ def run_agent_session(
         fallback_clients: Lista de (client, model_name) para tentar quando o provider
             principal falha com erro retryável (PROVIDER_DOWN / QUOTA_EXCEEDED).
     """
+    # MAX_TOOL_TURNS é lido por dezenas de call sites como global do módulo
+    # (inclusive dentro de funções aninhadas em _run_tool_loop_body) — em vez
+    # de threadar um parâmetro por toda essa cadeia, resolve uma vez aqui e
+    # muta o global; toda leitura subsequente nesta sessão já pega o valor
+    # configurado (Python resolve nomes de módulo em tempo de chamada, não
+    # de definição).
+    global MAX_TOOL_TURNS
+    MAX_TOOL_TURNS = _resolve_max_tool_turns()
+
     system_prompt = _build_system_prompt(router)
     if learning_hints:
         system_prompt += f"\n\n# Aprendizados desta sessão\n{learning_hints}"

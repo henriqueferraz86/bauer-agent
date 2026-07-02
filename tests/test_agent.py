@@ -153,6 +153,78 @@ def test_run_agent_session_task_command_uses_router_workspace(tmp_path: Path):
     client.chat_stream.assert_not_called()
 
 
+# ─── config.tools.max_tool_turns (MAX_TOOL_TURNS configurável) ─────────────
+# Regressão: "Limite de 150 tool calls atingido neste turno" era hardcoded,
+# sem NENHUM jeito de aumentar via config.yaml.
+
+
+def test_tools_section_max_tool_turns_default_150():
+    from bauer.config_loader import ToolsSection
+
+    assert ToolsSection().max_tool_turns == 150
+
+
+def test_resolve_max_tool_turns_reads_config():
+    from bauer.agent import _resolve_max_tool_turns
+    from bauer.config_loader import BauerConfig, ModelSection, ToolsSection
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        tools=ToolsSection(max_tool_turns=9999),
+    )
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        assert _resolve_max_tool_turns() == 9999
+
+
+def test_resolve_max_tool_turns_defaults_150_on_config_load_failure():
+    from bauer.agent import _resolve_max_tool_turns
+
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        assert _resolve_max_tool_turns() == 150
+
+
+def test_run_agent_session_applies_configured_max_tool_turns(ws: Path, router: ToolRouter):
+    """run_agent_session muta o global MAX_TOOL_TURNS a partir da config antes
+    de entrar no loop — cobre todos os call sites internos que leem o nome do
+    módulo (_run_tool_loop_body, _native_turn_interactive etc)."""
+    import bauer.agent as agent_mod
+    from bauer.config_loader import BauerConfig, ModelSection, ToolsSection
+    from rich.console import Console
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        tools=ToolsSection(max_tool_turns=9999),
+    )
+    client = _make_client()
+    console = Console()
+
+    try:
+        with patch("bauer.config_loader.load_config", return_value=cfg), \
+             patch("builtins.input", side_effect=[EOFError]):
+            agent_mod.run_agent_session(client, "test-model", 4096, console, router)
+        assert agent_mod.MAX_TOOL_TURNS == 9999
+    finally:
+        # Nunca deixa o global mutado vazar pra outros testes do mesmo processo.
+        agent_mod.MAX_TOOL_TURNS = 150
+
+
+def test_run_agent_session_falls_back_to_150_without_config(ws: Path, router: ToolRouter):
+    import bauer.agent as agent_mod
+    from rich.console import Console
+
+    client = _make_client()
+    console = Console()
+
+    try:
+        agent_mod.MAX_TOOL_TURNS = 9999  # simula valor deixado por outro teste/sessão
+        with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError), \
+             patch("builtins.input", side_effect=[EOFError]):
+            agent_mod.run_agent_session(client, "test-model", 4096, console, router)
+        assert agent_mod.MAX_TOOL_TURNS == 150
+    finally:
+        agent_mod.MAX_TOOL_TURNS = 150
+
+
 def test_dispatch_command_dry_run_uses_active_workspace(tmp_path: Path):
     from bauer.agent import _handle_dispatch_cmd
     from bauer.workspace_manager import WorkspaceManager
