@@ -636,6 +636,93 @@ class TestPickFromList:
             assert _pick_from_list(self.ITEMS, "T") == "999"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# model_switcher — _pick_openrouter_model / busca no catálogo completo
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Regressão: "não esta aparecendo todos os modelo openrouter na lista" — o
+# picker padrão mostra grátis (todos) + top 40 pagos por custo (curadoria
+# necessária: o catálogo tem 300+ modelos). Modelos fora desse recorte só
+# eram alcançáveis digitando o ID exato de cor. A opção "buscar por nome"
+# varre o catálogo INTEIRO (sem o corte de 40).
+
+
+def _fake_catalog(n_free: int = 3, n_paid: int = 50) -> list[dict]:
+    catalog = [
+        {"id": f"free-author/model-{i}:free", "is_free": True,
+         "cost_in": None, "context_window": 32000}
+        for i in range(n_free)
+    ]
+    catalog += [
+        {"id": f"paid-author/model-{i}", "is_free": False,
+         "cost_in": float(i + 1), "context_window": 128000}
+        for i in range(n_paid)
+    ]
+    return catalog
+
+
+class TestPickOpenrouterModel:
+    def test_default_view_caps_paid_at_40(self):
+        """Sem busca: grátis todos + top 40 pagos — não os 50 do catálogo."""
+        from bauer.model_switcher import _pick_openrouter_model
+
+        catalog = _fake_catalog(n_free=3, n_paid=50)
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=catalog), \
+             patch("rich.prompt.Prompt.ask", return_value="1") as mock_ask:
+            result = _pick_openrouter_model()
+
+        assert result == "free-author/model-0:free"
+        table = mock_ask.call_args_list  # apenas 1 prompt — nenhum novo prompt obrigatório
+        assert len(table) == 1
+
+    def test_search_finds_model_outside_top_40(self):
+        """Modelo mais caro que os top-40 (fora do recorte padrão) — só a
+        busca alcança, e ela varre o catálogo inteiro."""
+        from bauer.model_switcher import _pick_openrouter_model
+
+        catalog = _fake_catalog(n_free=3, n_paid=50)  # model-49 é o mais caro — fica fora do top 40
+        # 1) escolhe "__search__" (última posição antes de __custom__: 3 free + 40 paid + 1 search = idx 44)
+        # 2) digita o termo de busca
+        # 3) escolhe o resultado
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=catalog), \
+             patch("rich.prompt.Prompt.ask", side_effect=["44", "model-49", "1"]):
+            result = _pick_openrouter_model()
+
+        assert result == "paid-author/model-49"
+
+    def test_search_no_matches_reprompts_main_menu(self):
+        from bauer.model_switcher import _pick_openrouter_model
+
+        catalog = _fake_catalog(n_free=1, n_paid=1)
+        # items: 1=free, 2=paid, 3=__search__, 4=__custom__
+        # "3" escolhe buscar -> termo sem match -> volta ao menu -> "1" seleciona o grátis
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=catalog), \
+             patch("rich.prompt.Prompt.ask", side_effect=["3", "nao-existe-isso", "1"]):
+            result = _pick_openrouter_model()
+
+        assert result == "free-author/model-0:free"
+
+    def test_search_empty_query_reprompts_main_menu(self):
+        from bauer.model_switcher import _pick_openrouter_model
+
+        catalog = _fake_catalog(n_free=1, n_paid=1)
+        with patch("bauer.models_dev.fetch_openrouter_catalog", return_value=catalog), \
+             patch("rich.prompt.Prompt.ask", side_effect=["3", "", "1"]):
+            result = _pick_openrouter_model()
+
+        assert result == "free-author/model-0:free"
+
+    def test_search_custom_escape_hatch_still_available(self):
+        """Mesmo dentro da busca, digitar o ID exato continua funcionando."""
+        from bauer.model_switcher import _search_openrouter_model
+
+        catalog = _fake_catalog(n_free=1, n_paid=1)
+        with patch("rich.prompt.Prompt.ask", side_effect=["model-0", "some/exact-id"]):
+            result = _search_openrouter_model(catalog)
+
+        assert result == "some/exact-id"
+
+
 class TestAskApiKey:
     def test_existing_key_no_prompt(self, tmp_path):
         f = tmp_path / ".env"

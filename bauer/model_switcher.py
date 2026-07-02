@@ -285,10 +285,62 @@ def _pick_from_list(items: list[tuple[str, str]], title: str) -> str | None:
 # Fluxo principal
 # ---------------------------------------------------------------------------
 
+def _openrouter_desc(m: dict) -> str:
+    if m.get("is_free"):
+        ctx = m.get("context_window")
+        ctx_s = f" · {ctx // 1000}k ctx" if ctx else ""
+        return f"GRÁTIS{ctx_s}"
+    cost = m.get("cost_in")
+    cost_s = f"${cost}/M" if cost else "—"
+    return f"PAGO · {cost_s} entrada"
+
+
+# Teto de exibição para resultados de busca — o catálogo tem 300+ modelos
+# pagos; sem teto, um termo genérico ("gpt") devolveria dezenas de linhas
+# irrelevantes na mesma tabela numerada.
+_OPENROUTER_SEARCH_LIMIT = 60
+
+
+def _search_openrouter_model(catalog: list[dict]) -> str | None:
+    """Busca por substring do ID no catálogo INTEIRO (sem o corte de 40 pagos)."""
+    query = Prompt.ask(
+        "[bold]Buscar[/bold] (parte do ID — ex: 'claude', 'llama', 'gpt-4')",
+        default="",
+    ).strip().lower()
+    if not query:
+        return _pick_openrouter_model()
+
+    matches = [m for m in catalog if query in m["id"].lower()]
+    if not matches:
+        console.print(f"[yellow]Nenhum modelo com '{query}' no ID.[/yellow]")
+        console.print(
+            "[dim]Dica: o ID no OpenRouter segue o formato 'autor/modelo' "
+            "(ex: 'anthropic/claude-sonnet-4') — tente um termo mais curto.[/dim]"
+        )
+        return _pick_openrouter_model()
+
+    matches.sort(key=lambda m: (0 if m.get("is_free") else 1, m.get("cost_in") or 999.0))
+    shown = matches[:_OPENROUTER_SEARCH_LIMIT]
+    items: list[tuple[str, str]] = (
+        [(m["id"], _openrouter_desc(m)) for m in shown]
+        + [("__custom__", ">> digitar ID do modelo")]
+    )
+    console.print(
+        f"[dim]{len(matches)} resultado(s) para '{query}'"
+        + (f" — mostrando os {len(shown)} mais baratos" if len(matches) > len(shown) else "")
+        + "[/dim]"
+    )
+    return _pick_from_list(items, f"Busca OpenRouter: '{query}'")
+
+
 def _pick_openrouter_model() -> str | None:
     """Busca catálogo live do OpenRouter e exibe seletor interativo.
 
-    Mostra gratuitos primeiro (todos), depois pagos (top 40 por custo).
+    Mostra gratuitos (todos) + pagos (top 40 por custo) — a curadoria existe
+    porque o catálogo completo tem 300+ modelos e uma tabela numerada com
+    todos seria inutilizável. Quem procura um modelo específico fora desse
+    recorte (ex.: visto em openrouter.ai/models) usa a opção 'buscar por
+    nome', que varre o catálogo INTEIRO — sem o corte de 40.
     """
     console.print("[dim]Buscando catálogo OpenRouter…[/dim]")
     try:
@@ -304,28 +356,23 @@ def _pick_openrouter_model() -> str | None:
 
     # Ordena pagos por custo ascendente, limita a 40
     paid.sort(key=lambda m: m.get("cost_in") or 999.0)
-    paid = paid[:40]
-
-    def _desc(m: dict) -> str:
-        if m.get("is_free"):
-            ctx = m.get("context_window")
-            ctx_s = f" · {ctx // 1000}k ctx" if ctx else ""
-            return f"GRÁTIS{ctx_s}"
-        cost = m.get("cost_in")
-        cost_s = f"${cost}/M" if cost else "—"
-        return f"PAGO · {cost_s} entrada"
+    paid_top = paid[:40]
 
     items: list[tuple[str, str]] = (
-        [(m["id"], _desc(m)) for m in free]
-        + [(m["id"], _desc(m)) for m in paid]
-        + [("__custom__", ">> digitar ID do modelo")]
+        [(m["id"], _openrouter_desc(m)) for m in free]
+        + [(m["id"], _openrouter_desc(m)) for m in paid_top]
+        + [("__search__", ">> buscar por nome (ex: 'claude', 'llama')")]
+        + [("__custom__", ">> digitar ID do modelo exato")]
     )
 
     console.print(
-        f"[dim]{len(free)} gratuitos · {len(paid)} pagos mostrados "
-        f"(de {len(catalog)} no catálogo)[/dim]"
+        f"[dim]{len(free)} gratuitos · {len(paid_top)} pagos mostrados "
+        f"(de {len(catalog)} no catálogo, {len(paid)} pagos no total)[/dim]"
     )
-    return _pick_from_list(items, "Modelos OpenRouter")
+    chosen = _pick_from_list(items, "Modelos OpenRouter")
+    if chosen == "__search__":
+        return _search_openrouter_model(catalog)
+    return chosen
 
 
 def run_model_switcher(config_path: Path) -> None:
