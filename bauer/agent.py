@@ -1212,6 +1212,23 @@ def _thinking_status(console: Console, model_name: str):
     return _busy_spinner(console, f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]")
 
 
+# Tools que fazem I/O interativo direto no terminal (input() bloqueante) —
+# NUNCA envolver em _busy_spinner. Rich Live display (console.status) e
+# input() disputam o controle do terminal: a thread de refresh do spinner
+# corrompe a leitura de stdin, fazendo o texto digitado sumir/aparecer
+# truncado ("nao consigo escrever" — incidente real 2026-07-02, regressão
+# introduzida pelo próprio spinner de execução de tool no commit anterior).
+_INTERACTIVE_TOOLS: frozenset[str] = frozenset({"clarify"})
+
+
+def _tool_exec_status(console: Console, name: str):
+    """_busy_spinner para execução de tool — no-op (nullcontext) para tools
+    que fazem input() direto, ver _INTERACTIVE_TOOLS."""
+    if name in _INTERACTIVE_TOOLS:
+        return nullcontext()
+    return _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]")
+
+
 def _print_assistant_response(console: Console, text: str, cost_line: str = "") -> None:
     """Render da resposta final: cabeçalho `● bauer` + corpo em Markdown.
 
@@ -1600,7 +1617,7 @@ def _native_turn_interactive(
                 result = _cached
             else:
                 try:
-                    with _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]"):
+                    with _tool_exec_status(console, name):
                         result = router.execute_native_call(name, args)
                 except (ToolError, SandboxError) as exc:
                     result = f"[Erro: {exc}]"
@@ -3084,8 +3101,12 @@ def _run_tool_loop_body(
             # dá pra abrir um spinner por tool no caminho paralelo, Rich só
             # permite um Live display ativo por vez (as threads do
             # ThreadPoolExecutor rodam em background, só a thread principal
-            # mexe no console).
-            if not _to_execute:
+            # mexe no console). NUNCA envolve se alguma action do lote for
+            # interativa (ex.: clarify) — Live display corrompe input().
+            _batch_interactive = any(
+                a.get("action", "") in _INTERACTIVE_TOOLS for a in _to_execute
+            )
+            if not _to_execute or _batch_interactive:
                 _busy_label = ""
             elif len(_to_execute) == 1:
                 _busy_label = f"[dim]executando {_to_execute[0].get('action', '?')}… (Ctrl+C interrompe)[/dim]"

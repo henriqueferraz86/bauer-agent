@@ -244,3 +244,114 @@ def test_bridge_tool_execution_spinner_shows_single_action_name(ws: Path):
 
     status_texts = [c.args[0] for c in mock_status.call_args_list]
     assert any("list_dir" in t for t in status_texts)
+
+
+# ─── _tool_exec_status: clarify (input() bloqueante) fica FORA do spinner ──
+# Regressão 2026-07-02: o spinner de execução de tool (commit 90c5f21)
+# envolvia TODAS as tools, inclusive `clarify` — que chama input() direto no
+# terminal. Rich Live display (console.status) e input() disputam o
+# controle do terminal: a thread de refresh do spinner corrompe a leitura
+# de stdin. Usuário reportou "nao consigo escrever" com a resposta
+# aparecendo truncada/errada ("totodo").
+
+
+def test_interactive_tools_set_includes_clarify():
+    from bauer.agent import _INTERACTIVE_TOOLS
+
+    assert "clarify" in _INTERACTIVE_TOOLS
+
+
+def test_tool_exec_status_skips_spinner_for_clarify():
+    from bauer.agent import _tool_exec_status
+    from contextlib import nullcontext
+
+    console = MagicMock()
+    ctx = _tool_exec_status(console, "clarify")
+    assert isinstance(ctx, type(nullcontext()))
+    with ctx:
+        pass
+    console.status.assert_not_called()
+
+
+def test_tool_exec_status_uses_spinner_for_normal_tools():
+    from bauer.agent import _tool_exec_status
+
+    console = _capture_console()
+    with _tool_exec_status(console, "run_command"):
+        pass  # não deve levantar
+
+
+def test_native_tool_execution_skips_spinner_for_clarify():
+    """_native_turn_interactive não deve chamar console.status() ao redor
+    de clarify — mesmo teste de _native_tool_execution_shows_spinner_with_tool_name
+    mas confirmando a EXCLUSÃO."""
+    import json
+    from bauer.agent import _native_turn_interactive
+    from bauer.tool_dedup import ToolCallDeduper
+
+    client = MagicMock()
+    client.chat_with_tools.return_value = {
+        "content": "",
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {"name": "clarify", "arguments": json.dumps({"question": "Qual o publico-alvo?"})},
+        }],
+    }
+    router = MagicMock()
+    router.get_tool_schemas.return_value = []
+    router.execute_native_call.return_value = "usuarios finais"
+
+    console = MagicMock()
+    ctx = MagicMock()
+    ctx.get_payload.return_value = []
+    ctx.messages = []
+
+    kind, text = _native_turn_interactive(
+        ctx, router, client, "test-model", console,
+        cli_tool_log=[], deduper=ToolCallDeduper(), calls_left=10,
+    )
+
+    assert kind == "continue"
+    # console.status é chamado 1x (pela chamada do LLM em _thinking_status)
+    # mas NÃO pela execução da tool clarify em si.
+    status_texts = [c.args[0] for c in console.status.call_args_list]
+    assert not any("clarify" in t for t in status_texts)
+
+
+def test_bridge_batch_skips_spinner_when_clarify_present(ws: Path):
+    """Um lote com clarify + outra tool não deve abrir spinner nenhum —
+    mesmo que a outra tool sozinha justificasse um."""
+    from bauer.agent import _run_tool_loop_body, _TurnState
+    from bauer.context_manager import ContextManager
+    from bauer.performance_tracker import SessionStats
+    from bauer.tool_router import ToolRouter
+
+    responses = ['{"action": "clarify", "args": {"question": "Qual o publico-alvo?"}}']
+    calls = {"n": 0}
+
+    def _side_effect(*args, **kwargs):
+        idx = min(calls["n"], len(responses) - 1)
+        calls["n"] += 1
+        return iter([responses[idx]])
+
+    client = MagicMock()
+    client.chat_stream.side_effect = _side_effect
+    client.last_usage = {}
+
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    router = ToolRouter(workspace=ws)
+    stats = SessionStats(model="fake-model", context_tokens=4096, machine_id="x", provider="")
+    state = _TurnState(client=client, active_model="fake-model", native_session_ok=False, fb_idx=0, mem_turn_idx=0)
+
+    with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="publico geral"):
+        mock_stdin.isatty.return_value = True
+        with patch.object(Console, "status") as mock_status:
+            _run_tool_loop_body(
+                ctx=ctx, router=router, state=state, console=Console(file=io.StringIO(), force_terminal=False),
+                fallback_clients=None, stats=stats, tool_timeout_s=5.0,
+                session_store=None, session_id=None, active_workspace=str(ws),
+                turn_input_text="pergunte algo", memprov=None,
+            )
+
+    status_texts = [c.args[0] for c in mock_status.call_args_list if c.args]
+    assert not any("clarify" in t for t in status_texts)
