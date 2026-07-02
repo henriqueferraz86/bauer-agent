@@ -229,7 +229,7 @@ class MiscToolsMixin:
             return f"[process] PID {pid} '{info['label']}' — finalizado com exit:{rc}"
 
         if action == "log":
-            max_lines = int(args.get("max_lines", 50))
+            max_lines = self._coerce_int(args.get("max_lines", 50), default=50, minimum=1)
             stdout_lines = info["stdout_buf"][-max_lines:]
             stderr_lines = info["stderr_buf"][-max_lines:]
             out = "".join(stdout_lines) or "(vazio)"

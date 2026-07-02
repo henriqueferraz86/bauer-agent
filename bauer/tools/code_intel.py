@@ -162,8 +162,8 @@ class CodeIntelToolsMixin:
 
     def _lsp_hover(self, args: dict) -> str:
         file_rel = str(args.get("file", "")).strip()
-        line = int(args.get("line", 0))
-        char = int(args.get("character", 0))
+        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
+        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
         if not file_rel:
             raise ToolError("lsp_hover requer 'file'.")
         result = self._lsp_call("hover", file_rel, line, char)
@@ -174,8 +174,8 @@ class CodeIntelToolsMixin:
 
     def _lsp_definitions(self, args: dict) -> str:
         file_rel = str(args.get("file", "")).strip()
-        line = int(args.get("line", 0))
-        char = int(args.get("character", 0))
+        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
+        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
         if not file_rel:
             raise ToolError("lsp_definitions requer 'file'.")
         result = self._lsp_call("definitions", file_rel, line, char)
@@ -185,8 +185,8 @@ class CodeIntelToolsMixin:
 
     def _lsp_references(self, args: dict) -> str:
         file_rel = str(args.get("file", "")).strip()
-        line = int(args.get("line", 0))
-        char = int(args.get("character", 0))
+        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
+        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
         if not file_rel:
             raise ToolError("lsp_references requer 'file'.")
         result = self._lsp_call("references", file_rel, line, char)
@@ -215,8 +215,8 @@ class CodeIntelToolsMixin:
 
     def _lsp_completion(self, args: dict) -> str:
         file_rel = str(args.get("file", "")).strip()
-        line = int(args.get("line", 0))
-        char = int(args.get("character", 0))
+        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
+        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
         if not file_rel:
             raise ToolError("lsp_completion requer 'file'.")
         result = self._lsp_call("completion", file_rel, line, char)
@@ -228,10 +228,10 @@ class CodeIntelToolsMixin:
         file_rel = str(args.get("file", "")).strip()
         if not file_rel:
             raise ToolError("lsp_code_actions requer 'file'.")
-        start_line = int(args.get("start_line", 0))
-        start_char = int(args.get("start_char", 0))
-        end_line = int(args.get("end_line", start_line))
-        end_char = int(args.get("end_char", start_char))
+        start_line = self._coerce_int(args.get("start_line", 0), default=0, minimum=0)
+        start_char = self._coerce_int(args.get("start_char", 0), default=0, minimum=0)
+        end_line = self._coerce_int(args.get("end_line", start_line), default=start_line, minimum=0)
+        end_char = self._coerce_int(args.get("end_char", start_char), default=start_char, minimum=0)
         result = self._lsp_call(
             "code_actions", file_rel, start_line, start_char,
             end_line=end_line, end_char=end_char,
@@ -244,7 +244,7 @@ class CodeIntelToolsMixin:
         file_rel = str(args.get("file", "")).strip()
         if not file_rel:
             raise ToolError("lsp_format requer 'file'.")
-        tab_size = int(args.get("tab_size", 4))
+        tab_size = self._coerce_int(args.get("tab_size", 4), default=4, minimum=1)
         insert_spaces = bool(args.get("insert_spaces", True))
         result = self._lsp_call(
             "format_document", file_rel, 0, 0,
@@ -262,8 +262,8 @@ class CodeIntelToolsMixin:
             raise ToolError("lsp_rename requer 'file'.")
         if not new_name:
             raise ToolError("lsp_rename requer 'new_name'.")
-        line = int(args.get("line", 0))
-        char = int(args.get("character", 0))
+        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
+        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
         result = self._lsp_call(
             "rename_symbol", file_rel, line, char,
             new_name=new_name,

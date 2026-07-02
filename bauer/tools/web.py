@@ -25,7 +25,7 @@ class WebToolsMixin:
         query = args.get("query")
         if not query:
             raise ToolError("web_search requer 'query'.")
-        max_results = min(int(args.get("max_results", 5)), 10)
+        max_results = min(self._coerce_int(args.get("max_results", 5), default=5, minimum=1), 10)
 
         from ..web.dispatcher import WebError
         try:
@@ -47,7 +47,7 @@ class WebToolsMixin:
             except UrlSafetyError as exc:
                 raise ToolError(f"[BLOCKED] SSRF: {exc}") from exc
 
-        max_chars = int(args.get("max_chars", self._web.max_chars))
+        max_chars = self._coerce_int(args.get("max_chars", self._web.max_chars), default=self._web.max_chars, minimum=1)
 
         from ..web.dispatcher import WebError
         try:
@@ -62,7 +62,7 @@ class WebToolsMixin:
         method = str(args.get("method", "GET")).upper()
         headers = args.get("headers") or {}
         body = args.get("body")
-        max_chars = int(args.get("max_chars", 5000))
+        max_chars = self._coerce_int(args.get("max_chars", 5000), default=5000, minimum=1)
 
         if not url:
             raise ToolError("http_request requer 'url'.")

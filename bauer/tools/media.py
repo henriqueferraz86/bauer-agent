@@ -281,7 +281,7 @@ class MediaToolsMixin:
         """
         video = str(args.get("video", "")).strip()
         query = str(args.get("query", "")).strip()
-        max_frames = int(args.get("max_frames", 5))
+        max_frames = self._coerce_int(args.get("max_frames", 5), default=5, minimum=1)
         max_frames = max(1, min(max_frames, 20))
 
         if not video:

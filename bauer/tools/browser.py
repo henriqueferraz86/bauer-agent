@@ -152,7 +152,7 @@ class BrowserToolsMixin:
 
     def _browser_scroll(self, args: dict) -> str:
         direction = str(args.get("direction", "down")).lower()
-        amount = int(args.get("amount", 500))
+        amount = self._coerce_int(args.get("amount", 500), default=500, minimum=1)
         selector = args.get("selector")
         page = self._ensure_browser()
         try:
@@ -193,7 +193,7 @@ class BrowserToolsMixin:
 
     def _browser_console(self, args: dict) -> str:
         self._ensure_browser()
-        max_lines = int(args.get("max_lines", 50))
+        max_lines = self._coerce_int(args.get("max_lines", 50), default=50, minimum=1)
         msgs = self._BROWSER_CONSOLE_MSGS[-max_lines:]
         if not msgs:
             return "[browser_console] Sem mensagens de console."

@@ -314,7 +314,7 @@ class FsToolsMixin:
     def _diff_files(self, args: dict) -> str:
         path_a = args.get("path_a")
         path_b = args.get("path_b")
-        context_lines = int(args.get("context_lines", 3))
+        context_lines = self._coerce_int(args.get("context_lines", 3), default=3, minimum=0)
         if not path_a:
             raise ToolError("diff_files requer 'path_a'.")
         if not path_b:

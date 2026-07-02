@@ -241,6 +241,31 @@ def test_web_search_no_query_raises(ws: Path):
         router.execute({"action": "web_search", "args": {}})
 
 
+def test_web_search_malformed_max_results_does_not_crash(ws: Path):
+    """Regressão de bug real reportado pelo usuário: um modelo fraco (free tier)
+    emitiu args mal-formados misturando sintaxe de outro protocolo de tool call
+    (`<parameter=10>\\nmax_results`) — o `int()` sem guarda em max_results
+    estourava ValueError não-capturado, derrubando a sessão inteira do
+    `bauer agent` com "Erro inesperado". Confirma que valores não-numéricos
+    caem no default (5) via _coerce_int em vez de propagar a exceção, e que
+    o max_results NUMÉRICO correto (5) chega até o backend de busca."""
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    garbled = "10>\n</parameter\n<parameter=10>\nmax_results"
+    with patch.object(router._web, "search_as_text", return_value="ok") as mock_search:
+        result = router._web_search({"query": "Brazil next match", "max_results": garbled})
+    assert result == "ok"
+    mock_search.assert_called_once_with("Brazil next match", max_results=5)
+
+
+def test_web_fetch_malformed_max_chars_does_not_crash(ws: Path):
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    from bauer.web.dispatcher import WebError
+    with patch.object(router._web, "extract", side_effect=WebError("mock")):
+        with pytest.raises(ToolError):
+            # Levanta ToolError (do WebError mockado), não ValueError do int().
+            router._web_fetch({"url": "https://example.com", "max_chars": "abc"})
+
+
 def test_web_search_sem_ddgs_cai_em_wikipedia(ws: Path):
     """Novo contrato (G18.3): sem ddgs/brave/searxng, web_search NAO falha —
     cai no fallback open-source Wikipedia (zero setup, sem chave)."""

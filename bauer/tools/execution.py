@@ -312,7 +312,7 @@ class ExecToolsMixin:
                     "Remova o padrão perigoso ou use a tool apropriada (run_command, delete_file, etc.)."
                 )
 
-        timeout = int(args.get("timeout", 30))
+        timeout = self._coerce_int(args.get("timeout", 30), default=30, minimum=1)
         timeout = max(1, min(timeout, 120))
 
         with tempfile.NamedTemporaryFile(
@@ -377,7 +377,7 @@ class ExecToolsMixin:
 
         context = args.get("context", "").strip()
         agent_name = str(args.get("agent_name", "") or "").strip()
-        timeout = int(args.get("timeout", 120))
+        timeout = self._coerce_int(args.get("timeout", 120), default=120, minimum=1)
         timeout = max(10, min(timeout, 600))
 
         full_task = f"{context}\n\n{task}".strip() if context else task

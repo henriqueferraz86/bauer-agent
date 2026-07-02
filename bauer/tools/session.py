@@ -23,7 +23,7 @@ class SessionToolsMixin:
         source = str(args.get("source", "all")).lower().strip()
 
         if action == "recent":
-            n = int(args.get("n", 10))
+            n = self._coerce_int(args.get("n", 10), default=10, minimum=1)
             return self._session_search_recent(n, source)
 
         if action != "search":
