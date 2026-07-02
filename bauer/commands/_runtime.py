@@ -613,6 +613,7 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
         safe_mode=cfg.tools.safe_mode,
         timeout=cfg.tools.timeout_seconds,
         max_output_bytes=cfg.tools.max_output_kb * 1024,
+        extra_allowed_commands=cfg.tools.extra_allowed_commands,
     )
 
 

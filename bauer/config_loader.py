@@ -575,6 +575,12 @@ class ToolsSection(_StrictSection):
     # em CPU. Vazio = todas as tools. Ex.: [web_search, web_fetch, read_file,
     # list_dir, run_command, datetime_now, calculate].
     tool_allowlist: list[str] = Field(default_factory=list)
+    # Comandos de SHELL extras liberados para run_command, além da allowlist
+    # fixa embutida (git, python, npm, pytest...) em bauer/shell_runner.py.
+    # Vazio = só a allowlist padrão. Ex.: [docker, docker-compose, kubectl].
+    # Ainda passam pela denylist (sempre bloqueada) e pelo safe_mode (risco
+    # médio exige confirm=true).
+    extra_allowed_commands: list[str] = Field(default_factory=list)
 
 
 class LoopSection(_StrictSection):

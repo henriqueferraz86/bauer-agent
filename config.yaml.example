@@ -532,6 +532,14 @@ tools:
   # Tamanho máximo do output de uma tool antes de truncar (KB).
   max_output_kb: 50
 
+  # Comandos de SHELL extras liberados para run_command, além da allowlist
+  # fixa embutida (git, python, npm, pytest, ls, cat...). Vazio = só a
+  # allowlist padrão. Ainda passam pela denylist (sempre bloqueada) e pelo
+  # safe_mode (comandos de risco médio exigem confirm=true).
+  extra_allowed_commands: []
+  # Exemplo para workflows de DevOps/containers:
+  # extra_allowed_commands: [docker, docker-compose, kubectl]
+
 
 # =============================================================================
 # WEB — backends para web_search e web_fetch

@@ -111,6 +111,10 @@ class ShellRunner:
         safe_mode: Se True, risco médio exige confirm=True.
         timeout: Tempo máximo em segundos.
         max_output_bytes: Limite combinado de stdout+stderr.
+        extra_allowed_commands: Comandos extras liberados além da allowlist
+            fixa embutida (ex.: docker, kubectl) — vem de
+            config.tools.extra_allowed_commands. Ainda passam pela denylist
+            (sempre bloqueada) e pelo safe_mode (risco médio exige confirm).
     """
 
     def __init__(
@@ -119,11 +123,15 @@ class ShellRunner:
         safe_mode: bool = True,
         timeout: int = 30,
         max_output_bytes: int = _MAX_OUTPUT_BYTES,
+        extra_allowed_commands: "list[str] | frozenset[str] | None" = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.safe_mode = safe_mode
         self.timeout = timeout
         self.max_output_bytes = max_output_bytes
+        self.extra_allowed_commands: frozenset[str] = frozenset(
+            c.strip().lower() for c in (extra_allowed_commands or []) if c.strip()
+        )
 
     def run(self, command: str, confirm: bool = False) -> CommandResult:
         """Executa um comando controlado.
@@ -169,11 +177,13 @@ class ShellRunner:
 
     def _check_allowlist(self, args: list[str]) -> None:
         base = Path(args[0]).stem.lower()
-        if base not in _ALLOWLIST:
-            available = ", ".join(sorted(_ALLOWLIST))
+        if base not in _ALLOWLIST and base not in self.extra_allowed_commands:
+            available = ", ".join(sorted(_ALLOWLIST | self.extra_allowed_commands))
             raise BlockedCommandError(
                 f"Comando '{base}' nao esta na allowlist.\n"
-                f"Permitidos: {available}"
+                f"Permitidos: {available}\n"
+                "Para liberar mais comandos (ex.: docker, kubectl), adicione em "
+                "config.yaml: tools.extra_allowed_commands: [docker, ...]"
             )
 
     def _check_medium_risk(self, command: str) -> None:
