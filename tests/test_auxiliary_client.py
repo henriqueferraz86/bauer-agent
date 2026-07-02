@@ -284,3 +284,130 @@ def test_call_aux_text_swallows_runtime_errors():
             fallback="safe-fallback",
         )
     assert out == "safe-fallback"
+
+
+# ---------------------------------------------------------------------------
+# Token-store providers (copilot/github) — incidente 2026-07-02
+# ---------------------------------------------------------------------------
+#
+# Config real do usuário: model.provider=copilot, autenticado via
+# `bauer auth login -p copilot`. Todo slot auxiliar não configurado (ex.:
+# approval_model) herdava esse provider e SEMPRE falhava, pois 'copilot' não
+# tem entrada na tabela estática OPENAI_COMPAT_CONFIG (só cobre api_key
+# simples) — logava "provider not supported" em INFO a cada mensagem, mesmo
+# com o usuário autenticado de verdade.
+
+
+def _fake_token(provider="copilot", access_token="ghu_fake", api_key=None,
+                 expires_at=None, extra=None):
+    from bauer.auth import AuthToken
+    return AuthToken(
+        provider=provider, access_token=access_token, api_key=api_key,
+        expires_at=expires_at, extra=extra or {},
+    )
+
+
+def test_copilot_slot_reuses_authenticated_token():
+    """Provider copilot autenticado: constrói OpenAIClient com o token salvo,
+    sem cair no ValueError 'not supported'."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="copilot", name="gpt-4o")
+    token = _fake_token(api_key="copilot-session-key")
+
+    with patch("bauer.auth.TokenStore.load", side_effect=lambda p: token if p == "copilot" else None):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert client is not None
+    assert isinstance(client, OpenAIClient)
+    assert model == "gpt-4o"
+    assert client._headers["Authorization"] == "Bearer copilot-session-key"
+    assert client._headers["Copilot-Integration-Id"] == "vscode-chat"
+
+
+def test_copilot_slot_refreshes_expired_token():
+    """Copilot session token expira a cada ~30min — o helper renova antes de
+    construir o client, igual ao fluxo principal (_runtime._build_client)."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="copilot", name="gpt-4o")
+    expired = _fake_token(api_key="stale-key", expires_at=1.0)  # bem no passado
+    fresh = _fake_token(api_key="fresh-key")
+
+    with patch("bauer.auth.TokenStore.load", side_effect=lambda p: expired if p == "copilot" else None), \
+         patch("bauer.auth.AuthManager.refresh_copilot_token", return_value=fresh), \
+         patch("bauer.auth.TokenStore.save"):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert client is not None
+    assert client._headers["Authorization"] == "Bearer fresh-key"
+
+
+def test_copilot_slot_refresh_failure_falls_back_to_none():
+    """Se a renovação falhar, degrada para (None, None) — não quebra o caller."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="copilot", name="gpt-4o")
+    expired = _fake_token(api_key="stale-key", expires_at=1.0)
+
+    with patch("bauer.auth.TokenStore.load", side_effect=lambda p: expired if p == "copilot" else None), \
+         patch("bauer.auth.AuthManager.refresh_copilot_token", return_value=None):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert (client, model) == (None, None)
+
+
+def test_no_copilot_token_falls_back_to_unsupported_error():
+    """Sem token salvo, o comportamento antigo (ValueError → None, None) é
+    preservado — mensagem de erro continua clara para o usuário não-autenticado."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="copilot", name="gpt-4o")
+
+    with patch("bauer.auth.TokenStore.load", return_value=None):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert (client, model) == (None, None)
+
+
+def test_github_pat_token_reused_over_static_table():
+    """github já tinha entrada estática (api_key simples); um token salvo via
+    `bauer auth login -p github` deve ter prioridade (headers/host corretos)."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="github", name="gpt-4o-mini")
+    token = _fake_token(provider="github", api_key="ghp_fake")
+
+    with patch("bauer.auth.TokenStore.load", side_effect=lambda p: token if p == "github" else None):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert client is not None
+    assert client._headers["Authorization"] == "Bearer ghp_fake"
+    assert client._headers["X-GitHub-Api-Version"] == "2023-07-07"
+
+
+def test_jwt_token_is_not_reused_as_api_key():
+    """Token JWT do Codex CLI não serve como Bearer genérico — deve ser ignorado."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="copilot", name="gpt-4o")
+    jwt_token = _fake_token(access_token="eyJjodex", extra={"type": "jwt"})
+
+    with patch("bauer.auth.TokenStore.load", side_effect=lambda p: jwt_token if p == "copilot" else None):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert (client, model) == (None, None)
+
+
+def test_anthropic_provider_ignores_auth_store_token():
+    """anthropic tem builder nativo dedicado — um token OAuth salvo sob esse
+    nome não deve virar um OpenAIClient (headers/endpoint errados)."""
+    from bauer.auxiliary_client import get_text_auxiliary_client
+
+    cfg = _cfg(provider="anthropic", name="claude-3-5-haiku-20241022")
+    token = _fake_token(provider="anthropic", api_key="sk-ant-fake")
+
+    with patch("bauer.auth.TokenStore.load", side_effect=lambda p: token if p == "anthropic" else None):
+        client, model = get_text_auxiliary_client("approval_model", cfg)
+
+    assert isinstance(client, AnthropicClient)

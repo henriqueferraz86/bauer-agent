@@ -184,6 +184,67 @@ def _provider_section(cfg, provider: str):
     return getattr(cfg, name, None)
 
 
+def _try_build_from_auth_store(provider: str, model: str) -> TextLLMClient | None:
+    """Best-effort: reusa um token salvo via `bauer auth login -p <provider>`.
+
+    Mirrors the auth-first resolution `_build_client` (bauer/commands/_runtime.py)
+    does for the main model, mas sem I/O de console (uso best-effort/silencioso)
+    e sem os fluxos completos de ChatGPT-backend/ Codex JWT — só a forma comum
+    "token vira api_key/Bearer" que cobre copilot e github. Retorna None em
+    qualquer falha (sem token, refresh falhou, etc.) — o chamador cai para a
+    tabela estática ou levanta o erro "provider not supported" de sempre.
+    """
+    try:
+        from .auth import AuthManager
+        auth = AuthManager()
+        token = auth.store.load(provider) or auth.store.load(f"{provider}-api")
+        if token is None or token.extra.get("type") == "jwt":
+            return None  # JWT do Codex CLI não serve como API key genérica
+
+        if provider == "copilot" and token.is_expired:
+            refreshed = auth.refresh_copilot_token(token)
+            if refreshed is None:
+                return None
+            token = refreshed
+            try:
+                auth.store.save(token)
+            except Exception:
+                pass  # renovação ainda vale para esta chamada mesmo sem persistir
+
+        api_key = token.api_key or token.access_token
+        if not api_key:
+            return None
+
+        api_base = (token.api_base or "https://api.openai.com").rstrip("/")
+        _NO_V1 = {"copilot", "github", "gemini"}
+        if provider in _NO_V1 or api_base.endswith("/v1"):
+            chat_path = "/chat/completions"
+        else:
+            chat_path = "/v1/chat/completions"
+
+        extra_headers: dict[str, str] = {}
+        if provider == "copilot":
+            extra_headers = {
+                "Copilot-Integration-Id": "vscode-chat",
+                "Editor-Version": "vscode/1.99.0",
+                "Editor-Plugin-Version": "copilot-chat/0.26.0",
+                "User-Agent": "GitHubCopilotChat/0.26.0",
+                "X-GitHub-Api-Version": "2023-07-07",
+            }
+        elif provider == "github":
+            extra_headers = {"X-GitHub-Api-Version": "2023-07-07"}
+
+        from .openai_client import OpenAIClient
+        _c = OpenAIClient(
+            host=api_base, timeout_seconds=60, api_key=api_key, model=model,
+            extra_headers=extra_headers or None, chat_path=chat_path,
+        )
+        _c._provider = provider
+        return _c
+    except Exception:
+        return None
+
+
 def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
     """Construct a client object for `provider`. Raises on unsupported provider.
 
@@ -197,6 +258,19 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
     Provider names follow the same conventions as the main config sections.
     """
     p = provider.lower().strip()
+
+    # --- Token-store providers (bauer auth login) ---------------------------
+    # Tenta reusar um token que o usuário já autenticou (copilot, chatgpt via
+    # OAuth, github). Sem isto, provedores OAuth-only como 'copilot' nunca
+    # tinham entrada na tabela estática abaixo (que só cobre api_key simples)
+    # — todo slot auxiliar não configurado herdava o provider principal e
+    # falhava com "provider not supported" a cada mensagem, mesmo autenticado.
+    # Exclui anthropic/ollama: têm builder nativo dedicado logo abaixo — um
+    # token OAuth guardado sob esses nomes não deve virar um OpenAIClient.
+    if p not in ("anthropic", "ollama"):
+        _auth_client = _try_build_from_auth_store(p, model)
+        if _auth_client is not None:
+            return _auth_client
 
     # --- Anthropic native ---------------------------------------------------
     if p == "anthropic":
