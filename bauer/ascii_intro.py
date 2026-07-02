@@ -6,7 +6,6 @@ moderno com bordas arredondadas. Paleta consistente com indicators.py.
 from __future__ import annotations
 
 import sys
-import time
 
 # Blocos █ exigem utf-8 — garante o encoding mesmo se nenhum outro módulo
 # tiver reconfigurado o stdout (evita UnicodeEncodeError em consoles cp1252).
@@ -127,7 +126,6 @@ def play_intro(
     con.print()
     con.print(Align.center(Text(_SUBTITLE, style=f"italic {DIM}")))
     con.print()
-    time.sleep(0.4)
 
 
 def session_panel(

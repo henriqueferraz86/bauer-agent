@@ -21,6 +21,8 @@ from typing import Any
 
 import httpx
 
+from .http_shared import shared_ssl_context
+
 from .openai_client import OpenAIClient, OpenAIClientError
 
 
@@ -127,6 +129,7 @@ class ChatGPTBackendClient(OpenAIClient):
                 json=body,
                 headers=self._headers,
                 timeout=httpx.Timeout(connect=float(self.timeout), read=300.0, write=10.0, pool=5.0),
+                verify=shared_ssl_context(),
             ) as response:
                 if response.status_code >= 400:
                     _err_status = response.status_code

@@ -14,6 +14,7 @@ import httpx
 
 # Canônico em ollama_client — manter definição duplicada aqui causou drift real
 # (show_model passava context_length/size_bytes que a cópia local não tinha).
+from .http_shared import shared_ssl_context
 from .ollama_client import ModelfileParams
 
 
@@ -91,6 +92,7 @@ class OpenAIClient:
                 f"{self.host}/v1/models",
                 headers=self._headers,
                 timeout=self.timeout,
+                verify=shared_ssl_context(),
             )
             if r.status_code in (200, 401):
                 return True, ""  # 401 = auth error mas API está viva
@@ -104,7 +106,12 @@ class OpenAIClient:
 
     def list_models(self) -> list[str]:
         try:
-            r = httpx.get(f"{self.host}/v1/models", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(
+                f"{self.host}/v1/models",
+                headers=self._headers,
+                timeout=self.timeout,
+                verify=shared_ssl_context(),
+            )
             r.raise_for_status()
             data = r.json()
             return [m.get("id", "?") for m in data.get("data", [])]
@@ -177,6 +184,7 @@ class OpenAIClient:
                         write=10.0,
                         pool=5.0,
                     ),
+                    verify=shared_ssl_context(),
                 )
             except httpx.ConnectError as exc:
                 raise OpenAIClientError(
@@ -267,6 +275,7 @@ class OpenAIClient:
                     write=10.0,
                     pool=5.0,
                 ),
+                verify=shared_ssl_context(),
             ) as response:
                 if response.status_code >= 400:
                     # Lê o corpo do erro DENTRO do contexto stream (conexão ainda aberta)

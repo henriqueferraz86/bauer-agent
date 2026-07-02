@@ -135,11 +135,15 @@ def agent(
 
     is_ollama_provider = cfg.model.provider == "ollama"
 
-    # Cria cliente Ollama local SEMPRE — necessario para roteamento e planejamento
-    # mesmo quando o provider principal e OpenAI/OpenRouter.
+    # Cria cliente Ollama local — necessario para roteamento e planejamento.
+    # O probe de rede só roda quando o provider principal é ollama: com provider
+    # cloud o ModelRouter é desabilitado de qualquer forma (ver bloco do router
+    # abaixo), e esperar o timeout de um Ollama offline só atrasava o startup.
     from bauer.ollama_client import OllamaClient as _OllamaClient
     _ollama = _OllamaClient(cfg.ollama.host, cfg.ollama.timeout_seconds, cfg.ollama.api_key)
-    _ollama_alive, _ = _ollama.is_alive()
+    _ollama_alive = False
+    if is_ollama_provider:
+        _ollama_alive, _ = _ollama.is_alive()
 
     state = _get_or_run_state(cfg, reg, state_file)
 

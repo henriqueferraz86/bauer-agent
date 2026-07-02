@@ -26,6 +26,8 @@ from typing import Any
 
 import httpx
 
+from .http_shared import shared_ssl_context
+
 _ENDPOINT = "https://api.anthropic.com/v1"
 _DEFAULT_MAX_TOKENS = 4096
 
@@ -82,6 +84,7 @@ class AnthropicClient:
                 f"{_ENDPOINT}/models",
                 headers=self._headers,
                 timeout=10.0,
+                verify=shared_ssl_context(),
             )
             if r.status_code in (200, 401, 403):
                 return True, ""
@@ -96,7 +99,7 @@ class AnthropicClient:
     def list_models(self) -> list[str]:
         """Lista modelos disponíveis via /v1/models."""
         try:
-            r = httpx.get(f"{_ENDPOINT}/models", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(f"{_ENDPOINT}/models", headers=self._headers, timeout=self.timeout, verify=shared_ssl_context())
             r.raise_for_status()
             data = r.json()
             return [m.get("id", "?") for m in data.get("data", [])]
@@ -156,6 +159,7 @@ class AnthropicClient:
                     write=10.0,
                     pool=5.0,
                 ),
+                verify=shared_ssl_context(),
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():

@@ -496,7 +496,19 @@ class AuthManager:
 
     def __init__(self, base_dir: Path | None = None):
         self.store = TokenStore(base_dir)
-        self._http = httpx.Client(timeout=30, follow_redirects=True)
+        # Lazy: criar httpx.Client custa ~260ms de SSL context no Windows, e
+        # AuthManager é instanciado a cada _build_client (62× no startup com
+        # a lista de fallbacks) — a maioria nunca faz requisição nenhuma.
+        self._http_client: "httpx.Client | None" = None
+
+    @property
+    def _http(self) -> "httpx.Client":
+        if self._http_client is None:
+            from .http_shared import shared_ssl_context
+            self._http_client = httpx.Client(
+                timeout=30, follow_redirects=True, verify=shared_ssl_context()
+            )
+        return self._http_client
 
     def login_oauth(self, provider: str, port: int | None = None) -> AuthToken:
         """Login via OAuth Authorization Code Flow com PKCE — igual ao Codex CLI.
@@ -1122,7 +1134,8 @@ class AuthManager:
 
     def close(self) -> None:
         """Fecha conexões."""
-        self._http.close()
+        if self._http_client is not None:
+            self._http_client.close()
 
 
 # ─── Funções CLI ─────────────────────────────────────────────────────────────

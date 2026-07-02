@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from .http_shared import shared_ssl_context
+
 
 class OllamaError(Exception):
     pass
@@ -46,16 +48,23 @@ class OllamaClient:
     # --- saude / disponibilidade ------------------------------------------------
 
     def is_alive(self) -> tuple[bool, str]:
-        """Retorna (alive, motivo). motivo é vazio quando alive=True."""
+        """Retorna (alive, motivo). motivo é vazio quando alive=True.
+
+        Probe de liveness usa timeout curto (teto de 2s) independente do
+        timeout de chat: um Ollama saudável responde /api/tags em milissegundos,
+        e esperar o timeout cheio (host inalcançável/firewall drop) segurava o
+        startup do `bauer agent` por vários segundos.
+        """
+        _probe_timeout = min(float(self.timeout), 2.0)
         try:
-            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=_probe_timeout, verify=shared_ssl_context())
             if r.status_code == 200:
                 return True, ""
             return False, f"HTTP {r.status_code} de {self.host}/api/tags"
         except httpx.ConnectError as exc:
             return False, f"Conexao recusada em {self.host} ({exc})"
         except httpx.TimeoutException:
-            return False, f"Timeout ({self.timeout}s) conectando em {self.host}"
+            return False, f"Timeout ({_probe_timeout:.0f}s) conectando em {self.host}"
         except httpx.HTTPError as exc:
             return False, f"Erro HTTP: {exc}"
         except Exception as exc:
@@ -65,7 +74,7 @@ class OllamaClient:
 
     def list_models(self) -> list[str]:
         try:
-            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=self.timeout, verify=shared_ssl_context())
             r.raise_for_status()
         except httpx.HTTPError as exc:
             raise OllamaError(f"Falha ao listar modelos: {exc}") from exc
@@ -77,7 +86,7 @@ class OllamaClient:
     def list_models_with_sizes(self) -> list[dict]:
         """Retorna lista de {name, size_bytes} para todos os modelos instalados."""
         try:
-            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(f"{self.host}/api/tags", headers=self._headers, timeout=self.timeout, verify=shared_ssl_context())
             r.raise_for_status()
             data = r.json()
             return [
@@ -119,6 +128,7 @@ class OllamaClient:
                 json={"name": name},
                 headers=self._headers,
                 timeout=self.timeout,
+                verify=shared_ssl_context(),
             )
             r.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -174,6 +184,7 @@ class OllamaClient:
                     write=10.0,
                     pool=5.0,
                 ),
+                verify=shared_ssl_context(),
             ) as response:
                 response.raise_for_status()
                 thinking_buf: list[str] = []
