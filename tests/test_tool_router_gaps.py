@@ -266,6 +266,69 @@ def test_web_fetch_malformed_max_chars_does_not_crash(ws: Path):
             router._web_fetch({"url": "https://example.com", "max_chars": "abc"})
 
 
+# ─── web_fetch: fallback via browser em páginas JS-renderizadas (SPA) ───────
+
+
+def test_web_fetch_falls_back_to_browser_on_empty_static_extract(ws: Path):
+    """SPA (React/Next.js): o HTML estático (httpx) vem vazio — igual ao
+    caso real reproduzido com fifa.com. Confirma que web_fetch tenta o
+    browser real (Playwright, já embutido nas tools browser_*) e devolve
+    o texto renderizado em vez da mensagem de 'conteúdo vazio'."""
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    fake_page = MagicMock()
+    fake_page.content.return_value = "<html><body><p>Próximo jogo: 10 de julho.</p></body></html>"
+
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", return_value=fake_page):
+        result = router._web_fetch({"url": "https://www.fifa.com/en/tournaments/mens/world-cup"})
+
+    assert "Próximo jogo: 10 de julho." in result
+    fake_page.goto.assert_called_once()
+    assert fake_page.goto.call_args.kwargs.get("wait_until") == "networkidle"
+
+
+def test_web_fetch_keeps_original_message_when_browser_fallback_also_empty(ws: Path):
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    fake_page = MagicMock()
+    fake_page.content.return_value = "<html><body></body></html>"  # também vazio
+
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", return_value=fake_page):
+        result = router._web_fetch({"url": "https://example.com"})
+
+    assert result == EMPTY_EXTRACT_HTTPX
+
+
+def test_web_fetch_falls_back_gracefully_when_playwright_missing(ws: Path):
+    """Sem Playwright instalado, _ensure_browser levanta ToolError — o
+    fallback deve degradar pra mensagem original, NUNCA propagar esse erro
+    (o usuário só pediu web_fetch, não instalou browser de propósito)."""
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", side_effect=ToolError("Playwright ausente")):
+        result = router._web_fetch({"url": "https://example.com"})
+
+    assert result == EMPTY_EXTRACT_HTTPX
+
+
+def test_web_fetch_does_not_use_browser_when_static_extract_succeeds(ws: Path):
+    """Caminho feliz (site estático normal) não deve nem tentar o browser —
+    fallback só dispara quando a extração vem realmente vazia."""
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    with patch.object(router._web, "extract", return_value="conteúdo normal da página"), \
+         patch.object(router, "_ensure_browser") as mock_browser:
+        result = router._web_fetch({"url": "https://example.com"})
+
+    assert result == "conteúdo normal da página"
+    mock_browser.assert_not_called()
+
+
 def test_web_search_sem_ddgs_cai_em_wikipedia(ws: Path):
     """Novo contrato (G18.3): sem ddgs/brave/searxng, web_search NAO falha —
     cai no fallback open-source Wikipedia (zero setup, sem chave)."""

@@ -40,6 +40,12 @@ if TYPE_CHECKING:
 
 _SEARXNG_DEFAULT_URL = "http://localhost:8080"
 
+# Mensagens-sentinela de extração vazia — nomeadas (não string literal
+# duplicada) porque bauer/tools/web.py precisa detectá-las pra decidir se
+# tenta o fallback via browser real (páginas JS-renderizadas/SPA).
+EMPTY_EXTRACT_HTTPX = "Conteúdo vazio ou não extraído."
+EMPTY_EXTRACT_CRAWL4AI = "Conteúdo vazio ou não extraído pelo crawl4ai."
+
 
 class WebError(Exception):
     """Erro de operação web com mensagem legível."""
@@ -81,6 +87,26 @@ def _package_available(name: str) -> bool:
 def _env(key: str, cfg_val: str = "") -> str:
     """Retorna valor do .env/env ou fallback da config."""
     return os.environ.get(key, "") or cfg_val
+
+
+def clean_html_text(html: str) -> str:
+    """Remove script/style/nav/footer/header/aside e devolve texto legível.
+
+    Compartilhado entre `_extract_httpx` (HTML estático via httpx) e o
+    fallback via browser real em bauer/tools/web.py (SPA/JS-renderizada) —
+    mesma limpeza, mesma qualidade de saída, independente da fonte do HTML.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+    except Exception:
+        # bs4 não instalado ou falha interna — usa texto bruto como fallback
+        text = html
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -530,21 +556,10 @@ class WebDispatcher:
         if "text" not in content_type and "html" not in content_type:
             return f"[Conteúdo binário — content-type: {content_type}]"
 
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-        except Exception:
-            # bs4 não instalado ou falha interna — usa texto bruto como fallback
-            text = resp.text
-
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        text = "\n".join(lines)
+        text = clean_html_text(resp.text)
 
         if not text:
-            return "Conteúdo vazio ou não extraído."
+            return EMPTY_EXTRACT_HTTPX
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncado — limite de {max_chars} chars]"
         return text
@@ -575,7 +590,7 @@ class WebDispatcher:
             raise WebError(f"Erro crawl4ai em {url}: {exc}") from exc
 
         if not text:
-            return "Conteúdo vazio ou não extraído pelo crawl4ai."
+            return EMPTY_EXTRACT_CRAWL4AI
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncado — limite de {max_chars} chars]"
         return text

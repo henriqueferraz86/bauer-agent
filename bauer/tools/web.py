@@ -49,13 +49,50 @@ class WebToolsMixin:
 
         max_chars = self._coerce_int(args.get("max_chars", self._web.max_chars), default=self._web.max_chars, minimum=1)
 
-        from ..web.dispatcher import WebError
+        from ..web.dispatcher import EMPTY_EXTRACT_CRAWL4AI, EMPTY_EXTRACT_HTTPX, WebError
         try:
-            return self._web.extract(url, max_chars=max_chars)
+            result = self._web.extract(url, max_chars=max_chars)
         except WebError as exc:
             raise ToolError(str(exc)) from exc
         except Exception as exc:
             raise ToolError(f"Erro ao buscar URL: {exc}") from exc
+
+        if result in (EMPTY_EXTRACT_HTTPX, EMPTY_EXTRACT_CRAWL4AI):
+            # Extração estática veio vazia — típico de SPA JS-renderizada
+            # (React/Next.js): o HTML que o servidor manda não tem texto
+            # nenhum, só a casca que o JS preenche no navegador. Fallback
+            # pro browser real (Playwright) que o Bauer já tem via as tools
+            # browser_* — não depende de nada novo (crawl4ai usa a MESMA
+            # tecnologia por baixo, ver docs/integrations/).
+            browser_text = self._web_fetch_via_browser(url, max_chars)
+            if browser_text:
+                return browser_text
+        return result
+
+    def _web_fetch_via_browser(self, url: str, max_chars: int) -> str:
+        """Fallback de `_web_fetch` para páginas onde a extração httpx veio
+        vazia. Roda na thread dedicada do browser (G18 — Playwright sync é
+        thread-affine, não pode rodar inline na thread chamadora de
+        `execute()`). Retorna "" em qualquer falha (Playwright ausente,
+        timeout, site bloqueou) — o chamador decide como degradar.
+        """
+        from ..web.dispatcher import clean_html_text
+
+        def _do() -> str:
+            page = self._ensure_browser()
+            page.goto(url, wait_until="networkidle", timeout=30_000)
+            return page.content()
+
+        try:
+            pool = self._get_browser_executor()
+            html = pool.submit(_do).result(timeout=35)
+        except Exception:
+            return ""
+
+        text = clean_html_text(html)
+        if text and len(text) > max_chars:
+            text = text[:max_chars] + f"\n\n[... truncado — limite de {max_chars} chars]"
+        return text
 
     def _http_request(self, args: dict) -> str:
         url = args.get("url")
