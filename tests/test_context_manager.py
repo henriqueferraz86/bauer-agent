@@ -247,3 +247,35 @@ def test_trim_remove_par_atomicamente():
                 if tc.get("id"):
                     declared.add(tc["id"])
     assert not (tool_ids - declared), f"tool results órfãos: {tool_ids - declared}"
+
+
+# ─── shrink_budget: janela real do provider menor que a nominal ──────────────
+
+
+def test_shrink_budget_reduces_when_provider_cap_is_smaller():
+    from bauer.context_manager import ContextManager
+
+    ctx = ContextManager(applied_context=128000, system_prompt="s")
+    assert ctx.shrink_budget(65536) is True
+    assert ctx.applied_context == 65536
+    assert ctx._budget == int(65536 * 0.75)
+    assert ctx._tail_budget <= ctx._budget
+
+
+def test_shrink_budget_noop_when_cap_not_smaller():
+    from bauer.context_manager import ContextManager
+
+    ctx = ContextManager(applied_context=8192, system_prompt="s")
+    before = ctx._budget
+    assert ctx.shrink_budget(128000) is False
+    assert ctx._budget == before
+
+
+def test_shrink_budget_ignores_garbage():
+    from bauer.context_manager import ContextManager
+
+    ctx = ContextManager(applied_context=8192, system_prompt="s")
+    before = ctx._budget
+    assert ctx.shrink_budget(0) is False
+    assert ctx.shrink_budget(-5) is False
+    assert ctx._budget == before

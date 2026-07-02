@@ -320,3 +320,57 @@ def test_safe_body_json_error_passthrough():
     json_body = '{"error": "model not found"}'
     result = _safe_body(403, json_body)
     assert "model not found" in result
+
+
+# ---------------------------------------------------------------------------
+# Context overflow — casos reais do /loop de 2026-07-02 (66k tokens, 62
+# fallbacks varridos à toa com o mesmo payload)
+# ---------------------------------------------------------------------------
+
+def test_openrouter_max_context_message_is_context_overflow():
+    from bauer.error_classifier import FailReason, classify_api_error
+
+    exc = Exception(
+        "[Provedor] Requisicao invalida (HTTP 400). Detalhe: "
+        '{"error":{"message":"This endpoint\'s maximum context length is '
+        "65536 tokens. However, you requested about 66458 tokens\"}}"
+    )
+    c = classify_api_error(exc)
+    assert c.reason == FailReason.CONTEXT_OVERFLOW
+    assert c.should_compress is True
+    assert c.should_fallback is False  # mesmo payload em outro provider não resolve
+
+
+def test_groq_request_too_large_tpm_is_context_overflow_not_rate_limit():
+    """A mensagem do Groq 413 contém 'tokens per minute' — antes classificava
+    RATE_LIMIT e o fallback re-tentava com o MESMO payload gigante."""
+    from bauer.error_classifier import FailReason, classify_api_error
+
+    exc = Exception(
+        "[Provedor] HTTP 413. Request too large for model `llama-3.3-70b-versatile` "
+        "on tokens per minute (TPM): Limit 12000, Requested 69091, "
+        "please reduce your message size and try again."
+    )
+    c = classify_api_error(exc)
+    assert c.reason == FailReason.CONTEXT_OVERFLOW
+    assert c.should_compress is True
+
+
+def test_http_413_status_is_context_overflow():
+    from bauer.error_classifier import FailReason, classify_api_error
+
+    exc = Exception("payload rejected")
+    exc.status_code = 413  # type: ignore[attr-defined]
+    c = classify_api_error(exc)
+    assert c.reason == FailReason.CONTEXT_OVERFLOW
+    assert c.should_compress is True
+
+
+def test_plain_rate_limit_still_rate_limit():
+    """Guard: rate-limit puro (sem 'request too large') continua RATE_LIMIT."""
+    from bauer.error_classifier import FailReason, classify_api_error
+
+    exc = Exception("HTTP 429: rate limit exceeded, please retry after 2s")
+    c = classify_api_error(exc)
+    assert c.reason == FailReason.RATE_LIMIT
+    assert c.should_fallback is True

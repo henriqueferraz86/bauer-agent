@@ -441,7 +441,7 @@ class OpenAIClient:
                 _hint = (
                     f"Requisicao invalida (HTTP 400).\n"
                     f"  - Verifique se o nome do modelo em config.yaml e valido para este provider\n"
-                    f"  - Rode: bauer auth login -p {self.host.split('.')[0].lstrip('https://api.')}\n"
+                    f"  - Provider: {self.host}\n"
                     f"  - Detalhe: {body}"
                 )
             else:

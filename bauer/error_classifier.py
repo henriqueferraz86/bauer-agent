@@ -80,6 +80,18 @@ _CONTEXT_PATTERNS = [
     "input too long",
 ]
 
+# Payload grande demais PARA ESTA REQUISIÇÃO — checado ANTES de rate-limit
+# porque mensagens como a do Groq 413 ("Request too large ... tokens per
+# minute (TPM): Limit 12000, Requested 69091") contêm "tokens per minute" e
+# seriam classificadas como RATE_LIMIT → fallback com o MESMO payload gigante,
+# que nunca vai passar. Comprimir o contexto é o único recovery que funciona.
+_PAYLOAD_TOO_LARGE_PATTERNS = [
+    "request too large",
+    "reduce your message size",
+    "reduce the length of",
+    "payload too large",
+]
+
 _AUTH_PATTERNS = [
     "invalid api key",
     "invalid_api_key",
@@ -277,6 +289,11 @@ def classify_api_error(
             retryable=False,
             fallback=(status == 403),
         )
+
+    # 1b. Payload grande demais — antes do rate-limit (ver comentário nos
+    # patterns): HTTP 413 ou mensagem explícita de "request too large".
+    if status == 413 or _matches_any(msg, _PAYLOAD_TOO_LARGE_PATTERNS):
+        return _result(FailReason.CONTEXT_OVERFLOW, retryable=True, compress=True)
 
     # 2. Payment / rate limit
     if status == 402 or (status is None and _matches_any(msg, _BILLING_PATTERNS)):

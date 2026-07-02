@@ -844,3 +844,94 @@ def test_loop_skill_run_cmd_executes(ws: Path, router: ToolRouter, bauer_home: P
 
     assert client.chat_stream.call_count == 2  # final + nudge
     assert router._approval_callback is None
+
+
+# ─── context overflow: comprimir e re-tentar em vez de varrer fallbacks ─────
+
+
+def test_parse_provider_context_cap_openrouter():
+    from bauer.agent import _parse_provider_context_cap
+
+    cap = _parse_provider_context_cap(
+        "This endpoint's maximum context length is 65536 tokens. "
+        "However, you requested about 66458 tokens"
+    )
+    assert cap == 65536
+
+
+def test_parse_provider_context_cap_none_for_tpm_limit():
+    """Limite de TPM (Groq) NÃO é janela de contexto — não deve encolher budget."""
+    from bauer.agent import _parse_provider_context_cap
+
+    assert _parse_provider_context_cap(
+        "tokens per minute (TPM): Limit 12000, Requested 69091"
+    ) is None
+
+
+def test_tool_loop_context_overflow_compresses_and_retries(ws: Path):
+    """Caso real 2026-07-02: payload de 66k tokens → 400 de contexto → antes,
+    62 fallbacks eram varridos com o MESMO payload. Agora: comprime e re-tenta."""
+    from bauer.agent import _run_tool_loop_body
+    from bauer.openai_client import OpenAIClientError
+
+    calls = {"n": 0}
+
+    def _se(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OpenAIClientError(
+                "[Provedor] Requisicao invalida (HTTP 400). Detalhe: "
+                "This endpoint's maximum context length is 65536 tokens. "
+                "However, you requested about 66458 tokens"
+            )
+        return iter(["Feito."])
+
+    client = _client(_se)
+    ctx, console, router, stats, state = _driver_env(client, ws)
+    # Histórico compressível: bem maior que o tail budget (~1024 tokens)
+    for _ in range(6):
+        ctx.add_user("x" * 4000)
+        ctx.add_assistant("y" * 4000)
+    ctx.add_user("qual o resumo?")
+
+    outcome = _run_tool_loop_body(
+        ctx=ctx, router=router, state=state, console=console,
+        fallback_clients=None, stats=stats, tool_timeout_s=5.0,
+        session_store=None, session_id=None, active_workspace=str(ws),
+        turn_input_text="qual o resumo?", memprov=None,
+    )
+
+    assert outcome.kind == "final"
+    assert outcome.display == "Feito."
+    assert calls["n"] == 2  # 1ª estoura, comprime, 2ª passa
+    assert "comprimido" in console.file.getvalue().lower()
+
+
+def test_tool_loop_overflow_compress_attempted_only_once(ws: Path):
+    """Se comprimir não resolve (provider segue estourando), não entra em
+    loop infinito de compressão — cai na lógica de fallback/erro normal."""
+    from bauer.agent import _run_tool_loop_body
+    from bauer.openai_client import OpenAIClientError
+
+    def _se(*args, **kwargs):
+        raise OpenAIClientError(
+            "[Provedor] maximum context length is 100 tokens (sempre estoura)"
+        )
+
+    client = _client(_se)
+    ctx, console, router, stats, state = _driver_env(client, ws)
+    for _ in range(6):
+        ctx.add_user("x" * 4000)
+        ctx.add_assistant("y" * 4000)
+    ctx.add_user("oi")
+
+    outcome = _run_tool_loop_body(
+        ctx=ctx, router=router, state=state, console=console,
+        fallback_clients=None, stats=stats, tool_timeout_s=5.0,
+        session_store=None, session_id=None, active_workspace=str(ws),
+        turn_input_text="oi", memprov=None,
+    )
+
+    assert outcome.kind == "provider_error"
+    # 1 chamada original + 1 retry pós-compressão = 2 (não infinito)
+    assert client.chat_stream.call_count == 2

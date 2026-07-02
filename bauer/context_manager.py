@@ -116,6 +116,27 @@ class ContextManager:
         self._llm_client = client
         self._llm_model = model
 
+    def shrink_budget(self, provider_cap_tokens: int) -> bool:
+        """Reduz o budget quando o provider reporta uma janela REAL menor.
+
+        Caso real (2026-07-02): applied_context=128000 (nominal do modelo),
+        mas o endpoint free do OpenRouter corta em 65536 — o histórico crescia
+        até ~66k sem nunca atingir o threshold de compressão (70% de 96k) e
+        TODA chamada passava a falhar com 400. Ao parsear o cap do erro,
+        encolhemos o budget para o valor real e a compressão volta a disparar.
+
+        Retorna True se o budget foi de fato reduzido.
+        """
+        if provider_cap_tokens <= 0:
+            return False
+        new_budget = max(512, int(provider_cap_tokens * 0.75))
+        if new_budget >= self._budget:
+            return False  # cap reportado não é menor que o budget atual
+        self.applied_context = provider_cap_tokens
+        self._budget = new_budget
+        self._tail_budget = min(TAIL_BUDGET_TOKENS, max(512, self._budget // 3))
+        return True
+
     @property
     def budget(self) -> int:
         return self._budget

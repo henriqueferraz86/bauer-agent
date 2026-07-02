@@ -1058,6 +1058,31 @@ def _recover_empty_response(
     return "", diagnostico
 
 
+def _parse_provider_context_cap(error_text: str) -> int | None:
+    """Extrai a janela de contexto REAL reportada pelo provider num erro 400/413.
+
+    Formatos conhecidos:
+      OpenRouter: "This endpoint's maximum context length is 65536 tokens."
+      OpenAI:     "This model's maximum context length is 128000 tokens"
+      Groq 413:   "... tokens per minute (TPM): Limit 12000, ..."  (TPM, não janela — ignorado)
+    Retorna None quando não há um cap de CONTEXTO claro no texto.
+    """
+    import re as _re
+    m = _re.search(r"maximum context length is (\d{3,})", error_text)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    m = _re.search(r"context length of only (\d{3,})|context window of (\d{3,})", error_text)
+    if m:
+        try:
+            return int(m.group(1) or m.group(2))
+        except ValueError:
+            return None
+    return None
+
+
 @contextmanager
 def _thinking_status(console: Console, model_name: str):
     """Spinner enquanto o modelo gera a resposta completa.
@@ -1200,6 +1225,22 @@ def _collect_with_fallback(
         except Exception as fb_exc:
             if _cb_available and global_cb is not None:
                 global_cb.record_failure(_fb_provider, fb_exc)
+            # Overflow de contexto num fallback: o payload não vai caber em
+            # NENHUM provider desta varredura (mesmo payload em todos). Para
+            # a cadeia aqui e propaga — o chamador comprime o contexto e
+            # re-tenta, em vez de queimar dezenas de providers à toa.
+            _stop_chain = False
+            try:
+                from .error_classifier import classify_api_error as _classify_fb
+                _stop_chain = _classify_fb(fb_exc).should_compress
+            except Exception:
+                _stop_chain = False  # classifier indisponível — segue como antes
+            if _stop_chain:
+                console.print(
+                    "[yellow]⚠ Payload grande demais para os providers — "
+                    "interrompendo a varredura de fallbacks para comprimir o contexto.[/yellow]"
+                )
+                raise fb_exc
             console.print(f"[dim]  Fallback {_fb_label} também falhou: {fb_exc}[/dim]")
             continue
 
@@ -2681,6 +2722,7 @@ def _run_tool_loop_body(
     """
     tool_turns = 0
     cli_tool_log: list[dict] = []
+    _overflow_compress_attempted = False
     from .openai_client import OpenAIClient as _OpenAIClientCls
     from .tool_dedup import ToolCallDeduper as _CliDeduper
     _cli_deduper = _CliDeduper()
@@ -2763,6 +2805,44 @@ def _run_tool_loop_body(
                 if budget is not None:
                     budget.consume_llm_call()  # cobre o path bridge — native já contou acima
         except (OllamaError, OpenAIClientError) as exc:
+            # Context overflow: o payload não cabe na janela REAL do provider.
+            # Fallback com o MESMO payload é inútil (caso real: 62 providers
+            # tentados em sequência com 66k tokens, todos falhando). O único
+            # recovery que funciona é comprimir o contexto e re-tentar. Se o
+            # erro traz o cap real (ex.: "maximum context length is 65536"),
+            # encolhe o budget para a compressão automática voltar a disparar
+            # nos próximos turnos. Uma tentativa por turno — se comprimir não
+            # resolver, segue para a lógica de fallback normal abaixo.
+            if not _overflow_compress_attempted:
+                try:
+                    from .error_classifier import classify_api_error as _classify_ov
+                    _cls_ov = _classify_ov(exc)
+                except Exception:
+                    _cls_ov = None
+                if _cls_ov is not None and _cls_ov.should_compress:
+                    _overflow_compress_attempted = True
+                    _cap = _parse_provider_context_cap(str(exc))
+                    if _cap:
+                        try:
+                            if ctx.shrink_budget(_cap):
+                                console.print(
+                                    f"[dim]Janela real do provider: {_cap} tokens — "
+                                    "budget de contexto ajustado.[/dim]"
+                                )
+                        except Exception:
+                            pass
+                    _compressed_ov = False
+                    try:
+                        _compressed_ov = ctx.force_compress()
+                    except Exception:
+                        _compressed_ov = False
+                    if _compressed_ov:
+                        console.print(
+                            "[yellow]⚠ Payload excedeu a janela do provider — "
+                            "contexto comprimido, tentando novamente…[/yellow]"
+                        )
+                        continue
+
             # Tenta fallback automático para erros retryáveis (429, 5xx).
             # Avança em fallback_clients (não reinicia no item 0) para
             # percorrer a lista quando vários providers falham em sequência.
