@@ -585,10 +585,19 @@ def _specialists_section() -> str:
 
         lines = [
             "# ESPECIALISTAS DISPONIVEIS\n"
-            "Estes agents tem system prompt e ferramentas ajustados para suas areas. "
-            "Quando a tarefa do usuario combinar claramente com um deles, delegue "
-            "via delegate_task(agent_name=\"<nome>\", task=\"...\") em vez de "
-            "responder generico. Nao delegue tarefas triviais ou fora dessas areas."
+            "Estes agents tem system prompt ajustado para suas areas, mas "
+            "delegate_task(agent_name=\"<nome>\", task=\"...\") pra eles e uma "
+            "consulta de UMA RESPOSTA EM TEXTO — SEM tools, sem acesso a "
+            "arquivos/shell/docker, sem multiplas rodadas. Use SOMENTE para "
+            "pedir uma opiniao/analise pontual (revisar um trecho, explicar um "
+            "conceito, comparar opcoes, redigir um texto) que cabe numa resposta "
+            "unica.\n"
+            "NUNCA delegue tarefas que precisam EXECUTAR algo (rodar comando, "
+            "subir/parar servico, ler logs, editar arquivo, navegar pasta) — "
+            "mesmo que a tarefa seja da area de um especialista (ex.: 'suba o "
+            "docker e arrume o dashboard' e DevOps mas exige tools reais: faca "
+            "voce mesmo com run_command/read_file/write_file, NAO delegue). "
+            "Na duvida entre delegar ou executar, execute voce mesmo."
         ]
         for a in local_agents:
             lines.append(f"  - {a.name}: {a.description}")
