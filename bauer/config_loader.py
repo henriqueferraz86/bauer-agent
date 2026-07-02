@@ -568,6 +568,20 @@ class ToolsSection(_StrictSection):
     tool_allowlist: list[str] = Field(default_factory=list)
 
 
+class LoopSection(_StrictSection):
+    """Orçamento de segurança e política de aprovação do modo `/loop`.
+
+    O `/loop` roda o agente sozinho, turno após turno, sem confirmação
+    humana a cada passo — estes limites existem para conter o "blast
+    radius" de uma tarefa que entra em loop ou sai do previsto.
+    """
+    max_minutes: int = Field(ge=1, default=30)
+    max_tool_calls: int = Field(ge=1, default=120)
+    max_cost_usd: float = Field(ge=0.0, default=2.0)
+    approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
+    approval_risk_threshold: float = Field(ge=0.0, le=1.0, default=0.4)
+
+
 class McpServerEntry(_StrictSection):
     """Configuração de um servidor MCP individual.
 
@@ -760,6 +774,7 @@ class BauerConfig(_StrictSection):
     runtime: RuntimeSection = RuntimeSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()
+    loop: LoopSection = LoopSection()
     web: WebSection = WebSection()
     mcp: McpSection = McpSection()
     serve: ServeSection = ServeSection()

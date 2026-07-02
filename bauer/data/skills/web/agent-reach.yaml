@@ -1,0 +1,76 @@
+name: Agent Reach — acesso multi-plataforma sem API paga
+description: >
+  Conteúdo adaptado de Panniantong/agent-reach (MIT) — comandos exatos pra
+  buscar/ler Twitter, Reddit, YouTube, GitHub, Bilibili, RSS, V2EX e
+  XiaoHongShu via run_command, com fallback documentado por plataforma.
+  Fonte: https://github.com/Panniantong/agent-reach (v1.5.0).
+content: |
+  # Agent Reach — acesso a conteúdo multi-plataforma
+
+  O Agent Reach NÃO é uma tool com comando único — é um instalador que
+  configura várias CLIs upstream. Depois de instalado (fora do Bauer, uma
+  vez: `pipx install https://github.com/Panniantong/agent-reach/archive/main.zip
+  && agent-reach install --env=auto`), use `run_command` chamando a
+  ferramenta certa pra cada plataforma. Rode `agent-reach doctor --json`
+  primeiro pra saber qual backend está ativo em cada plataforma antes de
+  escolher o comando.
+
+  ## Comandos por plataforma (primário; se falhar, tente o fallback)
+
+  **Web genérico**
+  - `curl -s "https://r.jina.ai/<URL>"` — extrai texto limpo de qualquer página.
+
+  **GitHub**
+  - `gh search repos "<query>" --sort stars --limit 10`
+  - `gh search code "<query>" --language python`
+
+  **YouTube**
+  - `yt-dlp --dump-json "<URL>"` — metadados do vídeo.
+  - `yt-dlp --write-sub --write-auto-sub --sub-lang "en" --skip-download -o "/tmp/%(id)s" "<URL>"` — legenda/transcrição.
+  - `yt-dlp --dump-json "ytsearch5:<query>"` — busca (5 resultados).
+
+  **Bilibili**
+  - `bili search "<query>" --type video -n 5`
+  - `bili video BVxxxxxxxxxx`
+  - `bili hot -n 10`
+  - NUNCA use yt-dlp pro Bilibili — bloqueado com HTTP 412.
+
+  **Twitter/X** (instável — pode exigir fallback)
+  - `twitter feed -n 20`
+  - `twitter tweet <URL_OU_ID>`
+  - `twitter search "<query>" -n 10`
+  - Fallback: `opencli twitter search "<query>" -f yaml`
+
+  **Reddit** (sem caminho zero-config — precisa credencial)
+  - Desktop (sessão de browser): `opencli reddit search "<query>" -f yaml`
+  - Servidor (headless): `rdt search "<query>" --limit 10`
+
+  **XiaoHongShu (小红书)**
+  - `opencli xiaohongshu search "<query>" -f yaml`
+  - `opencli xiaohongshu note "<NOTE_URL>" -f yaml`
+
+  **V2EX**
+  - `curl -s "https://www.v2ex.com/api/topics/hot.json" -H "User-Agent: agent-reach/1.0"`
+
+  **Busca web semântica** (via MCP roteado pelo mcporter)
+  - `mcporter call 'exa.web_search_exa(query: "<query>", numResults: 5)'`
+
+  **Transcrição de áudio/vídeo genérico**
+  - Prefira a tool nativa `transcribe_audio` do Bauer (Whisper via Groq/OpenAI)
+    quando o arquivo já está local — cobre o mesmo caso de uso do
+    `agent-reach transcribe`.
+
+  ## Diagnóstico
+
+  - `agent-reach doctor --json` — mostra qual backend está ativo/quebrado por
+    plataforma (JSON estruturado, único comando do Agent Reach com saída
+    machine-readable além dos próprios comandos upstream).
+  - `agent-reach configure twitter-cookies "<COOKIE>"` / `groq-key gsk_xxx` /
+    `proxy http://user:pass@ip:port` — credenciais quando a plataforma exigir.
+
+  ## Formato de saída — varia por ferramenta, não é unificado
+
+  `opencli`/`rdt`/`twitter-cli` suportam `-f yaml`/`--yaml`/`--json`;
+  `yt-dlp --dump-json` é sempre JSON; `curl`/Jina/V2EX devolvem JSON ou texto
+  cru; `gh` suporta `--json <campo> --jq`. Cada ferramenta tem seu próprio
+  contrato de saída — não assuma um envelope comum entre plataformas.

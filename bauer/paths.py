@@ -58,3 +58,14 @@ def workspace_dir() -> Path:
     d = get_bauer_home() / "workspace"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def loop_skills_dir() -> Path:
+    """Diretório de loop-skills instaladas pelo usuário (YAML, opt-in).
+
+    Instalar um arquivo aqui é o único jeito de habilitar o auto-gatilho
+    do `/loop` — diretório vazio = recurso é um no-op completo.
+    """
+    d = get_bauer_home() / "loop_skills"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

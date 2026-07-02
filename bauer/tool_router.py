@@ -395,6 +395,10 @@ class ToolRouter(
         # visão usam ele se presente; senão caem no _llm_client principal.
         self._vision_client = vision_client
         self._dry_run = dry_run          # SAFETY-002: simula execução sem side effects
+        # /loop autônomo: callback opcional (str,str)->"once"|"session"|"always"|"deny"
+        # setado/resetado pelo handler do /loop; None preserva o comportamento
+        # atual (yolo=False, sem auto-aprovação) em todos os outros fluxos.
+        self._approval_callback = None
         self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
         self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
         self._tool_call_count = 0              # contador redefenido por sessão
@@ -1467,7 +1471,9 @@ class ToolRouter(
         # when no interactive approver is available (non-interactive mode).
         if _APPROVAL_AVAILABLE and name in {"run_command", "execute_code"}:
             _cmd = str(args.get("command", args.get("code", "")))
-            _guard_dec = _check_command_guards(_cmd, yolo=False)
+            _guard_dec = _check_command_guards(
+                _cmd, approval_callback=self._approval_callback, yolo=False
+            )
             if _guard_dec.action == "denied":
                 raise ToolError(
                     f"[BLOCKED] {_guard_dec.scope.upper()}: {_guard_dec.reason}"

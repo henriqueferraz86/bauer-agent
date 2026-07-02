@@ -18,7 +18,9 @@ import hashlib
 import json
 import os
 import sys
-from typing import TYPE_CHECKING, Any
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich.console import Console
 from rich.rule import Rule
@@ -35,6 +37,9 @@ from .tool_router import SandboxError, ToolError, ToolRouter
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
     from .session_store import SessionStore
+    from .app_verify import VerifyResult
+    from .config_loader import LoopSection
+    from .loop_skills import LoopSkill
 
 _EXIT_CMDS = {"/exit", "/quit", "/sair"}
 _CLEAR_CMDS = {"/clear", "/limpar"}
@@ -43,6 +48,7 @@ _MODEL_CMDS = {"/model", "/modelo"}
 _SESSIONS_CMDS = {"/sessions", "/sessoes"}
 _SPEC_CMDS = {"/spec", "/specs"}
 _KANBAN_CMDS = {"/kanban", "/board", "/tasks", "/task"}   # bare /task → board
+_LOOP_SKILL_CMDS = {"/loop-skill", "/loop-skills"}
 _DISPATCH_CMDS = {"/dispatch"}
 _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
@@ -1280,6 +1286,7 @@ def _native_turn_interactive(
     cli_tool_log: list[dict],
     deduper,
     calls_left: int,
+    guardrail=None,
 ) -> tuple[str, str | None]:
     """Um turno de native function calling no chat interativo.
 
@@ -1287,9 +1294,14 @@ def _native_turn_interactive(
     cli_tool_log) mas usa tool_calls nativos do provider em vez de parsing
     JSON da resposta — mais confiável em modelos que suportam.
 
+    ``guardrail`` (ToolCallGuardrailController opcional, usado pelo /loop —
+    ver run_one_turn/_run_native_tool_turn para o mesmo padrão) acumula
+    falhas entre chamadas; None preserva o comportamento atual (sem guarda).
+
     Returns:
-        ("final", texto)   — modelo respondeu sem tools; exibir e encerrar turno
-        ("continue", None) — tools executadas; voltar ao loop para nova chamada
+        ("final", texto)          — modelo respondeu sem tools; exibir e encerrar turno
+        ("continue", None)        — tools executadas; voltar ao loop para nova chamada
+        ("guardrail_halt", texto) — guardrail mandou parar (só quando guardrail != None)
 
     Raises:
         _NativeToolsUnsupported: downgrade definitivo para bridge (sessão).
@@ -1326,29 +1338,57 @@ def _native_turn_interactive(
         except _json.JSONDecodeError:
             args = {}
 
-        _failed = False
-        _cached = deduper.check(name, args) if deduper is not None else None
-        if _cached is not None:
-            result = _cached
-        else:
-            try:
-                result = router.execute_native_call(name, args)
-            except (ToolError, SandboxError) as exc:
-                result = f"[Erro: {exc}]"
-                _failed = True
-            if deduper is not None:
-                deduper.record(name, args, result, failed=_failed)
+        # Guardrail pre-call (mesmo padrão de _run_native_tool_turn) — só ativo
+        # quando o caller passa uma instância (ex.: /loop).
+        _guard_blocked = False
+        if guardrail is not None:
+            _pre = guardrail.before_call(name, args)
+            if _pre.should_halt:
+                ctx.add_user(_pre.message)
+                result = f"[BLOCKED] {_pre.message}"
+                _guard_blocked = True
+                cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
+                ctx.messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
+                if _pre.action == "halt":
+                    console.print(f"  [yellow]⛔ guardrail:[/yellow] {_pre.message}")
+                    return "guardrail_halt", _pre.message
 
-        display_line = _format_tool_display(name, result)
-        console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
+        if not _guard_blocked:
+            _failed = False
+            _cached = deduper.check(name, args) if deduper is not None else None
+            if _cached is not None:
+                result = _cached
+            else:
+                try:
+                    result = router.execute_native_call(name, args)
+                except (ToolError, SandboxError) as exc:
+                    result = f"[Erro: {exc}]"
+                    _failed = True
+                if deduper is not None:
+                    deduper.record(name, args, result, failed=_failed)
 
-        ctx_result, _ = _ctx_result_for_context(name, result)
-        cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
-        ctx.messages.append({
-            "role": "tool",
-            "tool_call_id": tc_id,
-            "content": ctx_result,
-        })
+            if guardrail is not None:
+                _post = guardrail.after_call(name, args, result, failed=_failed)
+                if _post.action == "warn":
+                    ctx.add_user(_post.message)
+                elif _post.should_halt:
+                    ctx.add_user(_post.message)
+                    ctx_result, _ = _ctx_result_for_context(name, result)
+                    cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
+                    ctx.messages.append({"role": "tool", "tool_call_id": tc_id, "content": ctx_result})
+                    console.print(f"  [yellow]⛔ guardrail:[/yellow] {_post.message}")
+                    return "guardrail_halt", _post.message
+
+            display_line = _format_tool_display(name, result)
+            console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
+
+            ctx_result, _ = _ctx_result_for_context(name, result)
+            cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
+            ctx.messages.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": ctx_result,
+            })
 
     console.print()
     return "continue", None
@@ -2481,6 +2521,935 @@ def _ledger_block(workspace_dir: str | None) -> str:
         return ""
 
 
+@dataclass
+class _TurnState:
+    """Estado mutável de run_agent_session que atravessa múltiplas chamadas a
+    _run_tool_loop_body (client/modelo podem trocar por fallback; native_session_ok
+    é downgrade definitivo; fb_idx avança sem reiniciar; mem_turn_idx é contador
+    de sessão). Mutado in-place pela função — não precisa ser retornado."""
+    client: Any
+    active_model: str
+    native_session_ok: bool
+    fb_idx: int = 0
+    mem_turn_idx: int = 0
+
+
+@dataclass
+class _TurnOutcome:
+    """Resultado de UMA chamada a _run_tool_loop_body — por que o "turno"
+    (uma rodada de tool calls até resposta só-texto, ou uma condição de
+    parada) terminou, e o que exibir/registrar em seguida."""
+    kind: Literal[
+        "final",            # resposta de texto, sem mais tool calls — fim natural
+        "loop_hard_stop",   # _detect_loop bateu repetição consecutiva
+        "guardrail_halt",   # ToolCallGuardrailController mandou parar (só com guardrail != None)
+        "tool_limit",       # MAX_TOOL_TURNS atingido no meio do loop nativo
+        "provider_error",   # todos os fallbacks falharam
+        "empty_response",   # recovery de resposta vazia falhou
+        "interrupted",      # KeyboardInterrupt
+        "budget_exhausted", # AutonomousBudget esgotado (só com budget != None)
+    ]
+    display: str = ""
+    tool_log: list = field(default_factory=list)
+    turn_cost_line: str = ""
+
+
+def _run_tool_loop_body(
+    *,
+    ctx,
+    router: ToolRouter,
+    state: _TurnState,
+    console: Console,
+    fallback_clients,
+    stats,
+    tool_timeout_s: float,
+    session_store,
+    session_id,
+    active_workspace,
+    turn_input_text: str,
+    memprov,
+    budget=None,
+    guardrail=None,
+) -> _TurnOutcome:
+    """Roda uma rodada de chamadas LLM + tool calls até o modelo responder só
+    texto (fim natural) ou uma condição de parada disparar. Extração pura do
+    corpo do while True que existia inline em run_agent_session — usada tanto
+    pelo fluxo manual (uma chamada por input do usuário) quanto pelo /loop
+    (várias chamadas em sequência, sem esperar input humano).
+
+    ``budget``/``guardrail`` são opcionais; ``None`` preserva o comportamento
+    de hoje (sem teto de orçamento, sem guarda de falha acumulada) — usado
+    pelo fluxo manual. O /loop passa instâncias reais.
+    """
+    tool_turns = 0
+    cli_tool_log: list[dict] = []
+    from .tool_dedup import ToolCallDeduper as _CliDeduper
+    _cli_deduper = _CliDeduper()
+
+    while True:
+        # Checa ANTES de mais uma chamada LLM — consume_llm_call()/consume_tool_call()
+        # levantam BudgetExhaustedError se já esgotado, então este é o único ponto
+        # que precisa checar (nada consome budget entre uma volta e outra do while).
+        if budget is not None and budget.is_exhausted:
+            return _TurnOutcome(kind="budget_exhausted", tool_log=cli_tool_log)
+
+        # Aviso precoce de contexto cheio — antes de travar silenciosamente
+        usage = ctx.usage_pct
+        if usage >= _CTX_WARN_THRESHOLD:
+            pct = int(usage * 100)
+            console.print(
+                f"[yellow]⚠ Contexto em {pct}% do budget "
+                f"({ctx.used_tokens}/{ctx.budget} tokens). "
+                "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
+            )
+        # MemoryProvider: on_turn_start antes da chamada LLM
+        if memprov is not None:
+            try:
+                memprov.on_turn_start(state.mem_turn_idx, ctx.messages)
+            except Exception:
+                pass
+
+        _native_final = False
+        try:
+            if state.native_session_ok:
+                try:
+                    _nkind, _ntext = _native_turn_interactive(
+                        ctx, router, state.client, state.active_model, console,
+                        cli_tool_log, _cli_deduper,
+                        MAX_TOOL_TURNS - tool_turns,
+                        guardrail=guardrail,
+                    )
+                except _NativeToolsUnsupported:
+                    state.native_session_ok = False
+                    console.print(
+                        "[dim][native→bridge] provider sem suporte a tools "
+                        "nativas — usando Tool Bridge JSON nesta sessão.[/dim]"
+                    )
+                else:
+                    if budget is not None:
+                        budget.consume_llm_call()  # client.chat_with_tools() acabou de suceder
+                    if _nkind == "guardrail_halt":
+                        return _TurnOutcome(kind="guardrail_halt", display=_ntext or "", tool_log=cli_tool_log)
+                    if _nkind == "continue":
+                        _new_calls = len(cli_tool_log) - tool_turns
+                        tool_turns = len(cli_tool_log)
+                        if budget is not None:
+                            for _ in range(max(0, _new_calls)):
+                                if budget.is_exhausted:
+                                    break
+                                budget.consume_tool_call()
+                        _maybe_reflect(ctx, tool_turns)
+                        loop_warn, hard_stop = _detect_loop(cli_tool_log)
+                        if loop_warn:
+                            ctx.add_user(loop_warn)
+                        if hard_stop:
+                            return _TurnOutcome(kind="loop_hard_stop", tool_log=cli_tool_log)
+                        # Cap de rounds (antes feito pelo slice em
+                        # _native_turn_interactive, removido p/ não quebrar
+                        # o pareamento assistant↔tool).
+                        if tool_turns >= MAX_TOOL_TURNS:
+                            console.print(
+                                f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls "
+                                "atingido neste turno.[/yellow]"
+                            )
+                            return _TurnOutcome(kind="tool_limit", tool_log=cli_tool_log)
+                        continue
+                    # _nkind == "final": resposta de texto sem tools
+                    response = _ntext or ""
+                    _native_final = True
+            if not _native_final:
+                response, state.client, state.active_model = _collect_with_fallback(
+                    state.client, state.active_model, ctx.get_payload(), fallback_clients, console
+                )
+                if budget is not None:
+                    budget.consume_llm_call()  # cobre o path bridge — native já contou acima
+        except (OllamaError, OpenAIClientError) as exc:
+            # Tenta fallback automático para erros retryáveis (429, 5xx).
+            # Avança em fallback_clients (não reinicia no item 0) para
+            # percorrer a lista quando vários providers falham em sequência.
+            _did_fallback = False
+            if fallback_clients and state.fb_idx < len(fallback_clients):
+                try:
+                    from .error_classifier import classify_api_error
+                    _cls = classify_api_error(exc)
+                    _should_fb = _cls.should_fallback
+                except Exception:
+                    _should_fb = True  # sem classifier: assume retryável
+                if _should_fb:
+                    _fb = fallback_clients[state.fb_idx]
+                    state.fb_idx += 1
+                    _fb_client, _fb_model = (
+                        (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple))
+                        else (_fb, state.active_model)
+                    )
+                    console.print(
+                        f"[yellow]⚡ Provider falhou ({exc.__class__.__name__}) — "
+                        f"trocando para fallback {state.fb_idx}/{len(fallback_clients)}: "
+                        f"[bold]{_fb_model}[/bold][/yellow]"
+                    )
+                    state.client = _fb_client
+                    state.active_model = _fb_model
+                    state.native_session_ok = (
+                        isinstance(_fb_client, _OpenAIClientCls)
+                        and getattr(_fb_client, "supports_native_tools", False)
+                    )
+                    _did_fallback = True
+            if not _did_fallback:
+                _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
+                console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
+                if fallback_clients and state.fb_idx >= len(fallback_clients):
+                    console.print(
+                        f"[dim]Todos os {len(fallback_clients)} fallbacks foram tentados.[/dim]"
+                    )
+                stats.record_error(str(exc))
+                if ctx.messages and ctx.messages[-1]["role"] == "user":
+                    ctx.messages.pop()
+                return _TurnOutcome(kind="provider_error", display=str(exc), tool_log=cli_tool_log)
+            # Fallback ativado: re-tenta o turno com o novo client (mesma
+            # mensagem do usuário ainda no contexto). Atualiza stats/provider.
+            stats.model = state.active_model
+            _fb_provider = getattr(state.client, "_provider", None) or "openai"
+            stats.provider = _fb_provider
+            ctx._provider = _fb_provider
+            continue
+        except KeyboardInterrupt:
+            console.print("\n[dim][interrompido][/dim]")
+            if ctx.messages and ctx.messages[-1]["role"] == "user":
+                ctx.messages.pop()
+            return _TurnOutcome(kind="interrupted", tool_log=cli_tool_log)
+
+        # Resposta vazia: recovery automático (retry → compress+retry)
+        # antes de devolver o problema ao usuário.
+        if not response.strip():
+            console.print("[dim][recovery] resposta vazia — tentando recuperar...[/dim]")
+            response, diagnostico = _recover_empty_response(
+                state.client, state.active_model, ctx, console=console
+            )
+            if not response:
+                console.print(f"[yellow]{diagnostico}[/yellow]")
+                if ctx.messages and ctx.messages[-1]["role"] == "user":
+                    ctx.messages.pop()
+                return _TurnOutcome(kind="empty_response", display=diagnostico, tool_log=cli_tool_log)
+
+        ctx.add_assistant(response)
+
+        # Tenta parsear como tool action(s) — suporta batch (múltiplos JSONs por resposta).
+        # Resposta final do native NÃO é re-parseada: texto que por acaso
+        # contenha JSON não deve re-disparar tools.
+        actions = None if _native_final else _try_parse_tools_batch(response, router)
+
+        if actions is not None and tool_turns < MAX_TOOL_TURNS:
+            combined_parts: list[str] = []
+
+            # Só processa o que cabe dentro do limite de tool turns
+            pending_actions = [a for a in actions if tool_turns < MAX_TOOL_TURNS]
+            if len(actions) > len(pending_actions):
+                console.print(
+                    f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls atingido "
+                    "neste turno.[/yellow]"
+                )
+
+            # Guardrail pre-call (sequencial, antes de disparar a execução —
+            # inclusive a paralela). Só ativo quando guardrail != None (/loop).
+            _to_execute = pending_actions
+            _guard_halted = False
+            if guardrail is not None:
+                _to_execute = []
+                for _a in pending_actions:
+                    _aname = _a.get("action", "?")
+                    _aargs = _a.get("args", {}) or {}
+                    _pre = guardrail.before_call(_aname, _aargs)
+                    if _pre.should_halt:
+                        ctx.add_user(_pre.message)
+                        _blocked = f"[BLOCKED] {_pre.message}"
+                        combined_parts.append(f"[Resultado de {_aname}]\n{_blocked}")
+                        cli_tool_log.append({"tool": _aname, "args_sig": _args_sig(_aargs), "result": _blocked[:300]})
+                        tool_turns += 1
+                        if _pre.action == "halt":
+                            _guard_halted = True
+                            break  # não dispara o resto do batch
+                    else:
+                        _to_execute.append(_a)
+
+            def _exec_action(action_dict: dict) -> tuple[str, str, str]:
+                """Executa 1 action com dedup e timeout."""
+                _name = action_dict.get("action", "?")
+                _args = action_dict.get("args", {}) or {}
+                _cached = _cli_deduper.check(_name, _args)
+                if _cached is not None:
+                    return _name, _cached, _args_sig(_args)
+                _failed = False
+                try:
+                    from .tool_timeout import call_with_timeout as _call_to
+                    _result, _timed_out = _call_to(
+                        lambda: router.execute(action_dict),
+                        tool_timeout_s,
+                        _name,
+                    )
+                    if _timed_out:
+                        _failed = True
+                except (ToolError, SandboxError) as _exc:
+                    _result = f"[Erro: {_exc}]"
+                    _failed = True
+                _cli_deduper.record(_name, _args, _result, failed=_failed)
+                return _name, _result, _args_sig(_args)
+
+            # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
+            if len(_to_execute) > 1:
+                from concurrent.futures import ThreadPoolExecutor
+                from concurrent.futures import as_completed as _as_completed
+
+                ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(_to_execute)
+                with ThreadPoolExecutor(max_workers=min(len(_to_execute), 8)) as _ex:
+                    _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(_to_execute)}
+                    for _fut in _as_completed(_fmap):
+                        ordered_results[_fmap[_fut]] = _fut.result()
+            else:
+                ordered_results = [_exec_action(a) for a in _to_execute]
+
+            for _exec_dict, (action_name, tool_result, _asig) in zip(_to_execute, ordered_results):
+                if budget is not None and not budget.is_exhausted:
+                    budget.consume_tool_call()
+
+                # Guardrail post-call
+                if guardrail is not None:
+                    _post = guardrail.after_call(
+                        action_name, _exec_dict.get("args", {}) or {}, tool_result,
+                        failed=tool_result.startswith("[Erro:"),
+                    )
+                    if _post.action == "warn":
+                        ctx.add_user(_post.message)
+                    elif _post.should_halt:
+                        ctx.add_user(_post.message)
+                        _guard_halted = True
+
+                # Display inteligente — filtra ruído, mostra apenas o relevante
+                display_line = _format_tool_display(action_name, tool_result)
+                console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
+
+                # Comprime resultado para o contexto — reduz impacto de resultados grandes
+                ctx_result, was_compressed = _ctx_result_for_context(action_name, tool_result)
+
+                combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
+                cli_tool_log.append({"tool": action_name, "args_sig": _asig, "result": tool_result[:300]})
+                tool_turns += 1
+
+            if combined_parts:
+                console.print()
+                ctx.add_user("\n\n".join(combined_parts))
+
+            if _guard_halted:
+                return _TurnOutcome(kind="guardrail_halt", tool_log=cli_tool_log)
+
+            _maybe_reflect(ctx, tool_turns)
+            # Detecção de loop após cada batch de tool calls (CLI path)
+            loop_warn, hard_stop = _detect_loop(cli_tool_log)
+            if loop_warn:
+                ctx.add_user(loop_warn)
+            if hard_stop:
+                return _TurnOutcome(kind="loop_hard_stop", tool_log=cli_tool_log)
+            continue
+
+        if tool_turns >= MAX_TOOL_TURNS:
+            console.print(
+                f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls atingido "
+                "neste turno.[/yellow]"
+            )
+
+        # Resposta final em texto — extrai se o modelo usou JSON de conversa
+        display = _extract_text_from_pseudo_json(response) or response
+        stats.end_turn(len(display))
+
+        # Wave 1 — capture real token usage from the client (provider-agnostic).
+        # `last_usage` is populated by openai_client / anthropic_client; if the
+        # provider doesn't surface usage (e.g. Ollama local, some compat
+        # backends), record_turn_usage gets {} and is a no-op.
+        _turn_usage: dict = {}
+        _turn_cost_line: str = ""
+        try:
+            _cost_before = stats.cost_usd_total
+            _raw_usage = getattr(state.client, "last_usage", None) or {}
+            _turn_usage = stats.record_turn_usage(_raw_usage)
+            if _turn_usage and (_turn_usage.get("total_tokens", 0) > 0):
+                from .usage_pricing import format_cost as _fmt_cost
+                _in = _turn_usage.get("prompt_tokens", 0)
+                _out = _turn_usage.get("completion_tokens", 0)
+                _cache_read = _turn_usage.get("cache_read_input_tokens", 0)
+                _cache_part = ""
+                if _cache_read and _in:
+                    _cache_part = f" cache:{_cache_read * 100 // _in}%"
+                _cost_now = _fmt_cost(stats.cost_usd_total)
+                _turn_cost_line = (
+                    f"[dim]  ↳ {_in}→{_out} tok{_cache_part} | "
+                    f"sess total: {_cost_now}[/dim]"
+                )
+                if budget is not None and not budget.is_exhausted:
+                    # A chamada em si já foi contada em budget.consume_llm_call()
+                    # (native/bridge, acima) — aqui só soma o custo real, que só
+                    # fica disponível depois que record_turn_usage roda.
+                    budget.consume_cost(max(0.0, stats.cost_usd_total - _cost_before))
+        except Exception:
+            pass  # never block the chat on a cost-display failure
+
+        # Persiste sessao apos cada turno completo
+        if session_store is not None and session_id:
+            try:
+                session_store.save(session_id, ctx.messages)
+            except Exception:
+                pass  # nao interrompe o agente por falha de persistencia
+
+        # Sync memory: grava turno em DecisionMemory (background)
+        try:
+            from .memory_context import sync_memory_after_turn as _sync_mem
+            _sync_mem(
+                turn_input_text, display, cli_tool_log,
+                workspace=active_workspace,
+                session_id=session_id or "",
+            )
+        except Exception:
+            pass
+
+        # G10: background quality review — daemon thread, never blocks
+        try:
+            from .background_review import review_turn as _bg_review
+            _bg_review(
+                turn_input_text, display, cli_tool_log,
+                workspace=active_workspace,
+                session_id=session_id or "",
+            )
+        except Exception:
+            pass
+
+        # G4: feed recent messages to ToolRouter for LLM approval context
+        try:
+            router.set_context(ctx.messages)
+        except Exception:
+            pass
+
+        # MemoryProvider hooks: sync_turn + nudge
+        state.mem_turn_idx += 1
+        if memprov is not None:
+            try:
+                memprov.sync_turn(state.mem_turn_idx, ctx.messages)
+                if memprov.should_nudge(state.mem_turn_idx):
+                    ctx.add_ephemeral_system(memprov.nudge_message())
+            except Exception:
+                pass
+
+        return _TurnOutcome(kind="final", display=display, tool_log=cli_tool_log, turn_cost_line=_turn_cost_line)
+
+
+# ---------------------------------------------------------------------------
+# /loop — modo autônomo (turno após turno, sem confirmação humana)
+# ---------------------------------------------------------------------------
+
+_LOOP_FLAG_TOKENS = {"--max-minutes", "--max-tool-calls", "--max-cost", "--approval"}
+
+_LOOP_CONFIRM_NUDGE = (
+    "Você respondeu sem chamar nenhuma tool, o que normalmente indica que a "
+    "tarefa terminou. Se ela está REALMENTE completa, responda apenas "
+    "confirmando isso (sem chamar tools). Se ainda falta trabalho, continue "
+    "chamando as tools necessárias."
+)
+
+_LOOP_STOP_REASON_LABELS = {
+    "completed": "tarefa concluída (confirmado pelo modelo)",
+    "budget_exhausted": "orçamento do /loop esgotado",
+    "loop_hard_stop": "loop de tool calls repetidas detectado",
+    "guardrail_halt": "guardrail de falhas acumuladas interrompeu",
+    "provider_error": "erro de provider sem fallback disponível",
+    "empty_response": "resposta vazia persistente",
+    "interrupted": "interrompido pelo usuário (Ctrl+C)",
+    "verification_failed": "verificação de loop-skill falhou após tentativa de correção",
+}
+
+_LOOP_SKILL_COOLDOWN_S = 60
+
+
+def _parse_loop_args(rest: str) -> tuple[str, dict]:
+    """Extrai flags conhecidas de `/loop <tarefa> [--max-minutes N] ...`.
+
+    Retorna (descrição_da_tarefa, overrides) — overrides tem só as chaves
+    que o usuário passou explicitamente (valores ainda como string bruta,
+    convertidos/validados por `_resolve_loop_config`).
+    """
+    import shlex
+    try:
+        tokens = shlex.split(rest)
+    except ValueError:
+        tokens = rest.split()
+
+    overrides: dict = {}
+    task_parts: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--yolo":
+            overrides["approval_mode"] = "yolo"
+            i += 1
+            continue
+        if tok in _LOOP_FLAG_TOKENS and i + 1 < len(tokens):
+            val = tokens[i + 1]
+            if tok == "--max-minutes":
+                overrides["max_minutes"] = val
+            elif tok == "--max-tool-calls":
+                overrides["max_tool_calls"] = val
+            elif tok == "--max-cost":
+                overrides["max_cost_usd"] = val
+            elif tok == "--approval":
+                overrides["approval_mode"] = val
+            i += 2
+            continue
+        task_parts.append(tok)
+        i += 1
+    return " ".join(task_parts), overrides
+
+
+def _resolve_loop_config(overrides: dict) -> "LoopSection":
+    """Resolve limites do /loop: flag > config.yaml (`loop:`) > defaults.
+
+    Nunca lança — falha ao carregar config.yaml cai silenciosamente para os
+    defaults de `LoopSection`. Overrides de flag inválidos (ex.: --max-cost
+    abc) levantam ValueError com mensagem amigável para o chamador tratar.
+    """
+    from .config_loader import LoopSection
+
+    try:
+        from .config_loader import load_config
+        base = load_config().loop
+    except Exception:
+        base = LoopSection()
+
+    data = base.model_dump()
+    if "max_minutes" in overrides:
+        try:
+            data["max_minutes"] = int(overrides["max_minutes"])
+        except ValueError:
+            raise ValueError(f"--max-minutes inválido: {overrides['max_minutes']!r}") from None
+    if "max_tool_calls" in overrides:
+        try:
+            data["max_tool_calls"] = int(overrides["max_tool_calls"])
+        except ValueError:
+            raise ValueError(f"--max-tool-calls inválido: {overrides['max_tool_calls']!r}") from None
+    if "max_cost_usd" in overrides:
+        try:
+            data["max_cost_usd"] = float(overrides["max_cost_usd"])
+        except ValueError:
+            raise ValueError(f"--max-cost inválido: {overrides['max_cost_usd']!r}") from None
+    if "approval_mode" in overrides:
+        data["approval_mode"] = overrides["approval_mode"]
+    if "approval_risk_threshold" in overrides:
+        try:
+            data["approval_risk_threshold"] = float(overrides["approval_risk_threshold"])
+        except ValueError:
+            raise ValueError(
+                f"approval_risk_threshold inválido: {overrides['approval_risk_threshold']!r}"
+            ) from None
+
+    return LoopSection(**data)
+
+
+def _run_loop_mode(
+    *,
+    task_description: str,
+    overrides: dict,
+    ctx,
+    router: ToolRouter,
+    state: _TurnState,
+    console: Console,
+    fallback_clients,
+    stats,
+    tool_timeout_s: float,
+    session_store,
+    session_id,
+    active_workspace,
+    memprov,
+    loop_skill: "LoopSkill | None" = None,
+) -> None:
+    """Roda o agente sozinho, turno após turno, sem confirmação humana a cada
+    passo — até concluir a tarefa (sinal natural + nudge de confirmação),
+    estourar o orçamento de segurança, um guardrail mandar parar, ou o
+    usuário interromper com Ctrl+C.
+
+    Muta `state`/`ctx`/`stats` in-place, igual ao call site do fluxo manual —
+    quem chama sincroniza `client`/`active_model`/etc. de volta depois.
+
+    `loop_skill`: quando setado, ao final de um stop_reason=="completed" roda
+    um gate de verificação obrigatório (`_run_loop_skill_verification`) e
+    grava o resultado em `DecisionMemory` — comportamento extra só ativo
+    para loop-skills; um `/loop` manual (`loop_skill=None`) continua
+    idêntico ao de sempre.
+    """
+    try:
+        loop_cfg = _resolve_loop_config(overrides)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return
+
+    from .autonomous_budget import AutonomousBudget
+    from .headless_approval import HeadlessApprovalEngine, HeadlessApprovalConfig
+    from .tool_guardrails import ToolCallGuardrailController
+    from .usage_pricing import format_cost as _fmt_cost
+
+    budget = AutonomousBudget(
+        max_cost_usd=loop_cfg.max_cost_usd,
+        max_wall_seconds=loop_cfg.max_minutes * 60,
+        max_tool_calls=loop_cfg.max_tool_calls,
+    )
+    guardrail = ToolCallGuardrailController()
+    engine = HeadlessApprovalEngine(
+        HeadlessApprovalConfig(mode=loop_cfg.approval_mode, risk_threshold=loop_cfg.approval_risk_threshold)
+    )
+
+    console.print(
+        f"[cyan]▶ /loop iniciado[/cyan] [dim]| aprovação: {loop_cfg.approval_mode} | "
+        f"até {loop_cfg.max_minutes}m / {loop_cfg.max_tool_calls} tool calls / "
+        f"{_fmt_cost(loop_cfg.max_cost_usd)}. Ctrl+C interrompe.[/dim]"
+    )
+
+    router._approval_callback = engine.make_approval_callback()
+    ctx.add_user(task_description)
+
+    round_num = 0
+    confirm_pending = False
+    warned_80 = False
+    stop_reason = "completed"
+    all_tool_log: list[dict] = []
+
+    try:
+        while True:
+            if budget.is_exhausted:
+                stop_reason = "budget_exhausted"
+                break
+
+            round_num += 1
+            outcome = _run_tool_loop_body(
+                ctx=ctx,
+                router=router,
+                state=state,
+                console=console,
+                fallback_clients=fallback_clients,
+                stats=stats,
+                tool_timeout_s=tool_timeout_s,
+                session_store=session_store,
+                session_id=session_id,
+                active_workspace=active_workspace,
+                turn_input_text=task_description,
+                memprov=memprov,
+                budget=budget,
+                guardrail=guardrail,
+            )
+            all_tool_log.extend(outcome.tool_log)
+
+            snap = budget.snapshot()
+            _mins, _secs = divmod(int(snap.elapsed_seconds), 60)
+            console.print(
+                f"[dim][loop] rodada {round_num} | {snap.tool_calls} tool calls "
+                f"({snap.tool_calls}/{snap.max_tool_calls}) | {_mins}m{_secs:02d}s/"
+                f"{loop_cfg.max_minutes}m | {_fmt_cost(snap.cost_usd)}/{_fmt_cost(snap.max_cost_usd)}[/dim]"
+            )
+            if not warned_80 and budget.is_warning:
+                console.print("[yellow]⚠ /loop perto do limite de orçamento (≥80%).[/yellow]")
+                warned_80 = True
+
+            if outcome.kind == "final":
+                sys.stdout.write("\033[32mbauer>\033[0m ")
+                sys.stdout.write(outcome.display)
+                sys.stdout.write("\n\n")
+                sys.stdout.flush()
+                if outcome.turn_cost_line:
+                    console.print(outcome.turn_cost_line)
+
+                if not outcome.tool_log:
+                    # Sinal natural genuíno: a resposta já veio em texto puro,
+                    # SEM nenhuma tool call nesta rodada — candidato real a
+                    # "terminei". Uma rodada que chamou tools e só por acaso
+                    # terminou em texto não conta (o modelo ainda trabalhou).
+                    if confirm_pending:
+                        stop_reason = "completed"
+                        break
+                    confirm_pending = True
+                    ctx.add_user(_LOOP_CONFIRM_NUDGE)
+                else:
+                    confirm_pending = False
+                continue
+
+            confirm_pending = False
+
+            if outcome.kind == "tool_limit":
+                # Cap por-turno (MAX_TOOL_TURNS) — não é o orçamento do /loop,
+                # só reinicia a "conversa" pro próximo round continuar.
+                continue
+
+            if outcome.kind in (
+                "loop_hard_stop", "guardrail_halt", "provider_error",
+                "empty_response", "interrupted", "budget_exhausted",
+            ):
+                stop_reason = outcome.kind
+                break
+    finally:
+        router._approval_callback = None
+
+    verify_result = None
+    if loop_skill is not None and stop_reason == "completed":
+        verify_result = _run_loop_skill_verification(
+            loop_skill=loop_skill,
+            active_workspace=active_workspace,
+            ctx=ctx,
+            router=router,
+            state=state,
+            console=console,
+            fallback_clients=fallback_clients,
+            stats=stats,
+            tool_timeout_s=tool_timeout_s,
+            session_store=session_store,
+            session_id=session_id,
+            memprov=memprov,
+            budget=budget,
+            guardrail=guardrail,
+        )
+        if verify_result is not None and not verify_result.ok:
+            stop_reason = "verification_failed"
+
+    _print_loop_summary(console, stop_reason, round_num, budget, all_tool_log, task_description)
+
+    try:
+        from .incidents import record_incident
+        snap = budget.snapshot()
+        record_incident(
+            "autonomous_loop_stopped",
+            reason=stop_reason,
+            task_description=task_description[:200],
+            rounds=round_num,
+            elapsed_seconds=round(snap.elapsed_seconds, 1),
+            tool_calls=snap.tool_calls,
+            llm_calls=snap.llm_calls,
+            cost_usd=round(snap.cost_usd, 4),
+        )
+    except Exception:
+        pass
+
+    try:
+        from .kanban_store import KanbanStore
+        _ks = KanbanStore(active_workspace)
+        _ks.append_event(
+            task_id="_loop",
+            event_type="autonomous_loop_stopped",
+            actor="loop",
+            message=f"{stop_reason}: {task_description[:120]}",
+            metadata=budget.to_dict(),
+        )
+    except Exception:
+        pass
+
+    if loop_skill is not None:
+        try:
+            from pathlib import Path as _Path_dm
+            from .decision_memory import DecisionMemory
+            snap = budget.snapshot()
+            _dm = DecisionMemory(db_path=_Path_dm(active_workspace) / "decisions.db")
+
+            if verify_result is not None:
+                _outcome = "good" if verify_result.ok else "bad"
+                _score = 1.0 if verify_result.ok else 0.0
+                _verify_line = f" | verificação: {verify_result.summary}"
+            elif stop_reason == "completed":
+                _outcome, _score, _verify_line = "good", 0.5, " | sem verificação configurada"
+            elif stop_reason in ("provider_error", "empty_response", "guardrail_halt", "verification_failed"):
+                _outcome, _score, _verify_line = "bad", 0.0, ""
+            else:  # budget_exhausted, loop_hard_stop, interrupted — inconclusivo
+                _outcome, _score, _verify_line = "neutral", 0.5, ""
+
+            _tool_names = sorted({t.get("tool", "?") for t in all_tool_log})
+            _dm.record(
+                context=task_description[:2000],
+                decision=(
+                    f"loop-skill '{loop_skill.name}': "
+                    f"{_LOOP_STOP_REASON_LABELS.get(stop_reason, stop_reason)} "
+                    f"em {round_num} rodada(s), {snap.tool_calls} tool calls, "
+                    f"{_fmt_cost(snap.cost_usd)}{_verify_line}"
+                ),
+                outcome=_outcome,
+                tags=[loop_skill.name, "loop-skill"] + _tool_names,
+                score=_score,
+            )
+        except Exception:
+            pass  # observabilidade nunca derruba o /loop
+
+
+def _run_loop_skill_verification(
+    *, loop_skill: "LoopSkill", active_workspace, ctx, router, state, console,
+    fallback_clients, stats, tool_timeout_s, session_store, session_id,
+    memprov, budget, guardrail,
+) -> "VerifyResult | None":
+    """Gate de verificação obrigatório de um loop-skill.
+
+    Roda 1x; se falhar, injeta o erro no contexto e dá EXATAMENTE UMA rodada
+    extra de correção (`_run_tool_loop_body` direto, sem loop de confirmação
+    aninhado), depois reverifica UMA vez. Bounded por construção — só existem
+    2 pontos de chamada de `_run_once()` neste código, nunca um loop.
+
+    `None` = loop-skill não configurou verificação (nem verify_command nem
+    verify_auto) — não é uma falha, é ausência de gate.
+    """
+    if not loop_skill.verify_command and not loop_skill.verify_auto:
+        return None
+
+    from .app_verify import Step, VerifyResult, verify_project
+
+    def _run_once() -> VerifyResult:
+        if loop_skill.verify_command:
+            import shlex
+            import subprocess
+            try:
+                proc = subprocess.run(
+                    shlex.split(loop_skill.verify_command),
+                    cwd=str(active_workspace), capture_output=True,
+                    text=True, encoding="utf-8", errors="replace", timeout=300,
+                )
+                out = (proc.stdout or "") + (proc.stderr or "")
+                ok = proc.returncode == 0
+                step = Step(
+                    "verify_command", [loop_skill.verify_command],
+                    rc=proc.returncode, ok=ok, output=out[-2000:],
+                )
+                return VerifyResult(
+                    str(active_workspace), "custom", ok, [step],
+                    "verificação customizada ok" if ok
+                    else f"verify_command falhou (rc={proc.returncode})",
+                )
+            except Exception as exc:
+                step = Step(
+                    "verify_command", [loop_skill.verify_command],
+                    rc=-1, ok=False, output=str(exc)[:2000],
+                )
+                return VerifyResult(
+                    str(active_workspace), "custom", False, [step],
+                    f"erro ao rodar verify_command: {exc}",
+                )
+        return verify_project(active_workspace)  # verify_auto
+
+    console.print(f"[cyan]verificação do loop-skill '{loop_skill.name}'...[/cyan]")
+    result = _run_once()
+    if result.ok:
+        console.print(f"[green]verificação passou:[/green] {result.summary}")
+        return result
+
+    console.print(f"[yellow]verificação falhou, tentando 1 correção:[/yellow] {result.summary}")
+    ctx.add_user(
+        f"A verificação automática falhou:\n{result.summary}\n\n"
+        "Corrija o problema. Esta é sua ÚLTIMA chance antes da verificação final."
+    )
+    try:
+        _run_tool_loop_body(
+            ctx=ctx, router=router, state=state, console=console,
+            fallback_clients=fallback_clients, stats=stats,
+            tool_timeout_s=tool_timeout_s, session_store=session_store,
+            session_id=session_id, active_workspace=active_workspace,
+            turn_input_text="", memprov=memprov, budget=budget, guardrail=guardrail,
+        )
+    except Exception:
+        pass  # mesmo se a rodada de correção falhar/estourar, tenta verificar de novo
+
+    console.print(f"[cyan]reverificando '{loop_skill.name}'...[/cyan]")
+    result2 = _run_once()
+    if result2.ok:
+        console.print(f"[green]verificação passou após correção:[/green] {result2.summary}")
+    else:
+        console.print(
+            f"[red]verificação falhou de novo — encerrando (sem mais tentativas):[/red] {result2.summary}"
+        )
+    return result2
+
+
+def _print_loop_summary(console, stop_reason, round_num, budget, all_tool_log, task_description) -> None:
+    """Painel resumo ao final do /loop — motivo, orçamento, tool calls por tipo."""
+    try:
+        from collections import Counter
+
+        from rich.panel import Panel
+
+        from .usage_pricing import format_cost as _fmt_cost
+
+        snap = budget.snapshot()
+        label = _LOOP_STOP_REASON_LABELS.get(stop_reason, stop_reason)
+        lines = [
+            f"[bold]Motivo:[/bold] {label}",
+            f"[bold]Rodadas:[/bold] {round_num}",
+            f"[bold]Duração:[/bold] {int(snap.elapsed_seconds)}s",
+            f"[bold]Tool calls:[/bold] {snap.tool_calls}/{snap.max_tool_calls}",
+            f"[bold]LLM calls:[/bold] {snap.llm_calls}/{snap.max_llm_calls}",
+            f"[bold]Custo:[/bold] {_fmt_cost(snap.cost_usd)}/{_fmt_cost(snap.max_cost_usd)}",
+        ]
+        tool_counts = Counter(t.get("tool", "?") for t in all_tool_log)
+        if tool_counts:
+            lines.append(
+                "[bold]Por tool:[/bold] "
+                + ", ".join(f"{k}={v}" for k, v in tool_counts.most_common())
+            )
+        console.print(Panel("\n".join(lines), title="/loop encerrado", border_style="cyan"))
+    except Exception:
+        pass  # observabilidade nunca derruba o /loop
+
+
+def _handle_loop_skill_cmd(
+    user_input: str, console, *, ctx, router, state: _TurnState,
+    fallback_clients, stats, tool_timeout_s, session_store, session_id,
+    active_workspace, memprov,
+) -> None:
+    """`/loop-skill list` e `/loop-skill run <nome> [texto livre]` — uso
+    manual/debug. O disparo automático (ver dispatch em run_agent_session)
+    é o fluxo principal."""
+    from .loop_skills import LoopSkillNotFound, LoopSkillRegistry
+
+    rest = user_input.split(None, 1)
+    sub = rest[1].strip() if len(rest) > 1 else ""
+    registry = LoopSkillRegistry()
+
+    if not sub or sub.lower() == "list":
+        loop_skills = registry.list()
+        if not loop_skills:
+            console.print(
+                "[dim]Nenhum loop-skill instalado. Crie um YAML em "
+                "~/.bauer/loop_skills/ — veja o formato no plano/README.[/dim]"
+            )
+            return
+        for s in loop_skills:
+            console.print(f"[cyan]{s.name}[/cyan] — {s.description} [dim]({s.trigger_pattern})[/dim]")
+        return
+
+    if sub.lower().startswith("run "):
+        name_and_rest = sub[4:].strip()
+        name, _, free_text = name_and_rest.partition(" ")
+        try:
+            skill = registry.get(name)
+        except LoopSkillNotFound as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        # Uso manual: sem regex real pra casar, então usa free_text como a
+        # tarefa literal se fornecido, senão usa o task_template como está.
+        task = free_text.strip() or skill.task_template
+        console.print(f"[cyan]rodando loop-skill '{skill.name}' manualmente...[/cyan]")
+        _run_loop_mode(
+            task_description=task,
+            overrides={
+                "max_minutes": str(skill.max_minutes),
+                "max_tool_calls": str(skill.max_tool_calls),
+                "max_cost_usd": str(skill.max_cost_usd),
+                "approval_mode": skill.approval_mode,
+                "approval_risk_threshold": str(skill.approval_risk_threshold),
+            },
+            ctx=ctx, router=router, state=state, console=console,
+            fallback_clients=fallback_clients, stats=stats,
+            tool_timeout_s=tool_timeout_s, session_store=session_store,
+            session_id=session_id, active_workspace=active_workspace,
+            memprov=memprov, loop_skill=skill,
+        )
+        return
+
+    console.print("[yellow]Uso:[/yellow] /loop-skill list | /loop-skill run <nome> [texto livre]")
+
+
 def run_agent_session(
     client: OllamaClient,
     model_name: str,
@@ -2573,6 +3542,9 @@ def run_agent_session(
         provider=_provider or "",
     )
     skills = SkillRegistry()
+    from .loop_skills import LoopSkillRegistry
+    _loop_skill_registry = LoopSkillRegistry()
+    _loop_skill_last_run: dict[str, float] = {}
     routing = model_router is not None and model_router.config.enabled
     orch_enabled = orchestrator is not None and routing
 
@@ -2587,6 +3559,7 @@ def run_agent_session(
             ("/status", "stats"),
             ("/clear", "limpar"),
             ("/memory", "memoria"),
+            ("/loop", "autonomo"),
             ("/exit", "sair"),
         ],
     ))
@@ -2767,6 +3740,124 @@ def run_agent_session(
             continue
         active_workspace = getattr(router, "workspace", "workspace")
 
+        if user_input.lower() == "/loop" or user_input.lower().startswith("/loop "):
+            _rest = user_input[len("/loop"):].strip()
+            if _rest.lower() == "status":
+                console.print(
+                    "[dim]Nenhum /loop em execução — o modo /loop roda de forma síncrona "
+                    "(ocupa o prompt enquanto ativo). Use Ctrl+C para interromper um /loop "
+                    "em andamento.[/dim]"
+                )
+                continue
+            if _rest.lower() == "stop":
+                console.print(
+                    "[dim]Nenhum /loop em execução para interromper. Durante um /loop "
+                    "ativo, use Ctrl+C.[/dim]"
+                )
+                continue
+            if not _rest:
+                console.print(
+                    "[yellow]Uso:[/yellow] /loop <tarefa> [--max-minutes N] [--max-tool-calls N] "
+                    "[--max-cost N] [--approval threshold|deny_all|yolo] [--yolo]\n"
+                    "[dim]Ctrl+C interrompe o /loop em andamento (não a sessão).[/dim]"
+                )
+                continue
+            _loop_task, _loop_overrides = _parse_loop_args(_rest)
+            if not _loop_task.strip():
+                console.print("[yellow]Descreva a tarefa: /loop <tarefa> ...[/yellow]")
+                continue
+            _loop_state = _TurnState(
+                client=client,
+                active_model=model_name,
+                native_session_ok=_native_session_ok,
+                fb_idx=_fb_idx,
+                mem_turn_idx=_mem_turn_idx,
+            )
+            _run_loop_mode(
+                task_description=_loop_task,
+                overrides=_loop_overrides,
+                ctx=ctx,
+                router=router,
+                state=_loop_state,
+                console=console,
+                fallback_clients=fallback_clients,
+                stats=stats,
+                tool_timeout_s=tool_timeout_s,
+                session_store=session_store,
+                session_id=session_id,
+                active_workspace=active_workspace,
+                memprov=_memprov,
+            )
+            client = _loop_state.client
+            _native_session_ok = _loop_state.native_session_ok
+            _fb_idx = _loop_state.fb_idx
+            _mem_turn_idx = _loop_state.mem_turn_idx
+            continue
+
+        # Auto-gatilho de loop-skills — nunca antes dos comandos explícitos
+        # acima (built-ins sempre vencem), nunca visto por texto gerado
+        # DENTRO de um /loop (user_input só é lido aqui, no topo do
+        # while True — nunca re-entrado durante _run_loop_mode).
+        if user_input.lower() != "/loop" and not user_input.lower().startswith("/loop "):
+            _ls_match = _loop_skill_registry.match(user_input)
+            if _ls_match is not None:
+                _ls_skill, _ls_re = _ls_match
+                _ls_now = time.monotonic()
+                _ls_last = _loop_skill_last_run.get(_ls_skill.name, 0.0)
+                if _ls_now - _ls_last >= _LOOP_SKILL_COOLDOWN_S:
+                    _loop_skill_last_run[_ls_skill.name] = _ls_now
+                    console.print(
+                        f"[cyan]padrão '{_ls_skill.name}' reconhecido[/cyan] "
+                        f"[dim]— disparando /loop autônomo automaticamente "
+                        f"(sem confirmação; instalada localmente por você).[/dim]"
+                    )
+                    _ls_task = _ls_skill.render_task(_ls_re)
+                    _ls_state = _TurnState(
+                        client=client, active_model=model_name,
+                        native_session_ok=_native_session_ok,
+                        fb_idx=_fb_idx, mem_turn_idx=_mem_turn_idx,
+                    )
+                    _run_loop_mode(
+                        task_description=_ls_task,
+                        overrides={
+                            "max_minutes": str(_ls_skill.max_minutes),
+                            "max_tool_calls": str(_ls_skill.max_tool_calls),
+                            "max_cost_usd": str(_ls_skill.max_cost_usd),
+                            "approval_mode": _ls_skill.approval_mode,
+                            "approval_risk_threshold": str(_ls_skill.approval_risk_threshold),
+                        },
+                        ctx=ctx, router=router, state=_ls_state, console=console,
+                        fallback_clients=fallback_clients, stats=stats,
+                        tool_timeout_s=tool_timeout_s, session_store=session_store,
+                        session_id=session_id, active_workspace=active_workspace,
+                        memprov=_memprov, loop_skill=_ls_skill,
+                    )
+                    client = _ls_state.client
+                    _native_session_ok = _ls_state.native_session_ok
+                    _fb_idx = _ls_state.fb_idx
+                    _mem_turn_idx = _ls_state.mem_turn_idx
+                    continue
+                # em cooldown — trata como input normal, não dispara de novo
+
+        if user_input.lower() in _LOOP_SKILL_CMDS or user_input.lower().startswith(
+            ("/loop-skill ", "/loop-skills ")
+        ):
+            _ls_state2 = _TurnState(
+                client=client, active_model=model_name, native_session_ok=_native_session_ok,
+                fb_idx=_fb_idx, mem_turn_idx=_mem_turn_idx,
+            )
+            _handle_loop_skill_cmd(
+                user_input, console, ctx=ctx, router=router, state=_ls_state2,
+                fallback_clients=fallback_clients, stats=stats, tool_timeout_s=tool_timeout_s,
+                session_store=session_store, session_id=session_id,
+                active_workspace=active_workspace, memprov=_memprov,
+            )
+            client = _ls_state2.client
+            _native_session_ok = _ls_state2.native_session_ok
+            _fb_idx = _ls_state2.fb_idx
+            _mem_turn_idx = _ls_state2.mem_turn_idx
+            continue
+
         if user_input.lower() in _KANBAN_CMDS:
             _handle_kanban_cmd(console, active_workspace)
             continue
@@ -2872,305 +3963,42 @@ def run_agent_session(
 
         ctx.add_user(user_input)
 
-        # --- loop de tool turns (um turno do usuário pode ter N tool calls) ---
-        tool_turns = 0
-        cli_tool_log: list[dict] = []  # para detecção de loop no CLI path
-        # Dedup por turno de usuário: replay de chamadas idênticas DENTRO do
-        # turno; reset a cada input ("rode de novo" deve re-executar de fato).
-        from .tool_dedup import ToolCallDeduper as _CliDeduper
-        _cli_deduper = _CliDeduper()
-        while True:
-            # Aviso precoce de contexto cheio — antes de travar silenciosamente
-            usage = ctx.usage_pct
-            if usage >= _CTX_WARN_THRESHOLD:
-                pct = int(usage * 100)
-                console.print(
-                    f"[yellow]⚠ Contexto em {pct}% do budget "
-                    f"({ctx.used_tokens}/{ctx.budget} tokens). "
-                    "Use [bold]/clear[/bold] se o modelo ficar lento.[/yellow]"
-                )
-            # MemoryProvider: on_turn_start antes da chamada LLM
-            if _memprov is not None:
-                try:
-                    _memprov.on_turn_start(_mem_turn_idx, ctx.messages)
-                except Exception:
-                    pass
+        # --- loop de tool turns (extraído p/ _run_tool_loop_body — usado
+        # também pelo /loop autônomo, que passa budget/guardrail reais) ---
+        _state = _TurnState(
+            client=client,
+            active_model=active_model,
+            native_session_ok=_native_session_ok,
+            fb_idx=_fb_idx,
+            mem_turn_idx=_mem_turn_idx,
+        )
+        outcome = _run_tool_loop_body(
+            ctx=ctx,
+            router=router,
+            state=_state,
+            console=console,
+            fallback_clients=fallback_clients,
+            stats=stats,
+            tool_timeout_s=tool_timeout_s,
+            session_store=session_store,
+            session_id=session_id,
+            active_workspace=active_workspace,
+            turn_input_text=user_input,
+            memprov=_memprov,
+        )
+        client = _state.client
+        active_model = _state.active_model
+        _native_session_ok = _state.native_session_ok
+        _fb_idx = _state.fb_idx
+        _mem_turn_idx = _state.mem_turn_idx
 
-            _native_final = False
-            try:
-                if _native_session_ok:
-                    try:
-                        _nkind, _ntext = _native_turn_interactive(
-                            ctx, router, client, active_model, console,
-                            cli_tool_log, _cli_deduper,
-                            MAX_TOOL_TURNS - tool_turns,
-                        )
-                    except _NativeToolsUnsupported:
-                        _native_session_ok = False
-                        console.print(
-                            "[dim][native→bridge] provider sem suporte a tools "
-                            "nativas — usando Tool Bridge JSON nesta sessão.[/dim]"
-                        )
-                    else:
-                        if _nkind == "continue":
-                            tool_turns = len(cli_tool_log)
-                            _maybe_reflect(ctx, tool_turns)
-                            loop_warn, hard_stop = _detect_loop(cli_tool_log)
-                            if loop_warn:
-                                ctx.add_user(loop_warn)
-                            if hard_stop:
-                                break
-                            # Cap de rounds (antes feito pelo slice em
-                            # _native_turn_interactive, removido p/ não quebrar
-                            # o pareamento assistant↔tool).
-                            if tool_turns >= MAX_TOOL_TURNS:
-                                console.print(
-                                    f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls "
-                                    "atingido neste turno.[/yellow]"
-                                )
-                                break
-                            continue
-                        # _nkind == "final": resposta de texto sem tools
-                        response = _ntext or ""
-                        _native_final = True
-                if not _native_final:
-                    response, client, active_model = _collect_with_fallback(
-                        client, active_model, ctx.get_payload(), fallback_clients, console
-                    )
-            except (OllamaError, OpenAIClientError) as exc:
-                # Tenta fallback automático para erros retryáveis (429, 5xx).
-                # Avança em fallback_clients (não reinicia no item 0) para
-                # percorrer a lista quando vários providers falham em sequência.
-                _did_fallback = False
-                if fallback_clients and _fb_idx < len(fallback_clients):
-                    try:
-                        from .error_classifier import classify_api_error
-                        _cls = classify_api_error(exc)
-                        _should_fb = _cls.should_fallback
-                    except Exception:
-                        _should_fb = True  # sem classifier: assume retryável
-                    if _should_fb:
-                        _fb = fallback_clients[_fb_idx]
-                        _fb_idx += 1
-                        _fb_client, _fb_model = (
-                            (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple))
-                            else (_fb, active_model)
-                        )
-                        console.print(
-                            f"[yellow]⚡ Provider falhou ({exc.__class__.__name__}) — "
-                            f"trocando para fallback {_fb_idx}/{len(fallback_clients)}: "
-                            f"[bold]{_fb_model}[/bold][/yellow]"
-                        )
-                        client = _fb_client
-                        active_model = _fb_model
-                        _native_session_ok = (
-                            isinstance(_fb_client, _OpenAIClientCls)
-                            and getattr(_fb_client, "supports_native_tools", False)
-                        )
-                        _did_fallback = True
-                if not _did_fallback:
-                    _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
-                    console.print(f"\n[red]Erro do {_err_type}:[/red] {exc}")
-                    if fallback_clients and _fb_idx >= len(fallback_clients):
-                        console.print(
-                            f"[dim]Todos os {len(fallback_clients)} fallbacks foram tentados.[/dim]"
-                        )
-                    stats.record_error(str(exc))
-                    if ctx.messages and ctx.messages[-1]["role"] == "user":
-                        ctx.messages.pop()
-                    break
-                # Fallback ativado: re-tenta o turno com o novo client (mesma
-                # mensagem do usuário ainda no contexto). Atualiza stats/provider.
-                stats.model = active_model
-                _fb_provider = getattr(client, "_provider", None) or "openai"
-                stats.provider = _fb_provider
-                ctx._provider = _fb_provider
-                continue
-            except KeyboardInterrupt:
-                console.print("\n[dim][interrompido][/dim]")
-                if ctx.messages and ctx.messages[-1]["role"] == "user":
-                    ctx.messages.pop()
-                break
-
-            # Resposta vazia: recovery automático (retry → compress+retry)
-            # antes de devolver o problema ao usuário.
-            if not response.strip():
-                console.print("[dim][recovery] resposta vazia — tentando recuperar...[/dim]")
-                response, diagnostico = _recover_empty_response(
-                    client, active_model, ctx, console=console
-                )
-                if not response:
-                    console.print(f"[yellow]{diagnostico}[/yellow]")
-                    if ctx.messages and ctx.messages[-1]["role"] == "user":
-                        ctx.messages.pop()
-                    break
-
-            ctx.add_assistant(response)
-
-            # Tenta parsear como tool action(s) — suporta batch (múltiplos JSONs por resposta).
-            # Resposta final do native NÃO é re-parseada: texto que por acaso
-            # contenha JSON não deve re-disparar tools.
-            actions = None if _native_final else _try_parse_tools_batch(response, router)
-
-            if actions is not None and tool_turns < MAX_TOOL_TURNS:
-                combined_parts: list[str] = []
-
-                # Só processa o que cabe dentro do limite de tool turns
-                pending_actions = [a for a in actions if tool_turns < MAX_TOOL_TURNS]
-                if len(actions) > len(pending_actions):
-                    console.print(
-                        f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls atingido "
-                        "neste turno.[/yellow]"
-                    )
-
-                def _exec_action(action_dict: dict) -> tuple[str, str, str]:
-                    """Executa 1 action com dedup e timeout."""
-                    _name = action_dict.get("action", "?")
-                    _args = action_dict.get("args", {}) or {}
-                    _cached = _cli_deduper.check(_name, _args)
-                    if _cached is not None:
-                        return _name, _cached, _args_sig(_args)
-                    _failed = False
-                    try:
-                        from .tool_timeout import call_with_timeout as _call_to
-                        _result, _timed_out = _call_to(
-                            lambda: router.execute(action_dict),
-                            tool_timeout_s,
-                            _name,
-                        )
-                        if _timed_out:
-                            _failed = True
-                    except (ToolError, SandboxError) as _exc:
-                        _result = f"[Erro: {_exc}]"
-                        _failed = True
-                    _cli_deduper.record(_name, _args, _result, failed=_failed)
-                    return _name, _result, _args_sig(_args)
-
-                # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
-                if len(pending_actions) > 1:
-                    from concurrent.futures import ThreadPoolExecutor
-                    from concurrent.futures import as_completed as _as_completed
-
-                    ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(pending_actions)
-                    with ThreadPoolExecutor(max_workers=min(len(pending_actions), 8)) as _ex:
-                        _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(pending_actions)}
-                        for _fut in _as_completed(_fmap):
-                            ordered_results[_fmap[_fut]] = _fut.result()
-                else:
-                    ordered_results = [_exec_action(a) for a in pending_actions]
-
-                for action_name, tool_result, _asig in ordered_results:
-                    # Display inteligente — filtra ruído, mostra apenas o relevante
-                    display_line = _format_tool_display(action_name, tool_result)
-                    console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
-
-                    # Comprime resultado para o contexto — reduz impacto de resultados grandes
-                    ctx_result, was_compressed = _ctx_result_for_context(action_name, tool_result)
-
-                    combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
-                    cli_tool_log.append({"tool": action_name, "args_sig": _asig, "result": tool_result[:300]})
-                    tool_turns += 1
-
-                if combined_parts:
-                    console.print()
-                    ctx.add_user("\n\n".join(combined_parts))
-
-                _maybe_reflect(ctx, tool_turns)
-                # Detecção de loop após cada batch de tool calls (CLI path)
-                loop_warn, hard_stop = _detect_loop(cli_tool_log)
-                if loop_warn:
-                    ctx.add_user(loop_warn)
-                if hard_stop:
-                    break
-                continue
-
-            if tool_turns >= MAX_TOOL_TURNS:
-                console.print(
-                    f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls atingido "
-                    "neste turno.[/yellow]"
-                )
-
-            # Resposta final em texto — extrai se o modelo usou JSON de conversa
-            display = _extract_text_from_pseudo_json(response) or response
-            stats.end_turn(len(display))
-
-            # Wave 1 — capture real token usage from the client (provider-agnostic).
-            # `last_usage` is populated by openai_client / anthropic_client; if the
-            # provider doesn't surface usage (e.g. Ollama local, some compat
-            # backends), record_turn_usage gets {} and is a no-op.
-            _turn_usage: dict = {}
-            _turn_cost_line: str = ""
-            try:
-                _raw_usage = getattr(client, "last_usage", None) or {}
-                _turn_usage = stats.record_turn_usage(_raw_usage)
-                # Compose a one-line cost summary for the user. Only show when
-                # we actually have token data — silent fallback to old behaviour
-                # for providers without usage support.
-                if _turn_usage and (_turn_usage.get("total_tokens", 0) > 0):
-                    from .usage_pricing import format_cost as _fmt_cost
-                    _in = _turn_usage.get("prompt_tokens", 0)
-                    _out = _turn_usage.get("completion_tokens", 0)
-                    _cache_read = _turn_usage.get("cache_read_input_tokens", 0)
-                    _cache_part = ""
-                    if _cache_read and _in:
-                        _cache_part = f" cache:{_cache_read * 100 // _in}%"
-                    _cost_now = _fmt_cost(stats.cost_usd_total)
-                    _turn_cost_line = (
-                        f"[dim]  ↳ {_in}→{_out} tok{_cache_part} | "
-                        f"sess total: {_cost_now}[/dim]"
-                    )
-            except Exception:
-                pass  # never block the chat on a cost-display failure
-
-            # Persiste sessao apos cada turno completo
-            if session_store is not None and session_id:
-                try:
-                    session_store.save(session_id, ctx.messages)
-                except Exception:
-                    pass  # nao interrompe o agente por falha de persistencia
-
-            # Sync memory: grava turno em DecisionMemory (background)
-            try:
-                from .memory_context import sync_memory_after_turn as _sync_mem
-                _sync_mem(
-                    user_input, display, cli_tool_log,
-                    workspace=active_workspace,
-                    session_id=session_id or "",
-                )
-            except Exception:
-                pass
-
-            # G10: background quality review — daemon thread, never blocks
-            try:
-                from .background_review import review_turn as _bg_review
-                _bg_review(
-                    user_input, display, cli_tool_log,
-                    workspace=active_workspace,
-                    session_id=session_id or "",
-                )
-            except Exception:
-                pass
-
-            # G4: feed recent messages to ToolRouter for LLM approval context
-            try:
-                router.set_context(ctx.messages)
-            except Exception:
-                pass
-
-            # MemoryProvider hooks: sync_turn + nudge
-            _mem_turn_idx += 1
-            if _memprov is not None:
-                try:
-                    _memprov.sync_turn(_mem_turn_idx, ctx.messages)
-                    if _memprov.should_nudge(_mem_turn_idx):
-                        ctx.add_ephemeral_system(_memprov.nudge_message())
-                except Exception:
-                    pass
-
+        if outcome.kind == "final":
             sys.stdout.write("\033[32mbauer>\033[0m ")
-            sys.stdout.write(display)
+            sys.stdout.write(outcome.display)
             sys.stdout.write("\n\n")
             sys.stdout.flush()
-            if _turn_cost_line:
-                console.print(_turn_cost_line)
-            break
+            if outcome.turn_cost_line:
+                console.print(outcome.turn_cost_line)
+        # demais kinds (loop_hard_stop, provider_error, empty_response,
+        # interrupted, tool_limit) já imprimiram o necessário dentro de
+        # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.

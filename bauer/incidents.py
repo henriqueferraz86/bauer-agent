@@ -22,6 +22,11 @@ Design:
 - Nunca grava conteúdo de mensagens (privacidade) — só métricas e metadados
 - Arquivos pequenos, nome ordenável: YYYYMMDD_HHMMSS_<kind>.json
 - Retenção: máximo INCIDENTS_MAX arquivos; mais antigos são removidos
+
+Kinds conhecidos: empty_response, tool_loop, provider_down,
+autonomous_loop_stopped (modo `/loop` do bauer agent — encerrado por
+conclusão, orçamento esgotado, guardrail, erro de provider ou Ctrl+C;
+detalhes em bauer/agent.py::_run_loop_mode).
 """
 
 from __future__ import annotations
