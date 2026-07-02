@@ -130,6 +130,29 @@ def test_parse_loop_args_empty():
     assert overrides == {}
 
 
+def test_parse_loop_args_preserves_windows_backslashes():
+    """Regressão do incidente 2026-07-02: shlex em modo POSIX comia as barras
+    de `C:\\Users\\...` e o modelo recebia um caminho inexistente."""
+    task, overrides = _parse_loop_args(
+        r"na pasta C:\Users\henri\.bauer\workspace\nexusalpha suba o docker --max-minutes 10"
+    )
+    assert task == r"na pasta C:\Users\henri\.bauer\workspace\nexusalpha suba o docker"
+    assert overrides == {"max_minutes": "10"}
+
+
+def test_parse_loop_args_preserves_quotes_verbatim():
+    """A tarefa é texto livre — aspas fazem parte dela, não são consumidas."""
+    task, overrides = _parse_loop_args('rode o comando "git status" e resuma --max-cost 0.5')
+    assert task == 'rode o comando "git status" e resuma'
+    assert overrides == {"max_cost_usd": "0.5"}
+
+
+def test_parse_loop_args_flag_in_middle_of_task():
+    task, overrides = _parse_loop_args("conserta --max-tool-calls 7 os testes")
+    assert task == "conserta os testes"
+    assert overrides == {"max_tool_calls": "7"}
+
+
 # ─── _resolve_loop_config ───────────────────────────────────────────────────
 
 
@@ -225,7 +248,7 @@ def test_loop_stops_after_two_consecutive_text_replies(ws: Path):
     assert router._approval_callback is None  # resetado ao sair
 
 
-def test_loop_confirm_pending_resets_when_tool_call_follows_nudge(ws: Path, capsys):
+def test_loop_confirm_pending_resets_when_tool_call_follows_nudge(ws: Path):
     """Texto (nudge) -> o modelo volta a chamar tool antes de responder ->
     essa rodada NÃO conta como sinal de "terminei" (teve tool call no meio);
     só para quando uma rodada SEM nenhuma tool call vier duas vezes seguidas."""
@@ -238,13 +261,12 @@ def test_loop_confirm_pending_resets_when_tool_call_follows_nudge(ws: Path, caps
     ]
     client = _fixed_response_client(*responses)
     output, _, _ = _run_loop(client, ws)
-    # As respostas "final" são escritas via sys.stdout.write (não console.print),
-    # então ficam em stdout puro — capturado pelo capsys, não pelo console.file.
-    stdout_text = capsys.readouterr().out
 
     assert client.chat_stream.call_count == 5
-    assert "ainda trabalhando" in stdout_text.lower()
-    assert "confirmado, terminei" in stdout_text.lower()
+    # Respostas finais agora passam por _print_assistant_response (console Rich),
+    # então aparecem no console.file junto com o resto do output.
+    assert "ainda trabalhando" in output.lower()
+    assert "confirmado, terminei" in output.lower()
     assert "/loop encerrado" in output
 
 
@@ -369,21 +391,48 @@ def test_loop_guardrail_hard_stop_is_cumulative_across_rounds(ws: Path):
 # ─── observabilidade: incident + kanban event ───────────────────────────────
 
 
-def test_loop_records_incident_with_expected_fields(ws: Path):
+def test_loop_completed_does_not_record_incident(ws: Path):
+    """Conclusão normal NÃO é incidente — o log INFO de
+    'autonomous_loop_stopped: completed' fazia sucesso parecer erro."""
     client = _fixed_response_client("Feito.")
 
     with patch("bauer.incidents.record_incident") as mock_incident:
         _run_loop(client, ws, task="minha tarefa de teste")
 
+    mock_incident.assert_not_called()
+
+
+def test_loop_anomalous_stop_records_incident_with_expected_fields(ws: Path):
+    """Paradas anômalas (ex.: orçamento esgotado) continuam gravando incidente."""
+    tool_action = '{"action": "list_dir", "args": {"path": "."}}'
+    client = _fixed_response_client(*([tool_action] * 50))
+
+    with patch("bauer.incidents.record_incident") as mock_incident:
+        _run_loop(
+            client, ws, task="minha tarefa de teste",
+            overrides={"max_tool_calls": "3", "max_minutes": "5"},
+        )
+
     mock_incident.assert_called_once()
     args, kwargs = mock_incident.call_args
     assert args[0] == "autonomous_loop_stopped"
-    assert kwargs["reason"] == "completed"
+    assert kwargs["reason"] == "budget_exhausted"
     assert kwargs["task_description"].startswith("minha tarefa de teste")
     assert "elapsed_seconds" in kwargs
     assert "tool_calls" in kwargs
     assert "llm_calls" in kwargs
     assert "cost_usd" in kwargs
+
+
+def test_loop_completed_with_zero_tool_calls_warns(ws: Path):
+    """Modelo que 'conclui' sem executar nenhuma tool merece aviso visível —
+    foi exatamente o modo de falha do incidente de 2026-07-02 (path Windows
+    mutilado → modelo respondeu em texto e o /loop reportou sucesso)."""
+    client = _fixed_response_client("Feito.")
+
+    output, _, _ = _run_loop(client, ws)
+
+    assert "NENHUMA tool" in output
 
 
 def test_loop_appends_kanban_event_best_effort(ws: Path):

@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -174,7 +175,14 @@ try:
         "completion-menu.completion.current": "bg:#89b4fa #1e1e2e bold",
         "completion-menu.meta.completion":         "bg:#313244 #6c7086",
         "completion-menu.meta.completion.current": "bg:#89b4fa #1e1e2e",
+        # Barra de status fixa (bottom toolbar) — identidade BAUER + modelo +
+        # tokens, sempre visível enquanto o prompt está ativo.
+        "bottom-toolbar":       "noreverse bg:#1e1e2e #6b7280",
+        "bottom-toolbar.brand": "bold #00d4aa",
+        "bottom-toolbar.model": "#3b82f6",
     })
+
+    _PROMPT_FRAGMENTS = [("class:prompt", "❯ ")]
 
     def _make_slash_kb() -> "KeyBindings":
         """Key binding: '/' insere o caractere E abre o menu de completions."""
@@ -187,7 +195,7 @@ try:
 
         return kb
 
-    def _make_prompt_session() -> "PromptSession":
+    def _make_prompt_session(bottom_toolbar=None) -> "PromptSession":
         # Histórico persistido entre sessões em ~/.bauer/.cli_history
         import os as _os
         from pathlib import Path as _Path
@@ -218,6 +226,7 @@ try:
             key_bindings=_make_slash_kb(),
             output=_output,
             cursor=CursorShape.BLINKING_UNDERLINE,
+            bottom_toolbar=bottom_toolbar,
         )
 
     _PT_AVAILABLE = True
@@ -1049,6 +1058,55 @@ def _recover_empty_response(
     return "", diagnostico
 
 
+@contextmanager
+def _thinking_status(console: Console, model_name: str):
+    """Spinner enquanto o modelo gera a resposta completa.
+
+    Sem isto o terminal ficava mudo por vários segundos (a resposta não é
+    streamada ao usuário) — parecia travado. Best-effort: se o console não
+    suportar live display (outro Live ativo, output capturado), segue sem
+    spinner em vez de quebrar o turno.
+    """
+    _status = None
+    try:
+        _status = console.status(
+            f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]",
+            spinner="dots",
+        )
+        _status.__enter__()
+    except Exception:
+        _status = None
+    try:
+        yield
+    finally:
+        if _status is not None:
+            try:
+                _status.__exit__(None, None, None)
+            except Exception:
+                pass
+
+
+def _print_assistant_response(console: Console, text: str, cost_line: str = "") -> None:
+    """Render da resposta final: cabeçalho `● bauer` + corpo em Markdown.
+
+    Markdown dá formatação real no terminal (código com syntax highlight,
+    listas, tabelas, negrito) — antes a resposta saía como texto cru via
+    sys.stdout. Fallback para texto puro se o corpo quebrar o parser.
+    """
+    from rich.text import Text as _Text
+
+    console.print()
+    console.print(_Text("● bauer", style="bold #00d4aa"))
+    try:
+        from rich.markdown import Markdown as _Markdown
+        console.print(_Markdown(text))
+    except Exception:
+        console.print(text, markup=False)
+    if cost_line:
+        console.print(cost_line)
+    console.print()
+
+
 def _collect_with_fallback(
     client: OllamaClient,
     model_name: str,
@@ -1086,7 +1144,8 @@ def _collect_with_fallback(
         )
     else:
         try:
-            resp = _collect_response(client, model_name, payload)
+            with _thinking_status(console, model_name):
+                resp = _collect_response(client, model_name, payload)
             if _cb_available and global_cb is not None:
                 global_cb.record_success(_primary_provider)
             return resp, client, model_name
@@ -1133,7 +1192,8 @@ def _collect_with_fallback(
             f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_label}[/bold][/yellow]"
         )
         try:
-            resp = _collect_response(fb_client, fb_model, payload)
+            with _thinking_status(console, fb_model):
+                resp = _collect_response(fb_client, fb_model, payload)
             if _cb_available and global_cb is not None:
                 global_cb.record_success(_fb_provider)
             return resp, fb_client, fb_model
@@ -1348,7 +1408,8 @@ def _native_turn_interactive(
 
     schemas = router.get_tool_schemas()
     try:
-        msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+        with _thinking_status(console, model_name):
+            msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
     except Exception as exc:
         if _is_native_unsupported_error(exc):
             raise _NativeToolsUnsupported(str(exc)) from exc
@@ -2981,8 +3042,6 @@ def _run_tool_loop_body(
 # /loop — modo autônomo (turno após turno, sem confirmação humana)
 # ---------------------------------------------------------------------------
 
-_LOOP_FLAG_TOKENS = {"--max-minutes", "--max-tool-calls", "--max-cost", "--approval"}
-
 _LOOP_CONFIRM_NUDGE = (
     "Você respondeu sem chamar nenhuma tool, o que normalmente indica que a "
     "tarefa terminou. Se ela está REALMENTE completa, responda apenas "
@@ -3010,37 +3069,39 @@ def _parse_loop_args(rest: str) -> tuple[str, dict]:
     Retorna (descrição_da_tarefa, overrides) — overrides tem só as chaves
     que o usuário passou explicitamente (valores ainda como string bruta,
     convertidos/validados por `_resolve_loop_config`).
-    """
-    import shlex
-    try:
-        tokens = shlex.split(rest)
-    except ValueError:
-        tokens = rest.split()
 
+    A tarefa é texto livre e fica VERBATIM (só as flags são removidas).
+    Nada de shlex aqui: em modo POSIX ele consome as barras invertidas de
+    caminhos Windows — `/loop suba o docker em C:\\Users\\x` chegava ao
+    modelo como "C:Usersx", um caminho inexistente (incidente real
+    autonomous_loop_stopped de 2026-07-02).
+    """
+    import re as _re
+
+    _FLAG_TO_KEY = {
+        "max-minutes": "max_minutes",
+        "max-tool-calls": "max_tool_calls",
+        "max-cost": "max_cost_usd",
+        "approval": "approval_mode",
+    }
     overrides: dict = {}
-    task_parts: list[str] = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok == "--yolo":
-            overrides["approval_mode"] = "yolo"
-            i += 1
-            continue
-        if tok in _LOOP_FLAG_TOKENS and i + 1 < len(tokens):
-            val = tokens[i + 1]
-            if tok == "--max-minutes":
-                overrides["max_minutes"] = val
-            elif tok == "--max-tool-calls":
-                overrides["max_tool_calls"] = val
-            elif tok == "--max-cost":
-                overrides["max_cost_usd"] = val
-            elif tok == "--approval":
-                overrides["approval_mode"] = val
-            i += 2
-            continue
-        task_parts.append(tok)
-        i += 1
-    return " ".join(task_parts), overrides
+
+    def _grab(m: "_re.Match") -> str:
+        overrides[_FLAG_TO_KEY[m.group(1)]] = m.group(2)
+        return ""  # remove a flag + valor + whitespace à direita
+
+    task = _re.sub(
+        r"(?:^|(?<=\s))--(max-minutes|max-tool-calls|max-cost|approval)\s+(\S+)\s*",
+        _grab,
+        rest,
+    )
+
+    def _grab_yolo(_m: "_re.Match") -> str:
+        overrides["approval_mode"] = "yolo"
+        return ""
+
+    task = _re.sub(r"(?:^|(?<=\s))--yolo(?:\s+|$)", _grab_yolo, task)
+    return task.strip(), overrides
 
 
 def _resolve_loop_config(overrides: dict) -> "LoopSection":
@@ -3191,12 +3252,7 @@ def _run_loop_mode(
                 warned_80 = True
 
             if outcome.kind == "final":
-                sys.stdout.write("\033[32mbauer>\033[0m ")
-                sys.stdout.write(outcome.display)
-                sys.stdout.write("\n\n")
-                sys.stdout.flush()
-                if outcome.turn_cost_line:
-                    console.print(outcome.turn_cost_line)
+                _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
 
                 if not outcome.tool_log:
                     # Sinal natural genuíno: a resposta já veio em texto puro,
@@ -3251,21 +3307,25 @@ def _run_loop_mode(
 
     _print_loop_summary(console, stop_reason, round_num, budget, all_tool_log, task_description)
 
-    try:
-        from .incidents import record_incident
-        snap = budget.snapshot()
-        record_incident(
-            "autonomous_loop_stopped",
-            reason=stop_reason,
-            task_description=task_description[:200],
-            rounds=round_num,
-            elapsed_seconds=round(snap.elapsed_seconds, 1),
-            tool_calls=snap.tool_calls,
-            llm_calls=snap.llm_calls,
-            cost_usd=round(snap.cost_usd, 4),
-        )
-    except Exception:
-        pass
+    # Conclusão normal não é incidente — gravar (e logar em INFO) um
+    # "autonomous_loop_stopped: completed" fazia sucesso parecer erro no
+    # terminal do usuário. Só paradas anômalas viram incidente.
+    if stop_reason != "completed":
+        try:
+            from .incidents import record_incident
+            snap = budget.snapshot()
+            record_incident(
+                "autonomous_loop_stopped",
+                reason=stop_reason,
+                task_description=task_description[:200],
+                rounds=round_num,
+                elapsed_seconds=round(snap.elapsed_seconds, 1),
+                tool_calls=snap.tool_calls,
+                llm_calls=snap.llm_calls,
+                cost_usd=round(snap.cost_usd, 4),
+            )
+        except Exception:
+            pass
 
     try:
         from .kanban_store import KanbanStore
@@ -3424,6 +3484,13 @@ def _print_loop_summary(console, stop_reason, round_num, budget, all_tool_log, t
             lines.append(
                 "[bold]Por tool:[/bold] "
                 + ", ".join(f"{k}={v}" for k, v in tool_counts.most_common())
+            )
+        if stop_reason == "completed" and snap.tool_calls == 0:
+            lines.append(
+                "\n[yellow]⚠ O modelo 'concluiu' sem executar NENHUMA tool — "
+                "provavelmente só respondeu em texto. Verifique se a tarefa "
+                "foi mesmo executada; se não, reformule com passos concretos "
+                "(ex.: 'use run_command para ...').[/yellow]"
             )
         console.print(Panel("\n".join(lines), title="/loop encerrado", border_style="cyan"))
     except Exception:
@@ -3618,8 +3685,27 @@ def run_agent_session(
     _is_interactive = sys.stdin.isatty()
     _pt_session = None
     if _PT_AVAILABLE and _is_interactive:
+        # Barra de status fixa no rodapé — o logo/painel do topo rola junto
+        # com o histórico, então a identidade + estado da sessão vivem aqui,
+        # sempre visíveis. Closure lê as variáveis locais atuais: /model e
+        # consumo de tokens/custo refletem na barra a cada prompt.
+        def _bottom_toolbar():
+            try:
+                import html as _html
+                from .usage_pricing import format_cost as _fmt_cost_tb
+                _cost = _fmt_cost_tb(stats.cost_usd_total)
+                _pct = int(ctx.usage_pct * 100)
+                return HTML(
+                    " <b><style fg='#00d4aa'>◆ BAUER</style></b>"
+                    f"  <style fg='#3b82f6'>{_html.escape(str(model_name))}</style>"
+                    f"  ·  ctx {_pct}%"
+                    f"  ·  {_html.escape(str(_cost))}"
+                    "  ·  /loop autônomo · /model trocar "
+                )
+            except Exception:
+                return " ◆ BAUER "
         try:
-            _pt_session = _make_prompt_session()
+            _pt_session = _make_prompt_session(bottom_toolbar=_bottom_toolbar)
         except Exception as _pt_exc:
             console.print(f"[dim](autocomplete indisponível: {_pt_exc})[/dim]")
             _pt_session = None  # terminal incompatível — usa fallback
@@ -3641,17 +3727,18 @@ def run_agent_session(
         try:
             if _pt_session is not None:
                 try:
-                    # Sem label — só o cursor sublinhado piscante (CursorShape acima).
-                    user_input = _pt_session.prompt("").strip()
+                    user_input = _pt_session.prompt(_PROMPT_FRAGMENTS).strip()
+                except (KeyboardInterrupt, EOFError):
+                    raise
                 except Exception:
                     # Falha em runtime (ex: terminal redimensionado abruptamente)
                     # — tenta uma vez com console.input fallback
                     _pt_session = None
                     _set_blink_underline()
-                    user_input = console.input("").strip()
+                    user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
             else:
                 _set_blink_underline()
-                user_input = console.input("").strip()
+                user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Sessao encerrada.[/dim]")
             try:
@@ -3988,10 +4075,7 @@ def run_agent_session(
                 # Persiste sessao apos orquestracao
                 if session_store is not None and session_id:
                     session_store.save(session_id, ctx.messages)
-                sys.stdout.write("\033[32mbauer>\033[0m ")
-                sys.stdout.write(final)
-                sys.stdout.write("\n\n")
-                sys.stdout.flush()
+                _print_assistant_response(console, final)
             continue
 
         # Prefetch memory context (decisões passadas + sessões similares)
@@ -4035,12 +4119,7 @@ def run_agent_session(
         _mem_turn_idx = _state.mem_turn_idx
 
         if outcome.kind == "final":
-            sys.stdout.write("\033[32mbauer>\033[0m ")
-            sys.stdout.write(outcome.display)
-            sys.stdout.write("\n\n")
-            sys.stdout.flush()
-            if outcome.turn_cost_line:
-                console.print(outcome.turn_cost_line)
+            _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.
