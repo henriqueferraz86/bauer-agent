@@ -364,42 +364,37 @@ class ExecToolsMixin:
     def _resolve_delegate_agent(self, agent_name: str, task: str):
         """Resolve o AgentDef a usar em `delegate_task`.
 
-        Com `agent_name` explícito: busca exata no registry (None se não achar
-        — nome errado não deve cair silenciosamente num especialista errado).
-        Sem `agent_name`: tenta `auto_select(task)` (keyword/Jaccard match) —
-        fallback determinístico para quando o modelo esquece de escolher um
-        especialista mesmo com a lista disponível no system prompt.
+        O pool de agents é os especialistas EMBUTIDOS no pacote (funcionam em
+        qualquer cwd, não dependem de nenhum agents.yaml existir) mesclados
+        com o agents.yaml do usuário (cwd > ~/.bauer/ > _bauer_home explícito
+        — ver `resolve_user_agents_path`); um agent do usuário com o mesmo
+        nome sobrescreve o embutido.
+
+        Com `agent_name` explícito: busca exata no pool (None se não achar —
+        nome errado não deve cair silenciosamente num especialista errado).
+        Sem `agent_name`: tenta match por keyword — fallback determinístico
+        para quando o modelo esquece de escolher um especialista mesmo com a
+        lista disponível no system prompt.
 
         Retorna (AgentDef | None, matched_by_name: bool, agents_file: str) —
-        o caminho do registry é devolvido (não guardado em self) porque
-        múltiplas `delegate_task` podem rodar em paralelo na mesma thread pool
-        (ver `_exec_action` em agent.py); estado de instância aqui correria
-        risco de uma chamada ler o path resolvido por outra.
+        o caminho do registry do usuário é devolvido (não guardado em self)
+        porque múltiplas `delegate_task` podem rodar em paralelo na mesma
+        thread pool (ver `_exec_action` em agent.py); estado de instância
+        aqui correria risco de uma chamada ler o path resolvido por outra.
 
         Best-effort: registry ausente/corrompido nunca bloqueia a delegação,
-        só degrada para None.
+        só degrada para só-embutidos (ou None se nem isso existir).
         """
-        import os as _os
-        from pathlib import Path as _Path
+        from ..agent_registry import match_agents, merged_specialist_pool, resolve_user_agents_path
 
-        # Prioridade: _bauer_home explícito (setado pelo caller/teste) > env var
-        # BAUER_AGENTS_FILE (isolamento hermético — ver tests/conftest.py,
-        # mesmo padrão de BAUER_CONFIG/BAUER_HOME) > CWD-relative (produção).
         _home = getattr(self, "_bauer_home", None)
-        _env_override = _os.environ.get("BAUER_AGENTS_FILE")
-        if _home:
-            _agents_file = str(_home / "agents.yaml")
-        elif _env_override:
-            _agents_file = _env_override
-        else:
-            _agents_file = str(_Path("agents.yaml").resolve())
+        _agents_file = str(resolve_user_agents_path(explicit=(_home / "agents.yaml") if _home else None))
         try:
-            from ..agent_registry import AgentRegistry
-
-            _reg = AgentRegistry(_agents_file)
+            pool = merged_specialist_pool(_agents_file)
             if agent_name:
-                return _reg.get(agent_name), True, _agents_file
-            return _reg.auto_select(task), False, _agents_file
+                _match = next((a for a in pool if a.name == agent_name), None)
+                return _match, True, _agents_file
+            return match_agents(task, pool), False, _agents_file
         except Exception:
             return None, False, _agents_file
 

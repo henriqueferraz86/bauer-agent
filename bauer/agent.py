@@ -561,24 +561,20 @@ def _specialist_delegation_enabled() -> bool:
 
 
 def _specialists_section() -> str:
-    """Lista os agents especialistas do registry (agents.yaml) para o
-    system prompt, instruindo o modelo a delegar via `delegate_task` quando
-    a tarefa combinar com um deles.
+    """Lista os agents especialistas (embutidos no pacote + agents.yaml do
+    usuário) para o system prompt, instruindo o modelo a delegar via
+    `delegate_task` quando a tarefa combinar com um deles.
 
-    Retorna "" (sem seção) quando o registry está vazio/ausente — não faz
-    sentido instruir sobre delegação sem nenhum especialista cadastrado.
-    Best-effort: qualquer falha de leitura degrada para "" silenciosamente,
-    igual ao padrão de _specs_section.
+    Retorna "" (sem seção) quando o pool está vazio — não faz sentido
+    instruir sobre delegação sem nenhum especialista cadastrado. Best-effort:
+    qualquer falha de leitura degrada para "" silenciosamente, igual ao
+    padrão de _specs_section.
     """
     try:
-        import os as _os
-        from pathlib import Path as _Path
+        from .agent_registry import merged_specialist_pool, resolve_user_agents_path
 
-        from .agent_registry import AgentRegistry
-
-        _env_override = _os.environ.get("BAUER_AGENTS_FILE")
-        _agents_file = _env_override or str(_Path("agents.yaml").resolve())
-        agents = AgentRegistry(_agents_file).list_agents()
+        _agents_file = str(resolve_user_agents_path())
+        agents = merged_specialist_pool(_agents_file)
         # Só lista agents locais (sem url) — remotos exigem bauer serve rodando
         # à parte e já são endereçáveis por agent_name sem precisar de aviso
         # prévio no prompt (o modelo não precisa "descobrir" um agent remoto

@@ -264,8 +264,31 @@ def test_build_system_prompt_excludes_specialists_when_disabled(router: ToolRout
     assert "devops-specialist" not in prompt
 
 
-def test_build_system_prompt_no_stray_section_when_registry_empty(router: ToolRouter, tmp_path, monkeypatch):
-    """Toggle ligado mas sem nenhum agent local — não deve sobrar seção vazia."""
+def test_build_system_prompt_no_stray_section_when_pool_empty(router: ToolRouter, tmp_path, monkeypatch):
+    """Toggle ligado mas sem nenhum especialista (embutido OU do usuário) —
+    não deve sobrar seção vazia. Os especialistas embutidos (bauer/data/
+    agents/specialists.yaml) SEMPRE existem em produção — mockar
+    list_builtin_specialists() é o único jeito de simular o pool
+    verdadeiramente vazio."""
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    monkeypatch.setenv("BAUER_AGENTS_FILE", str(tmp_path / "nao-existe.yaml"))
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg), \
+         patch("bauer.agent_registry.list_builtin_specialists", return_value=[]):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" not in prompt
+
+
+def test_build_system_prompt_includes_builtin_specialists_with_no_user_file(
+    router: ToolRouter, tmp_path, monkeypatch
+):
+    """Sem nenhum agents.yaml do usuário (BAUER_AGENTS_FILE aponta pra um
+    path inexistente): os especialistas EMBUTIDOS ainda aparecem — é
+    exatamente o cenário 'bauer agent rodado de qualquer pasta' que motivou
+    empacotar os especialistas junto com o Bauer em vez de depender de um
+    agents.yaml no cwd/home do usuário."""
     from bauer.config_loader import AgentSection, BauerConfig, ModelSection
 
     monkeypatch.setenv("BAUER_AGENTS_FILE", str(tmp_path / "nao-existe.yaml"))
@@ -273,7 +296,8 @@ def test_build_system_prompt_no_stray_section_when_registry_empty(router: ToolRo
     with patch("bauer.config_loader.load_config", return_value=cfg):
         prompt = _build_system_prompt(router)
 
-    assert "ESPECIALISTAS DISPONIVEIS" not in prompt
+    assert "ESPECIALISTAS DISPONIVEIS" in prompt
+    assert "devops-specialist" in prompt
 
 
 def test_build_system_prompt_specialists_excludes_remote_agents(router: ToolRouter, tmp_path, monkeypatch):

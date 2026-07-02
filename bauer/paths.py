@@ -34,6 +34,13 @@ def config_path() -> Path:
     return get_bauer_home() / "config.yaml"
 
 
+def agents_path() -> Path:
+    """Caminho canônico do agents.yaml do usuário (agents customizados/
+    remotos — NÃO os especialistas embutidos do pacote, ver
+    agent_registry.list_builtin_specialists())."""
+    return get_bauer_home() / "agents.yaml"
+
+
 def memory_dir() -> Path:
     """Diretório de memória (MODEL_EXPERIENCE.md, FEEDBACK.md, etc.)."""
     d = get_bauer_home() / "memory"
