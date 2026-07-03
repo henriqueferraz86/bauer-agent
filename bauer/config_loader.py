@@ -70,6 +70,12 @@ class AgentSection(_StrictSection):
     # a tarefa combinar com um deles. default True = agressivo, mesma
     # filosofia do minimal_code_mode.
     specialist_delegation: bool = True
+    # Checkpoint da App Factory: quando um projeto governado cruza o gate para
+    # IMPLEMENTATION (7 docs de planejamento preenchidos), pausa e oferece
+    # Revisar / Desenvolver (dispara /loop, opcionalmente semeia o kanban a
+    # partir do BACKLOG.md) / Continuar manual. Só em terminal interativo —
+    # degrada para no-op em canal/CI. default True.
+    planning_checkpoint: bool = True
 
 
 class ObservabilitySection(_StrictSection):

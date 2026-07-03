@@ -46,7 +46,12 @@ content: |
      implementar sem perguntar tudo de novo.
   4. **Checar o gate** — use `app_factory_status` para ver o gate atual e os docs
      pendentes. Quando os 7 estiverem preenchidos, o gate vira IMPLEMENTATION e a
-     escrita de código é liberada automaticamente.
+     escrita de código é liberada automaticamente. Nesse momento o Bauer oferece
+     um **checkpoint** (se `agent.planning_checkpoint`): Revisar os docs,
+     Desenvolver (dispara o `/loop` autônomo e pode semear o kanban a partir do
+     BACKLOG.md) ou seguir manual. Preencha o BACKLOG.md com itens `- [ ] tarefa`
+     (um por linha, com `Prioridade: alta/média/baixa`) — é a partir dele que os
+     cards do kanban são criados.
   5. **Vertical slice primeiro** — interface → API/serviço → persistência →
      resposta validada → teste mínimo. Só depois expanda funcionalidades.
   5b. **Auto-verificar** — após cada fatia, chame `verify_app` para BUILDAR e

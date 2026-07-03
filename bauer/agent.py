@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from contextlib import contextmanager, nullcontext
@@ -2821,6 +2822,203 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
     console.print()
 
 
+# ─── Checkpoint de planejamento (App Factory → /loop) ────────────────────────
+
+
+def _resolve_planning_checkpoint() -> bool:
+    """Lê agent.planning_checkpoint (best-effort, default True se falhar)."""
+    try:
+        from .config_loader import load_config
+        return bool(load_config().agent.planning_checkpoint)
+    except Exception:
+        return True
+
+
+def _af_active_gate(active_workspace) -> "tuple[Any, int | None]":  # type: ignore[type-arg]
+    """(project_dir, gate_int) do projeto App Factory ativo — (None, None) se não há."""
+    try:
+        from . import app_factory as af
+        proj = af.get_active_project(active_workspace)
+        if proj is None:
+            return None, None
+        g = af.current_gate(proj)
+        return proj, (int(g) if g is not None else None)
+    except Exception:
+        return None, None
+
+
+_BACKLOG_ITEM_RE = re.compile(r"^-\s*\[[ xX]?\]\s+(.+)$")
+
+
+def _parse_backlog_tasks(text: str, *, cap: int = 40) -> "list[dict]":
+    """Extrai tarefas de topo ('- [ ] ...') do BACKLOG.md, agrupadas por '## Fase'.
+
+    Só itens de nível 0-1 viram card (sub-bullets de prioridade/critério e
+    checkboxes aninhados são ignorados). Prioridade lida do sub-bullet
+    'Prioridade: alta/média/baixa' logo abaixo, se houver.
+    """
+    tasks: list[dict] = []
+    phase = ""
+    lines = text.splitlines()
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith("## "):
+            phase = stripped[3:].strip()
+            continue
+        if (len(raw) - len(raw.lstrip())) > 1:  # sub-bullet — ignora
+            continue
+        m = _BACKLOG_ITEM_RE.match(stripped)
+        if not m:
+            continue
+        title = m.group(1).strip()
+        if not title:
+            continue
+        prio = "medium"
+        for j in range(i + 1, min(i + 5, len(lines))):
+            sub = lines[j].strip().lower()
+            if not sub:
+                continue
+            if sub.startswith("## ") or _BACKLOG_ITEM_RE.match(lines[j].strip()):
+                break
+            if "priorid" in sub or "priority" in sub:
+                if "alta" in sub or "high" in sub:
+                    prio = "high"
+                elif "baixa" in sub or "low" in sub:
+                    prio = "low"
+                elif "crit" in sub:
+                    prio = "critical"
+                break
+        tasks.append({"title": title[:200], "phase": phase, "priority": prio})
+        if len(tasks) >= cap:
+            break
+    return tasks
+
+
+def _seed_kanban_from_backlog(router, project_dir, console) -> int:
+    """Cria cards no kanban a partir do BACKLOG.md do projeto. Retorna nº criados.
+
+    Usa router._kanban_create (mesmo store do ledger que o /loop lê), então os
+    cards aparecem tanto no board (/task) quanto no contexto de início do loop.
+    """
+    from pathlib import Path as _P
+    backlog = _P(project_dir) / "docs" / "BACKLOG.md"
+    if not backlog.is_file():
+        console.print("[dim]BACKLOG.md não encontrado — nada para semear.[/dim]")
+        return 0
+    try:
+        text = backlog.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    tasks = _parse_backlog_tasks(text)
+    if not tasks:
+        console.print("[dim]BACKLOG.md sem itens '- [ ]' reconhecíveis — nada semeado.[/dim]")
+        return 0
+    _name = _P(project_dir).name
+    created = 0
+    for t in tasks:
+        try:
+            router._kanban_create({
+                "title": t["title"],
+                "priority": t["priority"],
+                "description": f"[{_name}] {t['phase']}".strip(),
+            })
+            created += 1
+        except Exception:
+            continue
+    if created:
+        console.print(f"[green]✓[/green] {created} card(s) criados no kanban a partir do BACKLOG.md.")
+    return created
+
+
+def _maybe_planning_checkpoint(
+    console, router, active_workspace, gate_before, enabled: bool
+) -> "tuple[str, str] | None":
+    """Se o projeto ativo acabou de cruzar p/ IMPLEMENTATION, oferece o checkpoint.
+
+    Retorna None (sem checkpoint / desabilitado / não-interativo / declinou),
+    ou ('develop', task) / ('revisar', '') / ('continuar', ''). Só 'develop'
+    exige ação do caller (disparar _run_loop_mode com a task).
+    """
+    if not enabled:
+        return None
+    import sys as _sys
+    from . import app_factory as _af
+
+    proj, gate_after = _af_active_gate(active_workspace)
+    _IMPLEMENTATION = int(_af.Gate.IMPLEMENTATION)
+    crossed = (
+        proj is not None and gate_after is not None
+        and gate_after >= _IMPLEMENTATION
+        and (gate_before is None or gate_before < _IMPLEMENTATION)
+    )
+    if not crossed:
+        return None
+    # Não-interativo (canal/CI/pipe): não dá pra perguntar — segue sem interromper.
+    if not _sys.stdin.isatty():
+        return None
+
+    from pathlib import Path as _P
+    from rich.panel import Panel as _Panel
+    _name = _P(proj).name
+    try:
+        _score = f"{_af.delivery_score(proj).get('score', 0)}/10"
+    except Exception:
+        _score = "?"
+
+    console.print()
+    console.print(_Panel(
+        f"[bold green]Planejamento completo[/bold green] — [cyan]{_name}[/cyan] "
+        f"(gate: implementation, score {_score})\n\n"
+        "Como seguir?\n"
+        f"  [bold]R[/bold] Revisar antes    — pausa p/ você editar os docs (ex.: {_name}/docs/SPEC.md)\n"
+        "  [bold]D[/bold] Desenvolver      — dispara /loop autônomo agora (implementa a V1, verify a cada fatia)\n"
+        "  [bold]C[/bold] Continuar manual — sem loop; você conduz turno a turno",
+        title="[bold]Checkpoint — App Factory[/bold]", border_style="green",
+    ))
+    try:
+        from rich.prompt import Prompt
+        choice = Prompt.ask(
+            "Escolha", choices=["R", "D", "C", "r", "d", "c"], default="R"
+        ).strip().lower()
+    except Exception:
+        return None
+
+    if choice == "r":
+        console.print(
+            f"[dim]Revise/edite os docs em [cyan]{_name}/docs/[/cyan]. Quando estiver "
+            "pronto, peça a implementação ou rode [bold]/loop[/bold]. "
+            "Veja [bold]/spec list[/bold] e [bold]/project[/bold].[/dim]"
+        )
+        return ("revisar", "")
+    if choice == "c":
+        console.print("[dim]Ok — modo manual. Você conduz cada passo.[/dim]")
+        return ("continuar", "")
+
+    # Desenvolver: opcionalmente semeia o kanban, depois monta a task do loop.
+    _seeded = 0
+    try:
+        from rich.prompt import Confirm
+        if Confirm.ask("Semear o kanban a partir do BACKLOG.md?", default=True):
+            _seeded = _seed_kanban_from_backlog(router, proj, console)
+    except Exception:
+        pass
+    _kanban_hint = (
+        "Trabalhe pelos cards do kanban: kanban_list para ver o board e "
+        "kanban_complete(task_id, result=...) ao terminar cada card. "
+        if _seeded else ""
+    )
+    task = (
+        f"Implemente a V1 do projeto '{_name}' seguindo os documentos em "
+        f"{_name}/docs/ (SPEC.md, ARCHITECTURE.md, BACKLOG.md). Trabalhe uma fatia "
+        "vertical por vez (UI -> API -> persistência), rode verify_app a cada fatia "
+        "e só avance quando passar. " + _kanban_hint +
+        "Atualize PROGRESS.md ao concluir cada item. NÃO use clarify — assuma "
+        "premissas razoáveis e registre em DECISIONS.md."
+    )
+    console.print(f"[cyan]Iniciando desenvolvimento autônomo de '{_name}'…[/cyan]")
+    return ("develop", task)
+
+
 def _ledger_block(workspace_dir: str | None) -> str:
     """Retorna bloco markdown com tarefas pendentes do TASKS.md do workspace.
 
@@ -4042,6 +4240,9 @@ def run_agent_session(
     # no primeiro item (senão ficaria preso no mesmo provider quebrado).
     _fb_idx = 0
 
+    # Checkpoint de planejamento (App Factory → /loop): resolvido uma vez.
+    _planning_checkpoint_enabled = _resolve_planning_checkpoint()
+
     while True:
         # --- entrada do usuário ---
         try:
@@ -4409,6 +4610,12 @@ def run_agent_session(
 
         ctx.add_user(user_input)
 
+        # Gate do projeto App Factory ativo ANTES do turno — p/ detectar o
+        # cruzamento p/ IMPLEMENTATION ao final (checkpoint de planejamento).
+        _gate_before = None
+        if _planning_checkpoint_enabled:
+            _gate_before = _af_active_gate(active_workspace)[1]
+
         # --- loop de tool turns (extraído p/ _run_tool_loop_body — usado
         # também pelo /loop autônomo, que passa budget/guardrail reais) ---
         _state = _TurnState(
@@ -4443,3 +4650,26 @@ def run_agent_session(
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.
+
+        # Checkpoint: o projeto App Factory ativo acabou de completar o
+        # planejamento (cruzou p/ IMPLEMENTATION)? Oferece Revisar/Desenvolver/
+        # Continuar. Só 'develop' age aqui — dispara o /loop autônomo.
+        _cp = _maybe_planning_checkpoint(
+            console, router, active_workspace, _gate_before, _planning_checkpoint_enabled,
+        )
+        if _cp is not None and _cp[0] == "develop":
+            _cp_state = _TurnState(
+                client=client, active_model=model_name,
+                native_session_ok=_native_session_ok, fb_idx=_fb_idx,
+                mem_turn_idx=_mem_turn_idx,
+            )
+            _run_loop_mode(
+                task_description=_cp[1], overrides={}, ctx=ctx, router=router,
+                state=_cp_state, console=console, fallback_clients=fallback_clients,
+                stats=stats, tool_timeout_s=tool_timeout_s, session_store=session_store,
+                session_id=session_id, active_workspace=active_workspace, memprov=_memprov,
+            )
+            client = _cp_state.client
+            _native_session_ok = _cp_state.native_session_ok
+            _fb_idx = _cp_state.fb_idx
+            _mem_turn_idx = _cp_state.mem_turn_idx

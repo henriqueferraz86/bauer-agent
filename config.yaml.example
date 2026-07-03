@@ -102,6 +102,14 @@ agent:
   # Range: 0.0 – 600.0 | Padrão: 30.0
   tool_timeout_s: 30.0
 
+  # Checkpoint da App Factory: quando um projeto governado termina o
+  # planejamento (os 7 docs preenchidos → gate IMPLEMENTATION), o Bauer pausa
+  # e pergunta como seguir: (R)evisar os docs, (D)esenvolver — dispara o /loop
+  # autônomo e, opcionalmente, semeia o kanban a partir do BACKLOG.md — ou
+  # (C)ontinuar manual. Só em terminal interativo; em canal/CI vira no-op.
+  # Padrão: true
+  planning_checkpoint: true
+
 
 # =============================================================================
 # OLLAMA — LLM local (padrão)
