@@ -156,7 +156,40 @@ class MiscToolsMixin:
             command = args.get("command")
             if not command:
                 raise ToolError("process: 'command' é obrigatório para action=start.")
-            label = str(args.get("label", str(command)[:40]))
+            cmd_str = str(command)
+
+            # SEGURANÇA: process start executa comando arbitrário (Popen com
+            # shell=True) — SEM o gate abaixo era um bypass total do run_command
+            # (allowlist/denylist/safe_mode/aprovação). Mesmas regras aqui:
+            # 1. Encadeamento shell burlaria a allowlist do 1º token
+            #    (`echo x && del ...`): operadores fora de aspas são bloqueados.
+            import shlex as _shlex
+            try:
+                _lex = _shlex.shlex(cmd_str, posix=True, punctuation_chars=True)
+                _lex.whitespace_split = True
+                _ops = {t for t in _lex if t and set(t) <= set(";&|<>()")}
+            except ValueError as exc:
+                raise ToolError(f"process start: comando inválido — {exc}") from exc
+            if _ops:
+                raise ToolError(
+                    "process start: encadeamento/redirecionamento shell "
+                    f"({', '.join(sorted(_ops))}) não é permitido — inicie UM "
+                    "processo por chamada, sem &&, ;, |, > etc."
+                )
+            # 2. Mesmo gate do run_command background (G17.3): valida allowlist/
+            #    denylist/safe_mode via ShellRunner.validate(), sem executar.
+            _runner = getattr(self, "_shell_runner", None)
+            if _runner is None:
+                raise ToolError(
+                    "process start: shell desabilitado (router sem ShellRunner) — "
+                    "habilite tools.shell_enabled no config.yaml."
+                )
+            try:
+                _runner.validate(cmd_str, confirm=bool(args.get("confirm", False)))
+            except Exception as exc:  # Blocked/SafeMode/ShellError
+                raise ToolError(f"process start: {exc}") from exc
+
+            label = str(args.get("label", cmd_str[:40]))
             try:
                 proc = subprocess.Popen(
                     command,
@@ -173,8 +206,13 @@ class MiscToolsMixin:
                 raise ToolError(f"process start: falha ao iniciar — {exc}") from exc
 
             pid_str = str(proc.pid)
-            stdout_buf: list[str] = []
-            stderr_buf: list[str] = []
+            # Buffers LIMITADOS (ring): um processo longo (servidor, watch)
+            # produzindo logs indefinidamente encheria a memória da sessão.
+            # deque com maxlen descarta as linhas mais antigas — só as últimas
+            # ~2000 importam (log usa [-max_lines:]).
+            from collections import deque as _deque
+            stdout_buf: "_deque[str]" = _deque(maxlen=2000)
+            stderr_buf: "_deque[str]" = _deque(maxlen=2000)
 
             def _reader(stream, buf):
                 try:
@@ -230,8 +268,9 @@ class MiscToolsMixin:
 
         if action == "log":
             max_lines = self._coerce_int(args.get("max_lines", 50), default=50, minimum=1)
-            stdout_lines = info["stdout_buf"][-max_lines:]
-            stderr_lines = info["stderr_buf"][-max_lines:]
+            # deque não suporta slice — materializa só a cauda pedida.
+            stdout_lines = list(info["stdout_buf"])[-max_lines:]
+            stderr_lines = list(info["stderr_buf"])[-max_lines:]
             out = "".join(stdout_lines) or "(vazio)"
             err = "".join(stderr_lines) or "(vazio)"
             return (

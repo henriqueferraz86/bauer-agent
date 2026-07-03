@@ -211,8 +211,14 @@ class TestSkillsList:
 
 class TestProcess:
 
+    @staticmethod
+    def _shell_router(ws):
+        """process start exige ShellRunner (mesmo gate do run_command)."""
+        from bauer.shell_runner import ShellRunner
+        return ToolRouter(workspace=ws, shell_runner=ShellRunner(workspace=ws))
+
     def test_start_e_list(self, ws):
-        router = ToolRouter(workspace=ws)
+        router = self._shell_router(ws)
         result = router._process({"action": "start", "command": "python -c \"import time; time.sleep(5)\"", "label": "sleeping"})
         assert "Iniciado" in result
         assert "sleeping" in result
@@ -229,9 +235,40 @@ class TestProcess:
         assert "Nenhum" in result
 
     def test_start_sem_command_levanta(self, ws):
-        router = ToolRouter(workspace=ws)
+        router = self._shell_router(ws)
         with pytest.raises(ToolError, match="command"):
             router._process({"action": "start"})
+
+    def test_start_sem_shell_runner_negado(self, ws):
+        # Sem ShellRunner (shell desabilitado), start não pode rodar NADA —
+        # antes era um bypass total do run_command.
+        router = ToolRouter(workspace=ws)
+        with pytest.raises(ToolError, match="shell"):
+            router._process({"action": "start", "command": "python -c \"print(1)\""})
+
+    def test_start_comando_fora_da_allowlist_negado(self, ws):
+        router = self._shell_router(ws)
+        with pytest.raises(ToolError, match="allowlist"):
+            router._process({"action": "start", "command": "comando_inexistente_xyz --foo"})
+
+    def test_start_encadeamento_shell_negado(self, ws):
+        router = self._shell_router(ws)
+        for cmd in ("echo a && echo b", "echo a; echo b", "echo a | echo b",
+                    "echo a > out.txt", "echo a&&echo b"):
+            with pytest.raises(ToolError, match="encadeamento|redirecionamento"):
+                router._process({"action": "start", "command": cmd})
+
+    def test_start_ponto_e_virgula_dentro_de_aspas_permitido(self, ws):
+        # `;` DENTRO de aspas é conteúdo (ex.: python -c "a; b"), não operador.
+        router = self._shell_router(ws)
+        result = router._process({
+            "action": "start",
+            "command": "python -c \"import time; time.sleep(2)\"",
+            "label": "quoted",
+        })
+        assert "Iniciado" in result
+        pid = result.split("PID ")[-1].strip()
+        router._process({"action": "kill", "pid": pid})
 
     def test_sem_action_levanta(self, router):
         with pytest.raises(ToolError, match="action"):
@@ -254,7 +291,7 @@ class TestProcess:
             router._process({"action": "kill", "pid": "99999"})
 
     def test_write_sem_input_levanta(self, ws):
-        router = ToolRouter(workspace=ws)
+        router = self._shell_router(ws)
         result = router._process({"action": "start", "command": "python -c \"import sys; x=sys.stdin.read()\"", "label": "reader"})
         pid = result.split("PID ")[-1].strip()
         with pytest.raises(ToolError, match="input"):
@@ -262,7 +299,7 @@ class TestProcess:
         router._process({"action": "kill", "pid": pid})
 
     def test_poll_processo_finalizado(self, ws):
-        router = ToolRouter(workspace=ws)
+        router = self._shell_router(ws)
         result = router._process({"action": "start", "command": "python -c \"print('done')\"", "label": "quick"})
         pid = result.split("PID ")[-1].strip()
         import time

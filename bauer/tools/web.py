@@ -145,6 +145,7 @@ class WebToolsMixin:
                 content_body = str(body).encode()
 
         try:
+            from ..http_shared import shared_ssl_context
             resp = httpx.request(
                 method,
                 url,
@@ -153,6 +154,7 @@ class WebToolsMixin:
                 content=content_body,
                 timeout=15.0,
                 follow_redirects=True,
+                verify=shared_ssl_context(),
             )
         except httpx.TimeoutException:
             raise ToolError(f"Timeout ao acessar {url}")

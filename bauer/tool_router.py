@@ -140,7 +140,11 @@ _TOOL_SECURITY: dict[str, dict] = {
     "session_search": {"permission": "read",    "risk": "low",    "approval": False},
     "kanban_list":    {"permission": "read",    "risk": "low",    "approval": False},
     "kanban_show":    {"permission": "read",    "risk": "low",    "approval": False},
-    "process":        {"permission": "read",    "risk": "low",    "approval": False},
+    # process START executa comando arbitrário → gate via command-guards +
+    # ShellRunner.validate (ver execute()). approval LLM fica False p/ não
+    # disparar em list/poll/kill/log (inofensivos); o start já é barrado pelos
+    # guards determinísticos, sem custo de chamada de rede por ação.
+    "process":        {"permission": "execute", "risk": "high",   "approval": False},
     "code_symbols":   {"permission": "read",    "risk": "low",    "approval": False},
     "find_definition":{"permission": "read",    "risk": "low",    "approval": False},
     "get_imports":    {"permission": "read",    "risk": "low",    "approval": False},
@@ -389,6 +393,10 @@ class ToolRouter(
         # o prompt drasticamente — essencial para modelos locais (Ollama/CPU) onde
         # avaliar ~14k tokens das 79 tools leva ~100s. Vazio/None = todas as tools.
         self._tool_allowlist: set[str] = set(tool_allowlist or ())
+        # Guardado como atributo: a tool `process` (start) valida o comando com
+        # o MESMO gate do run_command (allowlist/denylist/safe_mode) via
+        # shell_runner.validate() — sem runner, process start é negado.
+        self._shell_runner = shell_runner
         self._llm_client = llm_client  # cliente LLM opcional (vision_analyze, delegate_task)
         self._model_name = model_name  # nome do modelo configurado (para delegate_task)
         # G18.4: cliente multimodal dedicado (auxiliary.vision_model). As tools de
@@ -811,11 +819,14 @@ class ToolRouter(
             "fn": self._process,
             "description": (
                 "Gerencia processos em background: start (lanca), list (lista), "
-                "poll (verifica status), log (stdout/stderr), kill (encerra), write (stdin)."
+                "poll (verifica status), log (stdout/stderr), kill (encerra), write (stdin). "
+                "start aplica as MESMAS regras do run_command (allowlist/denylist/"
+                "safe_mode) e nao aceita encadeamento shell (&&, ;, |, >)."
             ),
             "args": {
                 "action": "str — start | list | poll | log | kill | write (obrigatorio)",
-                "command": "str — comando a executar (obrigatorio para start)",
+                "command": "str — comando a executar (obrigatorio para start; 1 processo, sem && ; | >)",
+                "confirm": "bool — bypass safe_mode para risco medio no start (default: false)",
                 "label": "str — nome amigavel do processo (opcional, para start)",
                 "pid": "str — ID do processo retornado por start (obrigatorio para poll/log/kill/write)",
                 "input": "str — texto a enviar para stdin (obrigatorio para write)",
@@ -1476,15 +1487,18 @@ class ToolRouter(
 
         # Wave 4.5: command guards — HARDLINE always blocked; DANGEROUS denied
         # when no interactive approver is available (non-interactive mode).
-        if _APPROVAL_AVAILABLE and name in {"run_command", "execute_code"}:
-            _cmd = str(args.get("command", args.get("code", "")))
-            _guard_dec = _check_command_guards(
-                _cmd, approval_callback=self._approval_callback, yolo=False
-            )
-            if _guard_dec.action == "denied":
-                raise ToolError(
-                    f"[BLOCKED] {_guard_dec.scope.upper()}: {_guard_dec.reason}"
+        # `process` incluso: start executa comando arbitrário (Popen) e passava
+        # por fora de TODOS os guards do run_command.
+        if _APPROVAL_AVAILABLE and name in {"run_command", "execute_code", "process"}:
+            _cmd = str(args.get("command", args.get("code", "")) or "")
+            if _cmd.strip():  # process list/poll/log/kill não têm comando
+                _guard_dec = _check_command_guards(
+                    _cmd, approval_callback=self._approval_callback, yolo=False
                 )
+                if _guard_dec.action == "denied":
+                    raise ToolError(
+                        f"[BLOCKED] {_guard_dec.scope.upper()}: {_guard_dec.reason}"
+                    )
 
         # SAFETY-002: modo dry_run — não executa side effects
         _DRY_RUN_SIDE_EFFECTS = frozenset({
