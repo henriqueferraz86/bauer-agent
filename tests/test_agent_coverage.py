@@ -270,6 +270,14 @@ class TestRunOneTurn:
 
 # ─── _handle_spec_cmd ────────────────────────────────────────────────────────
 
+
+def _recording_console():
+    """Console Rich real que captura o texto renderizado (inclui células de
+    Table — o repr de um Table mockado NÃO mostra o conteúdo das linhas)."""
+    from rich.console import Console as _RC
+    return _RC(record=True, width=200, force_terminal=False)
+
+
 class TestHandleSpecCmd:
     def _make_console(self):
         console = MagicMock()
@@ -361,6 +369,35 @@ class TestHandleSpecCmd:
             mock_cls.return_value.list_specs.return_value = [mock_spec]
             _handle_spec_cmd("/spec list", console)
         console.print.assert_called()
+
+    def test_spec_list_resolve_do_workspace_nao_cwd(self, tmp_path: Path):
+        """Regressão: /spec list dentro do agente lê workspace/specs, não cwd/specs.
+
+        Rodando `bauer agent` da home, o default cwd 'specs/' apontava para uma
+        pasta vazia — os specs (que caem em workspace/specs via write_file
+        sandbox) nunca apareciam.
+        """
+        import yaml
+        specs_dir = tmp_path / "specs"
+        specs_dir.mkdir()
+        (specs_dir / "bauerinvest.yaml").write_text(
+            yaml.safe_dump({
+                "id": "bauerinvest",
+                "title": "BauerInvest",
+                "purpose": "Plataforma de investimentos",
+                "status": "draft",
+                "acceptance_criteria": ["login"],
+            }),
+            encoding="utf-8",
+        )
+        console = _recording_console()
+        _handle_spec_cmd("/spec list", console, tmp_path)
+        assert "bauerinvest" in console.export_text()
+
+    def test_spec_list_vazio_mostra_dir_do_workspace(self, tmp_path: Path):
+        console = _recording_console()
+        _handle_spec_cmd("/spec list", console, tmp_path)
+        assert "specs" in console.export_text()  # aponta p/ <workspace>/specs, não some
 
 
 # ─── _run_orchestrator_inline ────────────────────────────────────────────────
@@ -711,3 +748,58 @@ class TestRunAgentSession:
         client = self._make_client(pseudo_json)
         console = self._run_session(tmp_path, ["oi", "/exit"], client=client)
         console.print.assert_called()
+
+
+# ─── /agent list — pool mesclado (builtins + user) ───────────────────────────
+
+class TestHandleAgentCmdList:
+    """Regressão: /agent list dentro do agente mostra os 10 especialistas
+    embutidos + agents do usuário — antes lia 'agents.yaml' do cwd e, rodando
+    da home, dizia 'nenhum agent' mesmo com os especialistas disponíveis."""
+
+    def test_agent_list_mostra_builtins_sem_arquivo_do_usuario(self, tmp_path, monkeypatch):
+        from bauer.agent import _handle_agent_cmd
+        # aponta o agents.yaml do usuário para pasta inexistente (hermético)
+        monkeypatch.setenv("BAUER_AGENTS_FILE", str(tmp_path / "nao_existe.yaml"))
+        console = _recording_console()
+        _handle_agent_cmd("/agents", console)
+        printed = console.export_text()
+        # pelo menos um especialista embutido conhecido aparece
+        assert "specialist" in printed or "especialista" in printed
+        assert "Nenhum agent" not in printed
+
+    def test_agent_list_inclui_agent_do_usuario(self, tmp_path, monkeypatch):
+        import yaml
+        from bauer.agent import _handle_agent_cmd
+        user_file = tmp_path / "agents.yaml"
+        user_file.write_text(yaml.safe_dump({
+            "agents": [{
+                "name": "meu-bot", "description": "Bot custom do usuario",
+                "system": "Voce e um bot.", "tools": [],
+            }]
+        }), encoding="utf-8")
+        monkeypatch.setenv("BAUER_AGENTS_FILE", str(user_file))
+        console = _recording_console()
+        _handle_agent_cmd("/agent list", console)
+        assert "meu-bot" in console.export_text()
+
+
+# ─── /project — lista projetos governados pela App Factory ───────────────────
+
+class TestHandleProjectCmd:
+    def test_project_lista_projetos_governados(self, tmp_path):
+        from bauer.agent import _handle_project_cmd
+        from bauer import app_factory as af
+        proj = tmp_path / "bauerinvest"
+        proj.mkdir()
+        af.init_project(proj, idea="Plataforma de investimentos")
+        af.set_active_project(tmp_path, proj)
+        console = _recording_console()
+        _handle_project_cmd(console, tmp_path)
+        assert "bauerinvest" in console.export_text()
+
+    def test_project_sem_nada_nao_quebra(self, tmp_path):
+        from bauer.agent import _handle_project_cmd
+        console = _recording_console()
+        _handle_project_cmd(console, tmp_path)  # não deve levantar
+        assert console.export_text()  # produziu alguma saída

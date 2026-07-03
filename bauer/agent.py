@@ -28,7 +28,7 @@ from rich.rule import Rule
 
 from .context_manager import ContextManager
 from .machine_id import machine_id as get_machine_id
-from .model_router import ModelRouter, RouteKind
+from .model_router import ModelRouter
 from .ollama_client import OllamaClient, OllamaError
 from .openai_client import OpenAIClientError
 from .performance_tracker import SessionStats
@@ -2081,7 +2081,7 @@ def _handle_kanban_cmd(console, workspace: Any = "workspace") -> None:  # type: 
 # ─── /spec handler ───────────────────────────────────────────────────────────
 
 
-def _handle_spec_cmd(user_input: str, console) -> None:  # type: ignore[type-arg]
+def _handle_spec_cmd(user_input: str, console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
     """Processa comandos /spec digitados dentro da sessão do agente.
 
     Subcomandos:
@@ -2091,6 +2091,7 @@ def _handle_spec_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
       /spec new <id> → wizard com ID pré-preenchido
       /spec <id>     → exibe spec completo
     """
+    from pathlib import Path as _Path
     from rich.panel import Panel
     from rich.table import Table
 
@@ -2101,7 +2102,11 @@ def _handle_spec_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
         console.print("[red]SpecManager nao disponivel.[/red]")
         return
 
-    mgr = SpecManager()
+    # Specs vivem sob o WORKSPACE (é lá que write_file('specs/x.yaml') do agente
+    # cai, via sandbox), não em 'specs/' relativo ao cwd — rodando `bauer agent`
+    # da home, o default cwd apontava para uma pasta vazia/inexistente.
+    _specs_dir = _Path(str(workspace)) / "specs"
+    mgr = SpecManager(_specs_dir)
     parts = user_input.strip().split()
     # parts[0] = "/spec", parts[1] = subcomando (opcional), parts[2] = id (opcional)
     sub = parts[1].lower() if len(parts) > 1 else "list"
@@ -2109,7 +2114,10 @@ def _handle_spec_cmd(user_input: str, console) -> None:  # type: ignore[type-arg
     if sub in ("list", "ls"):
         specs = mgr.list_specs()
         if not specs:
-            console.print("[dim]Nenhum spec encontrado. Use [bold]/spec new[/bold] para criar.[/dim]")
+            console.print(
+                f"[dim]Nenhum spec em [cyan]{_specs_dir}[/cyan]. "
+                "Use [bold]/spec new[/bold] para criar.[/dim]"
+            )
             return
         table = Table(show_lines=False, box=None, title=f"Specs ({len(specs)})")
         table.add_column("id", style="cyan", no_wrap=True)
@@ -2161,7 +2169,12 @@ def _handle_agent_cmd(user_input: str, console) -> None:  # type: ignore[type-ar
     from rich.prompt import Confirm
 
     try:
-        from .agent_registry import AgentRegistry
+        from .agent_registry import (
+            AgentRegistry,
+            list_builtin_specialists,
+            merged_specialist_pool,
+            resolve_user_agents_path,
+        )
         from .agent_wizard import wizard_create_agent
     except ImportError:
         console.print("[red]AgentRegistry nao disponivel.[/red]")
@@ -2174,29 +2187,44 @@ def _handle_agent_cmd(user_input: str, console) -> None:  # type: ignore[type-ar
     if cmd0 == "/agents":
         sub = "list"
 
-    registry = AgentRegistry("agents.yaml")
+    # Registry do USUÁRIO resolvido pela mesma prioridade do resto do Bauer
+    # (~/.bauer/agents.yaml, env, cwd) — NÃO "agents.yaml" relativo ao cwd, que
+    # rodando `bauer agent` da home nunca encontrava nada.
+    _user_agents_path = resolve_user_agents_path()
+    registry = AgentRegistry(_user_agents_path)
 
     if sub in ("list", "ls"):
-        agents = registry.list_agents()
+        # Pool mesclado: 10 especialistas embutidos do pacote + agents do
+        # usuário (user sobrescreve builtin por nome). Antes só lia o cwd e
+        # aparecia "nenhum agent" mesmo com os 10 especialistas disponíveis.
+        agents = merged_specialist_pool(_user_agents_path)
+        _builtin_names = {a.name for a in list_builtin_specialists()}
         if not agents:
             console.print(
-                "[yellow]Nenhum agent criado ainda.[/yellow]\n"
+                "[yellow]Nenhum agent disponivel.[/yellow]\n"
                 "Crie um com: [bold]/agent create[/bold]"
             )
             return
+        agents = sorted(agents, key=lambda a: (a.name not in _builtin_names, a.name))
         table = Table(title=f"Agents ({len(agents)})", show_lines=True)
         table.add_column("nome",     style="cyan", no_wrap=True)
+        table.add_column("tipo",     style="dim", no_wrap=True)
         table.add_column("descricao")
         table.add_column("modelo",   style="dim")
         table.add_column("tools",    style="dim")
-        table.add_column("criado em", style="dim")
         for ag in agents:
             model_str = f"{ag.provider}/{ag.model}" if ag.model else "[dim]config.yaml[/dim]"
             tools_str = ", ".join(ag.tools) if ag.tools else "—"
-            created   = ag.created_at[:10] if ag.created_at else "—"
-            table.add_row(ag.name, ag.description, model_str, tools_str, created)
+            tipo = "[blue]especialista[/blue]" if ag.name in _builtin_names else (
+                "[magenta]remoto[/magenta]" if ag.url else "[green]seu[/green]"
+            )
+            table.add_row(ag.name, tipo, ag.description, model_str, tools_str)
         console.print(table)
-        console.print("[dim]Para rodar: [bold]bauer agent run <nome>[/bold] | Para criar: [bold]/agent create[/bold][/dim]")
+        console.print(
+            f"[dim]{len(_builtin_names)} especialistas embutidos + seus agents em "
+            f"[cyan]{_user_agents_path}[/cyan]. Rodar: [bold]bauer agent run <nome>[/bold] | "
+            "Criar: [bold]/agent create[/bold][/dim]"
+        )
         return
 
     if sub == "create":
@@ -2701,7 +2729,6 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
     """Exibe PROJECT.md e um resumo das tarefas do workspace."""
     from pathlib import Path as _Path
     from rich.panel import Panel as _Panel
-    from rich.rule import Rule as _Rule
 
     project_file = _Path(workspace) / "PROJECT.md"
     tasks_summary_parts: list[str] = []
@@ -2740,10 +2767,56 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
             preview += f"\n\n[dim]... (+{len(lines) - 50} linhas — abra workspace/PROJECT.md para ver tudo)[/dim]"
         console.print(_Panel(preview, title="[bold cyan]PROJECT.md[/bold cyan]", border_style="cyan"))
     else:
-        console.print("[dim]PROJECT.md nao encontrado. Use: [bold]bauer project init <nome>[/bold][/dim]")
+        console.print("[dim]PROJECT.md nao encontrado no workspace.[/dim]")
 
     for line in tasks_summary_parts:
         console.print(line)
+
+    # Projetos governados pela App Factory (1 ideia = 1 pasta): é aqui que
+    # moram os apps do usuário (ex.: bauerinvest/, nexusalpha/), não num
+    # PROJECT.md solto na raiz. Lista-os + marca o projeto ativo.
+    try:
+        from . import app_factory as _af
+        from rich.table import Table as _Table
+
+        _ws = _Path(str(workspace))
+        _active = _af.get_active_project(_ws)
+        _active_name = _active.name if _active is not None else None
+        _governed = []
+        if _ws.is_dir():
+            for _sub in sorted(p for p in _ws.iterdir() if p.is_dir()):
+                if _af.is_governed(_sub):
+                    _governed.append(_sub)
+        if _governed:
+            _t = _Table(title=f"Projetos App Factory ({len(_governed)})", show_lines=False, box=None)
+            _t.add_column("projeto", style="cyan", no_wrap=True)
+            _t.add_column("gate", no_wrap=True)
+            _t.add_column("score", style="dim", no_wrap=True)
+            _t.add_column("", style="green", no_wrap=True)
+            for _p in _governed:
+                _gate = _af.current_gate(_p)
+                _sc = _af.delivery_score(_p)
+                _mark = "● ativo" if _p.name == _active_name else ""
+                _t.add_row(
+                    _p.name,
+                    _gate.slug if _gate is not None else "—",
+                    f"{_sc.get('score', 0)}/10",
+                    _mark,
+                )
+            console.print()
+            console.print(_t)
+            console.print(
+                "[dim]Detalhe de um projeto: [bold]/spec list[/bold] · "
+                "[bold]app_factory_status[/bold] (tool). Novo: descreva a ideia "
+                "e o Bauer chama [bold]app_factory_init[/bold].[/dim]"
+            )
+        elif not project_file.exists():
+            console.print(
+                "[dim]Nenhum projeto governado ainda. Descreva uma ideia de app "
+                "e o Bauer inicia a App Factory automaticamente.[/dim]"
+            )
+    except Exception:
+        pass
 
     console.print()
 
@@ -4101,16 +4174,16 @@ def run_agent_session(
                 sessions = session_store.list_sessions()
                 if sessions:
                     console.print(f"[dim]Sessoes salvas ({len(sessions)}): {', '.join(sessions[-10:])}[/dim]")
-                    console.print(f"[dim]Para retomar: bauer agent --resume --session-id ID[/dim]")
+                    console.print("[dim]Para retomar: bauer agent --resume --session-id ID[/dim]")
                 else:
                     console.print("[dim]Nenhuma sessao salva.[/dim]")
             else:
                 console.print("[dim]Persistencia de sessao nao configurada.[/dim]")
             continue
-        if user_input.lower().startswith(tuple(_SPEC_CMDS)):
-            _handle_spec_cmd(user_input, console)
-            continue
         active_workspace = getattr(router, "workspace", "workspace")
+        if user_input.lower().startswith(tuple(_SPEC_CMDS)):
+            _handle_spec_cmd(user_input, console, active_workspace)
+            continue
 
         if user_input.lower() == "/loop" or user_input.lower().startswith("/loop "):
             _rest = user_input[len("/loop"):].strip()
@@ -4304,7 +4377,7 @@ def run_agent_session(
                 selected_model, route = model_router.select_model(user_input)
                 route_kind = route.kind
                 if route_kind == "orchestrate" and orch_enabled:
-                    console.print(f"[dim]  -> [orquestrar] tarefa complexa detectada[/dim]")
+                    console.print("[dim]  -> [orquestrar] tarefa complexa detectada[/dim]")
                 elif selected_model != model_name:
                     active_model = selected_model
                     console.print(f"[dim]  -> [{route.label}] {selected_model}[/dim]")
