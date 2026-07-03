@@ -241,7 +241,10 @@ def check_containment(
         f"DENTRO dessa pasta — nada solto na raiz nem em pastas irmãs.\n"
         f"  Você tentou escrever em: '{rel_target or target}'\n"
         f"  Escreva sob '{name}/' — ex.: '{name}/app/...', '{name}/frontend/...', "
-        f"'{name}/{rel_target.split('/', 1)[-1] if '/' in rel_target else rel_target}'."
+        f"'{name}/{rel_target.split('/', 1)[-1] if '/' in rel_target else rel_target}'.\n"
+        f"  Se isto pertence a um projeto NOVO (outra ideia/app, não '{name}'), NÃO "
+        "escreva aqui: chame app_factory_init(idea=..., path='<nome-do-novo-app>') "
+        "primeiro — isso cria a pasta do novo projeto e o torna o projeto ativo."
     )
 
 
@@ -482,9 +485,14 @@ def scaffold_docs(
         dest.write_text(tpl, encoding="utf-8")
         written.append(rel_dest)
 
-    # Atualiza marker preservando estado anterior
+    # Atualiza marker preservando estado anterior. Re-init explícito com
+    # overwrite TROCA a ideia (o setdefault mantinha a ideia antiga em silêncio
+    # — era assim que um init na pasta errada "herdava" o projeto anterior).
     state = load_state(project_dir) or {}
-    state.setdefault("idea", idea)
+    if idea and overwrite:
+        state["idea"] = idea
+    else:
+        state.setdefault("idea", idea)
     state.setdefault("created_at", _now_iso())
     if stack:
         state["stack"] = stack
@@ -518,6 +526,59 @@ def init_project(
         "written": written,
         "gate": gate.slug if gate is not None else "discovery",
     }
+
+
+def _norm_idea(text: str) -> str:
+    """Normaliza uma ideia para comparação (espaços colapsados, casefold)."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+def guard_reinit(
+    project_dir: Path | str, *, idea: str = "", overwrite: bool = False
+) -> Tuple[bool, str]:
+    """Regras anti-clobber: decide se ``init_project`` pode rodar nesta pasta.
+
+    Protege projetos existentes de serem sobrescritos por um init de uma ideia
+    nova com o mesmo nome de pasta (ou de um re-init destrutivo):
+
+      - pasta não governada → sempre permitido
+      - projeto COMPLETO (planejamento preenchido) → re-init NUNCA permitido
+        (nem com overwrite; docs preenchidos seriam destruídos) — exceto o
+        re-init idempotente da MESMA ideia sem overwrite, que é no-op seguro
+      - pasta governada por OUTRA ideia (só esqueleto) → exige ``overwrite=True``
+        explícito; sem ele, orienta a usar outra pasta
+
+    Returns:
+        ``(permitido, motivo)``. ``motivo`` é vazio quando permitido.
+    """
+    if not is_governed(project_dir):
+        return True, ""
+    state = load_state(project_dir) or {}
+    old_idea = _norm_idea(state.get("idea", ""))
+    new_idea = _norm_idea(idea)
+    same_idea = not old_idea or not new_idea or old_idea == new_idea
+    name = Path(project_dir).name or "projeto"
+
+    if planning_complete(project_dir):
+        if same_idea and not overwrite:
+            return True, ""  # retomada idempotente — não sobrescreve nada
+        return False, (
+            f"a pasta '{name}/' contém um projeto COMPLETO (planejamento "
+            "preenchido). Sobrescrever um projeto pronto é PROIBIDO — mesmo com "
+            f"overwrite=true. Para um projeto NOVO, use OUTRA pasta (ex.: path "
+            f"'{name}-2'); para continuar ESTE projeto, use app_factory_status "
+            "em vez de init."
+        )
+
+    if not same_idea and not overwrite:
+        old_preview = str(state.get("idea", ""))[:120]
+        return False, (
+            f"a pasta '{name}/' já está governada por OUTRA ideia: "
+            f"\"{old_preview}\". Use OUTRA pasta para o novo projeto (ex.: path "
+            f"'{name}-2'). Se tem CERTEZA de que quer descartar o esqueleto "
+            "antigo desta pasta, repita com overwrite=true."
+        )
+    return True, ""
 
 
 # ---------------------------------------------------------------------------

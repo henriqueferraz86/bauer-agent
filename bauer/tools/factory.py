@@ -16,11 +16,13 @@ class FactoryToolsMixin:
     """Spec-Driven Development: inicializa, pontua e verifica apps gerados."""
 
     def _af_project_dir(self, args: dict):
-        """Resolve a raiz do projeto-alvo (workspace ou subdir sandboxed)."""
+        """Resolve a raiz do projeto-alvo: path explícito > projeto ativo > workspace."""
         sub = str(args.get("path", "") or "").strip()
         if sub and sub not in (".", "./"):
             return self._sandbox(sub)
-        return self.workspace
+        from .. import app_factory as af
+        active = af.get_active_project(self.workspace)
+        return active if active is not None else self.workspace
 
     def _app_factory_init(self, args: dict) -> str:
         from .. import app_factory as af
@@ -30,7 +32,32 @@ class FactoryToolsMixin:
             raise ToolError("app_factory_init: 'idea' é obrigatório.")
         stack = str(args.get("stack", "") or "").strip()
         overwrite = bool(args.get("overwrite", False))
-        project_dir = self._af_project_dir(args)
+
+        # 'path' é OBRIGATÓRIO: cada ideia vive na SUA pasta. Init na raiz do
+        # workspace governava o workspace inteiro (compartilhado por todos os
+        # projetos) e herdava/misturava estado de projetos anteriores.
+        _path_err = (
+            "app_factory_init: 'path' é obrigatório — informe a pasta do NOVO "
+            "projeto usando o NOME DO APP em kebab-case (ex.: idea 'BauerInvest' "
+            "→ path 'bauerinvest'). A raiz do workspace é compartilhada por "
+            "vários projetos e NÃO pode ser governada. Nunca reutilize a pasta "
+            "de outro projeto."
+        )
+        sub = str(args.get("path", "") or "").strip()
+        if not sub or sub in (".", "./"):
+            raise ToolError(_path_err)
+        project_dir = self._sandbox(sub)
+        try:
+            if Path(project_dir).resolve() == Path(self.workspace).resolve():
+                raise ToolError(_path_err)
+        except OSError:
+            pass
+
+        # Anti-clobber: nunca sobrescrever um projeto existente/completo com
+        # uma ideia nova só porque o modelo escolheu o mesmo nome de pasta.
+        _ok, _why = af.guard_reinit(project_dir, idea=idea, overwrite=overwrite)
+        if not _ok:
+            return f"[app_factory_init] BLOQUEADO — {_why}"
 
         result = af.init_project(
             project_dir, idea=idea, stack=stack, overwrite=overwrite,

@@ -24,6 +24,10 @@ def factory_init(
 
     project = _P(path).resolve()
     project.mkdir(parents=True, exist_ok=True)
+    ok, why = af.guard_reinit(project, idea=idea, overwrite=overwrite)
+    if not ok:
+        console.print(f"[red]Bloqueado:[/red] {why}")
+        raise typer.Exit(code=1)
     res = af.init_project(project, idea=idea, stack=stack, overwrite=overwrite)
     console.print(f"[bold green]App Factory iniciada[/bold green] em [cyan]{project}[/cyan]")
     console.print(f"  Gate atual: [yellow]{res['gate']}[/yellow]")

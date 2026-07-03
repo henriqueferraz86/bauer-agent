@@ -243,10 +243,11 @@ class TestToolRouterIntegration:
         tr = self._router(tmp_path)
         out = tr.execute(json.dumps({
             "action": "app_factory_init",
-            "args": {"idea": "Encurtador", "stack": "FastAPI"},
+            "args": {"idea": "Encurtador", "stack": "FastAPI", "path": "encurtador"},
         }))
         assert "app_factory_init" in out
-        assert af.is_governed(tmp_path)
+        assert af.is_governed(tmp_path / "encurtador")
+        assert not af.is_governed(tmp_path)  # a raiz NUNCA é governada
 
     def test_init_requires_idea(self, tmp_path):
         from bauer.tool_router import ToolError
@@ -254,36 +255,64 @@ class TestToolRouterIntegration:
         with pytest.raises(ToolError):
             tr.execute(json.dumps({"action": "app_factory_init", "args": {}}))
 
+    def test_init_requires_path(self, tmp_path):
+        # Sem path o init caía na raiz do workspace (compartilhada) e herdava
+        # estado de projetos anteriores — agora é recusado com orientação.
+        from bauer.tool_router import ToolError
+        tr = self._router(tmp_path)
+        with pytest.raises(ToolError, match="path"):
+            tr.execute(json.dumps({
+                "action": "app_factory_init", "args": {"idea": "BauerInvest"},
+            }))
+        assert not af.is_governed(tmp_path)
+
+    def test_init_rejects_workspace_root_as_path(self, tmp_path):
+        from bauer.tool_router import ToolError
+        tr = self._router(tmp_path)
+        for bad in (".", "./", "sub/.."):
+            with pytest.raises(ToolError):
+                tr.execute(json.dumps({
+                    "action": "app_factory_init",
+                    "args": {"idea": "BauerInvest", "path": bad},
+                }))
+        assert not af.is_governed(tmp_path)
+
     def test_write_code_blocked_before_planning(self, tmp_path):
         tr = self._router(tmp_path)
-        tr.execute(json.dumps({"action": "app_factory_init", "args": {"idea": "x"}}))
+        tr.execute(json.dumps({
+            "action": "app_factory_init", "args": {"idea": "x", "path": "meu-app"},
+        }))
         out = tr.execute(json.dumps({
             "action": "write_file",
-            "args": {"path": "app/main.py", "content": "print(1)"},
+            "args": {"path": "meu-app/app/main.py", "content": "print(1)"},
         }))
         assert "[App Factory]" in out
-        assert not (tmp_path / "app" / "main.py").exists()
+        assert not (tmp_path / "meu-app" / "app" / "main.py").exists()
 
     def test_write_doc_allowed_before_planning(self, tmp_path):
         tr = self._router(tmp_path)
-        tr.execute(json.dumps({"action": "app_factory_init", "args": {"idea": "x"}}))
+        tr.execute(json.dumps({
+            "action": "app_factory_init", "args": {"idea": "x", "path": "meu-app"},
+        }))
         out = tr.execute(json.dumps({
             "action": "write_file",
-            "args": {"path": "docs/NOTAS.md", "content": "# notas\n" + "x" * 50},
+            "args": {"path": "meu-app/docs/NOTAS.md", "content": "# notas\n" + "x" * 50},
         }))
         assert "[App Factory]" not in out
-        assert (tmp_path / "docs" / "NOTAS.md").exists()
+        assert (tmp_path / "meu-app" / "docs" / "NOTAS.md").exists()
 
     def test_write_code_allowed_after_planning(self, tmp_path):
         tr = self._router(tmp_path)
-        tr.execute(json.dumps({"action": "app_factory_init", "args": {"idea": "x"}}))
-        _fill_all_planning(tmp_path)
+        tr.execute(json.dumps({
+            "action": "app_factory_init", "args": {"idea": "x", "path": "meu-app"},
+        }))
+        _fill_all_planning(tmp_path / "meu-app")
         out = tr.execute(json.dumps({
             "action": "write_file",
-            "args": {"path": "app/main.py", "content": "print(1)"},
+            "args": {"path": "meu-app/app/main.py", "content": "print(1)"},
         }))
         assert "[App Factory]" not in out
-        assert (tmp_path / "app" / "main.py").exists()
+        assert (tmp_path / "meu-app" / "app" / "main.py").exists()
 
     def test_ungoverned_project_unaffected(self, tmp_path):
         # Sem init: comportamento normal do Bauer, sem bloqueio.
@@ -297,7 +326,10 @@ class TestToolRouterIntegration:
 
     def test_status_and_score_tools(self, tmp_path):
         tr = self._router(tmp_path)
-        tr.execute(json.dumps({"action": "app_factory_init", "args": {"idea": "x"}}))
+        tr.execute(json.dumps({
+            "action": "app_factory_init", "args": {"idea": "x", "path": "meu-app"},
+        }))
+        # Sem path, status/score resolvem o PROJETO ATIVO (não a raiz).
         status_out = tr.execute(json.dumps({"action": "app_factory_status", "args": {}}))
         assert "gate: discovery" in status_out
         score_out = tr.execute(json.dumps({"action": "app_factory_score", "args": {}}))
@@ -384,6 +416,18 @@ class TestActiveProjectContainment:
         assert "[App Factory]" not in out2
         assert (tmp_path / "problemas-app" / "docs" / "NOTAS.md").exists()
 
+    def test_containment_message_orienta_projeto_novo(self, tmp_path):
+        # Cenário real: ponteiro ativo aponta pro projeto ANTERIOR e o usuário
+        # pede um app NOVO — a mensagem de bloqueio deve orientar o modelo a
+        # chamar app_factory_init com path novo, não a enfiar tudo na pasta velha.
+        proj = tmp_path / "nexusalpha"
+        proj.mkdir()
+        af.set_active_project(tmp_path, proj)
+        ok, why = af.check_containment(tmp_path, "bauerinvest/app/main.py")
+        assert ok is False
+        assert "app_factory_init" in why
+        assert "projeto NOVO" in why
+
     def test_init_subpasta_libera_codigo_dentro_apos_planning(self, tmp_path):
         from bauer.tool_router import ToolRouter
         tr = ToolRouter(workspace=tmp_path)
@@ -398,3 +442,110 @@ class TestActiveProjectContainment:
         }))
         assert "[App Factory]" not in out
         assert (tmp_path / "problemas-app" / "app" / "main.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# guard_reinit — regras anti-clobber (nunca sobrescrever projeto existente)
+# ---------------------------------------------------------------------------
+
+
+class TestGuardReinit:
+    def test_pasta_nao_governada_sempre_permite(self, tmp_path):
+        ok, why = af.guard_reinit(tmp_path, idea="qualquer")
+        assert ok is True and why == ""
+
+    def test_mesma_ideia_esqueleto_permite_retomada(self, tmp_path):
+        af.init_project(tmp_path, idea="Encurtador de URLs")
+        ok, _ = af.guard_reinit(tmp_path, idea="Encurtador de URLs")
+        assert ok is True
+
+    def test_mesma_ideia_normalizada_permite(self, tmp_path):
+        # Comparação tolera caixa e espaços — não bloqueia retomada legítima.
+        af.init_project(tmp_path, idea="Encurtador  de URLs")
+        ok, _ = af.guard_reinit(tmp_path, idea="encurtador de urls")
+        assert ok is True
+
+    def test_outra_ideia_sem_overwrite_bloqueia(self, tmp_path):
+        af.init_project(tmp_path, idea="Plataforma de saude mental")
+        ok, why = af.guard_reinit(tmp_path, idea="BauerInvest investimentos")
+        assert ok is False
+        assert "OUTRA ideia" in why
+        assert "overwrite" in why
+
+    def test_outra_ideia_com_overwrite_permite_se_so_esqueleto(self, tmp_path):
+        af.init_project(tmp_path, idea="Ideia velha")
+        ok, _ = af.guard_reinit(tmp_path, idea="Ideia nova", overwrite=True)
+        assert ok is True
+
+    def test_projeto_completo_outra_ideia_bloqueia_sempre(self, tmp_path):
+        af.init_project(tmp_path, idea="Ideia velha")
+        _fill_all_planning(tmp_path)
+        for ow in (False, True):
+            ok, why = af.guard_reinit(tmp_path, idea="Ideia nova", overwrite=ow)
+            assert ok is False
+            assert "COMPLETO" in why
+
+    def test_projeto_completo_mesma_ideia_overwrite_bloqueia(self, tmp_path):
+        # overwrite re-scaffoldaria os docs preenchidos → destruição. Nunca.
+        af.init_project(tmp_path, idea="Ideia")
+        _fill_all_planning(tmp_path)
+        ok, why = af.guard_reinit(tmp_path, idea="Ideia", overwrite=True)
+        assert ok is False and "COMPLETO" in why
+
+    def test_projeto_completo_mesma_ideia_sem_overwrite_permite_noop(self, tmp_path):
+        af.init_project(tmp_path, idea="Ideia")
+        _fill_all_planning(tmp_path)
+        ok, _ = af.guard_reinit(tmp_path, idea="Ideia", overwrite=False)
+        assert ok is True  # idempotente: scaffold sem overwrite não toca nada
+
+    def test_overwrite_atualiza_ideia_no_estado(self, tmp_path):
+        af.init_project(tmp_path, idea="Ideia velha")
+        af.init_project(tmp_path, idea="Ideia nova", overwrite=True)
+        st = af.load_state(tmp_path)
+        assert st["idea"] == "Ideia nova"
+
+    def test_reinit_sem_overwrite_preserva_ideia(self, tmp_path):
+        af.init_project(tmp_path, idea="Ideia original")
+        af.init_project(tmp_path, idea="")  # init sem ideia não apaga a original
+        assert af.load_state(tmp_path)["idea"] == "Ideia original"
+
+
+class TestGuardReinitViaRouter:
+    """Cenário do incidente real: modelo tenta init na pasta de projeto anterior."""
+
+    def _router(self, tmp_path):
+        from bauer.tool_router import ToolRouter
+        return ToolRouter(workspace=tmp_path)
+
+    def test_init_em_pasta_de_outro_projeto_bloqueado(self, tmp_path):
+        tr = self._router(tmp_path)
+        tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "NexusAlpha plataforma de investimentos",
+                     "path": "nexusalpha"},
+        }))
+        out = tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "BauerInvest recomendacoes de investimentos",
+                     "path": "nexusalpha"},
+        }))
+        assert "BLOQUEADO" in out
+        # a ideia original ficou intacta
+        st = af.load_state(tmp_path / "nexusalpha")
+        assert "NexusAlpha" in st["idea"]
+
+    def test_init_em_projeto_completo_bloqueado_mesmo_com_overwrite(self, tmp_path):
+        tr = self._router(tmp_path)
+        tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "Projeto pronto", "path": "pronto-app"},
+        }))
+        _fill_all_planning(tmp_path / "pronto-app")
+        out = tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "Projeto novo", "path": "pronto-app",
+                     "overwrite": True},
+        }))
+        assert "BLOQUEADO" in out and "COMPLETO" in out
+        spec = (tmp_path / "pronto-app" / "docs" / "SPEC.md").read_text(encoding="utf-8")
+        assert "conteudo real preenchido" in spec  # docs preenchidos intactos

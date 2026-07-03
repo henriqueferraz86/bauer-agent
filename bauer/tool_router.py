@@ -748,17 +748,24 @@ class ToolRouter(
         self._tools["app_factory_init"] = {
             "fn": self._app_factory_init,
             "description": (
-                "Inicia a governanca da App Factory no projeto: cria docs/ com os "
-                "esqueletos dos 7 docs de planejamento (SPEC, ARCHITECTURE, BACKLOG, "
-                "TASKS, DECISIONS, PROJECT_CONTEXT, PROGRESS) + docs de entrega + "
-                "README/.env.example/CI. Depois disso a escrita de codigo fica "
-                "BLOQUEADA ate os 7 docs estarem preenchidos."
+                "Inicia a governanca da App Factory num projeto NOVO: cria <path>/docs/ "
+                "com os esqueletos dos 7 docs de planejamento (SPEC, ARCHITECTURE, "
+                "BACKLOG, TASKS, DECISIONS, PROJECT_CONTEXT, PROGRESS) + docs de "
+                "entrega + README/.env.example/CI, e fixa <path>/ como projeto ativo. "
+                "Depois disso a escrita de codigo fica BLOQUEADA ate os 7 docs "
+                "estarem preenchidos. Cada ideia vive na SUA pasta: nunca reutilize "
+                "a pasta de outro projeto — init em pasta ja governada por outra "
+                "ideia (ou com projeto completo) e recusado."
             ),
             "args": {
                 "idea": "str — descricao da ideia/aplicacao (obrigatorio)",
+                "path": (
+                    "str — pasta do NOVO projeto (OBRIGATORIO): nome do app em "
+                    "kebab-case, ex.: idea 'BauerInvest' → path 'bauerinvest'. "
+                    "Nunca '.' nem a raiz do workspace."
+                ),
                 "stack": "str — stack preferida, ex: FastAPI+React (opcional)",
-                "path": "str — subdiretorio do projeto (opcional, default = raiz do workspace)",
-                "overwrite": "bool — sobrescrever docs existentes (opcional, default false)",
+                "overwrite": "bool — descartar esqueleto de OUTRA ideia na mesma pasta (opcional, default false; projeto completo nunca e sobrescrito)",
             },
         }
         self._tools["app_factory_status"] = {
