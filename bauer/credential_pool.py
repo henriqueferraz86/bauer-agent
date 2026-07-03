@@ -173,14 +173,16 @@ class CredentialPool:
 
     def _bw_available(self) -> bool:
         """Return True if `bw` is in PATH and a BW_SESSION is set."""
-        import shutil, os
+        import shutil
+        import os
         return bool(shutil.which("bw")) and bool(os.environ.get("BW_SESSION"))
 
     def _bw_get(self, provider: str) -> str | None:
         """Fetch credential from Bitwarden CLI. Returns None on any failure."""
         if not self._bw_available():
             return None
-        import subprocess, os
+        import subprocess
+        import os
         try:
             result = subprocess.run(
                 ["bw", "get", "password", f"bauer/{provider}"],

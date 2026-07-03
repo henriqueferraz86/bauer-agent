@@ -357,8 +357,8 @@ def agent(
             )
         else:
             console.print(
-                f"[dim]  Claw3D Gateway: desabilitado "
-                f"(use --gateway-port 18789 para ativar)[/dim]"
+                "[dim]  Claw3D Gateway: desabilitado "
+                "(use --gateway-port 18789 para ativar)[/dim]"
             )
     elif gateway_port > 0:
         console.print(
@@ -610,7 +610,7 @@ def agent_list(
         table.add_row(ag.name, ag.description, model_str, tools_str, created)
 
     console.print(table)
-    console.print(f"\n[dim]Para rodar: [bold]bauer agent run <nome>[/bold][/dim]")
+    console.print("\n[dim]Para rodar: [bold]bauer agent run <nome>[/bold][/dim]")
 
 
 @agent_app.command("run")
@@ -670,8 +670,8 @@ def agent_run(
                 raise typer.Exit(code=0)
         else:
             console.print(
-                f"Liste os agents: [bold]bauer agent list[/bold]\n"
-                f"Crie um novo:   [bold]bauer agent create[/bold]"
+                "Liste os agents: [bold]bauer agent list[/bold]\n"
+                "Crie um novo:   [bold]bauer agent create[/bold]"
             )
             raise typer.Exit(code=1)
 
@@ -737,7 +737,6 @@ def agent_run(
     model_name = ag.model or cfg.model.name
 
     # Constrói ToolRouter respeitando as tools do agent e da empresa ativa
-    from ..tool_router import ToolRouter as _ToolRouter
     from ..agent_registry import ALL_TOOLS as _ALL_TOOLS
     allowed = set(ag.tools) if ag.tools else set(_ALL_TOOLS)
     # Se a empresa define tools_allowed, intersecta (empresa restringe o agent)

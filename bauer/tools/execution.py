@@ -354,7 +354,7 @@ class ExecToolsMixin:
             lines.append("--- stderr ---")
             err = stderr
             if len(err) > 4000:
-                err = err[:4000] + f"\n[... truncado]"
+                err = err[:4000] + "\n[... truncado]"
             lines.append(err.rstrip())
         if not stdout.strip() and not stderr.strip():
             lines.append("(sem output)")
@@ -412,7 +412,6 @@ class ExecToolsMixin:
         especialização, ou subprocess).
         """
         import subprocess
-        import sys
 
         task = args.get("task", "").strip()
         if not task:

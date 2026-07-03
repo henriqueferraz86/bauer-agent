@@ -124,9 +124,9 @@ def _build_client(cfg):
             # Verifica se é JWT do Codex (não serve como API key)
             if token.extra.get("type") == "jwt":
                 console.print(
-                    f"[yellow]Aviso:[/yellow] Token do Codex CLI detectado.\n"
-                    f"Este token é para uso exclusivo do Codex CLI.\n"
-                    f"Para usar a API, insira uma API key: [bold]bauer auth login -p openai-api[/bold]"
+                    "[yellow]Aviso:[/yellow] Token do Codex CLI detectado.\n"
+                    "Este token é para uso exclusivo do Codex CLI.\n"
+                    "Para usar a API, insira uma API key: [bold]bauer auth login -p openai-api[/bold]"
                 )
             elif provider == "copilot" and token.is_expired:
                 # Copilot session token expira a cada ~30 min — renova automaticamente

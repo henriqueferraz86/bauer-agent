@@ -16,7 +16,6 @@ Uso via CLI::
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import Callable
 
@@ -246,8 +245,8 @@ def run_init_wizard(
         if provider == "ollama":
             host_key = pdef.get("host_key", "ollama.host")
             host_default = pdef.get("host_default", "http://localhost:11434")
-            print_fn(f"Passo 2: Host do Ollama\n")
-            host_val = _ask(f"  Host", default=host_default, io_ask=io_ask)
+            print_fn("Passo 2: Host do Ollama\n")
+            host_val = _ask("  Host", default=host_default, io_ask=io_ask)
             if host_val != host_default:
                 try:
                     from .config_admin import set_config_value
@@ -258,7 +257,7 @@ def run_init_wizard(
 
     # Step 3 — model name
     default_model = pdef.get("default_model", "")
-    print_fn(f"Passo 3: Nome do modelo")
+    print_fn("Passo 3: Nome do modelo")
     model = _ask("  Modelo", default=default_model, io_ask=io_ask)
     print_fn("")
 

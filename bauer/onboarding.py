@@ -164,8 +164,8 @@ def welcome_screen(console: Console | None = None, config_path: str | Path = "co
         ))
 
     con.print(
-        f"  [dim]Todos os comandos:[/dim] [bold]bauer --help[/bold]   "
-        f"[dim]·  Tour:[/dim] [bold]bauer guide[/bold]\n"
+        "  [dim]Todos os comandos:[/dim] [bold]bauer --help[/bold]   "
+        "[dim]·  Tour:[/dim] [bold]bauer guide[/bold]\n"
     )
 
 

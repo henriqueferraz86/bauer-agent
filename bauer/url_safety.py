@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import re
 import socket
 import urllib.parse
 from dataclasses import dataclass, field

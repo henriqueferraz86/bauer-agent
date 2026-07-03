@@ -59,7 +59,6 @@ def traces_show(
 ):
     """Mostra todos os spans de um trace específico."""
     from ..otel import load_spans
-    import datetime
 
     spans = load_spans(trace_id=trace_id, limit=500)
     if not spans:

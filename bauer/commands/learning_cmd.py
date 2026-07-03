@@ -409,7 +409,7 @@ def learning_stats(
             _rt_text = _rt_file.read_text(encoding="utf-8")
             _lessons = _re.findall(r"## \[([^\]]+)\][^\n]*\n(.*?)(?=\n## |\Z)", _rt_text, _re.S)
             if _lessons:
-                console.print(f"\n[bold]Últimas lições do auto-tuner:[/bold]")
+                console.print("\n[bold]Últimas lições do auto-tuner:[/bold]")
                 for _ts, _body in _lessons[-3:]:
                     _first = _body.strip().splitlines()[0][:80] if _body.strip() else ""
                     console.print(f"  [dim]{_ts[:16]}[/dim]  {_first}")

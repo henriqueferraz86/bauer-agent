@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import json
 import platform
-import sys
 from typing import Any
 
 

@@ -7,7 +7,7 @@ Classifica exceções em categorias semânticas para guiar retry e fallback.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 
@@ -222,7 +222,6 @@ def _build_error_msg(error: Exception) -> str:
     body = getattr(error, "response", None)
     if body is not None:
         try:
-            import json as _json
             bd = body.json() if callable(getattr(body, "json", None)) else {}
             msg = (bd.get("error", {}) or {}).get("message", "")
             if msg:

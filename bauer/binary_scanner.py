@@ -14,7 +14,6 @@ import base64
 import binascii
 import re
 from dataclasses import dataclass, field
-from typing import Sequence
 
 
 # ---------------------------------------------------------------------------

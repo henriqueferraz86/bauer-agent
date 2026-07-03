@@ -57,7 +57,6 @@ def project_board(
     Pressione Ctrl+C para sair.
     """
     import time
-    from collections import Counter
     from rich.live import Live
     from rich.panel import Panel as RPanel
     from rich.columns import Columns

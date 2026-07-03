@@ -14,9 +14,7 @@ from __future__ import annotations
 import sys
 
 from rich.console import Console
-from .indicators import show_header, show_step, spinning
 from .indicators import spinning
-from rich.rule import Rule
 
 from .context_manager import ContextManager
 from .ollama_client import OllamaClient, OllamaError

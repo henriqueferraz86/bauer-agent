@@ -43,7 +43,7 @@ def config_show(
         console.print(cfg.model_dump())
         return
 
-    from bauer.config_admin import get_config_path, get_env_path, redact_secret
+    from bauer.config_admin import get_config_path, get_env_path
     from bauer.provider_profile import env_var_status, get_profile
 
     console.print(Panel.fit("⚙  Configuração do Bauer", style="cyan"))

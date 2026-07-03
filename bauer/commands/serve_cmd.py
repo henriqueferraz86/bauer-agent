@@ -141,7 +141,7 @@ def serve(
         )
     else:
         console.print(
-            f"[dim]  Claw3D Gateway: desabilitado (use --gateway-port 18789 para ativar)[/dim]"
+            "[dim]  Claw3D Gateway: desabilitado (use --gateway-port 18789 para ativar)[/dim]"
         )
 
     console.print()

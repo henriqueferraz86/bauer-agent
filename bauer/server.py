@@ -183,7 +183,7 @@ def create_app(
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel
 
-    from .agent import _build_system_prompt, run_one_turn, run_one_turn_with_fallback
+    from .agent import run_one_turn, run_one_turn_with_fallback
 
     _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager

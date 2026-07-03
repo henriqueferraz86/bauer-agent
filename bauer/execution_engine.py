@@ -9,8 +9,7 @@ from typing import Any
 
 from .orchestration_store import OrchestrationRun, OrchestrationStore
 from .orchestrator import AgentOrchestrator, StepResult
-from .indicators import show_step, show_header
-from .indicators import show_header, show_step, spinning, progress_bar
+from .indicators import show_step
 
 
 @dataclass

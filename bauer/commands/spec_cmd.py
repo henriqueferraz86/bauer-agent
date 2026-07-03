@@ -176,7 +176,7 @@ def spec_delete(
     mgr = SpecManager(specs_dir)
     if not mgr.get(spec_id):
         console.print(f"[red]Spec '[cyan]{spec_id}[/cyan]' nao encontrado.[/red]")
-        console.print(f"[dim]Liste os specs: [bold]bauer spec list[/bold][/dim]")
+        console.print("[dim]Liste os specs: [bold]bauer spec list[/bold][/dim]")
         raise typer.Exit(code=1)
 
     if not force:

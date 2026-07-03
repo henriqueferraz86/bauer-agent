@@ -166,7 +166,8 @@ class FactoryToolsMixin:
         _MAX_VERIFY_ATTEMPTS = 3
         _attempt_num = 1
         try:
-            import json as _json, time as _time
+            import json as _json
+            import time as _time
             _meta = Path(project_dir) / ".bauer_meta"
             _meta.mkdir(parents=True, exist_ok=True)
 

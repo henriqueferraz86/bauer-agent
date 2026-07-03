@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path

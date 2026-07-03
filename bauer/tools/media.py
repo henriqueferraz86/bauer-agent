@@ -350,7 +350,6 @@ class MediaToolsMixin:
         """Extrai frames-chave via cv2 e analisa cada um."""
         import cv2
         import base64
-        import tempfile
 
         cap = cv2.VideoCapture(str(path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -380,7 +379,6 @@ class MediaToolsMixin:
             data_url = f"data:image/jpeg;base64,{b64}"
 
             try:
-                from ..agent import run_one_turn
                 frame_query = (
                     f"Frame do vídeo '{path.name}' em {timestamp_s:.1f}s "
                     f"(de {duration_s:.1f}s total).\n{query}"

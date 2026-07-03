@@ -19,7 +19,7 @@ import logging
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -459,7 +459,7 @@ class ProcessServiceManager:
         if self.platform == "launchd":
             if not self._plist_path.exists():
                 raise RuntimeError(
-                    f"LaunchAgent não instalado — rode 'service install' primeiro."
+                    "LaunchAgent não instalado — rode 'service install' primeiro."
                 )
             r = self._launchctl("load", "-w", str(self._plist_path))
             if r.returncode != 0:

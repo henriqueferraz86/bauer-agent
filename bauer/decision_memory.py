@@ -52,7 +52,7 @@ import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator
 

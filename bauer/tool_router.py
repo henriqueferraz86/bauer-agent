@@ -51,19 +51,14 @@ Tools de agente (sempre disponíveis):
 
 from __future__ import annotations
 
-import ast
-import difflib
 import json
 import logging
 import os
 import re
-import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from .shell_runner import ShellError
 from .tool_policy import load_tool_policy
 from .tools.agent_misc import MiscToolsMixin
 from .tools.browser import BrowserToolsMixin
@@ -83,7 +78,6 @@ from .tools.skills import SkillsToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
-from .workspace_manager import WorkspaceError, WorkspaceManager
 
 # Wave 4.5: lazy imports so the tool_router stays importable even if the
 # security modules are somehow unavailable (e.g. stripped install).
@@ -327,10 +321,7 @@ _WORKER_CONTEXT_ALLOWLIST = frozenset({
 # `from bauer.tool_router import _MAX_SEARCH_RESULTS`.
 from .tools.base import (  # noqa: E402
     _DEFAULT_READ_LINES,
-    _MAX_FILE_BYTES,
-    _MAX_READ_BYTES,
     _MAX_SEARCH_RESULTS,
-    _syntax_check,
 )
 
 # G18.4: padrões de nomes de modelos multimodais conhecidos (capability check
@@ -438,7 +429,7 @@ class ToolRouter(
                 ),
                 "args": {
                     "path": "str — caminho relativo ao workspace (obrigatorio)",
-                    "offset": f"int — linha inicial 1-indexed (default: 1)",
+                    "offset": "int — linha inicial 1-indexed (default: 1)",
                     "limit": f"int — numero de linhas a ler (default: {_DEFAULT_READ_LINES})",
                 },
             },
@@ -1427,7 +1418,6 @@ class ToolRouter(
         Aceita o nome da função e os argumentos já parseados (dict).
         Encaminha para execute() com o formato JSON padrão do Tool Bridge.
         """
-        import json as _json
         action = {"action": tool_name, "args": tool_args}
         return self.execute(action)
 
@@ -1447,7 +1437,7 @@ class ToolRouter(
         if not name:
             raise ToolError(
                 "Campo 'action' ausente no JSON.\n"
-                f"Exemplo: {{\"action\": \"list_dir\", \"args\": {{\"path\": \".\"}}}}"
+                "Exemplo: {\"action\": \"list_dir\", \"args\": {\"path\": \".\"}}"
             )
 
         # Resolve função — registry externo tem prioridade sobre built-ins
@@ -1587,7 +1577,6 @@ class ToolRouter(
             pass  # hooks nunca bloqueiam execução
 
         # SEG-3: audit com medição de tempo
-        from .audit_logger import audit_tool_call as _audit_ctx
         import time as _time
         _t0 = _time.monotonic()
         _audit_error: Exception | None = None

@@ -466,9 +466,9 @@ class LearningEngineV2:
         """Persiste o relatório em LEARNING_ANALYSIS.md."""
         p = self.mm.memory_dir / _ANALYSIS_FILE
         header = (
-            f"# LEARNING_ANALYSIS.md — Análise via LLM\n\n"
-            f"Gerado automaticamente por `bauer learning analyze`.\n"
-            f"Nunca editado manualmente. Não altera config.\n\n---\n\n"
+            "# LEARNING_ANALYSIS.md — Análise via LLM\n\n"
+            "Gerado automaticamente por `bauer learning analyze`.\n"
+            "Nunca editado manualmente. Não altera config.\n\n---\n\n"
         )
 
         entry = (

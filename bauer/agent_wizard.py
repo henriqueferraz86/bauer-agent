@@ -6,7 +6,6 @@ e retorna o objeto pronto para salvar/usar.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel

@@ -253,7 +253,6 @@ class SwarmRunner:
         self, votes: List[AgentVote]
     ) -> tuple[str, Dict[str, Any]]:
         """Voto por maioria: agrupa respostas similares (by first 40 chars), pega maior grupo."""
-        from collections import Counter
 
         buckets: Dict[str, List[AgentVote]] = {}
         for v in votes:

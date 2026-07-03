@@ -17,7 +17,7 @@ Interface estendida opcional (detectada por hasattr):
 from __future__ import annotations
 
 import abc
-from typing import Any, Generator, Iterator
+from typing import Any, Iterator
 
 
 class LLMProvider(abc.ABC):

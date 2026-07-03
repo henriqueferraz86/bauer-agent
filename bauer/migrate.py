@@ -15,9 +15,7 @@ avisos e erros.
 from __future__ import annotations
 
 import json
-import os
 import re
-import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -522,7 +520,6 @@ class HermesMigrator:
 
         # Cria agent "hermes-default" no agents.yaml
         try:
-            import yaml
             from .agent_registry import AgentRegistry, AgentDef
 
             registry = AgentRegistry(self.agents_path)

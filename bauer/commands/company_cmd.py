@@ -65,7 +65,7 @@ def company_list(
 
     if not companies:
         console.print("[dim]Nenhuma empresa cadastrada.[/dim]")
-        console.print(f"[dim]Crie uma: [bold]bauer company create <slug> --name 'Nome'[/bold][/dim]")
+        console.print("[dim]Crie uma: [bold]bauer company create <slug> --name 'Nome'[/bold][/dim]")
         return
 
     from rich.table import Table
@@ -95,8 +95,8 @@ def company_list(
         console.print(f"\n[dim]Empresa ativa: [cyan]{active_id}[/cyan][/dim]")
     else:
         console.print(
-            f"\n[dim]Nenhuma empresa ativa. Selecione: "
-            f"[bold]bauer company select <id>[/bold][/dim]"
+            "\n[dim]Nenhuma empresa ativa. Selecione: "
+            "[bold]bauer company select <id>[/bold][/dim]"
         )
 
 
@@ -169,7 +169,7 @@ def company_info(
     lines.append(f"  [bold]Criada:[/bold]    {company.created_at[:10] if company.created_at else '—'}")
 
     if company.context.strip():
-        lines.append(f"\n  [bold]Contexto injetado:[/bold]")
+        lines.append("\n  [bold]Contexto injetado:[/bold]")
         for ln in company.context.strip().splitlines():
             lines.append(f"  [dim]{ln}[/dim]")
 

@@ -25,7 +25,6 @@ def models_test(
     cfg, reg = _load_or_die(config, models)
     from ..machine_id import machine_summary
     from ..model_registry import contexto_seguro
-    from ..ollama_client import OllamaError
 
     machine = machine_summary()
     ram_available = int(machine["ram_available_mb"])

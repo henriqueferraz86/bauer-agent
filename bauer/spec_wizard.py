@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -364,7 +363,6 @@ def wizard_create_spec(manager: SpecManager) -> Spec | None:
     console.print()
     if Confirm.ask("Criar uma tarefa em TASKS.md vinculada a este spec?", default=True):
         try:
-            from pathlib import Path as _Path
             from .workspace_manager import WorkspaceManager
             _wm = WorkspaceManager()
             _task_title = f"Implementar: {title}"
@@ -381,11 +379,11 @@ def wizard_create_spec(manager: SpecManager) -> Spec | None:
             task_created = True
         except Exception as exc:
             console.print(f"[dim]Task não criada (workspace não inicializado): {exc}[/dim]")
-            console.print(f"[dim]Para criar manualmente: [bold]bauer task add[/bold][/dim]")
+            console.print("[dim]Para criar manualmente: [bold]bauer task add[/bold][/dim]")
 
     console.print(Panel(
         f"[green]✓[/green] Spec [cyan]{spec_id}[/cyan] salvo em [dim]{path}[/dim]\n"
-        + (f"[green]✓[/green] Tarefa vinculada criada em TASKS.md\n" if task_created else "")
+        + ("[green]✓[/green] Tarefa vinculada criada em TASKS.md\n" if task_created else "")
         + f"\n[dim]Fluxo SDD:[/dim]\n"
         f"  1. Escreva testes alinhados aos ACs acima\n"
         f"  2. Implemente até os testes passarem\n"

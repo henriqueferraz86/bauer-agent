@@ -8,9 +8,9 @@ from __future__ import annotations
 import random
 import threading
 import time
-from typing import Any, Callable, Optional, TypeVar
+from typing import Callable, Optional, TypeVar
 
-from .error_classifier import ClassifiedError, FailReason, classify_api_error
+from .error_classifier import ClassifiedError, classify_api_error
 
 T = TypeVar("T")
 

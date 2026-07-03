@@ -37,7 +37,6 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 from . import kanban_db as kb
 from .workspace_manager import Task, WorkspaceError, _normalize_task_id

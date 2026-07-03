@@ -23,30 +23,20 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 import typer
-from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from .paths import get_bauer_home as _get_bauer_home, memory_dir as _memory_dir_fn, runtime_state_path as _runtime_state_path_fn
-from .agent import run_agent_session
 
 # P4: paths canônicos movidos p/ bauer/commands/_common.py (compartilhados).
 from bauer.commands._common import _RUNTIME_STATE_DEFAULT  # noqa: E402
-from .ascii_intro import play_intro
-from .model_router import ModelRouter, Route, RouterConfig
-from .orchestrator import MAX_STEPS, AgentOrchestrator, OrchestratorConfig
 from .chat import run_chat_session
-from .config_loader import ConfigError, load_config, validate_config_file
+from .config_loader import ConfigError, load_config
 from .logging_config import setup_logging
-from .memory_manager import MemoryManager
-from .model_registry import ModelRegistryError, load_registry
-from .ollama_client import OllamaClient
 from .preflight import run_doctor
-from .runtime_state import read_state, write_state
-from .shell_runner import ShellRunner
-from .tool_router import SandboxError, ToolError, ToolRouter
-from .workspace_manager import WorkspaceError, WorkspaceManager
+# read_state e re-exportado no namespace de cli p/ patching em testes/plugins
+# (bauer.cli.read_state) — nao remover mesmo sem uso direto neste modulo.
+from .runtime_state import read_state, write_state  # noqa: F401
 
 app = typer.Typer(
     add_completion=False,
@@ -382,7 +372,6 @@ def status(
 ):
     """Dashboard de status do Bauer Agent — modelo, provider, contexto, memoria."""
     import json as _json
-    import time as _time
 
     from rich.columns import Columns
     from rich.panel import Panel as RPanel
@@ -491,7 +480,7 @@ def status(
 
     console.print(Rule("[bold]Bauer Status[/bold]"))
     console.print(Columns([model_panel, auth_panel, mem_panel], equal=True, expand=True))
-    console.print(f"\n[dim]Para diagnostico completo: [bold]bauer doctor --providers[/bold][/dim]")
+    console.print("\n[dim]Para diagnostico completo: [bold]bauer doctor --providers[/bold][/dim]")
 
 
 @app.command()
@@ -598,7 +587,7 @@ def chat(
 # --- memory -----------------------------------------------------------------
 
 # P4: _MEMORY_DIR / _FILE_ALIASES movidos p/ bauer/commands/_common.py.
-from bauer.commands._common import _MEMORY_DIR, _FILE_ALIASES  # noqa: E402
+from bauer.commands._common import _MEMORY_DIR  # noqa: E402
 
 
 
@@ -835,10 +824,11 @@ def kanban_cmd(
     console.print(f"\n[bold]Bauer Kanban[/bold]{f' — {company_name}' if company_name else ''}")
     console.print(f"  URL:       [cyan]{url}[/cyan]")
     console.print(f"  Workspace: {workspace}")
-    console.print(f"  Refresh:   3s")
+    console.print("  Refresh:   3s")
 
     if background:
-        import subprocess, sys
+        import subprocess
+        import sys
 
         args = [
             sys.executable, "-m", "bauer.cli", "kanban",
@@ -864,7 +854,7 @@ def kanban_cmd(
         console.print("[dim]Para encerrar: feche o processo ou reinicie o terminal.[/dim]")
         return
 
-    console.print(f"\n[dim]Pressione Ctrl+C para encerrar.[/dim]\n")
+    console.print("\n[dim]Pressione Ctrl+C para encerrar.[/dim]\n")
 
     try:
         run_kanban_server(
@@ -1143,7 +1133,6 @@ def logs(
 # --- spec (spec-driven development) ----------------------------------------
 
 # P4: movido p/ bauer/commands/_common.py (compartilhado com grupos extraídos).
-from bauer.commands._common import _SPECS_DIR  # noqa: E402
 
 
 
@@ -1228,14 +1217,14 @@ def gateway_cmd(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
-    console.print(f"\n[bold]Bauer Gateway[/bold] — WebSocket Claw3D")
+    console.print("\n[bold]Bauer Gateway[/bold] — WebSocket Claw3D")
     console.print(f"  WS:        ws://{host}:{port}")
     console.print(f"  Backend:   {bauer_url}")
     console.print(f"  Auth:      {'habilitada' if api_key else 'desabilitada'}")
     console.print(
-        f"\n[dim]  Configure no Claw3D:")
+        "\n[dim]  Configure no Claw3D:")
     console.print(f"    gateway.url         = ws://{host}:{port}")
-    console.print(f"    gateway.adapterType = bauer[/dim]\n")
+    console.print("    gateway.adapterType = bauer[/dim]\n")
 
     try:
         run_gateway_sync(bauer_url=bauer_url, host=host, port=port, api_key=api_key)
@@ -1820,11 +1809,11 @@ def kanban_swarm_status_cmd(
 
     bb = snap.get("blackboard", {})
     if bb:
-        console.print(f"\n[bold]Blackboard:[/bold]")
+        console.print("\n[bold]Blackboard:[/bold]")
         for key, value in bb.items():
             console.print(f"  [cyan]{key}[/cyan]: {value}")
     else:
-        console.print(f"\n[dim]Blackboard vazia.[/dim]")
+        console.print("\n[dim]Blackboard vazia.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -1841,7 +1830,6 @@ _DIAG_SEVERITY_COLOR = {
 
 def _render_diagnostics(diags, *, header: bool = True) -> None:
     """Print diagnostics to the console (Rich-formatted)."""
-    from rich.table import Table
     if not diags:
         if header:
             console.print("[green]✓ Nenhum diagnóstico ativo.[/green]")

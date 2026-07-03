@@ -334,7 +334,7 @@ def daemon_status_cmd(
             console.print(_json.dumps({"running": False, "pid": None, "sessions": []}, indent=2))
         else:
             console.print("[dim]Nenhuma sessao de daemon encontrada.[/dim]")
-            console.print(f"[dim]Use [bold]bauer daemon start[/bold] para iniciar.[/dim]")
+            console.print("[dim]Use [bold]bauer daemon start[/bold] para iniciar.[/dim]")
         raise typer.Exit(code=0)
 
     from ..daemon import DaemonStateDB
@@ -366,7 +366,7 @@ def daemon_status_cmd(
 
     # Pretty table
     console.print(
-        f"\n[bold]BauerDaemon[/bold]  "
+        "\n[bold]BauerDaemon[/bold]  "
         + ("[green]RODANDO[/green]" if alive else "[red]PARADO[/red]")
         + (f"  pid={pid}" if pid else "")
     )

@@ -170,6 +170,6 @@ def boards_rm_cmd(
     # Se era o board ativo, reseta o marcador.
     if _kb.get_active_board() == name:
         _kb.active_board_marker_path().unlink(missing_ok=True)
-        console.print(f"[yellow]Marcador 'active_board' removido — proximo "
-                      f"comando usara 'default'.[/yellow]")
+        console.print("[yellow]Marcador 'active_board' removido — proximo "
+                      "comando usara 'default'.[/yellow]")
     console.print(f"[green]✓[/green] Board removido: [bold]{name}[/bold]")

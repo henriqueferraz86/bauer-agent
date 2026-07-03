@@ -53,7 +53,6 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +274,7 @@ class ScopeBoundary:
                 resource=str(resolved),
                 reason="path is outside all allowed_write_paths",
                 suggested_action=(
-                    f"add parent directory to allowed_write_paths in scope config"
+                    "add parent directory to allowed_write_paths in scope config"
                 ),
             )
 
@@ -324,7 +323,7 @@ class ScopeBoundary:
                 resource=url,
                 reason="URL does not match any allowed_url_prefixes",
                 suggested_action=(
-                    f"add a matching prefix to allowed_url_prefixes, or set allow_all_urls: true"
+                    "add a matching prefix to allowed_url_prefixes, or set allow_all_urls: true"
                 ),
             )
 

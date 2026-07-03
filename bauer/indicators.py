@@ -1,7 +1,8 @@
 """Modern execution indicators for Bauer Agent."""
 from __future__ import annotations
-import contextlib, sys, time
-from typing import Generator, Optional
+import contextlib
+import sys
+import time
 if sys.platform == 'win32':
     if sys.stdout is not None: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     if sys.stderr is not None: sys.stderr.reconfigure(encoding='utf-8', errors='replace')

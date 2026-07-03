@@ -18,7 +18,6 @@ import hashlib
 import json
 import os
 import secrets
-import sys
 import threading
 import time
 import webbrowser
@@ -26,7 +25,7 @@ from dataclasses import dataclass, field
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
@@ -569,10 +568,10 @@ class AuthManager:
         print(f"\n{'='*60}")
         print(f"Autenticar com {config['name']}")
         print(f"{'='*60}")
-        print(f"\nAbrindo browser para login...")
-        print(f"\nSe o browser nao abrir, acesse:")
+        print("\nAbrindo browser para login...")
+        print("\nSe o browser nao abrir, acesse:")
         print(f"  {auth_url}")
-        print(f"\nAguardando autenticacao...")
+        print("\nAguardando autenticacao...")
 
         # Abrir browser
         webbrowser.open(auth_url)
@@ -1222,11 +1221,11 @@ def _switch_config_to_provider(provider: str) -> None:
 
     from rich.console import Console
     console = Console()
-    console.print(f"\n[dim]Config atualizada:[/dim]")
+    console.print("\n[dim]Config atualizada:[/dim]")
     console.print(f"  Provider: {old_provider} -> [green]{cfg['provider']}[/green]")
     console.print(f"  Modelo:   {old_model} -> [green]{cfg['model']}[/green]")
     console.print(f"  Contexto: {cfg['context']} tokens")
-    console.print(f"\n[dim]Rode 'bauer doctor' para validar.[/dim]")
+    console.print("\n[dim]Rode 'bauer doctor' para validar.[/dim]")
 
 
 def cmd_status() -> None:

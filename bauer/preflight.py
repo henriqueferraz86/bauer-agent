@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config_loader import BauerConfig
-from .machine_id import machine_id, machine_summary
+from .machine_id import machine_summary
 from .model_registry import ModelInfo, ModelRegistry, contexto_seguro
 from .ollama_client import OllamaClient, OllamaError
 from .runtime_state import ContextState, RuntimeState
@@ -98,7 +98,6 @@ def _resolve_context(
 from .provider_profile import (  # noqa: E402
     _DEFAULT_CONTEXT_FALLBACK as _CLOUD_CONTEXT_FALLBACK,
     default_context_map as _default_context_map,
-    get_default_context as _get_default_context,
 )
 
 _CLOUD_CONTEXT_DEFAULTS: dict[str, int] = _default_context_map()

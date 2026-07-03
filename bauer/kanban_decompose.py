@@ -35,9 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Any
 
 from . import kanban_db as kb
 from .auxiliary_client import get_text_auxiliary_client
