@@ -1240,14 +1240,18 @@ def _print_assistant_response(console: Console, text: str, cost_line: str = "") 
     from rich.text import Text as _Text
 
     console.print()
-    console.print(_Text("● bauer", style="bold #00d4aa"))
+    try:
+        from .ui import response_header as _rh
+        # cost_line é uma linha pronta (pode ter markup) — extrai texto p/ meta.
+        _meta = _Text.from_markup(cost_line).plain.strip() if cost_line else ""
+        console.print(_rh(cost=_meta))
+    except Exception:
+        console.print(_Text("● bauer", style="bold #00d4aa"))
     try:
         from rich.markdown import Markdown as _Markdown
         console.print(_Markdown(text))
     except Exception:
         console.print(text, markup=False)
-    if cost_line:
-        console.print(cost_line)
     console.print()
 
 
@@ -1639,7 +1643,14 @@ def _native_turn_interactive(
                     return "guardrail_halt", _post.message
 
             display_line = _format_tool_display(name, result)
-            console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
+            try:
+                from .ui import tool_line as _tool_line
+                console.print(_tool_line(
+                    name, display_line,
+                    status=("fail" if _failed else "ok"),
+                ))
+            except Exception:
+                console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
 
             ctx_result, _ = _ctx_result_for_context(name, result)
             cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
@@ -3417,7 +3428,14 @@ def _run_tool_loop_body(
 
                 # Display inteligente — filtra ruído, mostra apenas o relevante
                 display_line = _format_tool_display(action_name, tool_result)
-                console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
+                try:
+                    from .ui import tool_line as _tool_line
+                    console.print(_tool_line(
+                        action_name, display_line,
+                        status=("fail" if tool_result.startswith("[Erro:") else "ok"),
+                    ))
+                except Exception:
+                    console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
 
                 # Comprime resultado para o contexto — reduz impacto de resultados grandes
                 ctx_result, was_compressed = _ctx_result_for_context(action_name, tool_result)
@@ -4212,13 +4230,26 @@ def run_agent_session(
                 import html as _html
                 from .usage_pricing import format_cost as _fmt_cost_tb
                 _cost = _fmt_cost_tb(stats.cost_usd_total)
-                _pct = int(ctx.usage_pct * 100)
+                _p = max(0.0, min(1.0, ctx.usage_pct))
+                _pct = int(_p * 100)
+                # Medidor Minimal: preenchido no acento, vazio apagado; o pct
+                # vira vermelho só em perigo de estouro (>85%).
+                _w = 8
+                _fill = round(_p * _w)
+                _danger = _p > 0.85
+                _fc = "#ef4444" if _danger else "#00d4aa"
+                _pc = "#ef4444" if _danger else "#6b7280"
+                _gauge = (
+                    f"<style fg='{_fc}'>{'▰' * _fill}</style>"
+                    f"<style fg='#4b5563'>{'▱' * (_w - _fill)}</style>"
+                    f" <style fg='{_pc}'>{_pct}%</style>"
+                )
                 return HTML(
                     " <b><style fg='#00d4aa'>◆ BAUER</style></b>"
                     f"  <style fg='#3b82f6'>{_html.escape(str(model_name))}</style>"
-                    f"  ·  ctx {_pct}%"
-                    f"  ·  {_html.escape(str(_cost))}"
-                    "  ·  /loop autônomo · /model trocar "
+                    f"  ·  ctx {_gauge}"
+                    f"  ·  <style fg='#a855f7'>{_html.escape(str(_cost))}</style>"
+                    "  ·  <style fg='#6b7280'>/loop · /model · /exit</style> "
                 )
             except Exception:
                 return " ◆ BAUER "
@@ -4651,9 +4682,13 @@ def run_agent_session(
                 if _sk is not None:
                     ctx.add_ephemeral_system(skill_injection_block(_sk))
                     _injected_skill = _sk.name
-                    console.print(
-                        f"[dim]↳ skill '{_sk.name}' aplicada (relevância {_sk.score:.0%})[/dim]"
-                    )
+                    try:
+                        from .ui import skill_line as _skl
+                        console.print(_skl(_sk.name, int(_sk.score * 100)))
+                    except Exception:
+                        console.print(
+                            f"[dim]↳ skill '{_sk.name}' ({_sk.score:.0%})[/dim]"
+                        )
             except Exception:
                 pass  # skill é auxílio; nunca bloquear o turno
 
