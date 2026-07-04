@@ -7,6 +7,58 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+class TestCleanForSpeech:
+    """Piper lê '*' e emoji ao pé da letra — precisa sumir antes de sintetizar."""
+
+    def test_remove_bold_italic(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("o **auth.py** está quebrado") == "o auth.py está quebrado"
+        assert clean_for_speech("é *importante* corrigir") == "é importante corrigir"
+        assert clean_for_speech("__negrito__ e _itálico_") == "negrito e itálico"
+
+    def test_remove_emoji(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("🔧 Corrigir o backend") == "Corrigir o backend"
+        assert clean_for_speech("📋 Status Atual ✓") == "Status Atual"
+
+    def test_remove_headers(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("## Título\ntexto normal") == "Título\ntexto normal"
+
+    def test_remove_bullets(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("- item um\n* item dois") == "item um\nitem dois"
+
+    def test_remove_inline_code_mantem_texto(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("rode `pip install`") == "rode pip install"
+
+    def test_remove_code_block(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("veja:\n```python\nprint(1)\n```\nfim") == "veja:\nfim"
+
+    def test_remove_links_mantem_texto(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("veja [o repo](https://x.com)") == "veja o repo"
+
+    def test_texto_sem_markdown_intacto(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("uma frase normal, sem nada.") == "uma frase normal, sem nada."
+
+    def test_texto_so_marcadores_vira_vazio(self):
+        from bauer.tts_local import clean_for_speech
+
+        assert clean_for_speech("🔧🎯📋") == ""
+
+
 class TestHasPiper:
     def test_has_piper_returns_bool(self):
         from bauer.tts_local import _has_piper

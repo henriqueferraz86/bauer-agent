@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,52 @@ DEFAULT_VOICE = os.environ.get("TTS_LOCAL_VOICE", "pt_BR-faber-medium")
 
 # Cache do modelo carregado — carregar o ONNX é caro; reusa entre falas.
 _VOICE_CACHE: dict[str, Any] = {}
+
+# Faixas Unicode de emoji/símbolos pictográficos — Piper lê "*" e emoji como
+# fala literal ("asterisco", nome do glifo), o que soa mal. Removidos antes
+# de sintetizar; o texto impresso no terminal continua com a formatação.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"  # símbolos & pictogramas diversos, emoticons, transporte, suplementares
+    "\U00002600-\U000027BF"  # símbolos diversos + dingbats (☀ ✓ ➜ etc.)
+    "\U0001F1E6-\U0001F1FF"  # bandeiras (pares regionais)
+    "\U00002190-\U000021FF"  # setas
+    "\U0000FE0F"             # variation selector (emoji presentation)
+    "]+",
+    flags=re.UNICODE,
+)
+_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`]*)`")
+_MD_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_BOLD_ITALIC_RE = re.compile(r"(\*\*\*|\*\*|\*|___|__|_)(.+?)\1")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_BULLET_RE = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
+
+
+def clean_for_speech(text: str) -> str:
+    """Remove markdown e emoji antes de sintetizar — Piper lê tudo ao pé da
+    letra ('asterisco', nome do emoji), o que não faz sentido em voz alta.
+
+    O texto exibido no terminal (Markdown renderizado) não passa por aqui;
+    isso afeta só o que é enviado ao TTS.
+    """
+    t = text
+    t = _CODE_BLOCK_RE.sub(" ", t)
+    t = _INLINE_CODE_RE.sub(r"\1", t)
+    t = _MD_HEADER_RE.sub("", t)
+    t = _MD_LINK_RE.sub(r"\1", t)
+    t = _MD_BULLET_RE.sub("", t)
+    # Bold/itálico pode aninhar (**_x_**) — aplica algumas vezes até estabilizar.
+    for _ in range(3):
+        new_t = _MD_BOLD_ITALIC_RE.sub(r"\2", t)
+        if new_t == t:
+            break
+        t = new_t
+    t = _EMOJI_RE.sub("", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"[ \t]*\n[ \t]*", "\n", t)
+    t = re.sub(r"\n{2,}", "\n", t)
+    return t.strip()
 
 
 def _has_piper() -> bool:
@@ -86,7 +133,7 @@ def synthesize_to_file(text: str, output_path: str | Path, voice: str | None = N
     import soundfile as sf
 
     pv = _load_voice(voice or DEFAULT_VOICE)
-    chunks = list(pv.synthesize(text))
+    chunks = list(pv.synthesize(clean_for_speech(text)))
     if not chunks:
         raise RuntimeError("Piper não gerou áudio para o texto fornecido.")
     audio = np.concatenate([c.audio_int16_array for c in chunks])
@@ -103,7 +150,7 @@ def speak_text(text: str, voice: str | None = None, console: Any = None) -> bool
     Não bloqueia o chat por erro — falha vira aviso no console (se fornecido)
     e retorna False, nunca levanta.
     """
-    text = (text or "").strip()
+    text = clean_for_speech(text or "")
     if not text:
         return False
 
