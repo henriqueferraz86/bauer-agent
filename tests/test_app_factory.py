@@ -249,6 +249,21 @@ class TestToolRouterIntegration:
         assert af.is_governed(tmp_path / "encurtador")
         assert not af.is_governed(tmp_path)  # a raiz NUNCA é governada
 
+    def test_init_nao_forca_as_4_perguntas_clarify(self, tmp_path):
+        # Discovery agora é rascunho da IA + premissas, não interrogatório.
+        # A instrução NÃO deve mandar chamar clarify 4x; deve orientar a
+        # preencher os docs da ideia e marcar premissas.
+        tr = self._router(tmp_path)
+        out = tr.execute(json.dumps({
+            "action": "app_factory_init",
+            "args": {"idea": "Encurtador de URLs", "path": "enc"},
+        }))
+        low = out.lower()
+        assert "quatro vezes" not in low
+        assert "clarify" in low  # ainda menciona clarify (uso condicional)
+        assert "premissa" in low  # orienta marcar premissas
+        assert "rascunh" in low  # IA rascunha, não interroga
+
     def test_init_requires_idea(self, tmp_path):
         from bauer.tool_router import ToolError
         tr = self._router(tmp_path)

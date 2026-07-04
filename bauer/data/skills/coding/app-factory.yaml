@@ -32,10 +32,15 @@ content: |
 
   ## Como conduzir
 
-  1. **Discovery** — entenda antes de planejar: qual problema, quem usa, qual a
-     funcionalidade principal da V1, onde roda, stack preferida, o que está fora
-     do escopo. Se o usuário não souber tudo, assuma o mínimo e documente as
-     premissas.
+  1. **Discovery** — você RASCUNHA, o usuário aprova depois; NÃO interrogue.
+     Cubra 4 dimensões: (1) usuários-alvo, (2) funcionalidades da V1, (3)
+     restrições de stack/prazo/orçamento, (4) critério de sucesso. Para cada
+     dimensão que a IDEIA já responde, use o que ela diz — não pergunte o óbvio.
+     O que faltar, assuma um default razoável e marque como **"Premissa
+     (assumida)"** no doc (nunca invente requisito escondido). Use `clarify` SÓ
+     se algo essencial estiver genuinamente ambíguo (1-2 perguntas no máximo),
+     nunca as 4 de forma automática. O usuário valida tudo — inclusive as
+     premissas — no checkpoint de planejamento.
   2. **Iniciar governança** — chame a tool `app_factory_init` com `idea`,
      `path` (slug da ideia — SEMPRE, p/ a pasta única) e `stack` se houver. Ela
      cria `<path>/docs/` com os esqueletos dos 7 docs de planejamento + docs de
