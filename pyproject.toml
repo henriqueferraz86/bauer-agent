@@ -53,6 +53,10 @@ voice = [
     # STT local offline — pesos open-source do Whisper (large-v3-turbo) via
     # CTranslate2. Sem nuvem, sem API key. Baixa ~1.5GB no primeiro uso.
     "faster-whisper>=1.0.0",
+    # Captura de áudio do microfone (bauer voice listen).
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+    "soundfile>=0.12",
 ]
 all = [
     "fastapi>=0.110",
@@ -62,6 +66,9 @@ all = [
     "ddgs>=6.0",
     "beautifulsoup4>=4.12",
     "faster-whisper>=1.0.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+    "soundfile>=0.12",
 ]
 
 [project.scripts]

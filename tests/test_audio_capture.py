@@ -66,17 +66,14 @@ class TestAudioCaptureSkipped:
         ),
         reason="sounddevice, numpy ou soundfile não instalados",
     )
-    def test_capture_returns_text_or_none(self):
-        """Se deps estão, capture retorna texto ou None."""
+    def test_capture_sem_frames_retorna_none(self):
+        """duration_max_s=0 → max_frames=0 → loop nunca roda → sem áudio → None.
+
+        sd/np são import lazy DENTRO de capture_voice_input (não no nível do
+        módulo), então o patch precisa mirar sounddevice.InputStream direto.
+        """
         from bauer.audio_capture import capture_voice_input
 
-        # Moca sounddevice.InputStream e numpy
-        with patch("bauer.audio_capture.sd.InputStream"):
-            with patch("bauer.audio_capture.sd.rec") as mock_rec:
-                with patch("bauer.audio_capture.np.concatenate") as mock_concat:
-                    with patch("bauer.audio_capture.transcribe_audio") as mock_transcribe:
-                        # Simula: nenhum áudio (frames vazio)
-                        mock_rec.return_value = None
-                        result = capture_voice_input(console=None)
-                        # Sem frames, retorna None
-                        assert result is None
+        with patch("sounddevice.InputStream"):
+            result = capture_voice_input(duration_max_s=0, console=None)
+            assert result is None
