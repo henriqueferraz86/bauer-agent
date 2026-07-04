@@ -599,6 +599,13 @@ class ToolsSection(_StrictSection):
     # Ainda passam pela denylist (sempre bloqueada) e pelo safe_mode (risco
     # médio exige confirm=true).
     extra_allowed_commands: list[str] = Field(default_factory=list)
+    # Confirmação interativa de comando perigoso no chat (só em terminal TTY).
+    # Em vez de BLOQUEAR em silêncio um comando fora da allowlist, pergunta:
+    # [e]xecutar uma vez / [s]essão / [a]always (grava no ~/.bauer/approvals.yaml)
+    # / [n]egar. O "always" ENSINA o allowlist — pergunta uma vez, nunca mais.
+    # Degrada para o comportamento antigo (negar) em canal/serve/CI (sem TTY) e
+    # no /loop (que tem motor de aprovação próprio). default True.
+    confirm_commands: bool = True
 
 
 class LoopSection(_StrictSection):
