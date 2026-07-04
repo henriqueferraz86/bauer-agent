@@ -606,6 +606,11 @@ class ToolsSection(_StrictSection):
     # Degrada para o comportamento antigo (negar) em canal/serve/CI (sem TTY) e
     # no /loop (que tem motor de aprovação próprio). default True.
     confirm_commands: bool = True
+    # Captura de voz e transcrição via Whisper (local ou cloud).
+    # `bauer voice listen` ativa microfone. Requer sounddevice + numpy para
+    # captura, e faster-whisper (local offline) OU Groq/OpenAI API key para
+    # transcrição. Default False (feature opt-in, já que deps são pesadas).
+    voice_input_enabled: bool = False
 
 
 class LoopSection(_StrictSection):

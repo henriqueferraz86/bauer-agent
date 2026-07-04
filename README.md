@@ -310,6 +310,26 @@ bauer skills-hub stats            # telemetria de uso (quais disparam, desfecho,
 Toggle: `agent.skill_auto_inject` no config. A telemetria é só observação (não
 age) — base para refinar skills por uso real.
 
+### 🎤 Voice — Captura de voz e transcrição
+
+Grava áudio do microfone e transcreve automaticamente com Whisper (local offline ou cloud):
+
+```bash
+bauer voice listen              # grava até silêncio ou 30s, transcreve
+bauer voice listen --duration 60 --threshold -35  # ajusta duração e sensibilidade
+
+bauer voice transcribe audio.wav   # transcreve um arquivo existente
+```
+
+**Setup:**
+- **Captura**: `pip install sounddevice numpy` (ou `uv sync --extra voice`)
+- **Transcrição**: escolha uma:
+  - Local offline (recomendado): `pip install faster-whisper`
+  - Cloud grátis: `GROQ_API_KEY` (console.groq.com)
+  - OpenAI: `OPENAI_API_KEY`
+
+Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
+
 ### ⌨️ Comandos dentro da sessão
 
 | Comando | Descrição |
@@ -698,6 +718,8 @@ O Bauer tem defaults "agressivos mas seguros". Ajuste em `agent:` / `tools:`:
 | `tools.safe_mode` | `true` | Bloqueia comandos de risco médio sem `confirm` |
 | `tools.max_tool_turns` | `150` | Teto de tool calls por turno |
 | `tools.extra_allowed_commands` | `[]` | Libera comandos além da allowlist (ex.: `[docker, kubectl]`) |
+| `tools.confirm_commands` | `true` | Prompt interativo para comando fora da allowlist (aprende) |
+| `tools.voice_input_enabled` | `false` | Ativa `bauer voice listen` (requer sounddevice + faster-whisper) |
 
 ---
 
