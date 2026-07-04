@@ -568,6 +568,16 @@ tools:
   # comportamento antigo (bloquear) em canal/serve/CI e no /loop. Padrão: true
   confirm_commands: true
 
+  # Captura de voz e transcrição via Whisper (local ou cloud).
+  # Ativa `bauer voice listen` para gravar do microfone e transcrever
+  # automaticamente. Requer:
+  #   • Captura: sounddevice + numpy (pip install sounddevice numpy)
+  #   • Transcrição: either
+  #     - Local offline: faster-whisper (pip install faster-whisper)
+  #     - Cloud: GROQ_API_KEY (grátis, rápido) OU OPENAI_API_KEY
+  # Padrão: false (opt-in, porque as deps são pesadas)
+  voice_input_enabled: false
+
 
 # =============================================================================
 # WEB — backends para web_search e web_fetch

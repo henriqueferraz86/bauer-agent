@@ -113,7 +113,10 @@ app.add_typer(cost_app, name="cost")
 app.add_typer(factory_app, name="factory")
 
 from bauer.commands.home_cmd import home_app  # noqa: E402
+from bauer.commands.voice_cmd import voice_app  # noqa: E402
+
 app.add_typer(home_app, name="home")
+app.add_typer(voice_app, name="voice")
 
 # P4: console único movido para bauer/commands/_common.py (compartilhado com os
 # módulos de comando extraídos). Re-importado aqui — uso inalterado em cli.py.
