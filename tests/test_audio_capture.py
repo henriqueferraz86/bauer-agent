@@ -67,13 +67,29 @@ class TestAudioCaptureSkipped:
         reason="sounddevice, numpy ou soundfile não instalados",
     )
     def test_capture_sem_frames_retorna_none(self):
-        """duration_max_s=0 → max_frames=0 → loop nunca roda → sem áudio → None.
-
-        sd/np são import lazy DENTRO de capture_voice_input (não no nível do
-        módulo), então o patch precisa mirar sounddevice.InputStream direto.
-        """
+        """duration_max_s=0 → max_frames=0 → loop nunca roda → sem áudio → None."""
         from bauer.audio_capture import capture_voice_input
 
-        with patch("sounddevice.InputStream"):
-            result = capture_voice_input(duration_max_s=0, console=None)
-            assert result is None
+        result = capture_voice_input(duration_max_s=0, console=None)
+        assert result is None
+
+    def test_nao_abre_stream_concorrente_com_rec(self):
+        """Regressão: sd.InputStream() aberto em paralelo a sd.rec() disputava
+        o microfone e travava a gravação em alguns drivers Windows. sd.rec()
+        já abre/fecha sua própria stream — não deve haver mais nenhuma
+        chamada a sd.InputStream durante a captura."""
+        import numpy as np
+
+        from bauer.audio_capture import capture_voice_input
+
+        fake_chunk = np.zeros((1600, 1), dtype="float32")
+        with patch("sounddevice.rec", return_value=fake_chunk) as mock_rec, patch(
+            "sounddevice.wait"
+        ), patch("sounddevice.InputStream") as mock_stream, patch(
+            "bauer.transcription.transcribe_audio",
+            return_value={"success": False, "transcript": "", "error": "silêncio"},
+        ):
+            capture_voice_input(duration_max_s=1, silence_threshold_db=-100, console=None)
+
+        mock_stream.assert_not_called()
+        assert mock_rec.called

@@ -94,26 +94,28 @@ def capture_voice_input(
         silent_count = 0
         frame_count = 0
 
-        with sd.InputStream(samplerate=sample_rate, channels=1, blocksize=chunk_size, dtype="float32"):
-            while frame_count < max_frames:
-                chunk = sd.rec(chunk_size, samplerate=sample_rate, channels=1, dtype="float32")
-                sd.wait()
+        # sd.rec() já abre e fecha sua própria stream a cada chamada — não
+        # combinar com sd.InputStream() em paralelo (duas streams disputando
+        # o mesmo microfone travava a gravação em alguns drivers Windows).
+        while frame_count < max_frames:
+            chunk = sd.rec(chunk_size, samplerate=sample_rate, channels=1, dtype="float32")
+            sd.wait()
 
-                audio_frames.append(chunk)
-                frame_count += 1
+            audio_frames.append(chunk)
+            frame_count += 1
 
-                # Calcula RMS (root mean square) — proxy de amplitude
-                rms = float(np.sqrt(np.mean(chunk**2)))
-                db = 20 * np.log10(rms + 1e-9)  # evita log(0)
+            # Calcula RMS (root mean square) — proxy de amplitude
+            rms = float(np.sqrt(np.mean(chunk**2)))
+            db = 20 * np.log10(rms + 1e-9)  # evita log(0)
 
-                if db < silence_threshold_db:
-                    silent_count += 1
-                    if silent_count >= silence_frames:
-                        if console is not None:
-                            console.print("[dim]Silêncio detectado, finalizando.[/dim]")
-                        break
-                else:
-                    silent_count = 0  # reset se houver som novamente
+            if db < silence_threshold_db:
+                silent_count += 1
+                if silent_count >= silence_frames:
+                    if console is not None:
+                        console.print("[dim]Silêncio detectado, finalizando.[/dim]")
+                    break
+            else:
+                silent_count = 0  # reset se houver som novamente
 
         if not audio_frames:
             if console is not None:
