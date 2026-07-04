@@ -41,6 +41,13 @@ def _fts5_available(conn: sqlite3.Connection) -> bool:
         return False
 
 
+#: Roles cujas mensagens entram no ÍNDICE VETORIAL (busca semântica). tool e
+#: system ficam de fora — são output cru/prompt fixo, ruído para recall
+#: semântico (medição: 59% dos vetores eram tool+system). Continuam na tabela
+#: `messages` (FTS) para busca textual exata.
+_INDEXED_VECTOR_ROLES = frozenset({"user", "assistant"})
+
+
 def _content_to_str(content: Any) -> str:
     """Converte content de mensagem para str.
 
@@ -574,13 +581,42 @@ class SqliteSessionStore:
                 _store = _get_store()
                 for _idx, _msg in enumerate(messages):
                     _role = _msg.get("role", "")
+                    # Só indexa SUBSTÂNCIA (user+assistant). Medição da base real:
+                    # 55% dos vetores eram role=tool (output cru de comando/
+                    # arquivo/JSON) + 4% system — 59% de ruído que não se
+                    # recupera semanticamente e afogava o sinal (user/assistant
+                    # eram só 39%). tool/system ficam na tabela `messages` (FTS)
+                    # para busca textual; fora do índice vetorial.
+                    if _role not in _INDEXED_VECTOR_ROLES:
+                        continue
                     _content = _content_to_str(_msg.get("content", ""))
                     if not _content.strip():
                         continue
                     _source_id = f"{session_id}:{_role}:{_idx}"
-                    _store.store(_source_id, "session_msg", _content)
+                    # store_if_absent: não re-embeda o que já foi indexado (o
+                    # re-index roda a cada save sobre a conversa inteira).
+                    _store.store_if_absent(_source_id, "session_msg", _content)
             except Exception:
                 pass  # Never raise in background thread
 
         _t = _threading.Thread(target=_index_in_background, daemon=True)
         _t.start()
+
+    def compact_vector_index(self) -> int:
+        """Remove do índice vetorial global os vetores de roles NÃO indexados.
+
+        Limpeza ÚNICA do acúmulo anterior ao filtro de ingestão: antes, toda
+        mensagem (tool/system inclusos, 59% do total) era embedada. As
+        mensagens continuam na tabela `messages` (FTS) — só saem do índice
+        semântico. Destrutivo no índice: chame explicitamente, não roda sozinho.
+        Retorna o número de vetores removidos.
+        """
+        from .vector_store import get_default_store
+        store = get_default_store()
+        removed = 0
+        for sid in store.list_source_ids("session_msg"):
+            parts = sid.split(":")
+            role = parts[-2] if len(parts) >= 3 else ""
+            if role and role not in _INDEXED_VECTOR_ROLES:
+                removed += store.delete(sid, "session_msg")
+        return removed

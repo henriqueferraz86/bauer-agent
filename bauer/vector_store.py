@@ -161,6 +161,32 @@ class VectorStore:
             )
         return cur.lastrowid or 0
 
+    def store_if_absent(
+        self,
+        source_id: str,
+        source_type: str,
+        text: str,
+        *,
+        embedding: list[float] | None = None,
+    ) -> int:
+        """store() apenas se (source_id, source_type) ainda não existe.
+
+        O re-index de sessão (SqliteSessionStore) itera TODAS as mensagens a
+        cada save; sem este guard, cada save re-embedava a conversa inteira de
+        novo (embed() é chamado dentro de store() sempre) — custo O(n²) de
+        embedding por sessão. Como o source_id de mensagem é estável
+        (``{session}:{role}:{idx}`` e mensagens são append-only), pular quando
+        já existe é seguro e elimina o desperdício.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT rowid FROM vectors WHERE source_id = ? AND source_type = ?",
+                (source_id, source_type),
+            ).fetchone()
+        if row is not None:
+            return row[0]  # posicional: funciona p/ sqlite3.Row e tupla
+        return self.store(source_id, source_type, text, embedding=embedding)
+
     def delete(self, source_id: str, source_type: str) -> int:
         """Delete the vector for (source_id, source_type).  Returns rows deleted."""
         with self._connect() as conn:
@@ -185,6 +211,16 @@ class VectorStore:
                 (like, source_type),
             )
         return cur.rowcount
+
+    def list_source_ids(self, source_type: str) -> list[str]:
+        """Todos os source_id de um source_type (para manutenção/limpeza)."""
+        with self._connect() as conn:
+            return [
+                row[0] for row in conn.execute(
+                    "SELECT source_id FROM vectors WHERE source_type = ?",
+                    (source_type,),
+                )
+            ]
 
     def count(self, source_type: str | None = None) -> int:
         """Return total number of stored vectors, optionally filtered by source_type."""
