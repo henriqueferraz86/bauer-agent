@@ -11,12 +11,13 @@ Runtime adaptativo para LLMs locais e cloud.
 
 - [⚡ Instalação](#instalação)
 - [⚙️ Configuração](#configuração)
-- [🧠 bauer agent](#bauer-agent)
+- [🧠 Modos de uso](#modos-de-uso) — chat · agent · App Factory · /loop · especialistas · skills
 - [🌐 bauer serve](#bauer-serve)
 - [💬 bauer gateway — canais de chat](#bauer-gateway--canais-de-chat-telegram-discord)
 - [🔌 bauer gateway-ws (Claw3D)](#bauer-gateway-ws-claw3d)
 - [🔗 Providers suportados](#providers-suportados)
 - [🛠️ Tools disponíveis](#tools-disponíveis)
+- [🎛️ Toggles de comportamento](#toggles-de-comportamento-configyaml)
 - [🐳 Docker](#docker)
 - [🧪 Desenvolvimento](#desenvolvimento)
 
@@ -237,6 +238,78 @@ bauer orchestrate run "analise os arquivos do projeto e gere relatório" --inter
 
 O orquestrador planeja a tarefa em passos com DAG de dependências, executa passos independentes em paralelo ⚡ e salva progresso em disco.
 
+### 🏭 App Factory — da ideia à V1 com governança
+
+A **App Factory** transforma uma ideia em uma aplicação V1 funcional com *quality
+gates executáveis* — não é só orientação no prompt: enquanto o projeto está sob
+governança, a própria ToolRouter **recusa escrever código** antes da
+especificação existir.
+
+```bash
+bauer factory init "app de recomendações de investimento" --path bauerinvest
+bauer factory status    # gate atual, docs pendentes, delivery score
+bauer factory gate      # o que falta para liberar código
+bauer factory score     # delivery score objetivo (0–10)
+```
+
+Ou direto no `bauer agent`: descreva a ideia e o Bauer chama `app_factory_init`
+sozinho. O fluxo:
+
+1. **Discovery** — a IA **rascunha** os 7 docs de planejamento (SPEC, ARCHITECTURE,
+   BACKLOG, TASKS, DECISIONS, PROJECT_CONTEXT, PROGRESS) a partir da ideia,
+   marcando o que assumiu como *"Premissa"*. Só pergunta (`clarify`) se algo
+   essencial estiver genuinamente ambíguo — nada de interrogatório.
+2. **Gate** — quando os 7 docs estão preenchidos, o gate vira `IMPLEMENTATION` e o
+   Bauer oferece um **checkpoint**: `[R]` revisar os docs, `[D]` desenvolver
+   (dispara o `/loop` autônomo e pode semear o kanban a partir do BACKLOG),
+   `[C]` continuar manual.
+3. **Verificação** — `verify_app` builda/roda o app de verdade; o delivery score
+   só sobe quando ele passa ("arquivos existem" ≠ "funciona").
+
+Cada ideia vive na **sua pasta** (`--path`), e a escrita fica contida nela —
+nada solto na raiz do workspace. Projetos completos nunca são sobrescritos.
+
+### 🔁 /loop — modo autônomo
+
+Dentro do `bauer agent`, o `/loop` roda o agente **sozinho, turno após turno**,
+sem confirmação a cada passo — até concluir a tarefa, estourar o orçamento de
+segurança, um guardrail mandar parar, ou você apertar Ctrl+C.
+
+```
+/loop implemente a V1 seguindo os docs, rode verify_app a cada fatia
+      --max-minutes 90 --max-tool-calls 600 --max-cost 0.50
+```
+
+Guardrails de segurança embutidos (orçamento de tempo/tool-calls/custo,
+detecção de loop, aprovação de comandos perigosos). **loop-skills** (`~/.bauer/
+loop_skills/`) permitem auto-disparar um `/loop` quando o input casa um padrão —
+liste/rode com `/loop-skill list` e `/loop-skill run <nome>`.
+
+### 🧑‍🔧 Especialistas — delegação automática
+
+O Bauer traz **10 agents especialistas embutidos** (code, devops, security, data,
+research, writing, sre, design, finance, productivity). O modelo pode delegar uma
+consulta pontual a um deles via a tool `delegate_task` — com `agent_name` explícito
+ou deixando o Bauer **auto-selecionar** o melhor por relevância. Veja todos com
+`/agents` (builtins + os seus de `~/.bauer/agents.yaml`). Toggle:
+`agent.specialist_delegation` no config.
+
+### ✨ Skills — catálogo que dispara sozinho
+
+O Bauer traz um catálogo de **skills** (procedimentos/guias) e as injeta
+**automaticamente** no contexto quando sua mensagem casa uma delas com confiança —
+sem você precisar invocar nada. Na dúvida, não injeta (falha seguro).
+
+```bash
+bauer skills-hub list             # catálogo built-in
+bauer skills-hub search <termo>   # busca
+bauer skills-hub install <slug>   # instala em ~/.bauer/skills
+bauer skills-hub stats            # telemetria de uso (quais disparam, desfecho, 👍/👎)
+```
+
+Toggle: `agent.skill_auto_inject` no config. A telemetria é só observação (não
+age) — base para refinar skills por uso real.
+
 ### ⌨️ Comandos dentro da sessão
 
 | Comando | Descrição |
@@ -253,9 +326,13 @@ O orquestrador planeja a tarefa em passos com DAG de dependências, executa pass
 | `/task add <título>` | ➕ Adiciona tarefa ao Kanban |
 | `/task start <id>` | ▶️ Marca tarefa como em andamento |
 | `/task done <id>` | ✅ Conclui tarefa |
-| `/spec list` | 📄 Lista specs do projeto |
+| `/spec list` · `/spec <id>` | 📄 Lista specs / exibe um spec |
 | `/spec new` | ✨ Cria novo spec (wizard) |
-| `/agents` | 🤖 Lista agents disponíveis |
+| `/agents` · `/agent create` · `/agent delete <n>` | 🤖 Lista / cria / remove agents |
+| `/loop <tarefa> [flags]` | 🔁 Modo autônomo (roda sozinho até concluir/estourar orçamento) |
+| `/loop-skill list` · `/loop-skill run <n>` | ♻️ Lista / roda uma loop-skill manualmente |
+| `/dispatch` · `/ops` | 🧩 Despacho de tarefas do kanban / operações |
+| `/thumbsup` · `/thumbsdown` | 👍👎 Avalia a última resposta (vira sinal de qualidade na memória) |
 | `/exit` | 👋 Encerra a sessão |
 
 ---
@@ -521,6 +598,7 @@ O gateway repassa a key automaticamente para o `bauer serve` em todas as requisi
 | 🖥️ **Ollama** (local) | — | Modelos locais; sem custo; requer Ollama rodando |
 | ☁️ **OpenCode Zen** | — | Modelos gratuitos via opencode.ai; sem API key |
 | ⚡ **Groq** | `GROQ_API_KEY` | Llama 3.3 70B ultra-rápido; tier gratuito generoso (`console.groq.com`) |
+| 🧠 **Cerebras** | `CEREBRAS_API_KEY` | Inferência ultra-rápida; tier gratuito (`cloud.cerebras.ai`) |
 | 🐙 **GitHub Models** | `GITHUB_TOKEN` | GPT-4o, Llama via GitHub Marketplace |
 
 ### 🔐 Assinatura (usa conta ChatGPT, sem créditos de API)
@@ -559,40 +637,67 @@ bauer auth login -p openai
 
 ## 🛠️ Tools disponíveis
 
-### 📁 Arquivo
+O agente tem **~75 tools**. As principais, por categoria:
+
+### 📁 Arquivo & código
 | Tool | Descrição |
 |---|---|
-| `list_dir` | 📂 Lista arquivos e diretórios |
-| `read_file` | 📖 Lê conteúdo de arquivo |
-| `write_file` | ✏️ Escreve/sobrescreve arquivo |
-| `append_file` | ➕ Adiciona conteúdo ao final |
-| `create_dir` | 📁 Cria diretório |
-| `delete_file` | 🗑️ Remove arquivo |
-| `move_file` | 📦 Move ou renomeia arquivo |
-| `diff_files` | 🔍 Compara dois arquivos |
-| `search_text` | 🔎 Busca texto em arquivo |
+| `list_dir` · `read_file` · `write_file` · `append_file` · `patch` | 📂 Ler/escrever/aplicar patch |
+| `create_dir` · `delete_file` · `move_file` · `diff_files` | 📦 Gerenciar arquivos |
+| `search_text` · `glob_files` · `regex_search` | 🔎 Buscar por texto/padrão/regex |
+| `code_symbols` · `find_definition` · `find_usages` · `get_imports` | 🧬 Navegação de código |
+| `lsp_*` (hover, definitions, references, rename, diagnostics, format…) | 🛰️ Language Server (quando disponível) |
 
-### 🔍 Busca
+### ⚙️ Execução & utilidade
 | Tool | Descrição |
 |---|---|
-| `glob_files` | 🌐 Encontra arquivos por padrão glob |
-| `regex_search` | 🔬 Busca com regex em arquivos |
+| `run_command` | 💻 Comando shell (allowlist + denylist + safe_mode) |
+| `execute_code` · `process` | 🐍 Roda código / gerencia processos em background |
+| `calculate` · `datetime_now` · `json_query` · `encode_decode` · `todo` | 🧮 Utilidades |
 
-### ⚙️ Utilidade
+### 🌐 Web & navegador
 | Tool | Descrição |
 |---|---|
-| `calculate` | 🧮 Avalia expressão matemática |
-| `datetime_now` | 🕐 Data e hora atual |
-| `json_query` | 📊 Consulta JSON com path |
-| `encode_decode` | 🔐 Base64, URL encoding, hash |
+| `web_search` | 🔍 Busca na web — **default Wikipedia (sem chave)**; geral com extra `[web]` |
+| `web_fetch` · `http_request` | 📥 GET de URL (fallback p/ browser em SPA) / HTTP genérico |
+| `browser_*` (navigate, click, type, snapshot, vision…) | 🕹️ Navegador real via Playwright |
 
-### 🔓 Opcionais
-| Tool | Descrição | Requer |
+### 🏭 App Factory, agents & skills
+| Tool | Descrição |
+|---|---|
+| `app_factory_init` · `app_factory_status` · `app_factory_score` · `verify_app` | 🏭 Governança spec-driven + verificação real |
+| `delegate_task` | 🧑‍🔧 Delega a um especialista (auto-seleção ou `agent_name`) |
+| `skills_list` · `skill_view` · `skill_manage` | ✨ Consulta/gerencia skills |
+
+### 📋 Kanban, memória & canais
+| Tool | Descrição |
+|---|---|
+| `kanban_*` (create, list, show, complete, block, comment…) | 📋 Board de tarefas |
+| `memory` · `session_search` | 🧠 Memória persistente + busca em sessões |
+| `channel_send` · `channel_list` · `send_message` | 📤 Notifica canais (Telegram/Discord/…) |
+
+### 🎨 Multimodal & avançado
+| Tool | Descrição |
+|---|---|
+| `vision_analyze` · `video_analyze` · `image_generate` | 🖼️ Visão / geração de imagem |
+| `transcribe_audio` · `text_to_speech` | 🎙️ Áudio ↔ texto |
+| `clarify` · `cronjob` · `mcp_call` · `mixture_of_agents` | 🔧 Pergunta ao usuário / agenda / MCP / multi-modelo |
+
+---
+
+## 🎛️ Toggles de comportamento (config.yaml)
+
+O Bauer tem defaults "agressivos mas seguros". Ajuste em `agent:` / `tools:`:
+
+| Chave | Default | O que faz |
 |---|---|---|
-| `run_command` | 💻 Executa comando shell | config `allow_shell: true` |
-| `web_search` | 🌐 Busca na web | `SERPAPI_KEY` ou similar |
-| `web_fetch` | 📥 Faz GET em URL | — |
-| `http_request` | 🌍 HTTP GET/POST genérico | — |
+| `agent.minimal_code_mode` | `true` | Escada "código mínimo" (prefere reuso/stdlib a abstração nova) |
+| `agent.specialist_delegation` | `true` | Injeta os especialistas e permite `delegate_task` |
+| `agent.planning_checkpoint` | `true` | Checkpoint R/D/C ao terminar o planejamento da App Factory |
+| `agent.skill_auto_inject` | `true` | Injeta a skill relevante no turno automaticamente |
+| `tools.safe_mode` | `true` | Bloqueia comandos de risco médio sem `confirm` |
+| `tools.max_tool_turns` | `150` | Teto de tool calls por turno |
+| `tools.extra_allowed_commands` | `[]` | Libera comandos além da allowlist (ex.: `[docker, kubectl]`) |
 
 ---
 
