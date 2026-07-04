@@ -312,14 +312,26 @@ age) — base para refinar skills por uso real.
 
 ### 🎤 Voice — Captura de voz e transcrição
 
-Grava áudio do microfone e transcreve automaticamente com Whisper (local offline ou cloud):
+Grava áudio do microfone e transcreve automaticamente com Whisper (local offline ou cloud). Dois jeitos de usar:
 
+**Standalone** (fora do chat, imprime e termina):
 ```bash
 bauer voice listen              # grava até silêncio ou 30s, transcreve
 bauer voice listen --duration 60 --threshold -35  # ajusta duração e sensibilidade
 
 bauer voice transcribe audio.wav   # transcreve um arquivo existente
 ```
+
+**Dentro do `bauer agent`** (o texto transcrito vira sua mensagem do turno):
+```
+❯ /listen
+🎤 Gravando áudio... Fale agora (silêncio de 1s para parar ou max 30s).
+Silêncio detectado, finalizando.
+✓ Transcrito via local: Está me escutando bem agora?
+```
+Não é streaming em tempo real (tipo legenda ao vivo) — grava o áudio inteiro,
+transcreve de uma vez e injeta o resultado como se você tivesse digitado.
+O `.wav` temporário é apagado automaticamente após a transcrição.
 
 **Setup:**
 - **Captura**: `pip install sounddevice numpy` (ou `uv sync --extra voice`)
@@ -328,7 +340,9 @@ bauer voice transcribe audio.wav   # transcreve um arquivo existente
   - Cloud grátis: `GROQ_API_KEY` (console.groq.com)
   - OpenAI: `OPENAI_API_KEY`
 
-Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
+Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in) controla
+o `/listen` dentro do chat. O `bauer voice listen` standalone roda sempre que
+chamado explicitamente (é uma ação deliberada do terminal, sem gate de config).
 
 ### ⌨️ Comandos dentro da sessão
 
@@ -353,6 +367,7 @@ Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
 | `/loop-skill list` · `/loop-skill run <n>` | ♻️ Lista / roda uma loop-skill manualmente |
 | `/dispatch` · `/ops` | 🧩 Despacho de tarefas do kanban / operações |
 | `/thumbsup` · `/thumbsdown` | 👍👎 Avalia a última resposta (vira sinal de qualidade na memória) |
+| `/listen` | 🎤 Grava do microfone e transcreve como sua mensagem (requer `tools.voice_input_enabled: true`) |
 | `/exit` | 👋 Encerra a sessão |
 
 ---

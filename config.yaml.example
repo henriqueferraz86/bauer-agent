@@ -569,8 +569,9 @@ tools:
   confirm_commands: true
 
   # Captura de voz e transcrição via Whisper (local ou cloud).
-  # Ativa `bauer voice listen` para gravar do microfone e transcrever
-  # automaticamente. Requer:
+  # Ativa `bauer voice listen` (standalone) e `/listen` dentro do `bauer agent`
+  # (grava, transcreve, e o texto vira sua mensagem do turno automaticamente).
+  # Requer:
   #   • Captura: sounddevice + numpy (pip install sounddevice numpy)
   #   • Transcrição: either
   #     - Local offline: faster-whisper (pip install faster-whisper)

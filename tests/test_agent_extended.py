@@ -214,6 +214,43 @@ def test_build_system_prompt_ladder_defaults_true_on_config_load_failure(router:
     assert "ESCADA DE DECISAO" in prompt
 
 
+# ─── voice_input_enabled (captura de voz via /listen) ──────────────────────
+
+
+def test_tools_section_voice_input_enabled_default_false():
+    from bauer.config_loader import ToolsSection
+
+    assert ToolsSection().voice_input_enabled is False
+
+
+def test_voice_input_enabled_true_when_configured():
+    from bauer.agent import _voice_input_enabled
+    from bauer.config_loader import BauerConfig, ModelSection, ToolsSection
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        tools=ToolsSection(voice_input_enabled=True),
+    )
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        assert _voice_input_enabled() is True
+
+
+def test_voice_input_enabled_false_by_default_config():
+    from bauer.agent import _voice_input_enabled
+    from bauer.config_loader import BauerConfig, ModelSection
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        assert _voice_input_enabled() is False
+
+
+def test_voice_input_enabled_defaults_false_on_config_load_failure():
+    from bauer.agent import _voice_input_enabled
+
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        assert _voice_input_enabled() is False
+
+
 # ─── specialist_delegation (delegate_task a agents especialistas) ──────────
 
 

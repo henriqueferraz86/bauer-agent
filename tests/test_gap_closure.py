@@ -621,6 +621,11 @@ class TestSlashCommands:
         from bauer.agent import _MODEL_CMDS
         assert "/model" in _MODEL_CMDS
 
+    def test_listen_cmds_defined(self):
+        from bauer.agent import _LISTEN_CMDS
+        assert "/listen" in _LISTEN_CMDS
+        assert "/voice" in _LISTEN_CMDS
+
     def test_slash_descriptions_nonempty(self):
         from bauer.agent import _SLASH_DESCRIPTIONS
         assert len(_SLASH_DESCRIPTIONS) >= 10

@@ -57,6 +57,7 @@ _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 _THUMBSUP_CMDS = {"/thumbsup", "/bom", "/positivo", "/like"}
 _THUMBSDOWN_CMDS = {"/thumbsdown", "/ruim", "/negativo", "/dislike"}
+_LISTEN_CMDS = {"/listen", "/voice", "/ouvir"}
 
 # Sub-comandos exibidos no menu de autocomplete
 _SLASH_BASE = [
@@ -94,6 +95,7 @@ _SLASH_BASE = [
     "/agent list",
     "/agent create",
     "/agent delete",
+    "/listen",
 ]
 
 
@@ -131,6 +133,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/agent list":     "lista agents criados",
     "/agent create":   "cria novo agent (wizard interativo)",
     "/agent delete":   "remove agent: /agent delete <nome>",
+    "/listen":         "grava do microfone e transcreve como sua mensagem",
 }
 
 try:
@@ -4147,6 +4150,16 @@ def _resolve_max_tool_turns() -> int:
         return 150
 
 
+def _voice_input_enabled() -> bool:
+    """Lê config.tools.voice_input_enabled — best-effort, default False
+    (mesmo valor default de ToolsSection), mesma filosofia acima."""
+    try:
+        from .config_loader import load_config
+        return bool(load_config().tools.voice_input_enabled)
+    except Exception:
+        return False
+
+
 def run_agent_session(
     client: OllamaClient,
     model_name: str,
@@ -4433,6 +4446,27 @@ def run_agent_session(
                 + "[/dim]"
             )
             continue
+        if user_input.lower() in _LISTEN_CMDS:
+            if not _voice_input_enabled():
+                console.print(
+                    "[yellow]Captura de voz desativada. Ative "
+                    "`tools.voice_input_enabled: true` no config.yaml.[/yellow]"
+                )
+                continue
+            try:
+                from .audio_capture import capture_voice_input
+                _voice_text = capture_voice_input(console=console)
+            except ImportError as _exc:
+                console.print(f"[red]{_exc}[/red]")
+                continue
+            except Exception as _exc:
+                console.print(f"[red]Erro na captura de voz: {_exc}[/red]")
+                continue
+            if not _voice_text:
+                continue
+            # Sem 'continue': o texto transcrito vira a mensagem deste turno,
+            # cai no fluxo normal como se tivesse sido digitado.
+            user_input = _voice_text
         if user_input.lower() in _MODEL_CMDS:
             # Live model switch: abre seletor, salva config.yaml, reconstrói client ao vivo.
             console.print(
