@@ -110,6 +110,13 @@ agent:
   # Padrão: true
   planning_checkpoint: true
 
+  # Auto-injeção de skill: a cada turno, casa sua mensagem com as skills
+  # disponíveis (pacote + ~/.bauer/skills) e injeta o conteúdo da mais
+  # relevante no contexto SE o match for confiante (overlap coefficient >=
+  # 0.30). Na dúvida injeta nada (falha seguro). Faz as skills dispararem
+  # sozinhas em vez de ficarem só no catálogo. Padrão: true
+  skill_auto_inject: true
+
 
 # =============================================================================
 # OLLAMA — LLM local (padrão)

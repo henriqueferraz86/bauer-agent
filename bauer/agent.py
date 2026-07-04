@@ -4242,6 +4242,12 @@ def run_agent_session(
 
     # Checkpoint de planejamento (App Factory → /loop): resolvido uma vez.
     _planning_checkpoint_enabled = _resolve_planning_checkpoint()
+    # Auto-injeção de skill relevante por turno: resolvido uma vez.
+    try:
+        from .config_loader import load_config as _lc_sk
+        _skill_auto_inject_enabled = bool(_lc_sk().agent.skill_auto_inject)
+    except Exception:
+        _skill_auto_inject_enabled = True
 
     while True:
         # --- entrada do usuário ---
@@ -4623,6 +4629,21 @@ def run_agent_session(
                 ctx.add_ephemeral_system(_mem_ctx)
         except Exception:
             pass  # nunca bloquear o chat por falha de memória
+
+        # Auto-injeção de skill: casa o turno com as skills e injeta o conteúdo
+        # da mais relevante SE o match for confiante (threshold medido). Faz as
+        # skills dispararem sozinhas; na dúvida injeta nada (falha seguro).
+        if _skill_auto_inject_enabled:
+            try:
+                from .skill_match import match_skill, skill_injection_block
+                _sk = match_skill(user_input)
+                if _sk is not None:
+                    ctx.add_ephemeral_system(skill_injection_block(_sk))
+                    console.print(
+                        f"[dim]↳ skill '{_sk.name}' aplicada (relevância {_sk.score:.0%})[/dim]"
+                    )
+            except Exception:
+                pass  # skill é auxílio; nunca bloquear o turno
 
         ctx.add_user(user_input)
 

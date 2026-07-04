@@ -76,6 +76,12 @@ class AgentSection(_StrictSection):
     # partir do BACKLOG.md) / Continuar manual. Só em terminal interativo —
     # degrada para no-op em canal/CI. default True.
     planning_checkpoint: bool = True
+    # Auto-injeção de skill: casa cada turno com as skills (pacote + usuário) e
+    # injeta o conteúdo da mais relevante no contexto SE o match for confiante
+    # (overlap coefficient >= 0.30, medido). Na dúvida injeta nada (falha
+    # seguro). Faz as skills DISPARAREM sozinhas em vez de ficarem só no
+    # catálogo. default True.
+    skill_auto_inject: bool = True
 
 
 class ObservabilitySection(_StrictSection):
