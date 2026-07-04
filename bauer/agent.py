@@ -4248,6 +4248,8 @@ def run_agent_session(
         _skill_auto_inject_enabled = bool(_lc_sk().agent.skill_auto_inject)
     except Exception:
         _skill_auto_inject_enabled = True
+    # Skill injetada no último turno — p/ atribuir o feedback 👍/👎 a ela.
+    _last_injected_skill = None
 
     while True:
         # --- entrada do usuário ---
@@ -4584,6 +4586,14 @@ def run_agent_session(
                     )
             except Exception:
                 pass  # feedback de qualidade é best-effort
+
+            # Telemetria: atribui o 👍/👎 à skill que estava ativa no último turno.
+            if _last_injected_skill:
+                try:
+                    from .skill_stats import record_feedback as _rec_fb
+                    _rec_fb(_last_injected_skill, _rating == "positivo")
+                except Exception:
+                    pass
             continue
 
         suggested = skills.observe(user_input)
@@ -4633,12 +4643,14 @@ def run_agent_session(
         # Auto-injeção de skill: casa o turno com as skills e injeta o conteúdo
         # da mais relevante SE o match for confiante (threshold medido). Faz as
         # skills dispararem sozinhas; na dúvida injeta nada (falha seguro).
+        _injected_skill = None  # nome da skill injetada neste turno (p/ telemetria)
         if _skill_auto_inject_enabled:
             try:
                 from .skill_match import match_skill, skill_injection_block
                 _sk = match_skill(user_input)
                 if _sk is not None:
                     ctx.add_ephemeral_system(skill_injection_block(_sk))
+                    _injected_skill = _sk.name
                     console.print(
                         f"[dim]↳ skill '{_sk.name}' aplicada (relevância {_sk.score:.0%})[/dim]"
                     )
@@ -4687,6 +4699,24 @@ def run_agent_session(
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.
+
+        # Telemetria de skill (Nível 1: só coleta). Se uma skill foi injetada,
+        # atribui o DESFECHO grosseiro do turno a ela: "final" = ok; kinds de
+        # erro = ruim; resto = neutro. Sinal fraco por turno (a skill é 1 fator
+        # entre vários) — só o agregado significa algo. NÃO age.
+        if _injected_skill:
+            try:
+                from .skill_stats import record_use as _rec_skill
+                if outcome.kind == "final":
+                    _sk_outcome = "good"
+                elif outcome.kind in ("provider_error", "empty_response", "loop_hard_stop"):
+                    _sk_outcome = "bad"
+                else:
+                    _sk_outcome = "neutral"
+                _rec_skill(_injected_skill, _sk_outcome)
+            except Exception:
+                pass
+            _last_injected_skill = _injected_skill  # p/ atribuir 👍/👎 no próximo /thumbs
 
         # Checkpoint: o projeto App Factory ativo acabou de completar o
         # planejamento (cruzou p/ IMPLEMENTATION)? Oferece Revisar/Desenvolver/

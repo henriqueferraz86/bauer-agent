@@ -33,6 +33,51 @@ def hub_list_cmd(
     console.print(table)
 
 
+@skills_hub_app.command("stats")
+def hub_stats_cmd() -> None:
+    """Telemetria de uso das skills (Nível 1: só observação, nenhuma ação).
+
+    Mostra quantas vezes cada skill disparou e a cara do desfecho + 👍/👎.
+    AVISO: sinal fraco por turno; NÃO julgue skill por poucos usos nem por
+    taxa de sucesso crua (skills disparam em tarefas mais difíceis).
+    """
+    import time as _t
+    from rich.table import Table
+    from ..skill_stats import load_stats
+
+    stats = load_stats()
+    if not stats:
+        console.print(
+            "[dim]Nenhum uso de skill registrado ainda. Rode o [bold]bauer agent[/bold] "
+            "e faça pedidos que casem com skills — os números aparecem aqui.[/dim]"
+        )
+        raise typer.Exit()
+
+    table = Table(title=f"Uso de skills ({len(stats)})", show_lines=False, box=None)
+    table.add_column("Skill", style="cyan", no_wrap=True)
+    table.add_column("Usos", justify="right")
+    table.add_column("bom", style="green", justify="right")
+    table.add_column("ruim", style="red", justify="right")
+    table.add_column("neutro", style="dim", justify="right")
+    table.add_column("👍/👎", justify="right")
+    table.add_column("último uso", style="dim")
+    now = _t.time()
+    for name, r in sorted(stats.items(), key=lambda kv: kv[1].get("uses", 0), reverse=True):
+        last = r.get("last_used", 0) or 0
+        ago = "—" if not last else f"{int((now-last)/3600)}h" if now-last < 86400 else f"{int((now-last)/86400)}d"
+        table.add_row(
+            name, str(r.get("uses", 0)),
+            str(r.get("good", 0)), str(r.get("bad", 0)), str(r.get("neutral", 0)),
+            f"{r.get('thumbs_up', 0)}/{r.get('thumbs_down', 0)}", ago,
+        )
+    console.print(table)
+    console.print(
+        "[dim]Sinal fraco por turno (a skill é 1 fator entre vários). Só o agregado "
+        "sobre muitos usos significa algo — e skills disparam em tarefas mais difíceis, "
+        "então taxa de sucesso baixa ≠ skill ruim.[/dim]"
+    )
+
+
 @skills_hub_app.command("search")
 def hub_search_cmd(
     query: str = typer.Argument(..., help="Termos de busca"),
