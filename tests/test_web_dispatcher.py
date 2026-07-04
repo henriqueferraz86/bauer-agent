@@ -481,3 +481,31 @@ def test_close_resets_http_client():
     assert d._http_client is not None
     d.close()
     assert d._http_client is None
+
+
+# ── clean_html_text: fallback SEM bs4 ainda limpa (regressão CI) ─────────────
+
+def test_clean_html_text_com_bs4():
+    from bauer.web.dispatcher import clean_html_text
+    assert clean_html_text("<html><body></body></html>") == ""
+    assert "mundo" in clean_html_text("<p>ola mundo</p>")
+
+
+def test_clean_html_text_fallback_sem_bs4(monkeypatch):
+    """CI não tinha bs4: o except devolvia HTML cru ('<html>...') como 'texto'.
+    Agora o fallback (regex) limpa tags mesmo sem bs4 -> pagina so-tags = ''."""
+    import builtins
+    from bauer.web import dispatcher as _d
+    _real_import = builtins.__import__
+
+    def _no_bs4(name, *a, **k):
+        if name == "bs4" or name.startswith("bs4."):
+            raise ImportError("bs4 ausente (simulado)")
+        return _real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_bs4)
+    # pagina so-tags -> vazio (era o bug do CI)
+    assert _d.clean_html_text("<html><body></body></html>") == ""
+    # com conteudo real, ainda extrai o texto (e descarta script)
+    out = _d.clean_html_text("<body><p>Ola mundo</p><script>var x=1</script></body>")
+    assert "Ola mundo" in out and "var x" not in out

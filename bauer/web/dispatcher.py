@@ -102,8 +102,16 @@ def clean_html_text(html: str) -> str:
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
     except Exception:
-        # bs4 não instalado ou falha interna — usa texto bruto como fallback
-        text = html
+        # bs4 ausente/falhou — fallback SEM bs4 que ainda LIMPA de verdade:
+        # remove blocos de script/style e depois todas as tags via regex. Sem
+        # isto, uma página só de tags ("<html><body></body></html>") voltava
+        # como HTML cru (bug pego só no CI, onde bs4 não estava instalado).
+        import re as _re
+        _no_blocks = _re.sub(
+            r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html,
+            flags=_re.IGNORECASE | _re.DOTALL,
+        )
+        text = _re.sub(r"<[^>]+>", " ", _no_blocks)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     return "\n".join(lines)
 

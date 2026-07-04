@@ -113,18 +113,29 @@ class MiscToolsMixin:
 
         try:
             import signal
+            import threading
 
             def _timeout_handler(signum, frame):
                 raise TimeoutError
 
-            # Timeout de 5 minutos para não bloquear indefinidamente
-            try:
-                signal.signal(signal.SIGALRM, _timeout_handler)
-                signal.alarm(300)
-                answer = input(prompt).strip()
-                signal.alarm(0)
-            except AttributeError:
-                # Windows não tem SIGALRM — usa input sem timeout
+            # signal.SIGALRM só existe em Unix E só pode ser armado na MAIN
+            # thread. O bridge executa tools num ThreadPoolExecutor (thread
+            # worker) — armar o alarm ali levanta "signal only works in main
+            # thread" no Linux (no Windows nem existe SIGALRM). Só usa o alarm
+            # quando é seguro; senão input() sem timeout.
+            _can_alarm = (
+                hasattr(signal, "SIGALRM")
+                and threading.current_thread() is threading.main_thread()
+            )
+            if _can_alarm:
+                try:
+                    signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(300)  # timeout de 5 min p/ não travar indefinido
+                    answer = input(prompt).strip()
+                    signal.alarm(0)
+                except (ValueError, AttributeError, OSError):
+                    answer = input(prompt).strip()
+            else:
                 answer = input(prompt).strip()
 
         except (KeyboardInterrupt, TimeoutError, EOFError):

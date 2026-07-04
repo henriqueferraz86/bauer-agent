@@ -992,3 +992,24 @@ class TestRegistro57Tools:
         router = ToolRouter(workspace=ws)
         info = router.tool_info("kanban_create")
         assert "title" in info["args"]
+
+
+class TestClarifyThreadSafety:
+    """clarify em thread worker (bridge ThreadPoolExecutor) não pode estourar
+    'signal only works in main thread' — bug pego só no CI (Linux tem SIGALRM)."""
+
+    def test_clarify_em_thread_worker_nao_estoura_signal(self, ws):
+        import threading
+        from unittest.mock import patch
+        router = ToolRouter(workspace=ws)
+        out = {}
+
+        def _run():
+            with patch("sys.stdin") as st, patch("builtins.input", return_value="resp"):
+                st.isatty.return_value = True
+                out["r"] = router._clarify({"question": "q?"})
+
+        t = threading.Thread(target=_run)
+        t.start()
+        t.join()
+        assert out.get("r") == "resp"  # respondeu, não levantou ValueError
