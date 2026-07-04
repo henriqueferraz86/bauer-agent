@@ -559,8 +559,14 @@ tools:
   # contra o modelo entrar num loop de tool calls sem convergir). Diferente
   # de max_tool_calls acima, que é o teto por SESSÃO inteira.
   max_tool_turns: 150
-  # Exemplo para workflows de DevOps/containers:
-  # extra_allowed_commands: [docker, docker-compose, kubectl]
+
+  # Confirmação interativa de comando (só em terminal TTY). Em vez de BLOQUEAR
+  # em silêncio um comando fora da allowlist (docker/pip/kubectl…), o Bauer
+  # PERGUNTA: [e]xecutar uma vez / [s]essão / [a]sempre / [n]egar. O "sempre"
+  # grava em ~/.bauer/allowed_commands.yaml e o Bauer APRENDE — pergunta uma
+  # vez, nunca mais (o allowlist deixa de ser engessado). Degrada para o
+  # comportamento antigo (bloquear) em canal/serve/CI e no /loop. Padrão: true
+  confirm_commands: true
 
 
 # =============================================================================

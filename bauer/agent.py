@@ -1221,13 +1221,78 @@ def _thinking_status(console: Console, model_name: str):
 # introduzida pelo próprio spinner de execução de tool no commit anterior).
 _INTERACTIVE_TOOLS: frozenset[str] = frozenset({"clarify"})
 
+#: Tools que EXECUTAM comando e podem disparar o prompt de confirmação. Quando
+#: a confirmação interativa está ativa (_CONFIRM_EXEC_ACTIVE), elas não podem ter
+#: spinner em volta — Rich Live + input() se atropelam (o bug do "totodo" do
+#: clarify). Sem confirmação ativa, o spinner normal continua.
+_CONFIRM_CAPABLE_TOOLS: frozenset[str] = frozenset({"run_command", "execute_code", "process"})
+_CONFIRM_EXEC_ACTIVE: bool = False
+
 
 def _tool_exec_status(console: Console, name: str):
     """_busy_spinner para execução de tool — no-op (nullcontext) para tools
-    que fazem input() direto, ver _INTERACTIVE_TOOLS."""
+    que fazem input() direto, ver _INTERACTIVE_TOOLS. Também no-op para tools
+    de execução quando a confirmação interativa de comando está ligada (o
+    prompt de aprovação faria input() sob o spinner)."""
     if name in _INTERACTIVE_TOOLS:
         return nullcontext()
+    if _CONFIRM_EXEC_ACTIVE and name in _CONFIRM_CAPABLE_TOOLS:
+        return nullcontext()
     return _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]")
+
+
+def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
+    """Prompt compartilhado de decisão de comando. Devolve
+    "once" | "session" | "always" | "deny". Usado pelos dois gates (padrão
+    perigoso e allowlist). "always" é o que ENSINA — pergunta uma vez, nunca mais.
+    """
+    from rich.panel import Panel as _Panel
+
+    console.print()
+    console.print(_Panel(body, title=title, border_style="yellow", padding=(0, 1)))
+    console.print(
+        "[dim]  [bold]e[/bold] executar uma vez · [bold]s[/bold] toda a sessão · "
+        "[bold]a[/bold] sempre (aprende) · [bold]n[/bold] negar[/dim]"
+    )
+    try:
+        raw = input("  > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return "deny"
+    mapping = {
+        "e": "once", "o": "once", "1": "once",
+        "s": "session", "a": "always",
+        "n": "deny", "d": "deny", "": "deny",
+    }
+    decision = mapping.get(raw[:1], "deny")
+    _label = {"once": "executando uma vez", "session": "liberado nesta sessão",
+              "always": "aprendido (liberado sempre)", "deny": "negado"}[decision]
+    console.print(f"  [{'green' if decision != 'deny' else 'red'}]{_label}[/]")
+    return decision
+
+
+def _make_cli_approval_callback(console: Console):
+    """Gate 1 — padrões PERIGOSOS (rm -rf, fork bomb…). Compatível com
+    check_all_command_guards: (command, description) -> decisão. "always" grava
+    no ~/.bauer/approvals.yaml (approve_permanent) pelo próprio pipeline."""
+    def _cb(command: str, description: str) -> str:
+        return _prompt_cmd_decision(
+            console, "[bold yellow]⚠ confirmar comando[/bold yellow]",
+            f"[yellow]{description}[/yellow]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
+        )
+    return _cb
+
+
+def _make_cli_allowlist_callback(console: Console):
+    """Gate 2 — allowlist do shell (o que engessa: docker/pip/kubectl…).
+    Recebe o binário `base` e devolve a decisão; "always" persiste em
+    ~/.bauer/allowed_commands.yaml (via ShellRunner.add_learned_command)."""
+    def _cb(base: str) -> str:
+        return _prompt_cmd_decision(
+            console, "[bold yellow]⚠ comando fora da allowlist[/bold yellow]",
+            f"[white]'{base}'[/white] [yellow]não está na allowlist[/yellow].\n"
+            f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
+        )
+    return _cb
 
 
 def _print_assistant_response(console: Console, text: str, cost_line: str = "") -> None:
@@ -4282,6 +4347,28 @@ def run_agent_session(
     # Skill injetada no último turno — p/ atribuir o feedback 👍/👎 a ela.
     _last_injected_skill = None
 
+    # Confirmação interativa de comando perigoso (só em TTY real). Em vez de
+    # bloquear em silêncio, pergunta e o "always" ENSINA o allowlist. Resolvido
+    # uma vez; instala o callback por turno (o /loop usa motor próprio).
+    global _CONFIRM_EXEC_ACTIVE
+    _confirm_cb = None
+    try:
+        from .config_loader import load_config as _lc_cc
+        _confirm_on = bool(_lc_cc().tools.confirm_commands)
+    except Exception:
+        _confirm_on = True
+    if _confirm_on and sys.stdin.isatty():
+        _confirm_cb = _make_cli_approval_callback(console)
+        # Gate 2 — allowlist do shell (docker/pip/…): instala no ShellRunner do
+        # router, se houver. É o gate que mais engessa; "always" aprende.
+        _sr = getattr(router, "_shell_runner", None)
+        if _sr is not None:
+            try:
+                _sr.allowlist_callback = _make_cli_allowlist_callback(console)
+            except Exception:
+                pass
+    _CONFIRM_EXEC_ACTIVE = _confirm_cb is not None
+
     while True:
         # --- entrada do usuário ---
         try:
@@ -4693,6 +4780,11 @@ def run_agent_session(
                 pass  # skill é auxílio; nunca bloquear o turno
 
         ctx.add_user(user_input)
+
+        # Confirmação interativa de comando: instala o callback por turno (o
+        # /loop, quando roda, o sobrescreve com seu motor headless e depois
+        # reseta p/ None — por isso re-aplicamos aqui a cada turno de chat).
+        router._approval_callback = _confirm_cb
 
         # Gate do projeto App Factory ativo ANTES do turno — p/ detectar o
         # cruzamento p/ IMPLEMENTATION ao final (checkpoint de planejamento).
