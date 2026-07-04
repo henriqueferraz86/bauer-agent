@@ -127,6 +127,34 @@ def prefetch_memory_context(
 # Sync after turn
 # ---------------------------------------------------------------------------
 
+def _tool_entry_failed(entry: dict) -> bool:
+    """True se a entry do tool_log representa uma falha (result marca erro)."""
+    if entry.get("failed"):
+        return True
+    res = str(entry.get("result", ""))
+    return res.startswith("[Erro:") or res.startswith("[BLOCKED]") or res.startswith("[App Factory]")
+
+
+def _heuristic_quality(response: str, tool_log: list[dict] | None) -> tuple[str, float]:
+    """Gradiente de qualidade grosseiro a partir de sinais já disponíveis no turno.
+
+    Sem isto, toda decisão era gravada como neutral/0.5 e o retrieval (que ordena
+    por similaridade, depois score) ficava cego a qualidade. NÃO é um juízo
+    definitivo — é um sinal inicial, refinável depois pelo feedback 👍/👎
+    (DecisionMemory.update_latest_outcome). Heurística conservadora:
+
+      - qualquer tool falhou  → bad / 0.30
+      - resposta substantiva (>=200 chars) apoiada em tools sem falha → good / 0.65
+      - demais casos          → neutral / 0.50
+    """
+    entries = tool_log or []
+    if any(_tool_entry_failed(e) for e in entries):
+        return "bad", 0.30
+    if len(response.strip()) >= 200 and entries:
+        return "good", 0.65
+    return "neutral", 0.50
+
+
 def sync_memory_after_turn(
     user_input: str,
     response: str,
@@ -161,11 +189,13 @@ def sync_memory_after_turn(
                     if tool_name and tool_name not in tags:
                         tags.append(tool_name)
 
+            outcome, score = _heuristic_quality(response, tool_log)
             dm.record(
                 context=user_input[:400],
                 decision=response[:400],
-                outcome="neutral",
+                outcome=outcome,
                 tags=tags,
+                score=score,
                 session_id=session_id,
             )
         except Exception as exc:

@@ -4562,6 +4562,22 @@ def run_agent_session(
                 console.print(f"[dim]{_icon} Feedback registrado.[/dim]")
             except Exception:
                 console.print("[dim]Feedback não pôde ser salvo.[/dim]")
+
+            # Fecha o loop de qualidade: o 👍/👎 vira o veredito humano da última
+            # decisão da sessão (sobrescreve o score heurístico do gravador
+            # por-turno). É o `update_outcome` que antes nunca era chamado.
+            try:
+                from pathlib import Path as _P_fb
+                from .decision_memory import DecisionMemory as _DM_fb
+                _ws_fb = getattr(router, "workspace", None)
+                if _ws_fb and session_id:
+                    _good = _rating == "positivo"
+                    _DM_fb(db_path=_P_fb(_ws_fb) / "decisions.db").update_latest_outcome(
+                        session_id, "good" if _good else "bad",
+                        score=0.9 if _good else 0.1,
+                    )
+            except Exception:
+                pass  # feedback de qualidade é best-effort
             continue
 
         suggested = skills.observe(user_input)

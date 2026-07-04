@@ -263,6 +263,33 @@ class DecisionMemory:
             )
         return cur.rowcount > 0
 
+    def update_latest_outcome(
+        self,
+        session_id: str,
+        outcome: str,
+        *,
+        score: float | None = None,
+    ) -> bool:
+        """Atualiza outcome/score da decisão MAIS RECENTE de uma sessão.
+
+        Usado pelo feedback humano 👍/👎: o usuário avalia a última resposta e
+        isso vira sinal de qualidade real (o gravador por-turno grava um score
+        heurístico; este o sobrescreve com o veredito humano). Sem session_id
+        não faz nada (não dá pra saber qual decisão avaliar).
+        """
+        if not session_id:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM decisions WHERE session_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        dec_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+        return self.update_outcome(dec_id, outcome, score=score)
+
     def delete(self, dec_id: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM decisions WHERE id = ?", (dec_id,))
