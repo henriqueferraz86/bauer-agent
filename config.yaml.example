@@ -569,13 +569,16 @@ tools:
   confirm_commands: true
 
   # Captura de voz e transcrição via Whisper (local ou cloud).
-  # Ativa `bauer voice listen` (standalone) e `/listen` dentro do `bauer agent`
-  # (grava, transcreve, e o texto vira sua mensagem do turno automaticamente).
-  # Requer:
+  # Ativa `bauer voice listen` (standalone), `/listen` dentro do `bauer agent`
+  # (grava, transcreve, e o texto vira sua mensagem do turno automaticamente),
+  # e `/talk` (conversa por voz contínua: fala → transcreve → LLM responde →
+  # Piper TTS local fala a resposta → volta a escutar). Requer:
   #   • Captura: sounddevice + numpy (pip install sounddevice numpy)
   #   • Transcrição: either
   #     - Local offline: faster-whisper (pip install faster-whisper)
   #     - Cloud: GROQ_API_KEY (grátis, rápido) OU OPENAI_API_KEY
+  #   • Fala da resposta (só p/ /talk): piper-tts (pip install piper-tts) —
+  #     baixa a voz na 1ª fala (~60MB, cache em ~/.bauer/tts_voices)
   # Padrão: false (opt-in, porque as deps são pesadas)
   voice_input_enabled: false
 

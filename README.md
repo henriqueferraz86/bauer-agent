@@ -344,6 +344,37 @@ Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in) contr
 o `/listen` dentro do chat. O `bauer voice listen` standalone roda sempre que
 chamado explicitamente (é uma ação deliberada do terminal, sem gate de config).
 
+#### 🗣️ /talk — conversa por voz contínua (100% local)
+
+`/talk` liga um modo de conversa por voz: fala → Whisper transcreve → o LLM
+(o mesmo modelo do seu `config.yaml`) responde → **Piper TTS local** fala a
+resposta em voz alta → volta a escutar automaticamente. Diga "sair" ou "parar"
+para encerrar o modo.
+
+```
+❯ /talk
+🎙️ Modo conversa por voz ativado. Fale normalmente; diga 'sair' ou 'parar' para encerrar.
+🎤 Gravando áudio... Fale agora (silêncio de 1s para parar ou max 30s).
+✓ Transcrito via local: qual a capital da frança?
+[o Bauer responde em texto E fala a resposta em voz alta]
+🎤 Gravando áudio... (volta a escutar automaticamente)
+```
+
+**Importante — não é o "Advanced Voice Mode" do ChatGPT.** O GPT-4o Voice é um
+modelo áudio-para-áudio nativo (~300ms, interrompível no meio da fala). O
+`/talk` é uma pipeline em cascata (STT → LLM → TTS) — funciona 100% local e
+sem custo de API, mas é **por turno** (não simultâneo, não interrompível) e
+tem mais latência (alguns segundos por vez, variando com o tamanho do LLM
+local). É o equivalente a um walkie-talkie bem feito, não uma ligação de voz.
+
+**Setup adicional (além do STT acima):**
+- **TTS**: `pip install piper-tts` (ou `uv sync --extra voice` — já inclui). Na
+  1ª fala, baixa a voz padrão em português (~60MB, cache em
+  `~/.bauer/tts_voices`). Outras vozes: `TTS_LOCAL_VOICE=en_US-lessac-medium`
+  (catálogo completo em huggingface.co/rhasspy/piper-voices).
+
+Toggle: mesmo `tools.voice_input_enabled` do `/listen`.
+
 ### ⌨️ Comandos dentro da sessão
 
 | Comando | Descrição |
@@ -368,6 +399,7 @@ chamado explicitamente (é uma ação deliberada do terminal, sem gate de config
 | `/dispatch` · `/ops` | 🧩 Despacho de tarefas do kanban / operações |
 | `/thumbsup` · `/thumbsdown` | 👍👎 Avalia a última resposta (vira sinal de qualidade na memória) |
 | `/listen` | 🎤 Grava do microfone e transcreve como sua mensagem (requer `tools.voice_input_enabled: true`) |
+| `/talk` | 🗣️ Conversa por voz contínua — fala, ouve a resposta, repete (diga "sair" p/ encerrar) |
 | `/exit` | 👋 Encerra a sessão |
 
 ---

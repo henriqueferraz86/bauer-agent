@@ -58,6 +58,8 @@ _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  
 _THUMBSUP_CMDS = {"/thumbsup", "/bom", "/positivo", "/like"}
 _THUMBSDOWN_CMDS = {"/thumbsdown", "/ruim", "/negativo", "/dislike"}
 _LISTEN_CMDS = {"/listen", "/voice", "/ouvir"}
+_TALK_CMDS = {"/talk", "/conversar"}
+_VOICE_MODE_EXIT_WORDS = {"sair", "encerrar", "pare", "parar", "encerrar conversa", "sair do modo de voz"}
 
 # Sub-comandos exibidos no menu de autocomplete
 _SLASH_BASE = [
@@ -96,6 +98,7 @@ _SLASH_BASE = [
     "/agent create",
     "/agent delete",
     "/listen",
+    "/talk",
 ]
 
 
@@ -134,6 +137,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/agent create":   "cria novo agent (wizard interativo)",
     "/agent delete":   "remove agent: /agent delete <nome>",
     "/listen":         "grava do microfone e transcreve como sua mensagem",
+    "/talk":           "conversa por voz contínua (fala/ouve, diga 'sair' p/ encerrar)",
 }
 
 try:
@@ -4382,36 +4386,63 @@ def run_agent_session(
                 pass
     _CONFIRM_EXEC_ACTIVE = _confirm_cb is not None
 
+    # /talk: conversa por voz contínua (por turno, não simultânea). Enquanto
+    # True, o topo do loop grava do microfone em vez de ler texto; a resposta
+    # do assistente é falada (Piper local) ao final de cada turno.
+    _voice_mode = False
+
     while True:
         # --- entrada do usuário ---
-        try:
-            if _pt_session is not None:
-                try:
-                    user_input = _pt_session.prompt(_PROMPT_FRAGMENTS).strip()
-                except (KeyboardInterrupt, EOFError):
-                    raise
-                except Exception:
-                    # Falha em runtime (ex: terminal redimensionado abruptamente)
-                    # — tenta uma vez com console.input fallback
-                    _pt_session = None
+        if _voice_mode:
+            try:
+                from .audio_capture import capture_voice_input
+                _voice_text = capture_voice_input(console=console)
+            except ImportError as _exc:
+                console.print(f"[red]{_exc}[/red]")
+                _voice_mode = False
+                continue
+            except Exception as _exc:
+                console.print(f"[red]Erro na captura de voz: {_exc}[/red]")
+                _voice_mode = False
+                continue
+            if not _voice_text:
+                console.print("[dim]Modo de conversa por voz encerrado.[/dim]")
+                _voice_mode = False
+                continue
+            if _voice_text.strip().lower().rstrip(".!?") in _VOICE_MODE_EXIT_WORDS:
+                console.print("[dim]Modo de conversa por voz encerrado.[/dim]")
+                _voice_mode = False
+                continue
+            user_input = _voice_text
+        else:
+            try:
+                if _pt_session is not None:
+                    try:
+                        user_input = _pt_session.prompt(_PROMPT_FRAGMENTS).strip()
+                    except (KeyboardInterrupt, EOFError):
+                        raise
+                    except Exception:
+                        # Falha em runtime (ex: terminal redimensionado abruptamente)
+                        # — tenta uma vez com console.input fallback
+                        _pt_session = None
+                        _set_blink_underline()
+                        user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
+                else:
                     _set_blink_underline()
                     user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
-            else:
-                _set_blink_underline()
-                user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Sessao encerrada.[/dim]")
-            try:
-                from .plugin_hooks import hooks as _phooks
-                _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
-            except Exception:
-                pass
-            if _memprov is not None:
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Sessao encerrada.[/dim]")
                 try:
-                    _memprov.on_session_end(ctx.messages)
+                    from .plugin_hooks import hooks as _phooks
+                    _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
                 except Exception:
                     pass
-            return
+                if _memprov is not None:
+                    try:
+                        _memprov.on_session_end(ctx.messages)
+                    except Exception:
+                        pass
+                return
 
         if not user_input:
             continue
@@ -4467,6 +4498,19 @@ def run_agent_session(
             # Sem 'continue': o texto transcrito vira a mensagem deste turno,
             # cai no fluxo normal como se tivesse sido digitado.
             user_input = _voice_text
+        if user_input.lower() in _TALK_CMDS:
+            if not _voice_input_enabled():
+                console.print(
+                    "[yellow]Captura de voz desativada. Ative "
+                    "`tools.voice_input_enabled: true` no config.yaml.[/yellow]"
+                )
+                continue
+            _voice_mode = True
+            console.print(
+                "[cyan]🎙️ Modo conversa por voz ativado.[/cyan] "
+                "[dim]Fale normalmente; diga 'sair' ou 'parar' para encerrar.[/dim]"
+            )
+            continue
         if user_input.lower() in _MODEL_CMDS:
             # Live model switch: abre seletor, salva config.yaml, reconstrói client ao vivo.
             console.print(
@@ -4781,6 +4825,9 @@ def run_agent_session(
                 if session_store is not None and session_id:
                     session_store.save(session_id, ctx.messages)
                 _print_assistant_response(console, final)
+                if _voice_mode:
+                    from .tts_local import speak_text
+                    speak_text(final, console=console)
             continue
 
         # Prefetch memory context (decisões passadas + sessões similares)
@@ -4857,6 +4904,9 @@ def run_agent_session(
 
         if outcome.kind == "final":
             _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
+            if _voice_mode:
+                from .tts_local import speak_text
+                speak_text(outcome.display, console=console)
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.

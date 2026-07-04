@@ -626,6 +626,15 @@ class TestSlashCommands:
         assert "/listen" in _LISTEN_CMDS
         assert "/voice" in _LISTEN_CMDS
 
+    def test_talk_cmds_defined(self):
+        from bauer.agent import _TALK_CMDS
+        assert "/talk" in _TALK_CMDS
+
+    def test_voice_mode_exit_words_defined(self):
+        from bauer.agent import _VOICE_MODE_EXIT_WORDS
+        assert "sair" in _VOICE_MODE_EXIT_WORDS
+        assert "parar" in _VOICE_MODE_EXIT_WORDS
+
     def test_slash_descriptions_nonempty(self):
         from bauer.agent import _SLASH_DESCRIPTIONS
         assert len(_SLASH_DESCRIPTIONS) >= 10

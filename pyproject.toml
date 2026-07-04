@@ -53,10 +53,13 @@ voice = [
     # STT local offline — pesos open-source do Whisper (large-v3-turbo) via
     # CTranslate2. Sem nuvem, sem API key. Baixa ~1.5GB no primeiro uso.
     "faster-whisper>=1.0.0",
-    # Captura de áudio do microfone (bauer voice listen).
+    # Captura de áudio do microfone (bauer voice listen / /listen / /talk).
     "sounddevice>=0.4.6",
     "numpy>=1.24",
     "soundfile>=0.12",
+    # TTS local offline — Piper (ONNX), fala a resposta no /talk. Baixa
+    # ~50-70MB por voz na 1ª vez (cache em ~/.bauer/tts_voices).
+    "piper-tts>=1.4.0",
 ]
 all = [
     "fastapi>=0.110",
@@ -69,6 +72,7 @@ all = [
     "sounddevice>=0.4.6",
     "numpy>=1.24",
     "soundfile>=0.12",
+    "piper-tts>=1.4.0",
 ]
 
 [project.scripts]

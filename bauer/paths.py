@@ -76,3 +76,10 @@ def loop_skills_dir() -> Path:
     d = get_bauer_home() / "loop_skills"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def tts_voices_dir() -> Path:
+    """Diretório de vozes Piper TTS baixadas (~50MB cada, uma vez por voz)."""
+    d = get_bauer_home() / "tts_voices"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
