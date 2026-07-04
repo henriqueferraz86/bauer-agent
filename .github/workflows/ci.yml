@@ -146,7 +146,7 @@ jobs:
           pytest tests/ --cov=bauer --cov-report=term-missing --cov-report=xml -q
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.xml
@@ -237,7 +237,7 @@ jobs:
         run: npx tauri build
 
       - name: Upload bundles
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bauer-desktop-${{ matrix.os }}
           path: desktop/src-tauri/target/release/bundle/
