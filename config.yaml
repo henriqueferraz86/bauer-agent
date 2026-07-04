@@ -49,6 +49,7 @@ tools:
   shell_enabled: true
   timeout_seconds: 300
   web_enabled: true
+  voice_input_enabled: true
 telegram:
   enabled: true
   allowed_users:
