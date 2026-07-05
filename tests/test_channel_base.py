@@ -109,9 +109,13 @@ class TestChannelMessage:
         m = _msg("oi", channel="discord", chat="999")
         assert m.session_key == "dc:999"
 
-    def test_session_key_canal_desconhecido(self):
+    def test_session_key_slack(self):
         m = _msg("oi", channel="slack", chat="1")
-        assert m.session_key == "slack:1"
+        assert m.session_key == "sl:1"
+
+    def test_session_key_canal_desconhecido(self):
+        m = _msg("oi", channel="whatsapp", chat="1")
+        assert m.session_key == "whatsapp:1"
 
 
 class TestChunkText:
