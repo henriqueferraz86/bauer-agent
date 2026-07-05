@@ -85,11 +85,58 @@ class TestAudioCaptureSkipped:
         fake_chunk = np.zeros((1600, 1), dtype="float32")
         with patch("sounddevice.rec", return_value=fake_chunk) as mock_rec, patch(
             "sounddevice.wait"
-        ), patch("sounddevice.InputStream") as mock_stream, patch(
-            "bauer.transcription.transcribe_audio",
-            return_value={"success": False, "transcript": "", "error": "silêncio"},
-        ):
+        ), patch("sounddevice.InputStream") as mock_stream:
             capture_voice_input(duration_max_s=1, silence_threshold_db=-100, console=None)
 
         mock_stream.assert_not_called()
         assert mock_rec.called
+
+    def test_nao_corta_gravacao_antes_de_comecar_a_falar(self):
+        """Regressão: silêncio ANTES da pessoa começar a falar (tempo de
+        reação normal) não deve contar como "fim de fala" — só silêncio
+        DEPOIS de já ter detectado voz é que encerra a gravação. Sem isso,
+        1s de silêncio inicial já cortava a gravação antes da fala real
+        (bug relatado: transcrição vinha só "." — quase nada capturado)."""
+        import numpy as np
+
+        from bauer.audio_capture import capture_voice_input
+
+        silence_chunk = np.zeros((1600, 1), dtype="float32")
+        speech_chunk = np.full((1600, 1), 0.5, dtype="float32")  # amplitude alta
+
+        # 3 chunks de "silêncio de reação" (300ms) -> 1 chunk de fala real ->
+        # silêncio suficiente (>= silence_duration_s=1.0s => 10 chunks) p/ parar.
+        sequence = [silence_chunk] * 3 + [speech_chunk] + [silence_chunk] * 12
+
+        with patch("sounddevice.rec", side_effect=sequence), patch("sounddevice.wait"), patch(
+            "bauer.transcription.transcribe_audio",
+            return_value={"success": True, "transcript": "ola mundo", "provider": "local"},
+        ) as mock_transcribe:
+            result = capture_voice_input(
+                duration_max_s=30, silence_threshold_db=-40, console=None
+            )
+
+        assert result == "ola mundo"
+        assert mock_transcribe.called
+
+    def test_desiste_se_nunca_comecar_a_falar(self):
+        """Só silêncio do início ao fim (nunca fala) -> desiste no timeout de
+        espera, sem chamar transcribe_audio (nada de útil pra transcrever)."""
+        import numpy as np
+
+        from bauer.audio_capture import capture_voice_input
+
+        silence_chunk = np.zeros((1600, 1), dtype="float32")
+
+        with patch("sounddevice.rec", return_value=silence_chunk), patch("sounddevice.wait"), patch(
+            "bauer.transcription.transcribe_audio"
+        ) as mock_transcribe:
+            result = capture_voice_input(
+                duration_max_s=30,
+                silence_threshold_db=-40,
+                max_wait_to_start_s=0.5,
+                console=None,
+            )
+
+        assert result is None
+        assert not mock_transcribe.called

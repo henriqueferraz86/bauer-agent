@@ -48,6 +48,7 @@ def capture_voice_input(
     silence_threshold_db: float = -40.0,
     silence_duration_s: float = 1.0,
     sample_rate: int = 16000,
+    max_wait_to_start_s: float = 8.0,
     console: Any = None,
 ) -> str | None:
     """Grava áudio do microfone até silêncio ou timeout, transcreve com Whisper.
@@ -55,8 +56,12 @@ def capture_voice_input(
     Args:
         duration_max_s: tempo máximo de gravação (segundos)
         silence_threshold_db: nível de amplitude em dB para considerar silêncio
-        silence_duration_s: quantos segundos de silêncio para parar a gravação
+        silence_duration_s: quantos segundos de silêncio (APÓS já ter
+            detectado fala) para parar a gravação
         sample_rate: Hz
+        max_wait_to_start_s: quanto tempo esperar a pessoa COMEÇAR a falar
+            antes de desistir por silêncio total (evita cortar a gravação
+            no meio do "tempo de reação" antes da fala)
         console: console Rich (para output amigável)
 
     Retorna o texto transcrito ou None se falhar/cancelar.
@@ -89,10 +94,12 @@ def capture_voice_input(
         chunk_size = int(sample_rate * 0.1)  # 100ms chunks
         silence_frames = int(silence_duration_s * sample_rate / chunk_size)
         max_frames = int(duration_max_s * sample_rate / chunk_size)
+        max_wait_frames = int(max_wait_to_start_s * sample_rate / chunk_size)
 
         audio_frames: list[np.ndarray] = []
         silent_count = 0
         frame_count = 0
+        started_speaking = False
 
         # sd.rec() já abre e fecha sua própria stream a cada chamada — não
         # combinar com sd.InputStream() em paralelo (duas streams disputando
@@ -108,16 +115,24 @@ def capture_voice_input(
             rms = float(np.sqrt(np.mean(chunk**2)))
             db = 20 * np.log10(rms + 1e-9)  # evita log(0)
 
-            if db < silence_threshold_db:
+            if db >= silence_threshold_db:
+                started_speaking = True
+                silent_count = 0
+            elif started_speaking:
+                # Já detectou fala antes — silêncio agora é o sinal de "terminou".
                 silent_count += 1
                 if silent_count >= silence_frames:
                     if console is not None:
                         console.print("[dim]Silêncio detectado, finalizando.[/dim]")
                     break
-            else:
-                silent_count = 0  # reset se houver som novamente
+            elif frame_count >= max_wait_frames:
+                # Ainda não falou nada e o tempo de espera acabou — desiste
+                # (evita cortar a fala no "tempo de reação" antes de começar).
+                if console is not None:
+                    console.print("[dim]Nenhuma fala detectada.[/dim]")
+                break
 
-        if not audio_frames:
+        if not audio_frames or not started_speaking:
             if console is not None:
                 console.print("[red]✗ Nenhum áudio capturado.[/red]")
             return None
