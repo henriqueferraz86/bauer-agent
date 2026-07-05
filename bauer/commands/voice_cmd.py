@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import typer
-from rich.console import Console
 
 from ._common import console
 
@@ -15,19 +14,15 @@ voice_app = typer.Typer(
 @voice_app.command(name="listen")
 def cmd_voice_listen(
     max_duration: int = typer.Option(
-        30, "--duration", "-d", help="Tempo máximo de gravação (segundos)"
-    ),
-    silence_threshold: float = typer.Option(
-        -40.0, "--threshold", "-t", help="Nível de silêncio em dB"
+        60, "--duration", "-d", help="Teto de segurança da gravação (segundos)"
     ),
 ) -> None:
-    """Grava áudio do microfone, transcreve com Whisper local, imprime o resultado."""
+    """Grava do microfone (aperte ENTER quando terminar de falar), transcreve com Whisper local."""
     try:
         from bauer.audio_capture import capture_voice_input
 
         text = capture_voice_input(
             duration_max_s=max_duration,
-            silence_threshold_db=silence_threshold,
             console=console,
         )
 

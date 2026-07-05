@@ -316,8 +316,8 @@ Grava áudio do microfone e transcreve automaticamente com Whisper (local offlin
 
 **Standalone** (fora do chat, imprime e termina):
 ```bash
-bauer voice listen              # grava até silêncio ou 30s, transcreve
-bauer voice listen --duration 60 --threshold -35  # ajusta duração e sensibilidade
+bauer voice listen              # grava, ENTER para parar, transcreve
+bauer voice listen --duration 120   # teto de segurança maior (default 60s)
 
 bauer voice transcribe audio.wav   # transcreve um arquivo existente
 ```
@@ -325,13 +325,18 @@ bauer voice transcribe audio.wav   # transcreve um arquivo existente
 **Dentro do `bauer agent`** (o texto transcrito vira sua mensagem do turno):
 ```
 ❯ /listen
-🎤 Gravando áudio... Fale agora (silêncio de 1s para parar ou max 30s).
-Silêncio detectado, finalizando.
+🎤 Gravando... fale e pressione ENTER quando terminar (máx 60s).
+[você fala, aperta ENTER]
+📝 Transcrevendo...
 ✓ Transcrito via local: Está me escutando bem agora?
 ```
-Não é streaming em tempo real (tipo legenda ao vivo) — grava o áudio inteiro,
-transcreve de uma vez e injeta o resultado como se você tivesse digitado.
-O `.wav` temporário é apagado automaticamente após a transcrição.
+Parada é **manual** (ENTER) — não detecção automática de silêncio, que se
+mostrou pouco confiável (varia demais entre microfones/ambientes: ou corta a
+fala cedo demais, ou nunca corta). O `duration_max_s` (padrão 60s) é só um
+teto de segurança caso você esqueça de apertar ENTER. Não é streaming em
+tempo real (tipo legenda ao vivo) — grava o áudio inteiro, transcreve de
+uma vez e injeta o resultado como se você tivesse digitado. O `.wav`
+temporário é apagado automaticamente após a transcrição.
 
 **Setup:**
 - **Captura**: `pip install sounddevice numpy` (ou `uv sync --extra voice`)
@@ -346,18 +351,20 @@ chamado explicitamente (é uma ação deliberada do terminal, sem gate de config
 
 #### 🗣️ /talk — conversa por voz contínua (100% local)
 
-`/talk` liga um modo de conversa por voz: fala → Whisper transcreve → o LLM
-(o mesmo modelo do seu `config.yaml`) responde → **Piper TTS local** fala a
-resposta em voz alta → volta a escutar automaticamente. Diga "sair" ou "parar"
-para encerrar o modo.
+`/talk` liga um modo de conversa por voz: fala → ENTER para parar de gravar →
+Whisper transcreve → o LLM (o mesmo modelo do seu `config.yaml`) responde →
+**Piper TTS local** fala a resposta em voz alta → volta a escutar
+automaticamente (ENTER de novo para fechar cada turno). Diga "sair" ou
+"parar" para encerrar o modo.
 
 ```
 ❯ /talk
 🎙️ Modo conversa por voz ativado. Fale normalmente; diga 'sair' ou 'parar' para encerrar.
-🎤 Gravando áudio... Fale agora (silêncio de 1s para parar ou max 30s).
+🎤 Gravando... fale e pressione ENTER quando terminar (máx 60s).
+[você fala, aperta ENTER]
 ✓ Transcrito via local: qual a capital da frança?
 [o Bauer responde em texto E fala a resposta em voz alta]
-🎤 Gravando áudio... (volta a escutar automaticamente)
+🎤 Gravando... (volta a escutar automaticamente)
 ```
 
 **Importante — não é o "Advanced Voice Mode" do ChatGPT.** O GPT-4o Voice é um
