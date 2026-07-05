@@ -101,7 +101,7 @@ def chunk_text(text: str, limit: int) -> list[str]:
 class ChannelMessage:
     """Mensagem inbound normalizada — formato único para todos os canais."""
 
-    channel: str            # "telegram" | "discord" | ...
+    channel: str            # "telegram" | "discord" | "slack" | ...
     user_id: str
     chat_id: str
     text: str
@@ -110,7 +110,7 @@ class ChannelMessage:
 
     @property
     def session_key(self) -> str:
-        prefix = {"telegram": "tg", "discord": "dc"}.get(self.channel, self.channel)
+        prefix = {"telegram": "tg", "discord": "dc", "slack": "sl"}.get(self.channel, self.channel)
         return f"{prefix}:{self.chat_id}"
 
 

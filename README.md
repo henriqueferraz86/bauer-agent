@@ -13,7 +13,7 @@ Runtime adaptativo para LLMs locais e cloud.
 - [⚙️ Configuração](#configuração)
 - [🧠 Modos de uso](#modos-de-uso) — chat · agent · App Factory · /loop · especialistas · skills
 - [🌐 bauer serve](#bauer-serve)
-- [💬 bauer gateway — canais de chat](#bauer-gateway--canais-de-chat-telegram-discord)
+- [💬 bauer gateway — canais de chat](#bauer-gateway--canais-de-chat-telegram-discord-slack)
 - [🔌 bauer gateway-ws (Claw3D)](#bauer-gateway-ws-claw3d)
 - [🔗 Providers suportados](#providers-suportados)
 - [🛠️ Tools disponíveis](#tools-disponíveis)
@@ -473,11 +473,11 @@ O `bauer serve` expõe `/v1/chat/completions` no formato OpenAI SSE — funciona
 
 ---
 
-## 💬 bauer gateway — canais de chat (Telegram, Discord…)
+## 💬 bauer gateway — canais de chat (Telegram, Discord, Slack…)
 
 O **Bauer Gateway** conecta o agent a canais de chat: você conversa com o Bauer
-pelo Telegram ou Discord, com sessão persistente por chat, e o agent pode
-enviar notificações a canais via tool `channel_send`.
+pelo Telegram, Discord ou Slack, com sessão persistente por chat, e o agent
+pode enviar notificações a canais via tool `channel_send`.
 
 ### 🚀 Setup em 3 passos
 
@@ -513,6 +513,23 @@ bauer gateway stop            # encerra o gateway (e bridges antigos órfãos)
 Em servidores o bot responde só quando **mencionado** (`mention_only: true`);
 DMs respondem sempre. Allowlists de usuário/guild/canal no `config.yaml`.
 
+### 💼 Slack
+
+Via **Socket Mode** — sem URL pública/ngrok, funciona atrás de NAT/firewall.
+
+1. [api.slack.com/apps](https://api.slack.com/apps) → Create New App.
+2. **Socket Mode** → habilite → gera o App-Level Token (`xapp-…`, escopo
+   `connections:write`).
+3. **OAuth & Permissions** → Bot Token Scopes: `chat:write`, `im:history`,
+   `im:read`, `channels:history`, `app_mentions:read` → Install to Workspace
+   gera o Bot Token (`xoxb-…`).
+4. **Event Subscriptions** → habilite → inscreva `message.im` e `app_mention`.
+5. `bauer gateway init` → cole os dois tokens e seu user id.
+6. Requer extra: `pip install 'bauer-agent[gateway]'` (websockets).
+
+Em canais o bot responde só quando **mencionado** (`mention_only: true`); DMs
+respondem sempre. Allowlists de usuário/canal no `config.yaml`.
+
 ### ⚙️ Config (config.yaml)
 
 ```yaml
@@ -523,12 +540,16 @@ discord:
   enabled: true
   allowed_users: ["111222333444555666"]
   mention_only: true
+slack:
+  enabled: true
+  allowed_users: ["U0123456789"]
+  mention_only: true
 gateway:
   outbox_drain_interval_s: 15   # frequência de entrega do outbox
 ```
 
-Tokens ficam no `.env` (`TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`) — nunca no
-config.yaml em produção.
+Tokens ficam no `.env` (`TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`,
+`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`) — nunca no config.yaml em produção.
 
 ### 📤 Notificações do agent (tool channel_send)
 

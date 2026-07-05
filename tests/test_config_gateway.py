@@ -63,6 +63,29 @@ class TestDiscordSection:
             _minimal_config(discord={"mention_onli": True})  # typo
 
 
+class TestSlackSection:
+    def test_defaults_seguro(self):
+        cfg = _minimal_config()
+        assert cfg.slack.enabled is False
+        assert cfg.slack.mention_only is True
+        assert cfg.slack.allowed_users == []
+        assert cfg.slack.allow_all is False
+        assert cfg.slack.bot_token == ""
+        assert cfg.slack.app_token == ""
+
+    def test_allowlists(self):
+        cfg = _minimal_config(slack={
+            "enabled": True,
+            "allowed_users": ["U111"],
+            "allowed_channels": ["C333"],
+        })
+        assert cfg.slack.allowed_channels == ["C333"]
+
+    def test_campo_desconhecido_rejeitado(self):
+        with pytest.raises(ValidationError):
+            _minimal_config(slack={"mention_onli": True})  # typo
+
+
 class TestGatewaySection:
     def test_default_drain_interval(self):
         cfg = _minimal_config()

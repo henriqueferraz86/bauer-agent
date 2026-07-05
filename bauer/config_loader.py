@@ -771,6 +771,24 @@ class DiscordSection(_StrictSection):
     max_msgs_per_minute: int = Field(ge=1, le=600, default=20)
 
 
+class SlackSection(_StrictSection):
+    """Canal Slack — bot conversacional via Socket Mode (sem URL pública).
+
+    Requer extra: pip install 'bauer-agent[gateway]' (websockets).
+    Tokens: prefira SLACK_BOT_TOKEN (xoxb-…) e SLACK_APP_TOKEN (xapp-…) no
+    .env. O app precisa ter Socket Mode habilitado e um App-Level Token com
+    escopo connections:write.
+    """
+    enabled: bool = False
+    bot_token: str = ""                  # ou SLACK_BOT_TOKEN no .env (preferido)
+    app_token: str = ""                  # ou SLACK_APP_TOKEN no .env (preferido)
+    allowed_users: list[str] = Field(default_factory=list)     # ids de usuário (U…)
+    allowed_channels: list[str] = Field(default_factory=list)  # vazio = qualquer canal
+    allow_all: bool = False
+    mention_only: bool = True            # em canais só responde se mencionado; DM sempre responde
+    max_msgs_per_minute: int = Field(ge=1, le=600, default=20)
+
+
 class GatewaySection(_StrictSection):
     """Bauer Gateway — runtime unificado de canais + entrega do outbox."""
     outbox_drain_interval_s: int = Field(ge=1, le=3600, default=15)
@@ -827,6 +845,7 @@ class BauerConfig(_StrictSection):
     auxiliary: AuxiliarySection = AuxiliarySection()
     telegram: TelegramSection = TelegramSection()
     discord: DiscordSection = DiscordSection()
+    slack: SlackSection = SlackSection()
     gateway: GatewaySection = GatewaySection()
     observability: ObservabilitySection = ObservabilitySection()
 

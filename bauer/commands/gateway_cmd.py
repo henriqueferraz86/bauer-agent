@@ -125,7 +125,9 @@ def gateway_stop(
         except Exception:
             pass
         pid_file.unlink(missing_ok=True)
-    killed += _kill_bridge_processes("gateway_runtime", "telegram_bridge", "discord_bridge")
+    killed += _kill_bridge_processes(
+        "gateway_runtime", "telegram_bridge", "discord_bridge", "slack_bridge"
+    )
     if killed:
         console.print(f"[green]✓ Gateway parado ({killed} processo(s)).[/green]")
     else:
@@ -158,7 +160,7 @@ def gateway_start(
     runtime = BauerGatewayRuntime.from_config(config)
     if not runtime.bridges:
         console.print(
-            "[yellow]Nenhum canal habilitado.[/yellow] Habilite telegram/discord no "
+            "[yellow]Nenhum canal habilitado.[/yellow] Habilite telegram/discord/slack no "
             "config.yaml ou rode [bold]bauer gateway init[/bold]."
         )
     names = ", ".join(b.name for b in runtime.bridges) or "nenhum canal"
@@ -195,6 +197,8 @@ def gateway_status(
 
     tg_token = resolve_token(cfg.telegram.bot_token, "TELEGRAM_BOT_TOKEN")
     dc_token = resolve_token(cfg.discord.bot_token, "DISCORD_BOT_TOKEN")
+    sl_token = resolve_token(cfg.slack.bot_token, "SLACK_BOT_TOKEN")
+    sl_app_token = resolve_token(cfg.slack.app_token, "SLACK_APP_TOKEN")
     table.add_row(
         "telegram",
         "[green]sim[/green]" if cfg.telegram.enabled else "[dim]não[/dim]",
@@ -208,6 +212,13 @@ def gateway_status(
         "[green]ok[/green]" if dc_token else "[red]ausente[/red]",
         f"{len(cfg.discord.allowed_users)} usuários"
         + (" [yellow](allow_all!)[/yellow]" if cfg.discord.allow_all else ""),
+    )
+    table.add_row(
+        "slack",
+        "[green]sim[/green]" if cfg.slack.enabled else "[dim]não[/dim]",
+        "[green]ok[/green]" if (sl_token and sl_app_token) else "[red]ausente[/red]",
+        f"{len(cfg.slack.allowed_users)} usuários"
+        + (" [yellow](allow_all!)[/yellow]" if cfg.slack.allow_all else ""),
     )
     console.print(table)
 
@@ -314,7 +325,7 @@ def gateway_service_logs(
     console.print(_service_manager().logs(lines=lines))
 
 
-@gateway_app.command("init", help="Wizard interativo: configura Telegram/Discord")
+@gateway_app.command("init", help="Wizard interativo: configura Telegram/Discord/Slack")
 def gateway_init(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
 ):
@@ -432,6 +443,47 @@ def gateway_init(
             existing = set(dc.get("allowed_users", []))
             existing.add(user_id)
             dc["allowed_users"] = sorted(existing)
+
+    # ── Slack ──────────────────────────────────────────────────────────────
+    if Confirm.ask("\nConfigurar [bold]Slack[/bold]?", default=False):
+        console.print(
+            "\n1. https://api.slack.com/apps → Create New App\n"
+            "2. Socket Mode (menu lateral) → habilitar → gera o App-Level "
+            "Token ([bold]xapp-…[/bold], escopo connections:write)\n"
+            "3. OAuth & Permissions → Bot Token Scopes: chat:write, im:history, "
+            "im:read, channels:history, app_mentions:read → Install to Workspace "
+            "gera o Bot Token ([bold]xoxb-…[/bold])\n"
+            "4. Event Subscriptions → habilitar → inscreva message.im e app_mention"
+        )
+        bot_token = _ask_token("Bot Token (xoxb-…)", "SLACK_BOT_TOKEN")
+        app_token = _ask_token("App-Level Token (xapp-…)", "SLACK_APP_TOKEN")
+        if bot_token:
+            try:
+                r = httpx.post(
+                    "https://slack.com/api/auth.test",
+                    headers={"Authorization": f"Bearer {bot_token}"}, timeout=10,
+                )
+                data = r.json()
+                if data.get("ok"):
+                    console.print(f"[green]✓ Token válido — bot {data.get('user')}[/green]")
+                else:
+                    console.print(f"[red]Token rejeitado:[/red] {data.get('error')}")
+                    bot_token = ""
+            except httpx.HTTPError as exc:
+                console.print(f"[yellow]Não validou (rede): {exc} — salvando assim mesmo.[/yellow]")
+        user_id = Prompt.ask(
+            "Seu user id do Slack (perfil → ⋮ → Copy member ID)", default=""
+        ).strip()
+        if bot_token:
+            env_lines.append(f"SLACK_BOT_TOKEN={bot_token}")
+        if app_token:
+            env_lines.append(f"SLACK_APP_TOKEN={app_token}")
+        sl = raw.setdefault("slack", {})
+        sl["enabled"] = True
+        if user_id:
+            existing = set(sl.get("allowed_users", []))
+            existing.add(user_id)
+            sl["allowed_users"] = sorted(existing)
 
     # ── Persistência ───────────────────────────────────────────────────────
     if env_lines:

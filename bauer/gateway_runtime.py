@@ -64,6 +64,9 @@ class BauerGatewayRuntime:
         if cfg.discord.enabled:
             from .discord_bridge import build_bridge_from_config as build_dc
             bridges.append(build_dc(cfg, backend))
+        if cfg.slack.enabled:
+            from .slack_bridge import build_bridge_from_config as build_sl
+            bridges.append(build_sl(cfg, backend))
 
         return cls(
             backend=backend,
