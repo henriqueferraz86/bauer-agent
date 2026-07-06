@@ -319,6 +319,13 @@ class TestProcess:
 
 class TestImageGenerate:
 
+    @pytest.fixture(autouse=True)
+    def _sem_env_keys(self, monkeypatch):
+        """Auto-detecção de provider lê env keys — remove p/ hermeticidade
+        (senão uma OPENAI/XAI/OPENROUTER_API_KEY da máquina desvia do mock)."""
+        for var in ("OPENAI_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
     def test_sem_prompt_levanta(self, router):
         with pytest.raises(ToolError, match="prompt"):
             router._image_generate({})
@@ -375,6 +382,73 @@ class TestImageGenerate:
         router_with_client._llm_client = client
         with pytest.raises(ToolError, match="API error"):
             router_with_client._image_generate({"prompt": "falha"})
+
+    # ── Multi-provider (xai / openrouter) ────────────────────────────────────
+
+    def test_provider_invalido_levanta(self, router_with_client):
+        with pytest.raises(ToolError, match="provider"):
+            router_with_client._image_generate({"prompt": "x", "provider": "midjourney"})
+
+    def test_provider_xai_sem_key_levanta(self, router_with_client):
+        with pytest.raises(ToolError, match="XAI_API_KEY"):
+            router_with_client._image_generate({"prompt": "x", "provider": "xai"})
+
+    def test_provider_openrouter_sem_key_levanta(self, router_with_client):
+        with pytest.raises(ToolError, match="OPENROUTER_API_KEY"):
+            router_with_client._image_generate({"prompt": "x", "provider": "openrouter"})
+
+    def test_auto_detect_por_env(self, router_with_client, monkeypatch):
+        r = router_with_client
+        assert r._resolve_image_provider("", "") == "openai"  # sem env → legado
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        assert r._resolve_image_provider("", "") == "openrouter"
+        monkeypatch.setenv("XAI_API_KEY", "k")
+        assert r._resolve_image_provider("", "") == "xai"
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        assert r._resolve_image_provider("", "") == "openai"
+
+    def test_prefixo_do_modelo_define_provider(self, router_with_client):
+        r = router_with_client
+        assert r._resolve_image_provider("", "dall-e-2") == "openai"
+        assert r._resolve_image_provider("", "grok-imagine-image") == "xai"
+        assert r._resolve_image_provider("", "google/gemini-2.5-flash-image") == "openrouter"
+
+    def test_xai_retorna_url_publica(self, router_with_client, monkeypatch):
+        monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = {"data": [{"url": "https://imgen.x.ai/abc.png"}]}
+        fake_resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=fake_resp) as mock_post:
+            result = router_with_client._image_generate({"prompt": "um gato", "provider": "xai"})
+        assert "https://imgen.x.ai/abc.png" in result
+        assert "xai/grok-imagine-image" in result
+        body = mock_post.call_args.kwargs["json"]
+        assert body["model"] == "grok-imagine-image"
+
+    def test_openrouter_salva_base64_em_arquivo(self, router_with_client, ws, monkeypatch):
+        import base64
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+        png = base64.b64encode(b"fake-png-bytes").decode()
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = {"choices": [{"message": {
+            "images": [{"image_url": {"url": f"data:image/png;base64,{png}"}}],
+        }}]}
+        fake_resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=fake_resp):
+            result = router_with_client._image_generate({
+                "prompt": "um cachorro", "provider": "openrouter", "output_file": "dog.png",
+            })
+        assert "Salvo em" in result
+        assert (ws / "dog.png").read_bytes() == b"fake-png-bytes"
+
+    def test_openrouter_sem_imagem_na_resposta_levanta(self, router_with_client, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = {"choices": [{"message": {"content": "não consigo"}}]}
+        fake_resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=fake_resp):
+            with pytest.raises(ToolError, match="não retornou imagem"):
+                router_with_client._image_generate({"prompt": "x", "provider": "openrouter"})
 
 
 # =============================================================================
