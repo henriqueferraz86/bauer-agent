@@ -174,6 +174,63 @@ class TestSocialPost:
                     "args": {"content": "oi", "channels": ["ig-1"]},
                 })
 
+    def test_media_urls_direto_nao_faz_upload(self, router):
+        """media_urls (ex.: retorno público do image_generate xai/openrouter)
+        vai direto pro post — sem reenviar pro storage do Postiz."""
+        fake_client = MagicMock()
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            router.execute({
+                "action": "social_post",
+                "args": {
+                    "content": "com foto pronta",
+                    "channels": ["ig-1"],
+                    "media_urls": ["https://imgen.x.ai/abc.jpeg"],
+                },
+            })
+        fake_client.upload.assert_not_called()
+        _, kwargs = fake_client.create_post.call_args
+        assert kwargs["media_urls"] == ["https://imgen.x.ai/abc.jpeg"]
+
+    def test_upload_com_url_localhost_rejeitada(self, router, tmp_path):
+        """Regressão: Postiz self-hosted sem storage público devolve URL
+        localhost do upload — Instagram rejeita ('Media fetch failed').
+        Precisa falhar cedo e claro, não deixar o Postiz tentar publicar."""
+        img = tmp_path / "foto.png"
+        img.write_bytes(b"fake")
+        fake_client = MagicMock()
+        fake_client.upload.return_value = {"path": "http://localhost:4007/uploads/foto.png"}
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            with pytest.raises(ToolError, match="localhost"):
+                router.execute({
+                    "action": "social_post",
+                    "args": {
+                        "content": "com foto",
+                        "channels": ["ig-1"],
+                        "media_paths": [str(img)],
+                    },
+                })
+        fake_client.create_post.assert_not_called()
+
+    def test_media_urls_e_media_paths_combinados(self, router, tmp_path):
+        img = tmp_path / "foto.png"
+        img.write_bytes(b"fake")
+        fake_client = MagicMock()
+        fake_client.upload.return_value = {"path": "https://cdn.postiz.com/foto.png"}
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            router.execute({
+                "action": "social_post",
+                "args": {
+                    "content": "duas midias",
+                    "channels": ["ig-1"],
+                    "media_urls": ["https://imgen.x.ai/abc.jpeg"],
+                    "media_paths": [str(img)],
+                },
+            })
+        _, kwargs = fake_client.create_post.call_args
+        assert kwargs["media_urls"] == [
+            "https://imgen.x.ai/abc.jpeg", "https://cdn.postiz.com/foto.png",
+        ]
+
 
 class TestMetadata:
     def test_tools_aparecem_no_available(self, router):

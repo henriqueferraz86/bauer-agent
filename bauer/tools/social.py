@@ -72,10 +72,21 @@ class SocialToolsMixin:
         return None
 
     def _social_post(self, args: dict) -> str:
-        """Publica ou agenda um post em uma ou mais redes sociais via Postiz."""
+        """Publica ou agenda um post em uma ou mais redes sociais via Postiz.
+
+        Duas formas de anexar mídia:
+        - media_urls: URL já pública (ex.: retorno do image_generate via
+          provider xai/openrouter) — usada direto, sem reenvio.
+        - media_paths: arquivo local — sobe pro storage do PRÓPRIO Postiz
+          (client.upload). Em instância self-hosted sem storage público
+          (Cloudflare R2/S3), isso devolve uma URL localhost que plataformas
+          como Instagram REJEITAM ("Media fetch failed") — prefira
+          media_urls quando o provider de geração já dá URL pública.
+        """
         content = str(args.get("content", "")).strip()
         channels = args.get("channels")
         media_paths = args.get("media_paths") or []
+        media_urls_arg = list(args.get("media_urls") or [])
         schedule_at = str(args.get("schedule_at", "")).strip() or None
         post_type = str(args.get("post_type", "schedule")).strip() or "schedule"
         settings = args.get("settings")
@@ -96,12 +107,21 @@ class SocialToolsMixin:
             settings = self._default_settings_for(channel_ids)
 
         try:
-            media_urls: list[str] = []
+            media_urls: list[str] = list(media_urls_arg)
             for path in media_paths:
                 uploaded = client.upload(path)
                 url = uploaded.get("path") or uploaded.get("url")
                 if not url:
                     raise ToolError(f"Upload de '{path}' não retornou URL utilizável.")
+                if url.startswith("http://localhost") or url.startswith("http://127.0.0.1"):
+                    raise ToolError(
+                        f"Upload de '{path}' voltou uma URL local ({url}) — "
+                        "plataformas como Instagram não conseguem baixar mídia "
+                        "de localhost. Gere a imagem com um provider que retorna "
+                        "URL pública (ex.: image_generate provider=xai) e passe "
+                        "o resultado via 'media_urls' em vez de 'media_paths', "
+                        "ou configure storage público (Cloudflare R2/S3) no Postiz."
+                    )
                 media_urls.append(url)
 
             client.create_post(

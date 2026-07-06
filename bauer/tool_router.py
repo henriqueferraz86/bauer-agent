@@ -1119,12 +1119,17 @@ class ToolRouter(
             "description": (
                 "Publica ou agenda um post em uma ou mais redes sociais via Postiz. "
                 "Acao PUBLICA e praticamente irreversivel — use social_list_channels "
-                "primeiro para confirmar os IDs de canal certos."
+                "primeiro para confirmar os IDs de canal certos. Para midia, prefira "
+                "media_urls com uma URL PUBLICA (ex.: retorno de image_generate com "
+                "provider=xai/openrouter) — media_paths reenvia pro storage do "
+                "proprio Postiz, que em instancia self-hosted sem storage publico "
+                "devolve URL localhost e plataformas como Instagram rejeitam."
             ),
             "args": {
                 "content": "str — texto do post (obrigatorio)",
                 "channels": "list[str] — IDs de integracao do Postiz (obrigatorio)",
-                "media_paths": "list[str] — arquivos locais (imagem/video) para anexar (opcional)",
+                "media_urls": "list[str] — URLs publicas de midia ja hospedada (preferido)",
+                "media_paths": "list[str] — arquivos locais (imagem/video); sobe pro storage do Postiz",
                 "schedule_at": "str — data/hora ISO 8601 (opcional; default: agora)",
                 "post_type": "str — 'schedule' ou 'draft' (default: 'schedule')",
                 "settings": (
