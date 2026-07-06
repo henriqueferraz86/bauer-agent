@@ -652,6 +652,11 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
     shell_runner = _build_shell_runner(cfg, workspace)
     web_enabled = cfg.tools.web_enabled if cfg is not None else False
     web_config = cfg.web if cfg is not None else None
+    import os as _os
+    postiz_api_key = _os.environ.get("POSTIZ_API_KEY", "").strip() or (
+        cfg.postiz.api_key.strip() if cfg is not None else ""
+    )
+    postiz_api_url = cfg.postiz.api_url if cfg is not None else ""
     return ToolRouter(
         workspace,
         shell_runner=shell_runner,
@@ -663,6 +668,8 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
         max_tool_calls=cfg.tools.max_tool_calls if cfg is not None else 500,
         session_id=session_id,
         tool_allowlist=(list(cfg.tools.tool_allowlist) if cfg is not None else None),
+        postiz_api_key=postiz_api_key,
+        postiz_api_url=postiz_api_url,
     )
 
 

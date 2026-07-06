@@ -565,6 +565,39 @@ Comandos dentro do chat: `/status`, `/clear`, `/help`.
 
 ---
 
+## 📱 Integração social (Postiz)
+
+O Bauer publica/agenda posts em redes sociais reais (Instagram, X, LinkedIn,
+TikTok, YouTube, Facebook, Reddit, Pinterest, Threads, Bluesky, Mastodon…)
+via [Postiz](https://postiz.com) — self-hosted (`docker compose up -d`, veja
+o [docker-compose.yaml deles](https://github.com/gitroomhq/postiz-app)) ou a
+versão hospedada (`api.postiz.com`).
+
+### ⚙️ Config
+
+```yaml
+postiz:
+  api_url: https://api.postiz.com   # ou http://localhost:4007/api p/ self-hosted
+  api_key: ""                        # prefira POSTIZ_API_KEY no .env
+```
+
+Cada rede social precisa ser conectada **dentro da instância Postiz**
+primeiro (OAuth) — o Bauer só consome a API pública dela depois disso.
+
+### 🛠️ Tools
+
+- `social_list_channels` — lista as contas conectadas (IDs de integração).
+- `social_post` — publica ou agenda (`content`, `channels`, `media_paths?`,
+  `schedule_at?`, `post_type: schedule|draft`). Ação pública e praticamente
+  irreversível — passa pelo **G4 LLM Approval** (confirmação antes de
+  executar).
+
+Exemplo de conversa: *"gera uma imagem de um pôr do sol e posta no Instagram
+e no X"* → o agent usa `image_generate`, depois `social_post` com o
+arquivo gerado.
+
+---
+
 ## 🔌 bauer gateway-ws (Claw3D)
 
 O **bauer gateway-ws** é uma camada WebSocket que faz bridge entre clientes WebSocket e o `bauer serve` (HTTP).
@@ -715,7 +748,8 @@ O agente tem **~75 tools**. As principais, por categoria:
 |---|---|
 | `kanban_*` (create, list, show, complete, block, comment…) | 📋 Board de tarefas |
 | `memory` · `session_search` | 🧠 Memória persistente + busca em sessões |
-| `channel_send` · `channel_list` · `send_message` | 📤 Notifica canais (Telegram/Discord/…) |
+| `channel_send` · `channel_list` · `send_message` | 📤 Notifica canais (Telegram/Discord/Slack/…) |
+| `social_list_channels` · `social_post` | 📱 Publica/agenda em redes sociais via [Postiz](#-integração-social-postiz) |
 
 ### 🎨 Multimodal & avançado
 | Tool | Descrição |

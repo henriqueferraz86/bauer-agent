@@ -789,6 +789,16 @@ class SlackSection(_StrictSection):
     max_msgs_per_minute: int = Field(ge=1, le=600, default=20)
 
 
+class PostizSection(_StrictSection):
+    """Integração com Postiz — agendamento/publicação em redes sociais.
+
+    Self-hosted (docker-compose) ou hospedado (api.postiz.com). Token:
+    prefira POSTIZ_API_KEY no .env.
+    """
+    api_url: str = "https://api.postiz.com"
+    api_key: str = ""  # ou POSTIZ_API_KEY no .env (preferido)
+
+
 class GatewaySection(_StrictSection):
     """Bauer Gateway — runtime unificado de canais + entrega do outbox."""
     outbox_drain_interval_s: int = Field(ge=1, le=3600, default=15)
@@ -846,6 +856,7 @@ class BauerConfig(_StrictSection):
     telegram: TelegramSection = TelegramSection()
     discord: DiscordSection = DiscordSection()
     slack: SlackSection = SlackSection()
+    postiz: PostizSection = PostizSection()
     gateway: GatewaySection = GatewaySection()
     observability: ObservabilitySection = ObservabilitySection()
 
