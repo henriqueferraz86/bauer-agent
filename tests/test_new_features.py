@@ -176,6 +176,18 @@ class TestSecretsScanner:
         result = scan(text)
         assert result.found
 
+    def test_scan_xai_image_url_nao_e_falso_positivo(self):
+        """Regressão: URL de imagem gerada via xai-imgen (hífens, sem trecho
+        de 20+ chars contíguos) não pode ser confundida com a API key real
+        — senão image_generate(provider=xai) devolve URL corrompida."""
+        from bauer.secrets_scanner import scan
+        text = (
+            "https://imgen.x.ai/xai-imgen/"
+            "xai-tmp-imgen-21617436-ffd6-9ffb-a255-c0cd6910cd0a-79bbebb3.jpeg"
+        )
+        result = scan(text)
+        assert not result.found
+
 
 # ─── OpenAIClient.chat_with_tools ────────────────────────────────────────────
 
