@@ -96,7 +96,7 @@ if ($Update) {
 
     Write-Info "Atualizando dependências..."
     $pipTarget = if ($Extra) { "$InstallDir\[$Extra]" } else { $InstallDir }
-    & "$VenvDir\Scripts\pip" install -q --upgrade -e $pipTarget
+    & "$VenvDir\Scripts\python" -m pip install -q --upgrade -e $pipTarget
 
     Write-Ok "Bauer Agent atualizado!"
     try { & $BauerCmd --version } catch {}
@@ -131,7 +131,7 @@ Write-Info "Atualizando pip..."
 $extrasLabel = if ($Extra) { " [extras: $Extra]" } else { "" }
 Write-Info "Instalando dependencias$extrasLabel..."
 $pipTarget = if ($Extra) { "$InstallDir\[$Extra]" } else { $InstallDir }
-& "$VenvDir\Scripts\pip" install -q -e $pipTarget
+& "$VenvDir\Scripts\python" -m pip install -q -e $pipTarget
 
 # ─── Launchers ───────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force $BinDir | Out-Null
