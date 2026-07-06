@@ -47,6 +47,30 @@ class SocialToolsMixin:
             lines.append(f"- {it.get('id')} — {provider}: {name}{state}")
         return "\n".join(lines)
 
+    # Default de settings por plataforma — algumas exigem campos obrigatórios
+    # próprios (ex.: Instagram exige settings.post_type = "post"|"story", senão
+    # a API rejeita com 400 "should not be null or undefined"). Aplicado só
+    # quando o caller não passou 'settings' explicitamente.
+    _PLATFORM_DEFAULT_SETTINGS = {
+        "instagram": {"post_type": "post"},
+        "instagram-standalone": {"post_type": "post"},
+    }
+
+    def _default_settings_for(self, channel_ids: list[str]) -> dict | None:
+        """Resolve o identifier de cada canal e devolve o default da 1ª
+        plataforma reconhecida (Postiz aplica os mesmos settings a todos os
+        canais do post — não há por-canal na API pública)."""
+        try:
+            integrations = {i.get("id"): i.get("identifier") for i in self._postiz_client().list_integrations()}
+        except Exception:  # noqa: BLE001 — best-effort, não bloqueia o post
+            return None
+        for cid in channel_ids:
+            identifier = integrations.get(cid, "")
+            for prefix, defaults in self._PLATFORM_DEFAULT_SETTINGS.items():
+                if identifier.startswith(prefix):
+                    return dict(defaults)
+        return None
+
     def _social_post(self, args: dict) -> str:
         """Publica ou agenda um post em uma ou mais redes sociais via Postiz."""
         content = str(args.get("content", "")).strip()
@@ -54,6 +78,7 @@ class SocialToolsMixin:
         media_paths = args.get("media_paths") or []
         schedule_at = str(args.get("schedule_at", "")).strip() or None
         post_type = str(args.get("post_type", "schedule")).strip() or "schedule"
+        settings = args.get("settings")
 
         if not content:
             raise ToolError("social_post requer 'content'.")
@@ -66,6 +91,10 @@ class SocialToolsMixin:
             raise ToolError("post_type deve ser 'schedule' ou 'draft'.")
 
         client = self._postiz_client()
+        channel_ids = [str(c) for c in channels]
+        if settings is None:
+            settings = self._default_settings_for(channel_ids)
+
         try:
             media_urls: list[str] = []
             for path in media_paths:
@@ -77,10 +106,11 @@ class SocialToolsMixin:
 
             client.create_post(
                 content,
-                [str(c) for c in channels],
+                channel_ids,
                 media_urls=media_urls or None,
                 schedule_at=schedule_at,
                 post_type=post_type,
+                settings=settings,
             )
         except ToolError:
             raise

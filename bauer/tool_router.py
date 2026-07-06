@@ -1127,6 +1127,11 @@ class ToolRouter(
                 "media_paths": "list[str] — arquivos locais (imagem/video) para anexar (opcional)",
                 "schedule_at": "str — data/hora ISO 8601 (opcional; default: agora)",
                 "post_type": "str — 'schedule' ou 'draft' (default: 'schedule')",
+                "settings": (
+                    "dict — settings especificos da plataforma (opcional). "
+                    "Instagram exige {'post_type': 'post'|'story'} — aplicado "
+                    "automaticamente se omitido."
+                ),
             },
         }
 

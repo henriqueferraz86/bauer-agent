@@ -69,6 +69,7 @@ class TestSocialPost:
 
     def test_publica_com_sucesso(self, router):
         fake_client = MagicMock()
+        fake_client.list_integrations.return_value = []
         with patch.object(router, "_postiz_client", return_value=fake_client):
             out = router.execute({
                 "action": "social_post",
@@ -78,6 +79,63 @@ class TestSocialPost:
         fake_client.create_post.assert_called_once()
         _, kwargs = fake_client.create_post.call_args
         assert kwargs["media_urls"] is None
+
+    def test_instagram_aplica_post_type_default(self, router):
+        """Instagram exige settings.post_type — aplicado automaticamente
+        quando o caller não passa 'settings' (regressão: bauer HTTP 400)."""
+        fake_client = MagicMock()
+        fake_client.list_integrations.return_value = [
+            {"id": "ig-1", "identifier": "instagram-standalone"},
+        ]
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            router.execute({
+                "action": "social_post",
+                "args": {"content": "foto legal", "channels": ["ig-1"]},
+            })
+        _, kwargs = fake_client.create_post.call_args
+        assert kwargs["settings"] == {"post_type": "post"}
+
+    def test_settings_explicito_nao_e_sobrescrito(self, router):
+        fake_client = MagicMock()
+        fake_client.list_integrations.return_value = [
+            {"id": "ig-1", "identifier": "instagram-standalone"},
+        ]
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            router.execute({
+                "action": "social_post",
+                "args": {
+                    "content": "story", "channels": ["ig-1"],
+                    "settings": {"post_type": "story"},
+                },
+            })
+        _, kwargs = fake_client.create_post.call_args
+        assert kwargs["settings"] == {"post_type": "story"}
+
+    def test_canal_nao_instagram_sem_settings_default(self, router):
+        fake_client = MagicMock()
+        fake_client.list_integrations.return_value = [
+            {"id": "x-1", "identifier": "x"},
+        ]
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            router.execute({
+                "action": "social_post",
+                "args": {"content": "tweet", "channels": ["x-1"]},
+            })
+        _, kwargs = fake_client.create_post.call_args
+        assert kwargs["settings"] is None
+
+    def test_falha_ao_listar_integrations_nao_bloqueia_post(self, router):
+        """_default_settings_for é best-effort — se list_integrations falhar
+        (rede, timeout), o post ainda deve sair, só sem o default aplicado."""
+        fake_client = MagicMock()
+        fake_client.list_integrations.side_effect = RuntimeError("timeout")
+        with patch.object(router, "_postiz_client", return_value=fake_client):
+            out = router.execute({
+                "action": "social_post",
+                "args": {"content": "oi", "channels": ["ig-1"]},
+            })
+        assert "agendado" in out
+        fake_client.create_post.assert_called_once()
 
     def test_draft(self, router):
         fake_client = MagicMock()
