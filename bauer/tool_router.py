@@ -75,6 +75,7 @@ from .tools.media import _looks_multimodal  # noqa: F401 — re-export p/ testes
 from .tools.memory import MemoryToolsMixin
 from .tools.session import SessionToolsMixin
 from .tools.skills import SkillsToolsMixin
+from .tools.social import SocialToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
@@ -202,6 +203,9 @@ _TOOL_SECURITY: dict[str, dict] = {
     "channel_list":   {"permission": "read",    "risk": "low",    "approval": False},
     "send_message":   {"permission": "network", "risk": "medium", "approval": False},
     "transcribe_audio": {"permission": "network", "risk": "low",  "approval": False},
+    # Redes sociais (Postiz) — publicação é pública e praticamente irreversível
+    "social_list_channels": {"permission": "network", "risk": "low",  "approval": False},
+    "social_post":          {"permission": "network", "risk": "high", "approval": True},
     # Sistema
     "video_generate": {"permission": "network", "risk": "low",    "approval": False},
 }
@@ -348,6 +352,7 @@ class ToolRouter(
     MiscToolsMixin,
     SessionToolsMixin,
     SkillsToolsMixin,
+    SocialToolsMixin,
     UtilityToolsMixin,
     WebToolsMixin,
 ):
@@ -377,8 +382,12 @@ class ToolRouter(
         tool_context: str | None = None,
         tool_policy_path: str | Path | None = None,
         tool_allowlist: "list[str] | set[str] | None" = None,
+        postiz_api_key: str = "",
+        postiz_api_url: str = "",
     ):
         self.workspace = Path(workspace).resolve()
+        self._postiz_api_key = postiz_api_key
+        self._postiz_api_url = postiz_api_url or "https://api.postiz.com"
         # Modo "toolset enxuto": quando não-vazio, SÓ estas tools são expostas
         # (schema OpenAI, system prompt, parsing do bridge) e executáveis. Encolhe
         # o prompt drasticamente — essencial para modelos locais (Ollama/CPU) onde
@@ -829,14 +838,17 @@ class ToolRouter(
         self._tools["image_generate"] = {
             "fn": self._image_generate,
             "description": (
-                "Gera imagem a partir de prompt de texto via OpenAI DALL-E. "
-                "Requer llm_client com suporte a OpenAI Images API."
+                "Gera imagem a partir de prompt de texto. Providers: openai "
+                "(DALL-E), xai (grok-imagine-image, retorna URL publica) e "
+                "openrouter (gemini image, retorna base64/arquivo). Sem provider "
+                "explicito, escolhe pela API key disponivel no ambiente."
             ),
             "args": {
                 "prompt": "str — descricao detalhada da imagem (obrigatorio)",
-                "model": "str — dall-e-3 | dall-e-2 (default: dall-e-3)",
-                "size": "str — 1024x1024 | 1792x1024 | 1024x1792 (default: 1024x1024)",
-                "quality": "str — standard | hd (default: standard, so dall-e-3)",
+                "provider": "str — openai | xai | openrouter (default: auto por env key)",
+                "model": "str — ex: dall-e-3, grok-imagine-image, google/gemini-2.5-flash-image",
+                "size": "str — 1024x1024 | 1792x1024 | 1024x1792 (so openai; default: 1024x1024)",
+                "quality": "str — standard | hd (so dall-e-3; default: standard)",
                 "output_file": "str — caminho relativo para salvar a imagem no workspace (opcional)",
             },
         }
@@ -1089,6 +1101,37 @@ class ToolRouter(
             ),
             "args": {
                 "path": "str — caminho do arquivo de audio (obrigatorio)",
+            },
+        }
+
+        # ── Tools de redes sociais (Postiz) ─────────────────────────────────
+        self._tools["social_list_channels"] = {
+            "fn": self._social_list_channels,
+            "description": (
+                "Lista as contas/redes sociais conectadas na instancia Postiz "
+                "(instagram, x, linkedin, tiktok, etc). Use antes de social_post "
+                "para saber os IDs de canal disponiveis."
+            ),
+            "args": {},
+        }
+        self._tools["social_post"] = {
+            "fn": self._social_post,
+            "description": (
+                "Publica ou agenda um post em uma ou mais redes sociais via Postiz. "
+                "Acao PUBLICA e praticamente irreversivel — use social_list_channels "
+                "primeiro para confirmar os IDs de canal certos."
+            ),
+            "args": {
+                "content": "str — texto do post (obrigatorio)",
+                "channels": "list[str] — IDs de integracao do Postiz (obrigatorio)",
+                "media_paths": "list[str] — arquivos locais (imagem/video) para anexar (opcional)",
+                "schedule_at": "str — data/hora ISO 8601 (opcional; default: agora)",
+                "post_type": "str — 'schedule' ou 'draft' (default: 'schedule')",
+                "settings": (
+                    "dict — settings especificos da plataforma (opcional). "
+                    "Instagram exige {'post_type': 'post'|'story'} — aplicado "
+                    "automaticamente se omitido."
+                ),
             },
         }
 

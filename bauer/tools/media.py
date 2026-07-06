@@ -463,6 +463,43 @@ class MediaToolsMixin:
         lines.extend(f"  {a}" for a in frame_analyses)
         return "\n".join(lines)
 
+    # Modelo default por provider de geração de imagem. Providers com API de
+    # imagem nativa (openai/xai) devolvem URL pública temporária — útil p/
+    # repassar a serviços que baixam a mídia (ex.: Instagram via Postiz).
+    # OpenRouter gera via chat completions e devolve base64 (sem URL pública).
+    _IMAGE_PROVIDER_DEFAULTS = {
+        "openai": "dall-e-3",
+        "xai": "grok-imagine-image",
+        "openrouter": "google/gemini-2.5-flash-image",
+    }
+
+    def _resolve_image_provider(self, provider_arg: str, model_arg: str) -> str:
+        """Resolve o provider de imagem: explícito > prefixo do modelo > env."""
+        import os
+
+        if provider_arg:
+            if provider_arg not in self._IMAGE_PROVIDER_DEFAULTS:
+                raise ToolError(
+                    f"image_generate: provider deve ser um de "
+                    f"{tuple(self._IMAGE_PROVIDER_DEFAULTS)}."
+                )
+            return provider_arg
+        if model_arg.startswith("dall-e"):
+            return "openai"
+        if model_arg.startswith("grok"):
+            return "xai"
+        if "/" in model_arg:  # namespace estilo openrouter (google/…, openai/…)
+            return "openrouter"
+        # Sem pista nos args: escolhe pela credencial disponível no ambiente.
+        if os.environ.get("OPENAI_API_KEY", "").strip():
+            return "openai"
+        if os.environ.get("XAI_API_KEY", "").strip():
+            return "xai"
+        if os.environ.get("OPENROUTER_API_KEY", "").strip():
+            return "openrouter"
+        # Sem env nenhuma: caminho legado openai (llm_client pode ter .images).
+        return "openai"
+
     def _image_generate(self, args: dict) -> str:
         prompt = str(args.get("prompt", "")).strip()
         if not prompt:
@@ -470,11 +507,49 @@ class MediaToolsMixin:
         if self._llm_client is None:
             raise ToolError("image_generate: llm_client não configurado.")
 
-        model = str(args.get("model", "dall-e-3"))
-        size = str(args.get("size", "1024x1024"))
-        quality = str(args.get("quality", "standard"))
+        provider = self._resolve_image_provider(
+            str(args.get("provider", "")).strip().lower(),
+            str(args.get("model", "")).strip(),
+        )
+        model = str(args.get("model", "")).strip() or self._IMAGE_PROVIDER_DEFAULTS[provider]
         output_file = args.get("output_file")
 
+        if provider == "openai":
+            img_url, img_b64 = self._image_via_openai(prompt, model, args), None
+        elif provider == "xai":
+            img_url, img_b64 = self._image_via_xai(prompt, model)
+        else:
+            img_url, img_b64 = self._image_via_openrouter(prompt, model)
+
+        result = f"[image_generate] Imagem gerada ({provider}/{model}):"
+        if img_url:
+            result += f"\n  URL: {img_url}"
+        else:
+            result += "\n  (retorno em base64 — sem URL pública)"
+
+        if output_file or img_b64 is not None:
+            try:
+                dest = self._sandbox(output_file or f"generated_{abs(hash(prompt)) % 10**8}.png")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if img_b64 is not None:
+                    import base64
+                    dest.write_bytes(base64.b64decode(img_b64))
+                else:
+                    import httpx
+                    from ..http_shared import shared_ssl_context
+                    r = httpx.get(img_url, timeout=60, verify=shared_ssl_context())
+                    r.raise_for_status()
+                    dest.write_bytes(r.content)
+                result += f"\n  Salvo em: {dest.relative_to(self.workspace)}"
+            except Exception as exc:
+                result += f"\n  Aviso: falha ao salvar — {exc}"
+
+        return result
+
+    def _image_via_openai(self, prompt: str, model: str, args: dict) -> str:
+        """DALL-E via API OpenAI (caminho legado — aceita llm_client mockado)."""
+        size = str(args.get("size", "1024x1024"))
+        quality = str(args.get("quality", "standard"))
         valid_models = ("dall-e-3", "dall-e-2")
         if model not in valid_models:
             raise ToolError(f"image_generate: model deve ser {valid_models}.")
@@ -487,6 +562,7 @@ class MediaToolsMixin:
             # 1) self._llm_client (caso mock direto — não precisa de openai instalado)
             # 2) self._llm_client._client (caso wrapper bauer sobre openai.OpenAI)
             # 3) cria openai.OpenAI com credenciais (exige openai instalado)
+            import os
             _lc = self._llm_client
             if hasattr(_lc, "images") and callable(getattr(getattr(_lc, "images", None), "generate", None)):
                 client_obj = _lc
@@ -498,34 +574,94 @@ class MediaToolsMixin:
                 except ImportError:
                     raise ToolError("image_generate: requer 'pip install openai'.")
                 base_url = getattr(_lc, "base_url", None) or "https://api.openai.com/v1"
-                api_key = getattr(_lc, "api_key", None) or ""
+                api_key = (
+                    getattr(_lc, "api_key", None)
+                    or os.environ.get("OPENAI_API_KEY", "").strip()
+                )
+                if not api_key:
+                    raise ToolError(
+                        "image_generate: OPENAI_API_KEY ausente. Alternativas: "
+                        "provider 'xai' (XAI_API_KEY) ou 'openrouter' (OPENROUTER_API_KEY)."
+                    )
                 client_obj = openai.OpenAI(api_key=api_key, base_url=base_url)
 
             kw: dict = {"model": model, "prompt": prompt, "size": size, "n": 1}
             if model == "dall-e-3":
                 kw["quality"] = quality
             response = client_obj.images.generate(**kw)
-            img_url = response.data[0].url
+            return response.data[0].url
         except ToolError:
             raise
         except Exception as exc:
             raise ToolError(f"image_generate: falha na API — {exc}") from exc
 
-        result = f"[image_generate] Imagem gerada:\n  URL: {img_url}"
+    def _image_via_xai(self, prompt: str, model: str) -> tuple:
+        """xAI images API — devolve (url_pública | None, b64 | None)."""
+        import os
 
-        if output_file:
-            try:
-                import httpx
-                dest = self._sandbox(output_file)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                r = httpx.get(img_url, timeout=30)
-                r.raise_for_status()
-                dest.write_bytes(r.content)
-                result += f"\n  Salvo em: {dest.relative_to(self.workspace)}"
-            except Exception as exc:
-                result += f"\n  Aviso: falha ao salvar — {exc}"
+        key = os.environ.get("XAI_API_KEY", "").strip()
+        if not key:
+            raise ToolError("image_generate: XAI_API_KEY ausente para provider 'xai'.")
+        import httpx
+        from ..http_shared import shared_ssl_context
 
-        return result
+        try:
+            resp = httpx.post(
+                "https://api.x.ai/v1/images/generations",
+                json={"model": model, "prompt": prompt, "n": 1, "response_format": "url"},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=120,
+                verify=shared_ssl_context(),
+            )
+            resp.raise_for_status()
+            data = resp.json()["data"][0]
+            return data.get("url"), data.get("b64_json")
+        except Exception as exc:
+            raise ToolError(f"image_generate: falha na API xai — {exc}") from exc
+
+    def _image_via_openrouter(self, prompt: str, model: str) -> tuple:
+        """OpenRouter: geração via chat completions com modalities=[image].
+
+        Devolve (None, b64) — OpenRouter retorna data-URL base64, sem URL
+        pública; o caller salva em arquivo.
+        """
+        import os
+
+        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not key:
+            raise ToolError(
+                "image_generate: OPENROUTER_API_KEY ausente para provider 'openrouter'."
+            )
+        import httpx
+        from ..http_shared import shared_ssl_context
+
+        try:
+            resp = httpx.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "modalities": ["image", "text"],
+                },
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=120,
+                verify=shared_ssl_context(),
+            )
+            resp.raise_for_status()
+            message = resp.json()["choices"][0]["message"]
+            images = message.get("images") or []
+            if not images:
+                raise ToolError(
+                    f"image_generate: modelo {model} não retornou imagem "
+                    f"(resposta: {str(message.get('content'))[:150]})"
+                )
+            data_url = images[0]["image_url"]["url"]
+            b64 = data_url.split("base64,", 1)[-1]
+            return None, b64
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"image_generate: falha na API openrouter — {exc}") from exc
 
     def _text_to_speech(self, args: dict) -> str:
         text = str(args.get("text", "")).strip()
