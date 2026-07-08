@@ -18,6 +18,17 @@
 
 Execute cada item em ordem antes de criar a tag.
 
+### 0. Runtime beta
+
+Antes de um beta do Agent Runtime, confirme:
+
+- `README.md` aponta para o roteiro do beta.
+- `docs/ROADMAP.md` descreve o marco atual e proximos passos.
+- RFCs relevantes tem status definido.
+- `docs/BETA_CLOSED.md` tem demo repetivel em 5 minutos.
+- `config.yaml.example` documenta campos novos com defaults compativeis.
+- Config antiga sem `runtime.adapters` passa em `bauer config check`.
+
 ### 1. Testes e qualidade
 
 ```sh
