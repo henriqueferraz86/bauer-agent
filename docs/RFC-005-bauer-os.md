@@ -1,6 +1,6 @@
 # RFC-005: Bauer OS
 
-Status: Proposed
+Status: Accepted for closed beta
 
 ## Summary
 
@@ -161,3 +161,9 @@ Debug and audit the system. Shows events, traces, audit logs, metrics, budget st
 - Bauer OS is defined as an application shell and user experience layer.
 - Bauer Runtime sits below Bauer OS and owns execution primitives.
 - Agno is treated as an invisible adapter behind the runtime interface.
+
+## Closed Beta Decision
+
+For the closed beta, Bauer OS is shipped as the dashboard and local command surface around Bauer Runtime. The runtime remains the product core: runs, sessions, policy, approvals, skills, scheduler, event bus, audit log, memory and adapters.
+
+Agno is supported as an adapter, not as a user-facing product dependency. The default user journey shows agents, runs, approvals and outcomes; adapter details are visible only in settings, runtime diagnostics and debugging views.

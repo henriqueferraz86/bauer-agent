@@ -3,6 +3,22 @@
 Todas as mudanças notáveis são documentadas aqui.
 Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.9.0b1] - 2026-07-08
+
+### Adicionado
+- Closed beta do Bauer Agent Runtime documentado em `docs/BETA_CLOSED.md`.
+- Roadmap oficial do runtime em `docs/ROADMAP.md`.
+- README atualizado com comandos principais do Runtime beta.
+- Exemplo de `config.yaml` documenta `runtime.default_adapter` e `runtime.adapters`.
+- RFC-005 Bauer OS aceito como shell/experience do closed beta.
+
+### Runtime
+- Adapter nativo, adapter Agno, runs, sessions, Event Bus, scheduler, dashboard, Windows Skill Pack e observability consolidados como escopo do beta.
+- Demo de 5 minutos documentada para validar Agno, policy, approvals, eventos, audit log, scheduler, worker e kill switch.
+
+### Compatibilidade
+- Configs antigas sem `runtime.adapters` continuam validas porque o loader aplica defaults.
+
 ---
 
 ## [0.2.0] — 2026-06-25
