@@ -768,6 +768,11 @@ def is_daemon_alive(state_dir: Path | None = None) -> bool:
     if pid is None:
         return False
     try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except Exception:
+        psutil = None  # type: ignore[assignment]
+    try:
         os.kill(pid, 0)  # signal 0 = check existence
         return True
     except (ProcessLookupError, PermissionError):

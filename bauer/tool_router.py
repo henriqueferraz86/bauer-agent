@@ -379,6 +379,7 @@ class ToolRouter(
         max_retries: int = 3,
         audit_enabled: bool = True,
         session_id: str = "",
+        run_id: str = "",
         tool_context: str | None = None,
         tool_policy_path: str | Path | None = None,
         tool_allowlist: "list[str] | set[str] | None" = None,
@@ -412,6 +413,14 @@ class ToolRouter(
         self._tool_call_count = 0              # contador redefenido por sessão
         self.tool_context = _normalize_tool_context(tool_context)
         self._tool_policy = load_tool_policy(self.workspace, explicit_path=tool_policy_path)
+        self._runtime_session_id = session_id or None
+        self._runtime_run_id = run_id or None
+        self._event_bus = None
+        try:
+            from .core.events import EventBus
+            self._event_bus = EventBus(root=Path(workspace).resolve().parent / "runtime")
+        except Exception:
+            self._event_bus = None
         # SEG-3: audit logger
         if audit_enabled:
             from .audit_logger import AuditLogger
@@ -1343,8 +1352,8 @@ class ToolRouter(
                     "arg_keys": sorted(str(key) for key in args.keys()),
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("runtime tool event publish failed for %s: %s", tool_name, exc)
 
     def available_tools(self) -> list[str]:
         """Retorna união de tools built-in e tools registradas externamente (ToolRegistry)."""
@@ -1628,6 +1637,12 @@ class ToolRouter(
         import time as _time
         _t0 = _time.monotonic()
         _audit_error: Exception | None = None
+        self._publish_tool_event(
+            "tool.call.requested",
+            name,
+            args,
+            status="requested",
+        )
 
         try:
             # Per-tool timeout enforcement (Wave E)
@@ -1679,6 +1694,14 @@ class ToolRouter(
                     error_msg=str(_exc)[:300],
                 )
             # Plugin hooks — post_tool_call (erro)
+            self._publish_tool_event(
+                "tool.call.failed",
+                name,
+                args,
+                status="failed",
+                duration_ms=_duration_ms,
+                error=str(_exc)[:300],
+            )
             try:
                 from .plugin_hooks import hooks as _hooks
                 _hooks.emit("post_tool_call", action=name, args=args, result=None, error=_exc)
@@ -1734,6 +1757,14 @@ class ToolRouter(
             )
 
         # Plugin hooks — post_tool_call (sucesso)
+        self._publish_tool_event(
+            "tool.call.completed",
+            name,
+            args,
+            status="completed",
+            duration_ms=_duration_ms,
+            result_preview=result[:200] if isinstance(result, str) else None,
+        )
         try:
             from .plugin_hooks import hooks as _hooks
             _hooks.emit("post_tool_call", action=name, args=args, result=result, error=None)
@@ -1741,6 +1772,41 @@ class ToolRouter(
             pass  # hooks nunca bloqueiam execução
 
         return result
+
+    def _publish_tool_event(
+        self,
+        event_type: str,
+        tool_name: str,
+        args: dict,
+        *,
+        status: str,
+        duration_ms: float | None = None,
+        error: str | None = None,
+        result_preview: str | None = None,
+    ) -> None:
+        if self._event_bus is None:
+            return
+        data = {
+            "args": args,
+            "permission": _TOOL_SECURITY.get(tool_name, {}).get("permission"),
+            "risk": _TOOL_SECURITY.get(tool_name, {}).get("risk"),
+        }
+        if duration_ms is not None:
+            data["duration_ms"] = duration_ms
+        if result_preview is not None:
+            data["result_preview"] = result_preview
+        try:
+            self._event_bus.publish(
+                event_type,  # type: ignore[arg-type]
+                run_id=self._runtime_run_id,
+                session_id=self._runtime_session_id,
+                tool_name=tool_name,
+                status=status,
+                message=error,
+                data=data,
+            )
+        except Exception:
+            pass
 
     # --- sandbox ---------------------------------------------------------------
 
@@ -1847,4 +1913,3 @@ class ToolRouter(
     # (mixins herdados na declaração da classe). Esta classe contém agora só o
     # núcleo: __init__, dispatch (execute/_parse/execute_native_call), sandbox,
     # segurança/contexto e os schemas registrados em self._tools.
-

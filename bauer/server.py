@@ -187,6 +187,9 @@ def create_app(
 
     _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
+    from .core.events import EventBus
+    from .core.runtime.run_manager import RunManager
+    from .core.runtime.session_manager import SessionManager
     from .session_store import SessionStore
 
     _access_logger = logging.getLogger("bauer.access")
@@ -235,6 +238,10 @@ def create_app(
         app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     store = SessionStore(sessions_dir)
+    runtime_root = sessions_dir.parent / "runtime"
+    event_bus = EventBus(root=runtime_root)
+    run_manager = RunManager(root=runtime_root)
+    session_manager = SessionManager(root=runtime_root)
 
     # Detecta provider inicial pelo atributo _provider ou, como fallback, pela URL do host.
     def _detect_provider(c) -> str:
@@ -453,6 +460,14 @@ def create_app(
     def list_sessions(_: None = Depends(_verify_key)):
         return {"sessions": store.list_sessions()}
 
+    @app.get("/events")
+    def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(_verify_key)):
+        return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(limit=limit)]}
+
+    @app.get("/runs/{run_id}/events")
+    def list_run_events(run_id: str, _: None = Depends(_verify_key)):
+        return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(run_id=run_id)]}
+
     @app.delete("/sessions/{session_id}")
     def delete_session(session_id: str, _: None = Depends(_verify_key)):
         deleted = store.delete(session_id)
@@ -464,10 +479,24 @@ def create_app(
     def chat(req: ChatRequest, _: None = Depends(_verify_key)):
         _metrics.chat_requests_total += 1
         session_id = req.session_id or store.new_id()
+        session_manager.get_or_create_session(
+            session_id,
+            agent_id="serve.chat",
+            state={"transport": "http", "endpoint": "/chat"},
+        )
+        run = run_manager.create_run(
+            session_id=session_id,
+            agent_id="serve.chat",
+            runtime_adapter="bauer_native",
+            input={"message": req.message, "endpoint": "/chat"},
+            status="running",
+        )
 
         ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
         ctx.messages = store.load(session_id)
         ctx.add_user(req.message)
+        router._runtime_session_id = session_id  # type: ignore[attr-defined]
+        router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         try:
             response, tool_log = run_one_turn_with_fallback(
@@ -475,10 +504,17 @@ def create_app(
             )
         except Exception as exc:
             _log.exception("Erro interno em /chat: %s", exc)
+            run_manager.fail_run(run.id, str(exc))
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
         store.save(session_id, ctx.messages)
+        session_manager.touch_session(session_id, state={"last_run_id": run.id})
+        run_manager.complete_run(
+            run.id,
+            output={"response": response},
+            tool_calls_count=len(tool_log),
+        )
 
         return ChatResponse(
             response=response,
@@ -518,10 +554,24 @@ def create_app(
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
+        session_manager.get_or_create_session(
+            sid,
+            agent_id="serve.stream",
+            state={"transport": "sse", "endpoint": "/stream"},
+        )
+        run = run_manager.create_run(
+            session_id=sid,
+            agent_id="serve.stream",
+            runtime_adapter="bauer_native",
+            input={"message": message, "endpoint": "/stream"},
+            status="running",
+        )
 
         ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
         ctx.messages = store.load(sid)
         ctx.add_user(message)
+        router._runtime_session_id = sid  # type: ignore[attr-defined]
+        router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         def _event_stream():
             from .tool_router import SandboxError, ToolError
@@ -544,12 +594,20 @@ def create_app(
             _fb_idx = 0
 
             while True:
+                current_run = run_manager.get_run(run.id)
+                if current_run is not None and current_run.status == "cancelled":
+                    store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    yield f"event: done\ndata: {sid}\n\n"
+                    return
                 if time.monotonic() - turn_started > _STREAM_TURN_TIMEOUT_SECONDS:
                     yield (
                         "data: ⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
                         "turno. Tente reformular ou dividir em passos menores.\n\n"
                     )
                     store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    run_manager.fail_run(run.id, "stream turn timeout")
                     yield f"event: done\ndata: {sid}\n\n"
                     return
 
@@ -559,6 +617,12 @@ def create_app(
 
                 try:
                     for chunk in stream_client.chat_stream(stream_model, ctx.get_payload()):
+                        current_run = run_manager.get_run(run.id)
+                        if current_run is not None and current_run.status == "cancelled":
+                            store.save(sid, ctx.messages)
+                            session_manager.touch_session(sid, state={"last_run_id": run.id})
+                            yield f"event: done\ndata: {sid}\n\n"
+                            return
                         parts.append(chunk)
 
                         if streaming:
@@ -592,6 +656,8 @@ def create_app(
                         continue  # re-tenta com o próximo provider (ctx intacto)
                     yield f"data: [Erro: {exc}]\n\n"
                     store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    run_manager.fail_run(run.id, str(exc))
                     yield f"event: done\ndata: {sid}\n\n"
                     return
 
@@ -623,6 +689,8 @@ def create_app(
                     if hard_stop:
                         yield "data: [Loop detectado — tarefa interrompida automaticamente]\n\n"
                         store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.fail_run(run.id, "loop detected")
                         yield f"event: done\ndata: {sid}\n\n"
                         return
                 else:
@@ -631,13 +699,19 @@ def create_app(
                         clean = _extract_text_from_pseudo_json(response) or response
                         yield f"data: {clean}\n\n"
                     store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    run_manager.complete_run(
+                        run.id,
+                        output={"response": response},
+                        tool_calls_count=tool_count,
+                    )
                     yield f"event: done\ndata: {sid}\n\n"
                     break
 
         return StreamingResponse(
             _event_stream(),
             media_type="text/event-stream",
-            headers={"X-Session-ID": sid},
+            headers={"X-Session-ID": sid, "X-Bauer-Run-ID": run.id},
         )
 
     # ── OpenAI-compatible endpoint (Claw3D / virtual office) ─────────────────
@@ -680,6 +754,11 @@ def create_app(
             or req.session_id
             or store.new_id()
         )
+        session_manager.get_or_create_session(
+            sid,
+            agent_id="serve.openai",
+            state={"transport": "openai", "endpoint": "/v1/chat/completions"},
+        )
 
         ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
         ctx.messages = store.load(sid)
@@ -694,7 +773,20 @@ def create_app(
 
         active_model = _state["model"]
         completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
-        resp_headers = {"X-Hermes-Session-Id": sid}
+        run = run_manager.create_run(
+            session_id=sid,
+            agent_id="serve.openai",
+            runtime_adapter="bauer_native",
+            input={
+                "messages": [msg.model_dump() for msg in req.messages],
+                "stream": req.stream,
+                "endpoint": "/v1/chat/completions",
+            },
+            status="running",
+        )
+        router._runtime_session_id = sid  # type: ignore[attr-defined]
+        router._runtime_run_id = run.id  # type: ignore[attr-defined]
+        resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
 
         # ── modo streaming ────────────────────────────────────────────────────
         if req.stream:
@@ -706,9 +798,21 @@ def create_app(
                 parts: list[str] = []
 
                 while True:
+                    current_run = run_manager.get_run(run.id)
+                    if current_run is not None and current_run.status == "cancelled":
+                        store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        yield "data: [DONE]\n\n"
+                        return
                     parts = []
                     try:
                         for chunk in _state["client"].chat_stream(active_model, ctx.get_payload()):
+                            current_run = run_manager.get_run(run.id)
+                            if current_run is not None and current_run.status == "cancelled":
+                                store.save(sid, ctx.messages)
+                                session_manager.touch_session(sid, state={"last_run_id": run.id})
+                                yield "data: [DONE]\n\n"
+                                return
                             parts.append(chunk)
                             # Emite chunk no formato OpenAI delta
                             delta = _json.dumps({
@@ -723,6 +827,8 @@ def create_app(
                         err = _json.dumps({"error": {"message": str(exc), "type": "server_error"}})
                         yield f"data: {err}\n\n"
                         store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.fail_run(run.id, str(exc))
                         yield "data: [DONE]\n\n"
                         return
 
@@ -753,6 +859,12 @@ def create_app(
                         })
                         yield f"data: {final_delta}\n\n"
                         store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.complete_run(
+                            run.id,
+                            output={"response": response},
+                            tool_calls_count=tool_count,
+                        )
                         yield "data: [DONE]\n\n"
                         break
 
@@ -767,10 +879,17 @@ def create_app(
             response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
         except Exception as exc:
             _log.exception("Erro interno em /v1/chat/completions: %s", exc)
+            run_manager.fail_run(run.id, str(exc))
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
         store.save(sid, ctx.messages)
+        session_manager.touch_session(sid, state={"last_run_id": run.id})
+        run_manager.complete_run(
+            run.id,
+            output={"response": response},
+            tool_calls_count=len(tool_log),
+        )
 
         # Estima tokens (sem tokenizer real)
         prompt_tokens = sum(len(m.get("content", "")) // 4 for m in ctx.messages[:-1])
