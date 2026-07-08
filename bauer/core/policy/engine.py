@@ -21,6 +21,8 @@ class PolicyDecision:
 
 
 DEFAULT_RULES: list[dict[str, Any]] = [
+    {"id": "os.open_app.allow", "operation": "os.open_app", "action": "allow"},
+    {"id": "network.http.allow", "operation": "network.http", "action": "allow"},
     {"id": "shell.execute.ask", "operation": "shell.execute", "action": "ask"},
     {"id": "filesystem.delete.ask", "operation": "filesystem.delete", "action": "ask"},
     {"id": "social.publish.ask", "operation": "social.publish", "action": "ask"},

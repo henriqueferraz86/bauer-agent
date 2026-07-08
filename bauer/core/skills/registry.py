@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 
 from .manifest import SkillManifest, SkillManifestError
@@ -34,8 +35,18 @@ class SkillRegistry:
         return [
             manifest
             for manifest in self.list()
-            if any(capability.lower() == needle for capability in manifest.capabilities)
+            if any(item.lower() == needle for item in manifest.capabilities)
         ]
+
+    def resolve_capability(self, capability: str, *, platform_name: str | None = None) -> SkillManifest | None:
+        matches = self.find_by_capability(capability)
+        if not matches:
+            return None
+        current = _normalize_platform(platform_name or platform.system())
+        for manifest in matches:
+            if current in {item.lower() for item in manifest.platforms}:
+                return manifest
+        return matches[0]
 
     def capabilities(self) -> dict[str, list[str]]:
         result: dict[str, list[str]] = {}
@@ -62,3 +73,14 @@ class SkillRegistry:
             paths.extend(sorted(root.rglob("skill.yaml")))
             paths.extend(sorted(path for path in root.rglob("*.yaml") if path.name != "skill.yaml"))
         return paths
+
+
+def _normalize_platform(value: str) -> str:
+    name = value.strip().lower()
+    if name in {"darwin", "mac", "macos", "osx"}:
+        return "darwin"
+    if name.startswith("win"):
+        return "windows"
+    if name.startswith("linux"):
+        return "linux"
+    return name

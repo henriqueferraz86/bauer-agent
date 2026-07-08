@@ -1,4 +1,10 @@
 rules:
+  - id: os.open_app.allow
+    operation: os.open_app
+    action: allow
+  - id: network.http.allow
+    operation: network.http
+    action: allow
   - id: shell.execute.ask
     operation: shell.execute
     action: ask

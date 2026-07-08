@@ -1,0 +1,21 @@
+id: windows.open_app
+name: Windows Open App
+version: 1.0.0
+description: Open a simple Windows desktop application through the local OS launcher.
+capabilities:
+  - os.open_app
+  - os.windows.open_app
+permissions:
+  - os.open_app
+risk: low
+platforms:
+  - windows
+inputs:
+  app:
+    type: string
+    required: true
+outputs:
+  opened:
+    type: boolean
+  pid:
+    type: integer
