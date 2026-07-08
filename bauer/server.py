@@ -283,6 +283,27 @@ def create_app(
     except Exception:
         pass
 
+    def _current_system_prompt() -> str:
+        """Refresh request-scoped prompt data such as current date/time."""
+        try:
+            from .agent import _build_system_prompt
+
+            return _build_system_prompt(router)
+        except Exception:
+            return system_prompt
+
+    def _new_context() -> ContextManager:
+        return ContextManager(
+            applied_context=applied_context,
+            system_prompt=_current_system_prompt(),
+        )
+
+    def _format_server_response(response: str) -> str:
+        text = str(response or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        while "\n\n\n" in text:
+            text = text.replace("\n\n\n", "\n\n")
+        return text
+
     def _runtime_metrics_snapshot() -> dict:
         runs = run_manager.list_runs()
         events = event_bus.list_events()
@@ -607,7 +628,7 @@ def create_app(
             status="running",
         )
 
-        ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
+        ctx = _new_context()
         ctx.messages = store.load(session_id)
         ctx.add_user(req.message)
         router._runtime_session_id = session_id  # type: ignore[attr-defined]
@@ -623,6 +644,7 @@ def create_app(
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
+        response = _format_server_response(response)
         store.save(session_id, ctx.messages)
         session_manager.touch_session(session_id, state={"last_run_id": run.id})
         run_manager.complete_run(
@@ -682,7 +704,7 @@ def create_app(
             status="running",
         )
 
-        ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
+        ctx = _new_context()
         ctx.messages = store.load(sid)
         ctx.add_user(message)
         router._runtime_session_id = sid  # type: ignore[attr-defined]
@@ -776,7 +798,7 @@ def create_app(
                     yield f"event: done\ndata: {sid}\n\n"
                     return
 
-                response = "".join(parts)
+                response = _format_server_response("".join(parts))
                 ctx.add_assistant(response)
 
                 action_dict = _try_parse_tool(response, router)
@@ -875,7 +897,7 @@ def create_app(
             state={"transport": "openai", "endpoint": "/v1/chat/completions"},
         )
 
-        ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
+        ctx = _new_context()
         ctx.messages = store.load(sid)
 
         # Adiciona todas as mensagens do request ao contexto
@@ -947,7 +969,7 @@ def create_app(
                         yield "data: [DONE]\n\n"
                         return
 
-                    response = "".join(parts)
+                    response = _format_server_response("".join(parts))
                     ctx.add_assistant(response)
 
                     action_dict = _try_parse_tool(response, router)
@@ -998,6 +1020,7 @@ def create_app(
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
+        response = _format_server_response(response)
         store.save(sid, ctx.messages)
         session_manager.touch_session(sid, state={"last_run_id": run.id})
         run_manager.complete_run(

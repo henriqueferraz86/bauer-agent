@@ -273,6 +273,46 @@ def test_chat_with_tool_calls(tmp_path: Path):
     assert data["tool_calls"][0]["tool"] == "list_dir"
 
 
+def test_chat_refreshes_system_prompt_each_request(tmp_path: Path):
+    """Server nao deve congelar data/hora do system prompt no startup."""
+    from bauer.tool_router import ToolRouter
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = [iter(["ok 1"]), iter(["ok 2"])]
+    router = ToolRouter(workspace=tmp_path)
+    app = create_app(
+        model_name="phi4-mini",
+        applied_context=4096,
+        router=router,
+        client=mock_client,
+        system_prompt="startup prompt",
+        sessions_dir=tmp_path / "sessions",
+        api_key="",
+        rate_limit_requests=0,
+    )
+
+    with patch("bauer.agent._build_system_prompt", side_effect=["fresh time 1", "fresh time 2"]):
+        client = TestClient(app)
+        assert client.post("/chat", json={"message": "que horas sao?", "session_id": "a"}).status_code == 200
+        assert client.post("/chat", json={"message": "que horas sao?", "session_id": "b"}).status_code == 200
+
+    first_payload = mock_client.chat_stream.call_args_list[0][0][1]
+    second_payload = mock_client.chat_stream.call_args_list[1][0][1]
+    assert first_payload[0]["content"] == "fresh time 1"
+    assert second_payload[0]["content"] == "fresh time 2"
+
+
+def test_chat_response_is_trimmed_and_blank_lines_normalized(tmp_path: Path):
+    """Server devolve texto limpo para clientes REST simples."""
+    with patch("bauer.agent.run_one_turn") as mock_turn:
+        mock_turn.return_value = ("\n\n  Hoje sao 10:30.\n\n\n\n", [])
+        client = _make_app(tmp_path)
+        resp = client.post("/chat", json={"message": "hora"})
+
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "Hoje sao 10:30."
+
+
 def test_chat_error_returns_500(tmp_path: Path):
     """Quando run_one_turn lança exceção, retorna 500."""
     with patch("bauer.agent.run_one_turn") as mock_turn:

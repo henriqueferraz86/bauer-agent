@@ -56,6 +56,17 @@ _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 _LISTEN_CMDS = {"/listen", "/ouvir"}
+_LISTEN_LOOP_CMDS = {"/listen loop", "/listen auto", "/ouvir loop", "/ouvir auto"}
+_LISTEN_LOOP_STOP_WORDS = {
+    "parar",
+    "para",
+    "cancelar",
+    "sair",
+    "encerrar",
+    "stop",
+    "cancel",
+    "exit",
+}
 _THUMBSUP_CMDS = {"/thumbsup", "/bom", "/positivo", "/like"}
 _THUMBSDOWN_CMDS = {"/thumbsdown", "/ruim", "/negativo", "/dislike"}
 
@@ -66,6 +77,7 @@ _SLASH_BASE = [
     "/status",
     "/model",
     "/listen",
+    "/listen loop",
     "/sessions",
     "/spec",
     "/spec new",
@@ -107,6 +119,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
     "/listen":         "fala com o Bauer pelo microfone",
+    "/listen loop":    "conversa por voz ate cancelar",
     "/sessions":       "lista sessões salvas",
     "/spec":           "lista specs do projeto",
     "/spec new":       "cria novo spec (wizard)",
@@ -247,6 +260,9 @@ def _capture_listen_input(console: Console) -> str | None:
         from .audio_capture import capture_voice_input
 
         text = capture_voice_input(console=console)
+    except KeyboardInterrupt:
+        console.print("[yellow]Audio cancelado.[/yellow]")
+        return None
     except ImportError as exc:
         console.print(f"[red]{exc}[/red]")
         return None
@@ -254,10 +270,24 @@ def _capture_listen_input(console: Console) -> str | None:
         console.print(f"[red]Erro ao ouvir: {exc}[/red]")
         return None
 
-    if not text or not text.strip():
-        console.print("[yellow]Nenhum audio capturado.[/yellow]")
+    text = (text or "").strip()
+    if not _is_meaningful_voice_text(text):
+        console.print("[yellow]Nada util foi transcrito; tente falar novamente.[/yellow]")
         return None
-    return text.strip()
+    return text
+
+
+def _is_meaningful_voice_text(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) < 2:
+        return False
+    return bool(re.search(r"[\wÀ-ÿ]", compact, flags=re.UNICODE))
+
+
+def _is_listen_loop_stop(text: str) -> bool:
+    normalized = re.sub(r"[^\wÀ-ÿ\s-]", "", text.strip().lower(), flags=re.UNICODE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized in _LISTEN_LOOP_STOP_WORDS
 
 
 def _set_blink_underline() -> None:
@@ -4391,39 +4421,55 @@ def run_agent_session(
             except Exception:
                 pass
     _CONFIRM_EXEC_ACTIVE = _confirm_cb is not None
+    _listen_loop_active = False
 
     while True:
         # --- entrada do usuário ---
-        try:
-            if _pt_session is not None:
-                try:
-                    user_input = _pt_session.prompt(_PROMPT_FRAGMENTS).strip()
-                except (KeyboardInterrupt, EOFError):
-                    raise
-                except Exception:
-                    # Falha em runtime (ex: terminal redimensionado abruptamente)
-                    # — tenta uma vez com console.input fallback
-                    _pt_session = None
+        if _listen_loop_active:
+            listened = _capture_listen_input(console)
+            if not listened:
+                _listen_loop_active = False
+                console.print("[dim]Modo /listen loop pausado. Digite /listen loop para retomar.[/dim]")
+                continue
+            if _is_listen_loop_stop(listened):
+                _listen_loop_active = False
+                console.print("[dim]Modo /listen loop encerrado.[/dim]")
+                continue
+            console.print(f"[dim]Voce disse:[/dim] {listened}")
+            user_input = listened
+        else:
+            try:
+                if _pt_session is not None:
+                    try:
+                        user_input = _pt_session.prompt(_PROMPT_FRAGMENTS).strip()
+                    except (KeyboardInterrupt, EOFError):
+                        raise
+                    except Exception:
+                        _pt_session = None
+                        _set_blink_underline()
+                        user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
+                else:
                     _set_blink_underline()
                     user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
-            else:
-                _set_blink_underline()
-                user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Sessao encerrada.[/dim]")
-            try:
-                from .plugin_hooks import hooks as _phooks
-                _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
-            except Exception:
-                pass
-            if _memprov is not None:
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Sessao encerrada.[/dim]")
                 try:
-                    _memprov.on_session_end(ctx.messages)
+                    from .plugin_hooks import hooks as _phooks
+                    _phooks.emit("session_end", session_id=session_id or "local", model=model_name)
                 except Exception:
                     pass
-            return
+                if _memprov is not None:
+                    try:
+                        _memprov.on_session_end(ctx.messages)
+                    except Exception:
+                        pass
+                return
 
         if not user_input:
+            continue
+        if user_input.lower() in _LISTEN_LOOP_CMDS:
+            _listen_loop_active = True
+            console.print("[dim]Modo /listen loop iniciado. Fale 'parar' ou pressione Ctrl+C na escuta para pausar.[/dim]")
             continue
         if user_input.lower() in _LISTEN_CMDS:
             listened = _capture_listen_input(console)

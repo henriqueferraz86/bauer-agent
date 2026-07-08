@@ -59,9 +59,9 @@ def _has_numpy() -> bool:
 
 
 def capture_voice_input(
-    duration_max_s: int = 30,
+    duration_max_s: int = 120,
     silence_threshold_db: float = -40.0,
-    silence_duration_s: float = 1.0,
+    silence_duration_s: float = 5.0,
     sample_rate: int = 16000,
     console: Any = None,
 ) -> str | None:
@@ -107,7 +107,10 @@ def capture_voice_input(
         raise ImportError("transcription indisponivel para captura de audio.")
 
     if console is not None:
-        console.print("[cyan]🎤 Gravando áudio... Fale agora (silêncio de 1s para parar ou max 30s).[/cyan]")
+        console.print(
+            "[cyan]🎤 Gravando áudio... Fale agora "
+            f"(silêncio de {silence_duration_s:g}s para parar ou max {duration_max_s}s).[/cyan]"
+        )
 
     try:
         # Grava em chunks, monitora amplitude em tempo real

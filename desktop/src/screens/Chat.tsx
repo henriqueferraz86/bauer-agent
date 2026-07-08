@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, streamSSE } from "../api/client";
 
@@ -16,11 +16,30 @@ interface SlashCommand {
   run: (arg: string) => void | Promise<void>;
 }
 
+const CHAT_STATE_KEY = "bauer.chatState.v1";
+
+function loadChatState(): { messages: Message[]; sessionId: string } {
+  try {
+    const raw = localStorage.getItem(CHAT_STATE_KEY);
+    if (!raw) return { messages: [], sessionId: "" };
+    const parsed = JSON.parse(raw) as { messages?: Message[]; sessionId?: string };
+    return {
+      messages: Array.isArray(parsed.messages)
+        ? parsed.messages.map((m) => ({ ...m, streaming: false }))
+        : [],
+      sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : "",
+    };
+  } catch {
+    return { messages: [], sessionId: "" };
+  }
+}
+
 export default function Chat() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const initialState = useRef(loadChatState());
+  const [messages, setMessages] = useState<Message[]>(initialState.current.messages);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [sessionId, setSessionId] = useState<string>("");
+  const [sessionId, setSessionId] = useState<string>(initialState.current.sessionId);
   const [palIdx, setPalIdx] = useState(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -31,6 +50,15 @@ export default function Chat() {
 
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
 
+  useEffect(() => {
+    const cleanMessages = messages.map((m) => ({ ...m, streaming: false }));
+    localStorage.setItem(CHAT_STATE_KEY, JSON.stringify({ messages: cleanMessages, sessionId }));
+  }, [messages, sessionId]);
+
+  useEffect(() => {
+    scroll();
+  }, []);
+
   function appendInfo(text: string) {
     setMessages((m) => [...m, { role: "assistant", text }]);
     scroll();
@@ -38,6 +66,7 @@ export default function Chat() {
   function resetSession() {
     setMessages([]);
     setSessionId("");
+    localStorage.removeItem(CHAT_STATE_KEY);
   }
 
   // ── Comandos de barra (paridade com o menu "/" do Telegram) ───────────────

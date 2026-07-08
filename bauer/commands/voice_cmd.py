@@ -16,7 +16,7 @@ voice_app = typer.Typer(
 @voice_app.command(name="listen")
 def cmd_voice_listen(
     max_duration: int = typer.Option(
-        30, "--duration", "-d", help="Tempo maximo de gravacao (segundos)"
+        120, "--duration", "-d", help="Tempo maximo de gravacao (segundos)"
     ),
     silence_threshold: float = typer.Option(
         -40.0, "--threshold", "-t", help="Nivel de silencio em dB"
@@ -34,7 +34,7 @@ def cmd_voice_listen(
 @voice_app.command(name="ask")
 def cmd_voice_ask(
     max_duration: int = typer.Option(
-        30, "--duration", "-d", help="Tempo maximo de gravacao (segundos)"
+        120, "--duration", "-d", help="Tempo maximo de gravacao (segundos)"
     ),
     silence_threshold: float = typer.Option(
         -40.0, "--threshold", "-t", help="Nivel de silencio em dB"

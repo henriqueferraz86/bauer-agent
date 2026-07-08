@@ -594,6 +594,7 @@ class TestTabCompletion:
 
         completions = list(_SlashCompleter().get_completions(Document("/lis"), CompleteEvent()))
         assert any(c.text == "/listen" for c in completions)
+        assert any(c.text == "/listen loop" for c in completions)
 
     def test_slash_completer_ignores_non_slash(self):
         try:

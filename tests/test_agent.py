@@ -306,6 +306,56 @@ def test_agent_listen_command_sends_transcript_to_model(ws: Path, router: ToolRo
     assert "resuma o projeto" in contents
 
 
+def test_agent_listen_ignores_punctuation_only_transcript(ws: Path, router: ToolRouter):
+    """Transcricao espuria como '.' nao deve virar turno do modelo."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("nao deve chamar")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input", return_value=None):
+        with patch("builtins.input", side_effect=["/listen", "/exit"]):
+            run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()
+
+
+def test_agent_listen_loop_keeps_listening_until_stop(ws: Path, router: ToolRouter):
+    """Modo /listen loop volta a escutar depois da resposta ate comando de parada."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Primeira resposta.")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input", side_effect=["primeira pergunta", "parar"]):
+        with patch("builtins.input", side_effect=["/listen loop", EOFError]):
+            run_agent_session(client, "test-model", 4096, console, router)
+
+    assert client.chat_stream.call_count == 1
+    first_payload = client.chat_stream.call_args_list[0][0][1]
+    contents = [m["content"] for m in first_payload]
+    assert "primeira pergunta" in contents
+
+
+def test_capture_listen_input_handles_keyboard_interrupt():
+    """Ctrl+C durante audio deve cancelar o /listen e devolver o prompt."""
+    from bauer.agent import _capture_listen_input
+    from rich.console import Console
+
+    with patch("bauer.audio_capture.capture_voice_input", side_effect=KeyboardInterrupt):
+        assert _capture_listen_input(Console()) is None
+
+
+def test_capture_listen_input_rejects_noise_transcript():
+    from bauer.agent import _capture_listen_input
+    from rich.console import Console
+
+    with patch("bauer.audio_capture.capture_voice_input", return_value="."):
+        assert _capture_listen_input(Console()) is None
+
+
 def test_agent_single_tool_call(ws: Path, router: ToolRouter):
     """Modelo chama uma tool e depois responde com texto."""
     from bauer.agent import run_agent_session

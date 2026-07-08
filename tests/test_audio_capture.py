@@ -57,6 +57,21 @@ class TestAudioCaptureImportError:
                 capture_voice_input(console=None)
 
 
+def test_capture_voice_default_message_uses_5s_silence_and_120s_max():
+    """O prompt de voz deve refletir os novos defaults de conversa longa."""
+    from bauer.audio_capture import capture_voice_input
+
+    console = MagicMock()
+    with patch("bauer.audio_capture._has_sounddevice", return_value=True), \
+         patch("bauer.audio_capture._has_numpy", return_value=True), \
+         patch("bauer.audio_capture.sd.InputStream", side_effect=KeyboardInterrupt):
+        assert capture_voice_input(console=console) is None
+
+    first_message = console.print.call_args_list[0][0][0]
+    assert "silêncio de 5s" in first_message
+    assert "max 120s" in first_message
+
+
 class TestAudioCaptureSkipped:
     """Testa fallback when deps are unavailable — não tenta importar de verdade."""
 
