@@ -76,6 +76,9 @@ from bauer.commands.sessions_cmd import sessions_app  # noqa: E402
 from bauer.commands.events_cmd import events_app  # noqa: E402
 from bauer.commands.approvals_cmd import approvals_app  # noqa: E402
 from bauer.commands.skills_cmd import skills_app  # noqa: E402
+from bauer.commands.schedule_cmd import schedule_app  # noqa: E402
+from bauer.commands.worker_cmd import worker_app  # noqa: E402
+from bauer.commands.budget_cmd import budget_app, autonomy_app  # noqa: E402
 
 
 from bauer.commands.serve_cmd import serve_app  # noqa: E402
@@ -120,6 +123,10 @@ app.add_typer(sessions_app, name="sessions")
 app.add_typer(events_app, name="events")
 app.add_typer(approvals_app, name="approvals")
 app.add_typer(skills_app, name="skills")
+app.add_typer(schedule_app, name="schedule")
+app.add_typer(worker_app, name="worker")
+app.add_typer(budget_app, name="budget")
+app.add_typer(autonomy_app, name="autonomy")
 app.add_typer(factory_app, name="factory")
 
 from bauer.commands.home_cmd import home_app  # noqa: E402

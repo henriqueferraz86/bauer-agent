@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from ..runtime.autonomy import BudgetExceededError, BudgetManager
 from .risk import RiskClassifier
 
 
@@ -41,13 +42,29 @@ class PolicyEngine:
         workspace: str | Path = "workspace",
         rules_path: str | Path | None = None,
         rules: list[dict[str, Any]] | None = None,
+        runtime_root: str | Path = "memory/runtime",
     ) -> None:
         self.workspace = Path(workspace)
         self.risk = RiskClassifier(self.workspace)
         self.rules = rules if rules is not None else self._load_rules(rules_path)
+        self.budget_manager = BudgetManager(root=runtime_root)
 
     def evaluate(self, operation: str, payload: dict[str, Any] | None = None) -> PolicyDecision:
         payload = payload or {}
+        if operation == "runtime.execute":
+            try:
+                self.budget_manager.ensure_can_start(
+                    agent_id=str(payload.get("agent_id") or "default"),
+                    company_id=str(payload.get("company_id") or "") or None,
+                    estimated_cost_usd=float(payload.get("estimated_cost_usd") or 0),
+                )
+            except BudgetExceededError as exc:
+                return PolicyDecision(
+                    action="deny",
+                    reason=str(exc),
+                    risk_level="high",
+                    matched_rules=["budget.exceeded"],
+                )
         if operation == "skill.execute":
             permissions = payload.get("permissions") or []
             for permission in permissions:
