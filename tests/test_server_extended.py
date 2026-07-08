@@ -657,6 +657,41 @@ def test_stream_emits_selected_skill_event(tmp_path: Path):
     assert payload["score"] == 0.85
 
 
+def test_stream_strips_all_action_json_from_narration(tmp_path: Path):
+    """Regressão: modelo que emite VÁRIOS tool calls numa resposta, intercalados
+    com prosa, vazava o 2º/3º JSON no chat (só o 1º era removido). Agora todos
+    os blocos de action são retirados do texto exibido."""
+    from bauer.tool_router import ToolRouter
+
+    resp1 = (
+        "Vou fazer uma análise completa do Docker.\n\n"
+        '{"action": "list_dir", "args": {"path": "."}}\n\n'
+        "Vejo vários projetos mas nenhum Dockerfile. Vou verificar alguns.\n\n"
+        '{"action": "list_dir", "args": {"path": "barbearia-site"}}\n'
+        '{"action": "run_command", "args": {"command": "docker ps -a"}}'
+    )
+    turns = [iter([resp1]), iter(["Pronto: ambiente mapeado."])]
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = lambda *a, **k: turns.pop(0)
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+    resp = tc.get("/stream?message=analise docker")
+
+    assert resp.status_code == 200
+    text = _stream_text(resp.text)
+    assert '"action"' not in text          # nenhum JSON de action vaza
+    assert "Vou fazer uma análise completa do Docker." in text
+    assert "Vejo vários projetos" in text
+    assert "Pronto: ambiente mapeado." in text
+
+
 def test_stream_releases_false_positive_braces(tmp_path: Path):
     """Chaves legítimas no texto (ex.: `{{.ServerVersion}}` de um comando
     docker) não podem ficar presas na gate anti-vazamento — o texto completo

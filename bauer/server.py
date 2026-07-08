@@ -107,26 +107,45 @@ class _StreamGate:
 
 
 def _strip_action_block(text: str, available: set) -> str:
-    """Remove o primeiro JSON de action (e o fence markdown ao redor) do texto.
+    """Remove TODOS os JSON de action (e os fences markdown ao redor) do texto.
 
-    Usado no flush final da _StreamGate quando o turno terminou em tool call:
-    a narração retida junto com o JSON deve ir para o chat, o JSON não."""
+    Usado no flush da _StreamGate: a narração retida junto com o(s) JSON(s) vai
+    para o chat, o JSON não. Modelos que emitem vários tool calls numa única
+    resposta (batch, intercalados com prosa) deixariam o 2º, 3º… vazando se
+    removêssemos só o primeiro — daí o scan varrer a string inteira."""
     import json as _json
     import re as _re
 
+    def _is_action(obj) -> bool:
+        # Envelope de tool call do modelo: {"action": "...", "args": {...}}.
+        # Casa tools conhecidas OU qualquer objeto no formato action+args —
+        # mostrar JSON de tool call cru no chat nunca é desejável, mesmo que a
+        # tool não esteja disponível neste router (o modelo pode alucinar uma).
+        if not isinstance(obj, dict) or not isinstance(obj.get("action"), str):
+            return False
+        return obj["action"] in available or "args" in obj
+
     decoder = _json.JSONDecoder()
-    idx = text.find("{")
-    while idx != -1:
-        try:
-            obj, end = decoder.raw_decode(text, idx)
-            if isinstance(obj, dict) and obj.get("action") in available:
-                before = _re.sub(r"```(?:json)?\s*$", "", text[:idx])
-                after = _re.sub(r"^\s*```(?:json)?", "", text[end:])
-                return before + after
-        except _json.JSONDecodeError:
-            pass
-        idx = text.find("{", idx + 1)
-    return text
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "{":
+            try:
+                obj, end = decoder.raw_decode(text, i)
+                if _is_action(obj):
+                    i = end
+                    continue
+            except _json.JSONDecodeError:
+                pass
+        out.append(text[i])
+        i += 1
+    result = "".join(out)
+    # Fences que ficaram vazios após remover o JSON de dentro (```json``` ).
+    result = _re.sub(r"```(?:json)?\s*```", "", result)
+    # Colapsa as linhas em branco extras deixadas pelos blocos removidos.
+    result = _re.sub(r"\n{3,}", "\n\n", result)
+    return result
 
 
 # ─── Métricas globais em memória (Prometheus-style) ───────────────────────────
@@ -1015,6 +1034,9 @@ def create_app(
                     tail = gate.pending
                     if not gate.sent_any:
                         tail = _extract_text_from_pseudo_json(response) or tail
+                    # Remove qualquer JSON de action que tenha ficado no texto
+                    # (batch de tool calls acima do MAX_TOOL_TURNS, p.ex.).
+                    tail = _strip_action_block(tail, set(router.available_tools()))
                     if tail.strip():
                         if turn_sep:
                             tail = "\n\n" + tail.lstrip("\n")
