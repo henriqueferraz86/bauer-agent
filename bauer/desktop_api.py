@@ -588,6 +588,99 @@ def build_desktop_router(
             ],
         }
 
+    @router.get("/os/home")
+    def os_home():
+        """Painel unificado do Bauer OS: agentes ativos, aprovacoes pendentes,
+        tarefas agendadas com falha, budget do dia e ultimas execucoes.
+
+        Cada fonte e isolada em try/except: uma fonte indisponivel degrada o
+        cartao correspondente sem derrubar o painel inteiro.
+        """
+        from dataclasses import asdict
+
+        home: Dict[str, Any] = {}
+
+        # Runs: ativos (nao-terminais) + ultimas execucoes.
+        active_agents = 0
+        recent_runs: List[Dict[str, Any]] = []
+        try:
+            from .core.runtime.run_manager import TERMINAL_RUN_STATUSES, RunManager
+
+            runs = RunManager(root=_runtime_root).list_runs()
+            active_agents = sum(1 for r in runs if r.status not in TERMINAL_RUN_STATUSES)
+            recent_runs = [
+                {
+                    "id": r.id,
+                    "agent_id": r.agent_id,
+                    "status": r.status,
+                    "runtime_adapter": getattr(r, "runtime_adapter", ""),
+                    "started_at": getattr(r, "started_at", ""),
+                    "updated_at": getattr(r, "updated_at", ""),
+                }
+                for r in runs[-6:][::-1]
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home runs load failed: %s", exc)
+
+        # Aprovacoes pendentes.
+        pending_approvals: List[Dict[str, Any]] = []
+        try:
+            from .core.policy import ApprovalManager
+
+            pending_approvals = [
+                asdict(record)
+                for record in ApprovalManager(root=_runtime_root).list(status="pending")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home approvals load failed: %s", exc)
+
+        # Tarefas agendadas com falha na ultima execucao.
+        failed_scheduled: List[Dict[str, Any]] = []
+        try:
+            from .core.runtime.scheduler import Scheduler
+
+            for task in Scheduler(root=_runtime_root).list_tasks():
+                if task.last_error:
+                    failed_scheduled.append({
+                        "id": task.id,
+                        "name": getattr(task, "name", task.id),
+                        "last_error": task.last_error,
+                        "last_run_id": task.last_run_id,
+                        "next_run_at": task.next_run_at,
+                    })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home scheduler load failed: %s", exc)
+
+        # Budget do dia: limite/uso vem do autonomy profile; custo do dia do ledger.
+        budget: Dict[str, Any] = {}
+        try:
+            from .core.runtime.autonomy import BudgetManager
+
+            daily = BudgetManager(root=_runtime_root).status().get("daily", {})
+            budget = {
+                "used_usd": daily.get("used_usd"),
+                "limit_usd": daily.get("limit_usd"),
+                "remaining_usd": daily.get("remaining_usd"),
+                "exceeded": daily.get("exceeded"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home budget load failed: %s", exc)
+        try:
+            summary = cost_summary(_cost_file)
+            budget["cost_today_usd"] = summary.get("cost_today_usd")
+            budget["calls_today"] = summary.get("calls_today")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home cost summary failed: %s", exc)
+
+        home["active_agents"] = active_agents
+        home["pending_approvals_count"] = len(pending_approvals)
+        home["pending_approvals"] = pending_approvals[:5]
+        home["failed_scheduled_count"] = len(failed_scheduled)
+        home["failed_scheduled"] = failed_scheduled[:5]
+        home["budget"] = budget
+        home["recent_runs"] = recent_runs
+        return home
+
     @router.get("/runtime/dashboard")
     def runtime_dashboard():
         from .core.runtime.adapters import list_runtime_adapters

@@ -28,7 +28,7 @@ const COMMANDS: CommandSeed[] = [
   { text: "pesquisar arquivo", desc: "Abrir workspace/projetos", icon: "ti-file-search" },
   { text: "pausar agente code", desc: "Registrar pausa de um agente", icon: "ti-player-pause" },
   { text: "ver skills", desc: "Listar skills e permissoes", icon: "ti-puzzle" },
-  { text: "status agno", desc: "Ver adapter ativo e workers", icon: "ti-plug-connected" },
+  { text: "status do runtime", desc: "Ver adapter ativo e workers", icon: "ti-plug-connected" },
 ];
 
 export default function CommandPalette() {

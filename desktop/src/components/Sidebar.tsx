@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 
 const NAV = [
+  { to: "/", icon: "ti-home", label: "Bauer OS" },
   { to: "/chat", icon: "ti-message-2", label: "Chat" },
   { to: "/agents", icon: "ti-users", label: "Agents" },
   { to: "/skills", icon: "ti-puzzle", label: "Skills" },
@@ -23,6 +24,7 @@ export default function Sidebar() {
         <NavLink
           key={n.to}
           to={n.to}
+          end={n.to === "/"}
           title={n.label}
           className={({ isActive }) => "sb-item" + (isActive ? " active" : "")}
         >
