@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+pytest.importorskip("typer")
 from typer.testing import CliRunner
 
 from bauer.cli import app

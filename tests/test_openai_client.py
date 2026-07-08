@@ -175,3 +175,28 @@ def test_chat_stream_raises_on_connect_error():
         c = OpenAIClient("http://localhost:1234", 5, "", "m")
         with pytest.raises(OpenAIClientError, match="Conexao"):
             list(c.chat_stream("m", []))
+
+
+def test_chat_stream_429_with_int_code_does_not_crash():
+    """Regressão: alguns providers (openrouter) devolvem error.code como INT
+    (ex.: 429). O handler de 429 fazia `"x" in _error_type` e crashava com
+    TypeError: argument of type 'int' is not iterable — mascarando o erro real
+    de rate-limit e quebrando o fallback."""
+    import json
+    import httpx
+
+    body = json.dumps({"error": {"code": 429, "message": "Rate limit exceeded"}})
+    mock_response = MagicMock()
+    mock_response.status_code = 429
+    mock_response.request = MagicMock()
+    mock_response.iter_bytes.return_value = iter([body.encode("utf-8")])
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("httpx.stream", return_value=mock_response):
+        c = OpenAIClient("http://localhost:1234", 5, "", "m")
+        # Deve levantar OpenAIClientError limpo (rate limit), NÃO TypeError.
+        with pytest.raises(OpenAIClientError) as exc_info:
+            list(c.chat_stream("m", [{"role": "user", "content": "oi"}]))
+    assert not isinstance(exc_info.value.__cause__, TypeError)
+    assert "429" in str(exc_info.value) or "rate" in str(exc_info.value).lower() or "limit" in str(exc_info.value).lower()

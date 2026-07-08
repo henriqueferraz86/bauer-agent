@@ -1,0 +1,28 @@
+name: EDA Report
+description: Roteiro de analise exploratoria de dados antes de modelar.
+content: '# EDA
+
+
+  ## Visao geral
+
+  - Shape, tipos, head/sample.
+
+
+  ## Qualidade
+
+  - Faltantes, duplicatas, outliers, valores impossiveis.
+
+
+  ## Distribuicoes
+
+  - Numericas (histograma, skew); categoricas (cardinalidade).
+
+
+  ## Relacoes
+
+  - Correlacao (!= causa); target vs features.
+
+
+  ## Saidas
+
+  - Problemas de qualidade, hipoteses de features, riscos (vazamento).'

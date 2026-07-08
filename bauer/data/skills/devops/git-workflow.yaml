@@ -1,0 +1,33 @@
+name: Git Workflow
+description: "Boas práticas de branching, commits e PRs — conventional commits, squash, rebase interativo."
+content: |
+  # Git Workflow — Guia de boas práticas
+
+  ## Convenção de commits
+  Formato: `<tipo>(<escopo>): <descrição curta>`
+  Tipos: feat, fix, docs, style, refactor, test, chore, ci, perf
+
+  ## Branching
+  - `main` — produção, nunca commitado diretamente
+  - `feat/<slug>` — features novas
+  - `fix/<slug>` — correções
+  - `chore/<slug>` — tarefas de manutenção
+
+  ## Workflow padrão
+  1. `git checkout -b feat/<slug>` — cria branch
+  2. Commits atômicos (um assunto por commit)
+  3. `git rebase -i main` — limpa histórico antes do PR
+  4. `git push -u origin feat/<slug>` — abre PR
+
+  ## Regras
+  - Nunca force-push em `main`
+  - Squash commits de WIP antes do merge
+  - Mensagem do PR resume o PORQUÊ, não o que mudou
+
+  ## Comandos úteis
+  ```bash
+  git log --oneline --graph --all   # visão geral
+  git stash push -m "wip: <desc>"   # salva trabalho em progresso
+  git bisect start / good / bad     # acha commit que quebrou algo
+  git cherry-pick <hash>            # aplica commit específico
+  ```

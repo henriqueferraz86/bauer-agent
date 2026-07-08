@@ -8,20 +8,43 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+# Canônico em ollama_client — manter definição duplicada aqui causou drift real
+# (show_model passava context_length/size_bytes que a cópia local não tinha).
+from .http_shared import shared_ssl_context
+from .ollama_client import ModelfileParams
+
+
+def _is_html_body(body: str) -> bool:
+    """True when provider returned an HTML page instead of JSON (login/Cloudflare/proxy)."""
+    stripped = body.lstrip()
+    return stripped.startswith("<") or stripped.lower().startswith("<!doctype")
+
+
+def _safe_body(status: int, body: str) -> str:
+    """Return a human-readable one-liner for error body, hiding raw HTML dumps."""
+    if _is_html_body(body):
+        # 403 from ChatGPT/Codex backend when model not accessible via this token
+        if status == 403:
+            return (
+                "HTTP 403 — provider retornou pagina HTML (bloqueio de acesso).\n"
+                "  Este modelo/endpoint nao aceita este token.\n"
+                "  - Para o Codex backend: use 'gpt-5-codex' ou 'codex-mini-latest'\n"
+                "  - Ou troque de provider: bauer model"
+            )
+        return (
+            f"HTTP {status} — provider retornou pagina HTML em vez de JSON "
+            f"(bloqueio de login, proxy ou Cloudflare).\n"
+            "  Troque de provider: bauer model"
+        )
+    return f"HTTP {status}: {body}"
+
 
 class OpenAIClientError(Exception):
     pass
-
-
-@dataclass
-class ModelfileParams:
-    num_ctx: int | None
-    raw: dict[str, Any]
 
 
 class OpenAIClient:
@@ -45,6 +68,11 @@ class OpenAIClient:
             self._headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             self._headers.update(extra_headers)
+        # Last `response.usage` payload from the most recent chat call.
+        # Populated by chat_stream (via stream_options.include_usage) and
+        # chat_with_tools. Empty dict if provider didn't surface usage.
+        # Use bauer.account_usage.normalize_usage() to canonicalise.
+        self.last_usage: dict = {}
 
     def _chat_url(self) -> str:
         """URL de chat/completions.
@@ -64,6 +92,7 @@ class OpenAIClient:
                 f"{self.host}/v1/models",
                 headers=self._headers,
                 timeout=self.timeout,
+                verify=shared_ssl_context(),
             )
             if r.status_code in (200, 401):
                 return True, ""  # 401 = auth error mas API está viva
@@ -77,7 +106,12 @@ class OpenAIClient:
 
     def list_models(self) -> list[str]:
         try:
-            r = httpx.get(f"{self.host}/v1/models", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(
+                f"{self.host}/v1/models",
+                headers=self._headers,
+                timeout=self.timeout,
+                verify=shared_ssl_context(),
+            )
             r.raise_for_status()
             data = r.json()
             return [m.get("id", "?") for m in data.get("data", [])]
@@ -95,7 +129,7 @@ class OpenAIClient:
             return True  # assume disponível se não conseguir listar (ex: Groq, OpenRouter)
 
     def show_model(self, name: str) -> ModelfileParams:
-        return ModelfileParams(num_ctx=None, raw={"id": name})
+        return ModelfileParams(num_ctx=None, context_length=None, size_bytes=0, raw={"id": name})
 
     @property
     def supports_native_tools(self) -> bool:
@@ -132,41 +166,92 @@ class OpenAIClient:
             "tool_choice": tool_choice,
             "stream": False,
         }
-        try:
-            resp = httpx.post(
-                self._chat_url(),
-                json=body,
-                headers=self._headers,
-                timeout=httpx.Timeout(
-                    connect=float(self.timeout),
-                    read=300.0,
-                    write=10.0,
-                    pool=5.0,
-                ),
-            )
-        except httpx.ConnectError as exc:
-            raise OpenAIClientError(
-                f"Conexao recusada em {self.host}.\nVerifique se o servidor esta rodando."
-            ) from exc
-        except httpx.TimeoutException:
-            raise OpenAIClientError(f"Timeout ({self.timeout}s) em {self.host}.")
-        except httpx.HTTPError as exc:
-            raise OpenAIClientError(f"Erro HTTP: {exc}") from exc
+        # Retry com backoff em 429 (rate-limit, comum no free tier) e 5xx
+        # (transiente). Backoff exponencial: 2s, 4s, 8s. Honra Retry-After
+        # quando o provider o envia.
+        import time as _time
+        _max_retries = 3
+        resp = None
+        for _attempt in range(_max_retries + 1):
+            try:
+                resp = httpx.post(
+                    self._chat_url(),
+                    json=body,
+                    headers=self._headers,
+                    timeout=httpx.Timeout(
+                        connect=float(self.timeout),
+                        read=300.0,
+                        write=10.0,
+                        pool=5.0,
+                    ),
+                    verify=shared_ssl_context(),
+                )
+            except httpx.ConnectError as exc:
+                raise OpenAIClientError(
+                    f"Conexao recusada em {self.host}.\nVerifique se o servidor esta rodando."
+                ) from exc
+            except httpx.TimeoutException:
+                raise OpenAIClientError(f"Timeout ({self.timeout}s) em {self.host}.")
+            except httpx.HTTPError as exc:
+                raise OpenAIClientError(f"Erro HTTP: {exc}") from exc
+
+            _retryable = resp.status_code == 429 or resp.status_code >= 500
+            if _retryable and _attempt < _max_retries:
+                try:
+                    _ra = resp.headers.get("retry-after")
+                    _wait = float(_ra) if _ra else 2.0 * (2 ** _attempt)
+                except (ValueError, TypeError):
+                    _wait = 2.0 * (2 ** _attempt)
+                _wait = min(_wait, 30.0)  # teto de 30s por espera
+                _time.sleep(_wait)
+                continue
+            break
 
         if resp.status_code >= 400:
             body_text = resp.text[:600]
             raise OpenAIClientError(
-                f"[Provedor] HTTP {resp.status_code} em tool calling. Detalhe: {body_text}"
+                f"[Provedor] {_safe_body(resp.status_code, body_text)}"
             )
 
         try:
             data = resp.json()
+        except json.JSONDecodeError as exc:
+            raise OpenAIClientError(f"Resposta inesperada do provider: {exc}") from exc
+
+        # Alguns providers (ex.: modelos free do OpenRouter) devolvem o erro no
+        # CORPO com HTTP 200 — `{"error": {"message": ..., "code": 429}}` em vez
+        # de `choices`. Detecta isso e levanta com a mensagem real + código, para
+        # o error_classifier reconhecer rate-limit/billing e disparar fallback.
+        if isinstance(data, dict) and "choices" not in data and data.get("error"):
+            err = data["error"]
+            if isinstance(err, dict):
+                _emsg = err.get("message", "") or str(err)
+                _ecode = err.get("code", "")
+            else:
+                _emsg, _ecode = str(err), ""
+            raise OpenAIClientError(
+                f"[Provedor] erro no corpo (HTTP 200) em tool calling"
+                f"{f' [{_ecode}]' if _ecode else ''}: {_emsg}"
+            )
+
+        try:
+            # Capture usage for downstream cost accounting. Non-streaming
+            # responses always carry it in the top-level `usage` field.
+            self.last_usage = dict(data.get("usage") or {})
             return data["choices"][0]["message"]
-        except (KeyError, IndexError, json.JSONDecodeError) as exc:
+        except (KeyError, IndexError, TypeError) as exc:
             raise OpenAIClientError(f"Resposta inesperada do provider: {exc}") from exc
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
-        """Streaming via /v1/chat/completions com SSE."""
+        """Streaming via /v1/chat/completions com SSE.
+
+        Captures `usage` from the final SSE chunk (when the provider supports
+        `stream_options.include_usage=true`) into `self.last_usage`. Providers
+        that don't honour the flag (e.g. some older OpenAI-compat backends)
+        leave `last_usage = {}` — caller should fall back to an estimate.
+        """
+        # Reset usage before each call — readers compare to {} to detect "no data".
+        self.last_usage = {}
         _error_body: str = ""
         _error_status: int = 0
         _error_exc: httpx.HTTPStatusError | None = None
@@ -174,7 +259,15 @@ class OpenAIClient:
             with httpx.stream(
                 "POST",
                 self._chat_url(),
-                json={"model": model, "messages": messages, "stream": True},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    # Request that OpenAI/compat providers include `usage` in the
+                    # final SSE event (one chunk before [DONE], with empty choices).
+                    # Backends that don't recognise this key ignore it silently.
+                    "stream_options": {"include_usage": True},
+                },
                 headers=self._headers,
                 timeout=httpx.Timeout(
                     connect=float(self.timeout),
@@ -182,6 +275,7 @@ class OpenAIClient:
                     write=10.0,
                     pool=5.0,
                 ),
+                verify=shared_ssl_context(),
             ) as response:
                 if response.status_code >= 400:
                     # Lê o corpo do erro DENTRO do contexto stream (conexão ainda aberta)
@@ -212,8 +306,15 @@ class OpenAIClient:
                             data = json.loads(payload)
                         except json.JSONDecodeError:
                             continue
+                        # OpenAI's final usage event arrives BEFORE [DONE], shaped
+                        # like {"choices": [], "usage": {...}}. Capture it here
+                        # so callers can read self.last_usage post-iteration.
+                        usage_payload = data.get("usage")
+                        if isinstance(usage_payload, dict):
+                            self.last_usage = dict(usage_payload)
                         choices = data.get("choices") or []
                         if not choices:
+                            # Final usage-only event (no choices) — keep iterating.
                             continue
                         delta = choices[0].get("delta", {})
                         chunk = delta.get("content", "")
@@ -234,26 +335,102 @@ class OpenAIClient:
             status = _error_status
             body = _error_body
             if status == 429:
+                # Tenta parsear o body para distinguir quota vs rate-limit
+                _error_type = ""
+                _error_msg = body
+                try:
+                    _err_json = json.loads(body)
+                    _error_type = (
+                        _err_json.get("error", {}).get("type", "")
+                        or _err_json.get("error", {}).get("code", "")
+                    )
+                    _error_msg = _err_json.get("error", {}).get("message", body)
+                except Exception:
+                    pass
+
+                # Coerção para str: alguns providers (openrouter) devolvem
+                # error.code como INT (ex.: 429) — sem isto, `"x" in _error_type`
+                # levanta TypeError: argument of type 'int' is not iterable.
+                _error_type = str(_error_type)
+                body = str(body)
+
+                if "insufficient_quota" in _error_type or "insufficient_quota" in body:
+                    _hint = (
+                        "Sem creditos na conta OpenAI API.\n"
+                        f"  Mensagem: {_error_msg}\n\n"
+                        "  IMPORTANTE: ChatGPT Plus (assinatura web) != creditos de API.\n"
+                        "  Sao produtos separados na OpenAI.\n\n"
+                        "  Para resolver — escolha uma opcao:\n"
+                        "  A) Adicionar billing em platform.openai.com/settings/billing\n"
+                        "     e usar bauer model → OpenAI API Key (sk-...)\n"
+                        "  B) Usar Groq gratis: bauer model → Groq → Llama 3.3 70B\n"
+                        "  C) Usar Ollama local: bauer model → Ollama"
+                    )
+                elif "rate_limit" in _error_type or "rate_limit" in body:
+                    _hint = (
+                        "Rate limit atingido (muitas requisicoes por minuto).\n"
+                        f"  Mensagem: {_error_msg}\n"
+                        "  - Aguarde alguns segundos e tente novamente\n"
+                        "  - Ou troque de provider: bauer model"
+                    )
+                else:
+                    # Erro 429 desconhecido — mostra body completo para diagnóstico
+                    _hint = (
+                        f"HTTP 429 do provider.\n"
+                        f"  Resposta: {_error_msg or body}\n"
+                        "  - Verifique sua conta e billing em platform.openai.com\n"
+                        "  - Ou troque de provider: bauer model"
+                    )
+            elif status == 402:
                 _hint = (
-                    "Limite de requisicoes excedido.\n"
-                    "O plano gratuito deste provider tem limites baixos.\n"
-                    "  - Aguarde alguns segundos e tente novamente\n"
-                    "  - Ou troque de provider: bauer model\n"
-                    "  - Ou use Ollama local (sem limites)"
+                    "Creditos insuficientes no provider.\n\n"
+                    "  Este modelo requer saldo — escolha um gratuito:\n"
+                    "  - OpenRouter: use modelos com ':free' no ID\n"
+                    "    (ex: meta-llama/llama-3.2-3b-instruct:free)\n"
+                    "  - OpenCode: modelos com '-free' no ID\n"
+                    "    (ex: mimo-v2-flash-free)\n"
+                    "  - No Desktop: /model → ative 'so gratis' para filtrar\n\n"
+                    f"  Detalhe: {body[:200]}"
                 )
             elif status == 401:
-                _hint = (
-                    "Falha de autenticacao.\n"
-                    "  - Verifique se a API key esta correta em config.yaml\n"
-                    "  - Rode: bauer model para configurar novamente\n"
-                    f"  - URL: {self.host}"
-                )
+                _code = ""
+                try:
+                    _code = json.loads(body).get("error", {}).get("code", "")
+                except Exception:
+                    pass
+                if _code == "missing_scope":
+                    _hint = (
+                        "Token OAuth do ChatGPT nao tem permissao para a API de modelos.\n\n"
+                        "  IMPORTANTE: O login 'ChatGPT OAuth' usa sua conta ChatGPT,\n"
+                        "  mas a API de completions exige creditos separados de API.\n"
+                        "  ChatGPT Plus (assinatura web) != acesso a API developer.\n\n"
+                        "  Para resolver — escolha uma opcao:\n"
+                        "  A) Usar API Key OpenAI: bauer model → OpenAI API Key (sk-...)\n"
+                        "     (requer billing em platform.openai.com/settings/billing)\n"
+                        "  B) Usar Groq gratis: bauer model → Groq → Llama 3.3 70B\n"
+                        "  C) Usar OpenCode gratis: bauer model → OpenCode Zen\n"
+                        "  D) Usar Ollama local: bauer model → Ollama"
+                    )
+                else:
+                    _hint = (
+                        "Falha de autenticacao.\n"
+                        f"  Provider: {self.host}\n\n"
+                        "  'Gratis' = sem custo por token, mas ainda exige API key.\n"
+                        "  Para resolver:\n"
+                        "  - No Desktop: /model para trocar de modelo\n"
+                        "  - No CLI: bauer model\n"
+                        "  - Ou configure a chave em config.yaml: <provider>.api_key"
+                    )
             elif status == 403:
-                _hint = (
-                    "Acesso negado.\n"
-                    "  - Sua API key pode nao ter acesso a este modelo\n"
-                    "  - Verifique os permissoes da chave no provider"
-                )
+                if _is_html_body(body):
+                    _hint = _safe_body(403, body)
+                else:
+                    _hint = (
+                        "Acesso negado (HTTP 403).\n"
+                        "  - Sua API key pode nao ter acesso a este modelo\n"
+                        "  - Verifique as permissoes da chave no provider\n"
+                        f"  - Detalhe: {body[:200]}"
+                    )
             elif 500 <= status < 600:
                 _hint = (
                     "Erro no servidor do provider.\n"
@@ -264,9 +441,38 @@ class OpenAIClient:
                 _hint = (
                     f"Requisicao invalida (HTTP 400).\n"
                     f"  - Verifique se o nome do modelo em config.yaml e valido para este provider\n"
-                    f"  - Rode: bauer auth login -p {self.host.split('.')[0].lstrip('https://api.')}\n"
+                    f"  - Provider: {self.host}\n"
                     f"  - Detalhe: {body}"
                 )
             else:
                 _hint = f"HTTP {status}. {body}".strip()
             raise OpenAIClientError(f"[Provedor] {_hint}") from _error_exc
+
+    def chat_with_retry(
+        self,
+        model: str,
+        messages: list[dict],
+        *,
+        max_retries: int = 2,
+        on_retry=None,
+    ) -> list[str]:
+        """Coleta todos os chunks do chat_stream com retry automático.
+
+        Útil quando o caller quer o texto completo e pode aceitar um pequeno delay
+        em caso de rate limit ou erro transitório do provider.
+
+        Returns:
+            Lista de chunks (strings) — junte com "".join() para o texto completo.
+        """
+        from .retry_utils import retry_with_backoff
+
+        def _collect() -> list[str]:
+            return list(self.chat_stream(model, messages))
+
+        return retry_with_backoff(
+            _collect,
+            max_retries=max_retries,
+            base_delay=5.0,
+            max_delay=60.0,
+            on_retry=on_retry,
+        )

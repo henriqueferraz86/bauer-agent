@@ -1,0 +1,28 @@
+name: Postmortem
+description: 'Postmortem blameless: o que aconteceu, por que, e como evitar recorrencia.'
+content: '# Postmortem (blameless)
+
+
+  ## Resumo
+
+  - O que aconteceu, impacto, severidade.
+
+
+  ## Timeline
+
+  - Deteccao -> diagnostico -> mitigacao -> resolucao.
+
+
+  ## Causa raiz
+
+  - 5 porques ate a causa sistemica, nao a pessoa.
+
+
+  ## Acoes (dono + prazo)
+
+  - Prevencao, deteccao mais rapida, mitigacao mais rapida.
+
+
+  ## Principio
+
+  - Sem culpados. Foco em sistemas e processos.'

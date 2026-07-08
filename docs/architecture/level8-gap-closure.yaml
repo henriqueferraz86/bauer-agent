@@ -1,0 +1,31 @@
+id: level8-gap-closure
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  Consolidates the remaining below-8 maturity topics into durable foundations:
+  platform delivery outbox, worker secret policy, schema migration ledger,
+  searchable memory index, and research trajectory storage.
+
+targets:
+  gateway_multiplatform:
+    level8_definition: Durable outbox plus at least file/webhook delivery adapters.
+  automation_delivery:
+    level8_definition: Automation runs can produce platform delivery intents independent of worker execution.
+  secrets_worker_isolation:
+    level8_definition: Worker env is allowlisted/redacted and outputs can be sanitized consistently.
+  memory_context:
+    level8_definition: Markdown memory can be indexed into SQLite FTS and queried deterministically.
+  schema_migration:
+    level8_definition: Sidecar stores have a shared schema migration ledger and CLI visibility.
+  batch_trajectories:
+    level8_definition: Agent/runtime events can be stored as reusable JSONL trajectories.
+  docs_runbooks:
+    level8_definition: Operators have runbooks for daemon, cron, gateway and recovery flows.
+
+runtime_contract:
+  - Gateway delivery never blocks scheduler/dispatcher execution; it records outbox state.
+  - Secret policy exposes sanitize_text, sanitize_mapping, and safe_worker_env.
+  - Migration ledger is idempotent and records applied migrations per store.
+  - Memory index rebuild is deterministic from memory/*.md.
+  - Trajectory store writes append-only JSONL under workspace/.bauer_research.

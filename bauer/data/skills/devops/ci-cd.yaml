@@ -1,0 +1,52 @@
+name: CI/CD Pipeline
+description: "Estruturar pipelines de integração e entrega contínua — GitHub Actions, testes, deploy seguro."
+content: |
+  # CI/CD Pipeline — Boas práticas
+
+  ## Princípios
+  - **Fast feedback**: pipeline < 10min para falhar rapidamente
+  - **Fail fast**: lint e testes rápidos primeiro; build e deploy depois
+  - **Idempotente**: rodar duas vezes = mesmo resultado
+  - **Imutável**: artefato de build não muda entre stages
+
+  ## GitHub Actions — Estrutura típica
+  ```yaml
+  on: [push, pull_request]
+  jobs:
+    lint:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - run: pip install ruff && ruff check .
+
+    test:
+      needs: lint
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - run: pip install -e .[dev] && pytest --tb=short -q
+
+    deploy:
+      needs: test
+      if: github.ref == 'refs/heads/main'
+      steps:
+        - run: ./deploy.sh
+  ```
+
+  ## Segredos
+  - `Settings > Secrets > Actions` — NUNCA em código
+  - Rotacione a cada 90 dias
+  - Use ambientes (`environment: production`) com proteção por aprovação
+
+  ## Cache
+  ```yaml
+  - uses: actions/cache@v4
+    with:
+      path: ~/.cache/pip
+      key: pip-${{ hashFiles('requirements.txt') }}
+  ```
+
+  ## Estratégia de deploy
+  - **Blue/Green**: dois ambientes idênticos, troca de tráfego instantânea
+  - **Canary**: 5% → 25% → 100% do tráfego com monitoramento entre etapas
+  - **Feature flags**: deploy sem ativar — controle granular por usuário

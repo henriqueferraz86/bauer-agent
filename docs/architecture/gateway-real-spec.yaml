@@ -1,0 +1,68 @@
+feature: gateway-real-phase-2
+status: implemented-foundation
+updated_at: "2026-06-02"
+
+objective:
+  - Make Bauer deliver outbound messages through real platform adapters while keeping the durable outbox as the single persistence and retry source.
+  - Allow cron/automation jobs to target named channels with channel:<name>.
+  - Keep runtime supervisor unchanged: the existing outbox worker processes all platform deliveries.
+
+non_goals:
+  - Do not store platform tokens in workspace files.
+  - Do not replace the Hermes-compatible WebSocket gateway.
+  - Do not implement inbound chat gateways in this phase.
+
+contracts:
+  channel_registry:
+    path: workspace/.bauer_gateway/channels.json
+    fields:
+      - name
+      - platform
+      - target
+      - enabled
+      - metadata
+    secret_rule: "metadata can reference *_env variables but must not store raw token/password/api_key values"
+  outbox:
+    database: workspace/.bauer_gateway/outbox.sqlite3
+    supported_channels:
+      - file
+      - webhook
+      - telegram
+      - discord
+      - slack
+      - whatsapp
+    retry_owner: GatewayOutbox.deliver_once
+  delivery_spec:
+    direct: "<platform>:<target>"
+    registered: "channel:<name>"
+
+platform_mapping:
+  file:
+    target: "relative or absolute path"
+  webhook:
+    target: "HTTP endpoint receiving the sanitized payload as JSON"
+  telegram:
+    target: "chat_id"
+    token_env: TELEGRAM_BOT_TOKEN
+  discord:
+    target: "incoming webhook URL"
+  slack:
+    target: "incoming webhook URL"
+  whatsapp:
+    target: "<recipient> or <phone_number_id>/<recipient>"
+    token_env: WHATSAPP_ACCESS_TOKEN
+    metadata:
+      - phone_number_id
+      - graph_version
+
+cli:
+  configure_channel: "bauer gateway-channel-add alerts telegram 123 --metadata-json '{\"token_env\":\"TELEGRAM_BOT_TOKEN\"}'"
+  list_channels: "bauer gateway-channels --workspace workspace"
+  send: "bauer gateway-send alerts 'message' --deliver-now"
+  automate: "bauer cron create report 'prompt' --schedule 'daily 09:00' --deliver 'channel:alerts'"
+
+acceptance:
+  - Existing file/webhook outbox deliveries continue working.
+  - Registered channel delivery resolves to platform/target/metadata at enqueue time.
+  - Outbox worker can deliver telegram/discord/slack/whatsapp without changing supervisor.
+  - Ops status exposes configured gateway channels and recent outbox messages.

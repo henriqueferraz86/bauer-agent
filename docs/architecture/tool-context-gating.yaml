@@ -1,0 +1,52 @@
+id: tool-context-gating
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  ToolRouter exposes a context-aware allowlist so chat, orchestrator,
+  dispatcher workers, and supervisor operations do not receive the same
+  mutation surface by default.
+
+contexts:
+  supervisor:
+    intent: Human/operator or tests needing the full legacy tool surface.
+    default_policy: allow_all
+  orchestrator:
+    intent: Main synchronous DAG/orchestration loop.
+    default_policy: allow_all
+  chat:
+    intent: Interactive assistant session.
+    default_policy: allow_all_except_worker_completion_tools
+    denied_tools:
+      - kanban_heartbeat
+      - kanban_complete
+      - kanban_block
+  worker:
+    intent: Durable Kanban worker executing one claimed task.
+    default_policy: allow_explicit_worker_surface
+    allowed_classes:
+      - workspace_read
+      - workspace_write
+      - local_execution
+      - worker_kanban_lifecycle
+    denied_examples:
+      - kanban_create
+      - kanban_unblock
+      - kanban_link
+      - delegate_task
+      - mixture_of_agents
+      - browser_cdp
+      - mcp_call
+
+runtime_contract:
+  tool_listing: available_tools and function schemas only include tools allowed by context.
+  execution: execute rejects denied tools before dry-run, hooks, audit, or side effects.
+  audit: denied executions append a tool.denied event to the Kanban sidecar when possible.
+  worker_scope: worker kanban_* mutations remain bound to BAUER_KANBAN_TASK and BAUER_KANBAN_CLAIM_ID.
+  compatibility: ToolRouter defaults to supervisor unless a caller explicitly chooses a context.
+
+acceptance:
+  - worker context cannot execute kanban_create or delegate_task.
+  - worker context can execute kanban_heartbeat, kanban_complete, kanban_block, and kanban_comment for its claimed task.
+  - denied worker calls create tool.denied events linked to the current run/task when env metadata exists.
+  - supervisor context preserves the existing tool surface for backward compatibility.

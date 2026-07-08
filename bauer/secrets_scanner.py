@@ -24,7 +24,12 @@ _PATTERNS: list[SecretPattern] = [
     SecretPattern("OpenAI API Key",    re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
     SecretPattern("OpenAI Project Key",re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{20,}\b")),
     SecretPattern("Anthropic API Key", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
-    SecretPattern("xAI API Key",       re.compile(r"\bxai-[A-Za-z0-9_\-]{20,}\b")),
+    # Sem "_\-" no corpo: a key real da xAI é um bloco alfanumérico contíguo
+    # após "xai-". Com dash permitido, casava também com o segmento de URL de
+    # imagens geradas via xai-imgen (ex.: .../xai-tmp-imgen-<uuid>-<hash>.jpeg),
+    # que tem múltiplos hífens mas nenhum trecho de 20+ chars — falso positivo
+    # que corrompia a URL pública devolvida por image_generate(provider=xai).
+    SecretPattern("xAI API Key",       re.compile(r"\bxai-[A-Za-z0-9]{20,}\b")),
 
     # GitHub
     SecretPattern("GitHub Token (classic)", re.compile(r"\bghp_[A-Za-z0-9]{36,}\b")),
@@ -63,6 +68,10 @@ _PATTERNS: list[SecretPattern] = [
     # Groq / Mistral / Together / DeepSeek / OpenRouter
     SecretPattern("Groq API Key",      re.compile(r"\bgsk_[A-Za-z0-9]{50,}\b")),
     SecretPattern("HuggingFace Token", re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
+
+    # Gateway bot tokens (aparecem em URLs nos logs do gateway)
+    SecretPattern("Telegram Bot Token", re.compile(r"\d{8,10}:[A-Za-z0-9_\-]{35}\b")),
+    SecretPattern("Discord Bot Token",  re.compile(r"\b[MNO][A-Za-z0-9_\-]{23,25}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,40}\b")),
 
     # Tokens de alta entropia (heurística) — apenas se precedidos de keyword suspeita
     SecretPattern("High-entropy token", re.compile(

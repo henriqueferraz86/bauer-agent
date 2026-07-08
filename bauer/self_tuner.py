@@ -49,6 +49,7 @@ class SelfTuner:
         registry,
         ram_available_mb: int,
         machine_id: str = "",
+        honor_user_preference: bool = False,
     ) -> TuneResult:
         """Calcula modelo e contexto ideais para esta maquina.
 
@@ -60,6 +61,7 @@ class SelfTuner:
             registry: ModelRegistry carregado.
             ram_available_mb: RAM livre antes de iniciar o modelo.
             machine_id: ID da maquina (para filtrar historico).
+            honor_user_preference: Se True, nunca troca o modelo (só ajusta contexto).
 
         Returns:
             TuneResult com modelo, contexto, motivo e lista de ajustes.
@@ -74,14 +76,16 @@ class SelfTuner:
         # --- Passo 1: verificar historico de falhas para o modelo desejado ---
         bad_history = self._get_bad_history(engine, desired_model, machine_id)
         if bad_history >= 2:
-            warnings.append(
-                f"'{desired_model}' falhou {bad_history}x nesta maquina — historico negativo."
-            )
+            _warn = f"'{desired_model}' falhou {bad_history}x nesta maquina — historico negativo."
+            if honor_user_preference:
+                _warn += " (mantido por preferência explícita do usuário)"
+            warnings.append(_warn)
 
         # --- Passo 2: verificar RAM ---
         info = registry.get(desired_model)
         safe_ctx = contexto_seguro(info, ram_available_mb, self.safety_margin_mb) if info else desired_context
-        ram_ok = safe_ctx > 0 and bad_history < 2
+        # honor_user_preference bloqueia troca de modelo — só ajusta contexto
+        ram_ok = (safe_ctx > 0 and bad_history < 2) or honor_user_preference
 
         if not ram_ok:
             # Tenta encontrar melhor alternativa instalada

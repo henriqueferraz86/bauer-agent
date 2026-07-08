@@ -1,0 +1,39 @@
+id: tool-policy
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  Tool permissions are defined by execution context and may be overridden by
+  YAML policy without changing ToolRouter code.
+
+policy_discovery_order:
+  - explicit ToolRouter(tool_policy_path=...)
+  - <workspace>/.bauer/tool_policy.yaml
+  - config/tool_policy.yaml
+  - tool_policy.yaml
+  - builtin defaults
+
+policy_shape:
+  contexts:
+    supervisor:
+      mode: allow_all
+      deny: []
+    orchestrator:
+      mode: allow_all
+      deny: []
+    chat:
+      mode: allow_all
+      deny: [kanban_heartbeat, kanban_complete, kanban_block]
+    worker:
+      mode: allowlist
+      allow: [list_dir, read_file, write_file, patch, kanban_heartbeat, kanban_complete]
+
+runtime_contract:
+  listing: available_tools and function schemas use the resolved policy.
+  execution: denied tools fail before hooks, dry-run, audit, or side effects.
+  audit: denied executions emit tool.denied when Kanban metadata exists.
+
+acceptance:
+  - a workspace policy can deny a tool in supervisor context.
+  - a workspace policy can extend or reduce worker allowlist.
+  - invalid or absent policy falls back to safe builtin defaults.

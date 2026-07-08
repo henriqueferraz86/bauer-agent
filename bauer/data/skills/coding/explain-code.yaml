@@ -1,0 +1,25 @@
+name: Explain Code
+description: 'Como explicar um trecho de codigo: o que faz, por que, e como.'
+content: '# Explicar codigo
+
+
+  ## Estrutura
+
+  1. Proposito (1 frase).
+
+  2. Fluxo passo a passo na ordem de execucao.
+
+  3. Pontos sutis: efeitos colaterais, edge cases, premissas.
+
+  4. Contexto no sistema maior.
+
+
+  ## Boas praticas
+
+  - Comece pelo porque antes do como.
+
+  - Aponte armadilhas (mutabilidade, concorrencia).
+
+  - Destaque O(n^2) ou IO em loop.
+
+  - Termine com: o que e seguro mudar e o que e fragil.'

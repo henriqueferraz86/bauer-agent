@@ -1,0 +1,66 @@
+id: kanban-store-v1
+title: Bauer durable Kanban store
+status: accepted
+created_at: 2026-06-01
+
+problem:
+  summary: >
+    TASKS.md is a good human projection, but it is not enough as the
+    operational record for durable dispatch, worker recovery, run history,
+    event timelines, dashboard operations, and diagnostics.
+
+goals:
+  - Keep TASKS.md as the readable and auditable task projection.
+  - Add a durable sidecar store for task_events and task_runs.
+  - Let chat, CLI, dashboard, dispatcher, and kanban_* tools observe the same
+    operational history.
+  - Avoid a hard migration from markdown to a database-only Kanban.
+
+non_goals:
+  - Do not replace TASKS.md as the human-facing board in this version.
+  - Do not implement multi-board routing in this spec.
+  - Do not require a daemon for basic task operations.
+
+storage:
+  location: "<workspace>/.bauer_dispatch/kanban.sqlite3"
+  engine: sqlite
+  journal_mode: wal_when_available
+
+tables:
+  task_events:
+    fields:
+      - id: integer primary key
+      - at: utc iso timestamp
+      - task_id: normalized TASKS.md id
+      - event_type: namespaced event string
+      - actor: workspace | dispatcher | worker | tool | dashboard | cli | chat
+      - status_from: optional task status
+      - status_to: optional task status
+      - run_id: optional dispatcher run id
+      - message: short human-readable message
+      - metadata_json: compact json object
+  task_runs:
+    fields:
+      - run_id: primary key
+      - task_id: normalized TASKS.md id
+      - status: claimed | running | succeeded | failed | retrying | stale | blocked | cancelled
+      - claim_id: dispatcher claim token
+      - runner: dispatcher runner name
+      - attempt: numeric attempt
+      - worker_pid: optional worker process id
+      - log_path: workspace-relative log path
+      - started_at: utc iso timestamp
+      - heartbeat_at: utc iso timestamp
+      - finished_at: optional utc iso timestamp
+      - summary: optional short result
+      - error: optional short error
+      - metadata_json: compact json object
+
+acceptance:
+  - Creating a task appends task.created.
+  - Moving a task appends task.status_changed.
+  - Claiming a READY task creates a task_run and dispatcher.claimed event.
+  - Completing a worker run marks the run succeeded and task DONE.
+  - Failing a worker run marks the run retrying or failed according to retry policy.
+  - Reclaiming a stale claim marks the run stale and task READY.
+  - Existing TASKS.md workflows keep working without a daemon.

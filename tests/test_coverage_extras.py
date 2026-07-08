@@ -24,6 +24,22 @@ def _make_console():
 
 
 class TestRunChatSession:
+    @pytest.fixture(autouse=True)
+    def _patch_spinning(self):
+        """Patch the spinning context manager for all tests.
+
+        MagicMock(spec=Console) doesn't expose get_time, which Rich's Progress
+        needs internally. Replacing spinning with a no-op avoids that.
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _noop(*args, **kwargs):
+            yield MagicMock()
+
+        with patch("bauer.chat.spinning", _noop):
+            yield
+
     def _run(self, inputs, stream_chunks=None, stream_error=None, applied_context=2048):
         from rich.console import Console
 
@@ -34,7 +50,6 @@ class TestRunChatSession:
             client.chat_stream.return_value = iter(stream_chunks)
 
         console = MagicMock(spec=Console)
-        # Make console.input return values from inputs list
         inputs_iter = iter(inputs)
         console.input.side_effect = lambda *a, **kw: next(inputs_iter)
 

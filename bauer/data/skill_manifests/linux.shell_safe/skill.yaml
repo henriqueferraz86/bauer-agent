@@ -1,0 +1,25 @@
+id: linux.shell_safe
+name: Linux Shell Safe
+version: 1.0.0
+description: Run a policy-gated Linux shell command through bash without shell=True.
+capabilities:
+  - os.linux.run_shell
+permissions:
+  - shell.execute
+risk: high
+platforms:
+  - linux
+inputs:
+  command:
+    type: string
+    required: true
+  timeout_s:
+    type: number
+    default: 30
+outputs:
+  exit_code:
+    type: integer
+  stdout:
+    type: text
+  stderr:
+    type: text

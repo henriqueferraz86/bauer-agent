@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+pytest.importorskip("typer")
 import yaml
 from typer.testing import CliRunner
 
@@ -131,7 +132,7 @@ class TestModelsTestCommand:
         mock_client.is_alive.return_value = (True, "ok")
         mock_client.has_model.return_value = True
         from bauer.openai_client import ModelfileParams
-        mock_client.show_model.return_value = ModelfileParams(num_ctx=4096, raw={})
+        mock_client.show_model.return_value = ModelfileParams(num_ctx=4096, context_length=None, size_bytes=0, raw={})
 
         with patch("bauer.cli._build_client", return_value=mock_client), \
              patch("bauer.machine_id.machine_summary",

@@ -26,6 +26,8 @@ from typing import Any
 
 import httpx
 
+from .http_shared import shared_ssl_context
+
 _ENDPOINT = "https://api.anthropic.com/v1"
 _DEFAULT_MAX_TOKENS = 4096
 
@@ -63,6 +65,15 @@ class AnthropicClient:
             "x-api-key": api_key,
             "anthropic-version": api_version,
         }
+        # Last `usage` payload aggregated from SSE message_start + message_delta.
+        # Keys (Anthropic-native): input_tokens, output_tokens,
+        # cache_creation_input_tokens, cache_read_input_tokens.
+        # bauer.account_usage.normalize_usage() handles the shape difference.
+        self.last_usage: dict = {}
+        # Marker so bauer.prompt_caching.should_apply_cache_control() returns True
+        # for this client even when callers compare against an external interface
+        # rather than the concrete class.
+        self.supports_prompt_caching: bool = True
 
     # ── Interface pública (compatível com OllamaClient) ──────────────────────
 
@@ -73,6 +84,7 @@ class AnthropicClient:
                 f"{_ENDPOINT}/models",
                 headers=self._headers,
                 timeout=10.0,
+                verify=shared_ssl_context(),
             )
             if r.status_code in (200, 401, 403):
                 return True, ""
@@ -87,7 +99,7 @@ class AnthropicClient:
     def list_models(self) -> list[str]:
         """Lista modelos disponíveis via /v1/models."""
         try:
-            r = httpx.get(f"{_ENDPOINT}/models", headers=self._headers, timeout=self.timeout)
+            r = httpx.get(f"{_ENDPOINT}/models", headers=self._headers, timeout=self.timeout, verify=shared_ssl_context())
             r.raise_for_status()
             data = r.json()
             return [m.get("id", "?") for m in data.get("data", [])]
@@ -104,10 +116,18 @@ class AnthropicClient:
             return True
 
     def show_model(self, name: str) -> ModelfileParams:
-        return ModelfileParams(num_ctx=None, raw={"id": name})
+        return ModelfileParams(num_ctx=None, context_length=None, size_bytes=0, raw={"id": name})
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
-        """Streaming via /v1/messages com SSE Anthropic."""
+        """Streaming via /v1/messages com SSE Anthropic.
+
+        Captures usage from `message_start` (input tokens + cache fields) and
+        `message_delta` (output tokens) into `self.last_usage`. Empty dict if
+        the stream errored before the start event arrived.
+        """
+        # Reset usage so a fresh stream doesn't return stale numbers if the
+        # previous call errored mid-stream.
+        self.last_usage = {}
         # Anthropic não suporta role "system" dentro de messages[]
         # — deve ir no campo "system" do request body.
         system_content = ""
@@ -139,6 +159,7 @@ class AnthropicClient:
                     write=10.0,
                     pool=5.0,
                 ),
+                verify=shared_ssl_context(),
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
@@ -159,6 +180,17 @@ class AnthropicClient:
                             text = delta.get("text", "")
                             if text:
                                 yield text
+                    elif event_type == "message_start":
+                        # First event carries input_tokens + cache stats.
+                        msg = data.get("message") or {}
+                        usage = msg.get("usage")
+                        if isinstance(usage, dict):
+                            self.last_usage.update(usage)
+                    elif event_type == "message_delta":
+                        # Final delta carries the cumulative output_tokens count.
+                        delta_usage = data.get("usage")
+                        if isinstance(delta_usage, dict):
+                            self.last_usage.update(delta_usage)
                     elif event_type == "message_stop":
                         break
                     elif event_type == "error":

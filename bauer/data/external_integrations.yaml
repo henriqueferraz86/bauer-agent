@@ -1,0 +1,43 @@
+# Manifesto de integrações externas — rastreabilidade pra manutenção.
+#
+# Nenhuma das ferramentas listadas aqui roda no CI do Bauer (são processos
+# externos, opcionais, instalados pelo usuário) — rastreabilidade aqui
+# significa "versão fixada + doc com os comandos/schemas exatos encontrados
+# na pesquisa", não "teste automatizado batendo na ferramenta real".
+#
+# Ao atualizar uma integração: atualize pinned_version/pinned_commit e
+# verified_at (data de hoje), e confira se o conteúdo do `doc` ainda bate
+# com o comportamento real da ferramenta (seção "Como re-verificar" de
+# cada doc tem os comandos pra conferir manualmente).
+
+agent_reach:
+  repo: https://github.com/Panniantong/agent-reach
+  license: MIT
+  pinned_version: v1.5.0
+  pinned_commit: f65526cbaaad3879473acc1ba6dbefd195caf2be
+  integration_type: skill_content + run_command  # sem tool Python dedicada
+  bauer_files:
+    - bauer/data/skills/web/agent-reach.yaml
+  doc: docs/integrations/agent-reach.md
+  verified_at: "2026-07-01"
+
+graphify:
+  repo: https://github.com/safishamsi/graphify
+  license: MIT
+  pinned_version: v0.9.4
+  integration_type: mcp_server_config
+  bauer_files:
+    - config.yaml.example
+  doc: docs/integrations/graphify.md
+  verified_at: "2026-07-01"
+
+impeccable:
+  repo: https://github.com/pbakaus/impeccable
+  license: Apache-2.0
+  pinned_version: "skill-v3.9.1 (guia) / cli-v3.2.0 (detector)"
+  integration_type: skill_content + verify_command_recipe
+  bauer_files:
+    - bauer/data/skills/design/impeccable-design-principles.yaml
+    - bauer/data/skills/design/impeccable-review-process.yaml
+  doc: docs/integrations/impeccable.md
+  verified_at: "2026-07-01"

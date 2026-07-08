@@ -1,0 +1,52 @@
+name: Technical Writing
+description: "Escrever documentação técnica clara: READMEs, ADRs, runbooks, guias de API e design docs."
+content: |
+  # Technical Writing — Guia prático
+
+  ## README mínimo eficaz
+  ```
+  # Nome do Projeto
+  Uma frase: o que é e para quem serve.
+
+  ## Quick Start
+  3 comandos que fazem funcionar.
+
+  ## Como usar
+  Exemplos reais (não teóricos).
+
+  ## Configuração
+  Variáveis de ambiente e arquivo de config.
+
+  ## Contribuindo
+  Como rodar localmente + processo de PR.
+  ```
+
+  ## ADR (Architecture Decision Record)
+  ```
+  # ADR-0012: Usar SQLite em vez de PostgreSQL
+
+  ## Status: aceito | deprecado | supersedido por ADR-0015
+
+  ## Contexto
+  [Situação que gerou a decisão]
+
+  ## Decisão
+  [O que foi decidido]
+
+  ## Consequências
+  Positivas: ...
+  Negativas: ...
+  ```
+
+  ## Runbook (operação)
+  - **Propósito**: o que este serviço faz
+  - **Como verificar saúde**: endpoint /health, métricas chave
+  - **Procedimento para incidente**: passo a passo com comandos copiáveis
+  - **Escalação**: quem chamar e como
+
+  ## Boas práticas de escrita
+  - Escreva para quem nunca viu o projeto antes
+  - Prefira listas e código a parágrafos longos
+  - Mostre EXEMPLOS REAIS, não apenas a sintaxe abstrata
+  - Mantenha próximo ao código (docs na mesma pasta, CI valida)
+  - Datas relativas envelhecem mal: use absoluto ("versão 2.0") ou omita

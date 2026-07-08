@@ -10,6 +10,8 @@ import json
 import uuid
 from pathlib import Path
 
+from .unicode_utils import safe_json_dumps as _safe_json_dumps
+
 
 class SessionStore:
     def __init__(self, sessions_dir: str | Path = "memory/sessions"):
@@ -23,7 +25,7 @@ class SessionStore:
         p = self.dir / f"{session_id}.jsonl"
         with p.open("w", encoding="utf-8") as f:
             for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                f.write(_safe_json_dumps(msg, ensure_ascii=False) + "\n")
 
     def load(self, session_id: str) -> list[dict]:
         p = self.dir / f"{session_id}.jsonl"

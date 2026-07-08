@@ -1,0 +1,38 @@
+name: Data Analysis
+description: "Fluxo completo de análise de dados: exploração, limpeza, visualização e interpretação com Python."
+content: |
+  # Data Analysis — Fluxo completo
+
+  ## 1. Exploração inicial (EDA)
+  ```python
+  df.shape, df.dtypes, df.head()
+  df.describe(include="all")         # stats básicas
+  df.isnull().sum() / len(df)        # % de nulos por coluna
+  df.duplicated().sum()              # duplicatas
+  df["col"].value_counts(normalize=True)  # distribuição categórica
+  ```
+
+  ## 2. Limpeza
+  - Nulos: `df.fillna(median)` ou `df.dropna(subset=["col"])`
+  - Outliers: IQR fence `Q1 - 1.5*IQR` até `Q3 + 1.5*IQR`
+  - Tipos: `pd.to_datetime()`, `pd.to_numeric(errors="coerce")`
+  - Strings: `.str.strip().str.lower()`
+
+  ## 3. Transformação
+  - Normalização: `(x - x.min()) / (x.max() - x.min())`
+  - Padronização: `(x - x.mean()) / x.std()`
+  - Encoding categórico: `pd.get_dummies()` ou `.astype("category").cat.codes`
+
+  ## 4. Visualização (matplotlib/seaborn)
+  ```python
+  import seaborn as sns
+  sns.histplot(df["col"])                    # distribuição
+  sns.heatmap(df.corr(), annot=True)         # correlação
+  sns.boxplot(x="cat", y="num", data=df)     # outliers por grupo
+  sns.pairplot(df[["a","b","c"]])            # relações pairwise
+  ```
+
+  ## 5. Interpretação
+  - Correlação ≠ causalidade
+  - Sempre questione o viés de seleção da amostra
+  - Relate incerteza: intervalos de confiança, não só médias

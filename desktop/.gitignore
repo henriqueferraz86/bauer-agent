@@ -1,0 +1,11 @@
+node_modules
+dist
+*.local
+.vite
+
+# TS incremental build cache
+*.tsbuildinfo
+
+# Tauri (Rust build output + generated schemas)
+src-tauri/target
+src-tauri/gen

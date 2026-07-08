@@ -1,0 +1,21 @@
+id: bauer.product
+name: Bauer Product Agent
+version: 0.1.0
+description: Agente supervisor de produto para coordenar escopo, prioridade e delegação.
+runtime_adapter: agno
+model:
+  provider: openrouter
+  name: auto
+instructions: Coordene o time, esclareça requisitos e delegue trabalho para os agentes certos.
+skills:
+  - bauer.project
+permissions:
+  - runtime.execute
+  - filesystem.read
+autonomy:
+  mode: supervised
+limits:
+  max_runtime_s: 600
+  max_tool_calls: 150
+policies:
+  - default

@@ -29,8 +29,10 @@ from rich.console import Console
 
 from .agent import _build_system_prompt, run_one_turn
 from .context_manager import ContextManager
+from .indicators import show_header, show_step, spinning
 from .model_router import ModelRouter
 from .ollama_client import OllamaClient
+from .unicode_utils import safe_json_dumps as _safe_json_dumps
 from .tool_router import ToolRouter
 
 MAX_STEPS = 6
@@ -41,7 +43,25 @@ Voce e um orquestrador de tarefas. Decomponha a tarefa do usuario em passos sequ
 
 Cada passo deve ser UMA acao que UM modelo de linguagem consegue executar de uma vez.
 {agents_section}
-REGRAS:
+━━━ REGRA CRITICA: VERIFICACAO ANTES DE IMPLEMENTAR ━━━━━━━━━━━━━━━━━━━━━━━━━━
+Se a tarefa envolve IMPLEMENTAR, CRIAR, ADICIONAR, MODIFICAR ou CORRIGIR qualquer
+coisa em um projeto de software, o PASSO 1 OBRIGATORIAMENTE deve ser:
+
+  {{"id": 1, "goal": "Verificar estado atual: checar se a funcionalidade ja existe, \
+listar arquivos relevantes e ler o codigo existente antes de qualquer alteracao", \
+"tools": true, "depends_on": [], "agent": ""}}
+
+Por que isso e obrigatorio:
+- Evita reimplementar codigo que ja existe
+- Evita sobrescrever trabalho anterior
+- Da ao agent contexto real do projeto antes de agir
+- Permite que o agent decida "ja esta pronto" e encerre sem trabalho desnecessario
+
+So pule este passo se a tarefa for claramente de consulta/leitura (ex: "me explique X",
+"liste os providers", "qual e o status de Y").
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REGRAS GERAIS:
 - Maximo de {max_steps} passos
 - Cada passo tem:
     'goal'       instrucao clara em portugues
@@ -57,10 +77,10 @@ Formato:
 {{
   "objective": "objetivo principal em portugues",
   "steps": [
-    {{"id": 1, "goal": "buscar dados necessarios",   "tools": true,  "depends_on": [], "agent": ""}},
-    {{"id": 2, "goal": "analisar os dados",          "tools": false, "depends_on": [1], "agent": "python"}},
-    {{"id": 3, "goal": "gerar relatorio em arquivo", "tools": true,  "depends_on": [1], "agent": "docs"}},
-    {{"id": 4, "goal": "resumo final combinado",     "tools": false, "depends_on": [2, 3], "agent": ""}}
+    {{"id": 1, "goal": "Verificar estado atual: checar arquivos existentes e codigo atual", "tools": true,  "depends_on": [], "agent": ""}},
+    {{"id": 2, "goal": "implementar a funcionalidade X com base no que foi encontrado", "tools": true,  "depends_on": [1], "agent": ""}},
+    {{"id": 3, "goal": "escrever testes para a funcionalidade X",                       "tools": true,  "depends_on": [2], "agent": ""}},
+    {{"id": 4, "goal": "resumo do que foi feito e validacao final",                     "tools": false, "depends_on": [3], "agent": ""}}
   ]
 }}
 
@@ -73,14 +93,27 @@ Regras de agent:
   "" usa o agent padrao (generalista)
   Use o nome exato de um agent da lista acima quando aquele especialista e o mais adequado para o passo
 
-Exemplos de tarefas simples (sem paralelismo):
-  Tarefa: "crie um script python fatorial"
-  → 1 ou 2 passos lineares, todos com depends_on do passo anterior
+Exemplos — tarefa de implementacao (COM verificacao):
+  Tarefa: "implemente o spec orchestrator-dag"
+  → passo 1: verificar estado atual (list_dir, read_file no orchestrator.py)
+  → passo 2: implementar apenas o que falta (depends_on: [1])
+  → passo 3: testes (depends_on: [2])
 
-Exemplos de tarefas paralelizaveis:
+Exemplos — tarefa simples de criacao (sem codigo existente):
+  Tarefa: "crie um script python fatorial"
+  → passo 1: verificar se ja existe script similar no workspace
+  → passo 2: criar o script (depends_on: [1])
+
+Exemplos — tarefas paralelizaveis (pesquisa + implementacao independentes):
   Tarefa: "pesquise sobre IA e escreva um script de automacao"
-  → passo 1 pesquisa (web), passo 2 escreve script (code) — ambos independentes (depends_on: [])
-  → passo 3 combina resultados (depends_on: [1, 2])
+  → passo 1: verificar workspace e contexto
+  → passo 2: pesquisa (web, depends_on: [1])
+  → passo 3: escreve script (depends_on: [1])
+  → passo 4: combina resultados (depends_on: [2, 3])
+
+Exemplos — tarefa de consulta (SEM verificacao obrigatoria):
+  Tarefa: "liste os providers configurados"
+  → passo 1: ler config.yaml e listar providers (tools: true)
 
 Tarefa do usuario:"""
 
@@ -161,14 +194,35 @@ class AgentOrchestrator:
         return "".join(parts)
 
     def _call_ollama(self, model: str, messages: list[dict], stream_prefix: str = "") -> str:
-        parts = []
-        for chunk in self._planner_client.chat_stream(model, messages):
-            parts.append(chunk)
+        """Chama o planner_client com fallback automatico para self.client.
+
+        Quando Ollama nao esta disponivel, _planner_client e o proprio self.client
+        (cloud provider). Se o stream falhar (ex: provider sem aquele modelo),
+        tenta com o modelo padrao do client principal antes de propagar o erro.
+        """
+        try:
+            parts = []
+            for chunk in self._planner_client.chat_stream(model, messages):
+                parts.append(chunk)
+                if self.console and stream_prefix:
+                    self.console.print(chunk, end="", highlight=False)
             if self.console and stream_prefix:
-                self.console.print(chunk, end="", highlight=False)
-        if self.console and stream_prefix:
-            self.console.print()
-        return "".join(parts)
+                self.console.print()
+            return "".join(parts)
+        except Exception as exc:
+            # Fallback gracioso: se o planner falhou e nao e o mesmo do client principal,
+            # tenta de novo com o client principal + seu modelo default.
+            if self._planner_client is not self.client:
+                fallback_model = getattr(self.client, "default_model", None) or model
+                parts = []
+                for chunk in self.client.chat_stream(fallback_model, messages):
+                    parts.append(chunk)
+                    if self.console and stream_prefix:
+                        self.console.print(chunk, end="", highlight=False)
+                if self.console and stream_prefix:
+                    self.console.print()
+                return "".join(parts)
+            raise
 
     def _extract_json(self, text: str) -> dict | None:
         try:
@@ -299,6 +353,59 @@ class AgentOrchestrator:
         except Exception:
             return ""
 
+    def _remote_dispatch(
+        self,
+        url: str,
+        api_key: str,
+        task: str,
+        timeout: float = 120.0,
+    ) -> str:
+        """Dispatcha tarefa para uma instância remota bauer serve via POST /chat.
+
+        Args:
+            url:     Base URL do servidor remoto, ex: 'http://192.168.1.5:8000'.
+            api_key: X-API-Key do servidor remoto ('' = sem autenticação).
+            task:    Texto completo da tarefa a executar.
+            timeout: Timeout HTTP em segundos.
+
+        Returns:
+            Texto da resposta do agente remoto.
+
+        Raises:
+            RuntimeError: Se o servidor retornar erro HTTP ou timeout.
+        """
+        import httpx  # importação lazy — não penaliza quem não usa dispatch remoto
+
+        endpoint = url.rstrip("/") + "/chat"
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+
+        try:
+            resp = httpx.post(
+                endpoint,
+                json={"message": task},
+                headers=headers,
+                timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=5.0),
+            )
+            resp.raise_for_status()
+        except httpx.TimeoutException:
+            raise RuntimeError(
+                f"Timeout ({timeout}s) ao aguardar resposta de {endpoint}."
+            )
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Agente remoto {endpoint} retornou HTTP {exc.response.status_code}."
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise RuntimeError(
+                f"Não foi possível conectar a {endpoint}. "
+                "Verifique se o bauer serve está rodando e acessível."
+            ) from exc
+
+        data = resp.json()
+        return data.get("response", "")
+
     def execute_step(
         self,
         step: dict,
@@ -329,6 +436,43 @@ class AgentOrchestrator:
         context_text = "\n".join(context_lines)
 
         stream_prefix = f"[passo {step_id}]"
+
+        # ── Dispatch remoto ────────────────────────────────────────────────────
+        # Se o agente designado para este passo tiver `url` no registry, envia
+        # a tarefa via HTTP para aquela instância bauer serve em vez de executar
+        # localmente. Não passa pelo SSRF guard — URL vem do registry confiável.
+        if agent_name:
+            try:
+                from .agent_registry import AgentRegistry
+                _reg = AgentRegistry(self.config.agents_file)
+                _ag = _reg.get(agent_name)
+                if _ag and _ag.url:
+                    if self.console:
+                        self.console.print(
+                            f"[dim][passo {step_id}] → dispatch remoto: {_ag.url}[/dim]"
+                        )
+                    full_task = (goal + "\n\n" + context_text).strip()
+                    _timeout = getattr(self.config, "remote_timeout_s", 120.0)
+                    response = self._remote_dispatch(
+                        url=_ag.url,
+                        api_key=_ag.api_key,
+                        task=full_task,
+                        timeout=_timeout,
+                    )
+                    return StepResult(
+                        id=step_id,
+                        goal=goal,
+                        model_used=f"remote:{_ag.url}",
+                        response=response,
+                        tool_log=[],
+                    )
+            except Exception as _dispatch_err:
+                if self.console:
+                    self.console.print(
+                        f"[yellow][passo {step_id}] Dispatch remoto falhou "
+                        f"({_dispatch_err}); executando localmente.[/yellow]"
+                    )
+                # fallthrough — executa local normalmente
 
         # Execução usa self.client (provider principal: Groq, OpenAI, Ollama…).
         # self._planner_client é reservado exclusivamente para planejamento (qwen3:0.6b).
@@ -454,7 +598,7 @@ class AgentOrchestrator:
         p = self._progress_path(task)
         p.mkdir(parents=True, exist_ok=True)
         (p / "plan.json").write_text(
-            json.dumps(steps, ensure_ascii=False, indent=2),
+            _safe_json_dumps(steps, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         # Salva task.txt para permitir listagem legível
@@ -473,7 +617,7 @@ class AgentOrchestrator:
         p.mkdir(parents=True, exist_ok=True)
         for r in results:
             (p / f"step_{r.id}.json").write_text(
-                json.dumps(
+                _safe_json_dumps(
                     {
                         "id": r.id,
                         "goal": r.goal,
@@ -631,15 +775,25 @@ class AgentOrchestrator:
         all_results: list[StepResult] = list(done.values())
 
         # Executa ondas (cada onda = passos independentes entre si)
+        show_header('Bauer Orchestrator', self.console)
         for batch in self._topological_batches(steps):
             pending = [s for s in batch if s["id"] not in done]
             if not pending:
                 continue  # todos ja concluidos nesta onda
 
-            batch_results = self.execute_parallel_steps(pending, all_results)
+            pending_ids = [s["id"] for s in pending]
+            step_names = [s.get('goal', s.get('name', f'passo {s["id"]}'))[:50] for s in pending]
+            with spinning(f'Executando {len(pending)} passo(s)...', console=self.console):
+                batch_results = self.execute_parallel_steps(pending, all_results)
             all_results.extend(batch_results)
             for r in batch_results:
                 done[r.id] = r
+                idx = pending_ids.index(r.id) if r.id in pending_ids else 0
+                show_step(
+                    step_names[idx],
+                    'done' if 'error' not in r.model_used else 'failed',
+                    self.console,
+                )
             self.save_progress(user_input, batch_results)
 
         if not steps:

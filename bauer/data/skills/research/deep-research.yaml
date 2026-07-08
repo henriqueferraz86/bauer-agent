@@ -1,0 +1,40 @@
+name: Deep Research
+description: "Processo estruturado de pesquisa profunda: formulação de hipóteses, fontes, síntese e viés."
+content: |
+  # Deep Research — Processo estruturado
+
+  ## 1. Formulação da pergunta
+  - Defina a pergunta central em UMA frase
+  - Liste 3-5 sub-perguntas que, respondidas, respondem a central
+  - Identifique o que você JÁ sabe vs o que precisa descobrir
+
+  ## 2. Estratégia de fontes
+  - **Primárias**: papers originais, dados brutos, entrevistas, documentação oficial
+  - **Secundárias**: artigos de revisão, livros, reports de analistas
+  - **Terciárias**: blogs, resumos — úteis para orientação, não para citar como fato
+
+  ## 3. Busca eficiente
+  ```
+  Google Scholar: "frase exata" filetype:pdf site:gov
+  arXiv: para ciências exatas e IA (preprints)
+  Semantic Scholar: para mapa de citações
+  Wikipedia: ponto de entrada, não fonte final
+  ```
+
+  ## 4. Avaliação crítica
+  Para cada fonte, pergunte:
+  - Quem financiou? (conflito de interesse)
+  - Tamanho da amostra é adequado?
+  - A metodologia replica o que se diz provar?
+  - Foi replicado por outros grupos independentes?
+
+  ## 5. Síntese
+  - Use uma tabela comparativa para múltiplas fontes sobre o mesmo tema
+  - Identifique consenso vs controvérsia
+  - Declare nível de certeza: "forte evidência", "evidência limitada", "especulação"
+  - Distingua fato de interpretação
+
+  ## 6. Vieses comuns a evitar
+  - Confirmation bias: buscar só o que confirma
+  - Availability heuristic: o que aparece primeiro no Google não é o mais confiável
+  - Authority bias: nome famoso ≠ conclusão correta

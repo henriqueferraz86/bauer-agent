@@ -1,0 +1,66 @@
+id: dispatcher-runtime-v1
+title: Bauer hybrid dispatcher runtime
+status: accepted
+created_at: 2026-06-01
+
+problem:
+  summary: >
+    READY tasks need a durable claim and run lifecycle so the system can recover
+    from crashes, retries, stale workers, and background execution.
+
+goals:
+  - Preserve the synchronous DAG orchestrator as the execution engine.
+  - Add durable run records around each claim.
+  - Record enough events to debug queue movement from chat, CLI, dashboard, and tools.
+  - Keep a small local implementation that does not require an external service.
+
+state_machine:
+  task_statuses:
+    - TODO
+    - READY
+    - IN_PROGRESS
+    - BLOCKED
+    - FAILED
+    - DONE
+  run_statuses:
+    - claimed
+    - running
+    - succeeded
+    - retrying
+    - failed
+    - stale
+    - blocked
+    - cancelled
+
+claim_contract:
+  input: READY task with dispatch=true
+  output:
+    task_status: IN_PROGRESS
+    metadata:
+      - claim_id
+      - claim_expires
+      - claimed_by
+      - run_id
+      - heartbeat_at
+      - attempts
+      - log
+    durable_run: status claimed
+    durable_event: dispatcher.claimed
+
+recovery_contract:
+  stale_claim:
+    condition: claim_expires elapsed and heartbeat too old
+    action: task returns to READY and run becomes stale
+  retry_failure:
+    condition: attempts below max_retries
+    action: task returns to READY and run becomes retrying
+  terminal_failure:
+    condition: attempts at or above max_retries
+    action: task becomes FAILED and run becomes failed
+
+acceptance:
+  - dispatch once creates one run per claimed task.
+  - foreground dispatch moves run claimed -> running -> succeeded or retrying/failed.
+  - background dispatch stores worker_pid after spawn.
+  - stale reclaim updates both TASKS.md and task_runs.
+  - /dispatch status and CLI status can inspect active runs.

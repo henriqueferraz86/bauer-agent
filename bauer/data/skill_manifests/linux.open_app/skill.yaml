@@ -1,0 +1,24 @@
+id: linux.open_app
+name: Linux Open App
+version: 1.0.0
+description: Open a Linux desktop application through the local process launcher.
+capabilities:
+  - os.open_app
+  - os.linux.open_app
+permissions:
+  - os.open_app
+risk: low
+platforms:
+  - linux
+inputs:
+  app:
+    type: string
+    required: true
+  args:
+    type: array
+    required: false
+outputs:
+  opened:
+    type: boolean
+  pid:
+    type: integer

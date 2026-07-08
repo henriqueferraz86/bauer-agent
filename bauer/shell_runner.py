@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,6 +102,43 @@ class CommandResult:
     truncated: bool = False
 
 
+# ── Allowlist aprendida (persistida) ────────────────────────────────────────
+# Comandos que o usuário liberou com "sempre" no prompt de confirmação. Ficam
+# em $BAUER_HOME/allowed_commands.yaml e são carregados junto da allowlist fixa.
+
+def _learned_commands_path() -> "Path":
+    from .paths import get_bauer_home
+    return get_bauer_home() / "allowed_commands.yaml"
+
+
+def load_learned_commands() -> set[str]:
+    """Comandos aprendidos (liberados com 'sempre'). Vazio se não há/ilegível."""
+    try:
+        import yaml
+        data = yaml.safe_load(_learned_commands_path().read_text(encoding="utf-8"))
+        return {str(c).strip().lower() for c in (data or []) if str(c).strip()}
+    except Exception:
+        return set()
+
+
+def add_learned_command(base: str) -> None:
+    """Persiste um comando na allowlist aprendida. Best-effort."""
+    base = (base or "").strip().lower()
+    if not base:
+        return
+    cur = load_learned_commands()
+    if base in cur:
+        return
+    cur.add(base)
+    try:
+        import yaml
+        p = _learned_commands_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(yaml.safe_dump(sorted(cur), allow_unicode=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
 class ShellRunner:
     """Executa comandos shell de forma controlada.
 
@@ -111,6 +147,10 @@ class ShellRunner:
         safe_mode: Se True, risco médio exige confirm=True.
         timeout: Tempo máximo em segundos.
         max_output_bytes: Limite combinado de stdout+stderr.
+        extra_allowed_commands: Comandos extras liberados além da allowlist
+            fixa embutida (ex.: docker, kubectl) — vem de
+            config.tools.extra_allowed_commands. Ainda passam pela denylist
+            (sempre bloqueada) e pelo safe_mode (risco médio exige confirm).
     """
 
     def __init__(
@@ -119,11 +159,24 @@ class ShellRunner:
         safe_mode: bool = True,
         timeout: int = 30,
         max_output_bytes: int = _MAX_OUTPUT_BYTES,
+        extra_allowed_commands: "list[str] | frozenset[str] | None" = None,
+        allowlist_callback=None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.safe_mode = safe_mode
         self.timeout = timeout
         self.max_output_bytes = max_output_bytes
+        self.extra_allowed_commands: frozenset[str] = frozenset(
+            c.strip().lower() for c in (extra_allowed_commands or []) if c.strip()
+        )
+        # Confirmação interativa da allowlist (o gate que engessa: docker/pip/…).
+        # callback(base) -> "once" | "session" | "always" | "deny". "always"
+        # grava no allowed_commands.yaml (aprende). None = comportamento antigo
+        # (bloqueia comando fora da allowlist). Só instalado em chat TTY.
+        self.allowlist_callback = allowlist_callback
+        # Comandos aprendidos (persistidos) + os liberados nesta sessão via
+        # "session"/"once". Mesclam com a allowlist fixa e extra_allowed_commands.
+        self._runtime_allowed: set[str] = set(load_learned_commands())
 
     def run(self, command: str, confirm: bool = False) -> CommandResult:
         """Executa um comando controlado.
@@ -138,12 +191,23 @@ class ShellRunner:
             CommandTimeoutError: Excedeu timeout.
             ShellError: Outros erros de execução.
         """
+        args = self.validate(command, confirm=confirm)
+        return self._execute(args)
+
+    def validate(self, command: str, confirm: bool = False) -> list[str]:
+        """Roda as verificações de segurança e devolve os args parseados,
+        SEM executar. Usado pelo modo background do run_command (G17.3), que
+        lança o processo via Popen mas precisa do mesmo gate de segurança.
+
+        Raises:
+            BlockedCommandError, SafeModeError, ShellError — iguais ao run().
+        """
         self._check_denylist(command)
         args = self._parse_command(command)
         self._check_allowlist(args)
         if self.safe_mode and not confirm:
             self._check_medium_risk(command)
-        return self._execute(args)
+        return args
 
     # --- verificações de segurança -------------------------------------------
 
@@ -158,12 +222,34 @@ class ShellRunner:
 
     def _check_allowlist(self, args: list[str]) -> None:
         base = Path(args[0]).stem.lower()
-        if base not in _ALLOWLIST:
-            available = ", ".join(sorted(_ALLOWLIST))
-            raise BlockedCommandError(
-                f"Comando '{base}' nao esta na allowlist.\n"
-                f"Permitidos: {available}"
-            )
+        if (base in _ALLOWLIST or base in self.extra_allowed_commands
+                or base in self._runtime_allowed):
+            return
+        # Fora da allowlist: se houver callback interativo, pergunta e (talvez)
+        # aprende — em vez de bloquear em silêncio. "always" persiste.
+        if self.allowlist_callback is not None:
+            try:
+                decision = str(self.allowlist_callback(base) or "deny").lower()
+            except Exception:
+                decision = "deny"
+            if decision == "always":
+                add_learned_command(base)
+                self._runtime_allowed.add(base)
+                return
+            if decision in ("once", "session"):
+                # "session" e "once" liberam sem persistir em disco; a diferença
+                # prática (once re-pergunta no próximo turno) não compensa a
+                # fricção — ambos liberam pelo runtime desta sessão.
+                self._runtime_allowed.add(base)
+                return
+            # "deny" → cai no raise abaixo
+        available = ", ".join(sorted(_ALLOWLIST | self.extra_allowed_commands))
+        raise BlockedCommandError(
+            f"Comando '{base}' nao esta na allowlist.\n"
+            f"Permitidos: {available}\n"
+            "Para liberar mais comandos (ex.: docker, kubectl), adicione em "
+            "config.yaml: tools.extra_allowed_commands: [docker, ...]"
+        )
 
     def _check_medium_risk(self, command: str) -> None:
         for pattern in _MEDIUM_RISK:
@@ -179,7 +265,10 @@ class ShellRunner:
 
     def _parse_command(self, command: str) -> list[str]:
         try:
-            args = shlex.split(command, posix=(sys.platform != "win32"))
+            # posix=True sempre: strip correto de aspas em caminhos Windows como
+            # "C:/path/python.exe" — com posix=False o shlex mantém as aspas no
+            # token e subprocess.run falha com FileNotFoundError.
+            args = shlex.split(command, posix=True)
         except ValueError as exc:
             raise ShellError(f"Comando invalido (parsing falhou): {exc}") from exc
         if not args:

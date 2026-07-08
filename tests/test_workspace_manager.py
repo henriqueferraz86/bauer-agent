@@ -51,6 +51,8 @@ def test_init_tasks_has_header(wm: WorkspaceManager, ws: Path):
     content = (ws / "TASKS.md").read_text(encoding="utf-8")
     assert "TASKS.md" in content
     assert "TODO" in content
+    assert "READY" in content
+    assert "FAILED" in content
 
 
 def test_init_creates_workspace_dir(tmp_path: Path):
@@ -67,7 +69,7 @@ def test_add_task_creates_entry(wm: WorkspaceManager, ws: Path):
     wm.init_project("P")
     task = wm.add_task("Implementar login")
     assert task.id == "001"
-    assert task.status == "TODO"
+    assert task.status == "READY"
     assert task.title == "Implementar login"
     content = (ws / "TASKS.md").read_text(encoding="utf-8")
     assert "Implementar login" in content
@@ -89,6 +91,20 @@ def test_add_task_with_description(wm: WorkspaceManager, ws: Path):
     wm.add_task("Com desc", description="Descricao detalhada aqui")
     content = (ws / "TASKS.md").read_text(encoding="utf-8")
     assert "Descricao detalhada aqui" in content
+
+
+def test_add_task_with_kanban_metadata(wm: WorkspaceManager):
+    wm.init_project("P")
+    wm.add_task(
+        "Com metadata",
+        priority="high",
+        assignee="agent-1",
+        parent_id="T0001",
+    )
+    task = wm.list_tasks()[0]
+    assert task.priority == "high"
+    assert task.assignee == "agent-1"
+    assert task.parent_id == "001"
 
 
 def test_add_task_initializes_project_if_missing(ws: Path):
@@ -160,6 +176,15 @@ def test_update_to_blocked(wm: WorkspaceManager):
     assert updated.status == "BLOCKED"
 
 
+def test_update_to_ready_and_failed(wm: WorkspaceManager):
+    wm.init_project("P")
+    wm.add_task("Dispatch task")
+    ready = wm.update_task_status("001", "ready")
+    assert ready.status == "READY"
+    failed = wm.update_task_status("001", "FAILED")
+    assert failed.status == "FAILED"
+
+
 def test_update_invalid_status_raises(wm: WorkspaceManager):
     wm.init_project("P")
     wm.add_task("T")
@@ -192,8 +217,26 @@ def test_update_second_task_does_not_affect_first(wm: WorkspaceManager, ws: Path
     wm.add_task("Task B")
     wm.update_task_status("002", "DONE")
     tasks = wm.list_tasks()
-    assert tasks[0].status == "TODO"  # Task A unchanged
+    assert tasks[0].status == "READY"  # Task A unchanged (default status)
     assert tasks[1].status == "DONE"  # Task B updated
+
+
+def test_update_metadata_and_comment_round_trip(wm: WorkspaceManager):
+    wm.init_project("P")
+    wm.add_task("Task")
+    wm.update_task_metadata(
+        "T0001",
+        priority="critical",
+        assignee="agent-2",
+        metadata={"dispatch": "true", "claim_id": "abc"},
+    )
+    wm.add_task_comment("001", "Progresso registrado", author="agent")
+    task = wm.get_task("T0001")
+    assert task.priority == "critical"
+    assert task.assignee == "agent-2"
+    assert task.metadata["dispatch"] == "true"
+    assert task.metadata["claim_id"] == "abc"
+    assert any(c["text"] == "Progresso registrado" for c in task.comments)
 
 
 # --- get_project_info -------------------------------------------------------

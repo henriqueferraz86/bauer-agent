@@ -178,6 +178,69 @@ def test_allowlist_stem_strips_exe_extension(runner_unsafe: ShellRunner):
         assert result.returncode == 0
 
 
+# === EXTRA_ALLOWED_COMMANDS (config.tools.extra_allowed_commands) ===========
+# Regressão: usuário perguntou se a allowlist "esta totalmente liberada" ao
+# esbarrar em 'docker nao esta na allowlist' — não estava, e não havia
+# nenhum jeito de estender via config.yaml (só editando o código-fonte).
+
+
+def test_docker_blocked_by_default(runner_unsafe: ShellRunner):
+    """docker NÃO está na allowlist fixa embutida — comportamento padrão
+    inalterado, extra_allowed_commands é opt-in."""
+    with pytest.raises(BlockedCommandError, match="allowlist"):
+        runner_unsafe.run("docker ps")
+
+
+def test_extra_allowed_commands_unblocks_docker(ws: Path):
+    runner = ShellRunner(workspace=ws, safe_mode=False, timeout=5,
+                          extra_allowed_commands=["docker", "docker-compose"])
+    with patch("subprocess.run", return_value=_mock_proc(stdout="CONTAINER ID")):
+        result = runner.run("docker ps")
+    assert result.returncode == 0
+
+
+def test_extra_allowed_commands_case_and_whitespace_insensitive(ws: Path):
+    runner = ShellRunner(workspace=ws, safe_mode=False, timeout=5,
+                          extra_allowed_commands=[" Docker ", "KUBECTL"])
+    with patch("subprocess.run", return_value=_mock_proc()):
+        runner.run("docker ps")
+        runner.run("kubectl get pods")
+
+
+def test_extra_allowed_commands_still_respects_denylist(ws: Path):
+    """Comando liberado via config ainda passa pela denylist — não é uma
+    porta dos fundos pra contornar rm -rf / etc."""
+    runner = ShellRunner(workspace=ws, safe_mode=False, timeout=5,
+                          extra_allowed_commands=["rm"])
+    with pytest.raises(BlockedCommandError, match="denylist|perigoso"):
+        runner.run("rm -rf /")
+
+
+def test_extra_allowed_commands_does_not_affect_other_unlisted_commands(ws: Path):
+    """Liberar 'docker' não libera comandos não relacionados."""
+    runner = ShellRunner(workspace=ws, safe_mode=False, timeout=5,
+                          extra_allowed_commands=["docker"])
+    with pytest.raises(BlockedCommandError, match="allowlist"):
+        runner.run("kubectl get pods")
+
+
+def test_allowlist_error_message_mentions_config_and_extras(ws: Path):
+    """A mensagem de erro orienta como estender via config.yaml, não só
+    lista os comandos fixos."""
+    runner = ShellRunner(workspace=ws, safe_mode=False, timeout=5,
+                          extra_allowed_commands=["docker"])
+    with pytest.raises(BlockedCommandError) as exc_info:
+        runner.run("terraform apply")
+    msg = str(exc_info.value)
+    assert "extra_allowed_commands" in msg
+    assert "docker" in msg  # extra liberado aparece na lista de permitidos
+
+
+def test_default_extra_allowed_commands_is_empty(ws: Path):
+    runner = ShellRunner(workspace=ws)
+    assert runner.extra_allowed_commands == frozenset()
+
+
 # === SAFE_MODE ==============================================================
 
 
@@ -332,12 +395,13 @@ def test_tool_router_without_shell_runner_no_run_command(ws: Path):
 
 
 def test_tool_router_run_command_denylist_via_tool_error(ws: Path):
-    """Denylist via router lança ToolError com mensagem de perigoso."""
+    """Denylist / HARDLINE approval lança ToolError bloqueando shutdown."""
     from bauer.tool_router import ToolError, ToolRouter
 
     runner = ShellRunner(workspace=ws, safe_mode=False)
     router = ToolRouter(workspace=ws, shell_runner=runner)
-    with pytest.raises(ToolError, match="perigoso"):
+    # Blocked either by Wave 4.5 HARDLINE approval OR by shell_runner denylist.
+    with pytest.raises(ToolError, match=r"(?i)(perigoso|BLOCKED|shutdown|hardline)"):
         router.execute({"action": "run_command", "args": {"command": "shutdown now"}})
 
 
@@ -371,3 +435,32 @@ def test_tool_router_run_command_invalid_confirm_raises(ws: Path):
     router = ToolRouter(workspace=ws, shell_runner=runner)
     with pytest.raises(ToolError, match="confirm"):
         router.execute({"action": "run_command", "args": {"command": "git status", "confirm": "yes"}})
+
+
+# === config.tools.extra_allowed_commands (wiring end-to-end) ===============
+
+
+def test_tools_section_extra_allowed_commands_default_empty():
+    from bauer.config_loader import ToolsSection
+
+    assert ToolsSection().extra_allowed_commands == []
+
+
+def test_tools_section_extra_allowed_commands_roundtrip():
+    from bauer.config_loader import ToolsSection
+
+    section = ToolsSection(extra_allowed_commands=["docker", "kubectl"])
+    assert section.extra_allowed_commands == ["docker", "kubectl"]
+
+
+def test_build_shell_runner_passes_extra_allowed_commands(ws: Path):
+    from bauer.commands._runtime import _build_shell_runner
+    from bauer.config_loader import BauerConfig, ModelSection, ToolsSection
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        tools=ToolsSection(shell_enabled=True, extra_allowed_commands=["docker"]),
+    )
+    runner = _build_shell_runner(cfg, ws)
+    assert runner is not None
+    assert runner.extra_allowed_commands == frozenset({"docker"})

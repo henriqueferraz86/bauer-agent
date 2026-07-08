@@ -1,0 +1,27 @@
+name: retrospective
+version: "1.0"
+description: Facilitação de retrospectiva — o que foi bem, o que melhorar, ações concretas
+tags: [productivity, agile, retrospective, team]
+content: |
+  Facilite a retrospectiva usando o formato Start/Stop/Continue + Action Items:
+
+  **WENT WELL** (Continue): O que funcionou e deve ser mantido?
+  **PROBLEMS** (Stop): O que atrapalhou e deve parar?
+  **IDEAS** (Start): O que devemos começar a fazer?
+
+  Para cada item:
+  - Agrupe temas similares
+  - Vote nos mais impactantes (1-3 votos por pessoa)
+  - Crie action items SMART para os top-3 problemas
+
+  Output: documento de retro com action items assignados e datas.
+tools: [write_file, datetime_now]
+params:
+  sprint_name:
+    type: string
+    description: Nome ou número do sprint/período
+    required: true
+  team_size:
+    type: number
+    description: Número de participantes
+    default: 4

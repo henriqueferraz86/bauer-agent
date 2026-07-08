@@ -102,6 +102,166 @@ def test_system_prompt_mentions_portugues(router: ToolRouter):
 # --- run_agent_session (integração) -----------------------------------------
 
 
+# --- comandos slash de workspace --------------------------------------------
+
+
+def test_task_command_uses_active_workspace(tmp_path: Path):
+    from bauer.agent import _handle_task_cmd
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    global_ws = tmp_path / "workspace"
+    console = Console(record=True, width=120)
+
+    _handle_task_cmd("/task add Custom workspace task", console, active_ws)
+
+    assert (active_ws / "TASKS.md").exists()
+    assert "Custom workspace task" in (active_ws / "TASKS.md").read_text(encoding="utf-8")
+    assert not (global_ws / "TASKS.md").exists()
+
+
+def test_project_command_uses_active_workspace(tmp_path: Path):
+    from bauer.agent import _handle_project_cmd
+    from bauer.workspace_manager import WorkspaceManager
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    WorkspaceManager(active_ws).init_project("Active Project", "From active workspace")
+    console = Console(record=True, width=120)
+
+    _handle_project_cmd(console, active_ws)
+
+    output = console.export_text()
+    assert "Active Project" in output
+    assert "From active workspace" in output
+
+
+def test_run_agent_session_task_command_uses_router_workspace(tmp_path: Path):
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    router = ToolRouter(workspace=active_ws)
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/task add Via chat", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    assert (active_ws / "TASKS.md").exists()
+    assert "Via chat" in (active_ws / "TASKS.md").read_text(encoding="utf-8")
+    client.chat_stream.assert_not_called()
+
+
+# ─── config.tools.max_tool_turns (MAX_TOOL_TURNS configurável) ─────────────
+# Regressão: "Limite de 150 tool calls atingido neste turno" era hardcoded,
+# sem NENHUM jeito de aumentar via config.yaml.
+
+
+def test_tools_section_max_tool_turns_default_150():
+    from bauer.config_loader import ToolsSection
+
+    assert ToolsSection().max_tool_turns == 150
+
+
+def test_resolve_max_tool_turns_reads_config():
+    from bauer.agent import _resolve_max_tool_turns
+    from bauer.config_loader import BauerConfig, ModelSection, ToolsSection
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        tools=ToolsSection(max_tool_turns=9999),
+    )
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        assert _resolve_max_tool_turns() == 9999
+
+
+def test_resolve_max_tool_turns_defaults_150_on_config_load_failure():
+    from bauer.agent import _resolve_max_tool_turns
+
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        assert _resolve_max_tool_turns() == 150
+
+
+def test_run_agent_session_applies_configured_max_tool_turns(ws: Path, router: ToolRouter):
+    """run_agent_session muta o global MAX_TOOL_TURNS a partir da config antes
+    de entrar no loop — cobre todos os call sites internos que leem o nome do
+    módulo (_run_tool_loop_body, _native_turn_interactive etc)."""
+    import bauer.agent as agent_mod
+    from bauer.config_loader import BauerConfig, ModelSection, ToolsSection
+    from rich.console import Console
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        tools=ToolsSection(max_tool_turns=9999),
+    )
+    client = _make_client()
+    console = Console()
+
+    try:
+        with patch("bauer.config_loader.load_config", return_value=cfg), \
+             patch("builtins.input", side_effect=[EOFError]):
+            agent_mod.run_agent_session(client, "test-model", 4096, console, router)
+        assert agent_mod.MAX_TOOL_TURNS == 9999
+    finally:
+        # Nunca deixa o global mutado vazar pra outros testes do mesmo processo.
+        agent_mod.MAX_TOOL_TURNS = 150
+
+
+def test_run_agent_session_falls_back_to_150_without_config(ws: Path, router: ToolRouter):
+    import bauer.agent as agent_mod
+    from rich.console import Console
+
+    client = _make_client()
+    console = Console()
+
+    try:
+        agent_mod.MAX_TOOL_TURNS = 9999  # simula valor deixado por outro teste/sessão
+        with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError), \
+             patch("builtins.input", side_effect=[EOFError]):
+            agent_mod.run_agent_session(client, "test-model", 4096, console, router)
+        assert agent_mod.MAX_TOOL_TURNS == 150
+    finally:
+        agent_mod.MAX_TOOL_TURNS = 150
+
+
+def test_dispatch_command_dry_run_uses_active_workspace(tmp_path: Path):
+    from bauer.agent import _handle_dispatch_cmd
+    from bauer.workspace_manager import WorkspaceManager
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    global_ws = tmp_path / "workspace"
+    wm = WorkspaceManager(active_ws)
+    wm.init_project("Active Project")
+    wm.add_task("Queued task", status="READY", metadata={"dispatch": "true"})
+    console = Console(record=True, width=120)
+
+    _handle_dispatch_cmd("/dispatch once --dry-run", console, active_ws)
+
+    output = console.export_text()
+    assert "dry: T0001" in output
+    assert wm.get_task("001").status == "READY"
+    assert not (global_ws / "TASKS.md").exists()
+
+
+def test_run_agent_session_dispatch_status_uses_router_workspace(tmp_path: Path):
+    from bauer.agent import run_agent_session
+    from bauer.workspace_manager import WorkspaceManager
+    from rich.console import Console
+
+    active_ws = tmp_path / "company-a" / "workspace"
+    WorkspaceManager(active_ws).init_project("Active Project")
+    router = ToolRouter(workspace=active_ws)
+    client = _make_client()
+    console = Console()
+
+    with patch("builtins.input", side_effect=["/dispatch status", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()
+
+
 def _make_client(*responses: str) -> MagicMock:
     """Cria mock de OllamaClient que retorna respostas em sequência."""
     client = MagicMock()
@@ -164,7 +324,15 @@ def test_agent_tool_result_fed_back(ws: Path, router: ToolRouter):
 
 
 def test_agent_max_tool_turns_protection(ws: Path, router: ToolRouter):
-    """Agente para após MAX_TOOL_TURNS tool calls consecutivos."""
+    """Agente para após MAX_TOOL_TURNS tool calls consecutivos.
+
+    Contexto GRANDE (131072) de propósito: com 4096, a compressão de contexto
+    dispara a cada ~13 rodadas e o fallback dela ("auxiliary primeiro,
+    principal depois") consome respostas do MOCK como sumarizador — antes da
+    hermeticidade do conftest.py isso silenciosamente fazia ~10 chamadas de
+    LLM REAIS por execução deste teste. O teste é sobre o teto de tool calls,
+    não sobre compressão — contexto grande isola o que se quer medir.
+    """
     from bauer.agent import run_agent_session
     from rich.console import Console
 
@@ -176,7 +344,7 @@ def test_agent_max_tool_turns_protection(ws: Path, router: ToolRouter):
     console = Console()
 
     with patch("builtins.input", side_effect=["faça algo", EOFError]):
-        run_agent_session(client, "test-model", 4096, console, router)
+        run_agent_session(client, "test-model", 131072, console, router)
 
     # Não deve ter mais de MAX_TOOL_TURNS + 1 chamadas (MAX tool calls + 1 final)
     assert client.chat_stream.call_count <= MAX_TOOL_TURNS + 1

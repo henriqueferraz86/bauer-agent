@@ -392,3 +392,25 @@ def test_import_codex_token_no_access_token_raises(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Codex"):
         manager._import_codex_token(codex_path)
+
+
+# ─── Segurança: sem fallback XOR silencioso ───────────────────────────────────
+
+
+def test_try_get_fernet_raises_on_import_error(monkeypatch):
+    """_try_get_fernet deve propagar ImportError com mensagem clara."""
+    from unittest.mock import patch
+    import bauer.auth as auth_module
+
+    with patch("bauer.auth._try_get_fernet", side_effect=ImportError("cryptography ausente")):
+        with pytest.raises(ImportError, match="cryptography"):
+            auth_module._encrypt_token("sk-test", "key")
+
+
+def test_encrypt_token_uses_fernet_prefix():
+    """_encrypt_token sempre usa Fernet (prefixo 'fernet:') quando cryptography disponível."""
+    from bauer.auth import _FERNET_PREFIX
+    encrypted = _encrypt_token("sk-test", "some-key")
+    assert encrypted.startswith(_FERNET_PREFIX), (
+        f"Token encriptado deve ter prefixo '{_FERNET_PREFIX}', mas obteve: {encrypted[:20]}"
+    )

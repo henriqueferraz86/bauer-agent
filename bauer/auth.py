@@ -18,7 +18,6 @@ import hashlib
 import json
 import os
 import secrets
-import sys
 import threading
 import time
 import webbrowser
@@ -26,7 +25,7 @@ from dataclasses import dataclass, field
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
@@ -147,29 +146,114 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _encrypt_token(token: str, key: str) -> str:
-    """XOR simples para ofuscar token (não é criptografia forte, mas evita armazenamento em plaintext)."""
-    if not key:
-        return token
-    encrypted = bytes(
-        b ^ ord(key[i % len(key)])
-        for i, b in enumerate(token.encode())
-    )
+# ── Fernet encryption (SEG-2) ────────────────────────────────────────────────
+# Usa criptografia real (AES-128-CBC + HMAC-SHA256) se o pacote `cryptography`
+# estiver instalado. Caso contrário, cai back para XOR para não quebrar
+# ambientes sem a dependência.
+#
+# Formato em disco:
+#   Fernet: "fernet:<base64url_token>"
+#   Legacy XOR: qualquer string sem o prefixo "fernet:"
+#
+# Retrocompatibilidade: ao carregar um token legacy, desofusca com XOR,
+# re-encripta com Fernet e salva automaticamente.
+
+_FERNET_PREFIX = "fernet:"
+
+
+def _derive_fernet_key(raw_key: str) -> bytes:
+    """Deriva chave Fernet de 32 bytes via PBKDF2-HMAC-SHA256."""
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
     import base64
+    salt = b"bauer-auth-v2"  # salt fixo por design (chave já é aleatória)
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100_000)
+    return base64.urlsafe_b64encode(kdf.derive(raw_key.encode()))
+
+
+def _try_get_fernet(raw_key: str):
+    """Retorna objeto Fernet. Lança ImportError com mensagem clara se biblioteca ausente."""
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError as exc:
+        raise ImportError(
+            "A biblioteca 'cryptography' é necessária para armazenar tokens de forma segura. "
+            "Instale com: pip install 'bauer-agent[keychain]' ou pip install cryptography>=41.0"
+        ) from exc
+    key = _derive_fernet_key(raw_key)
+    return Fernet(key)
+
+
+def _xor_encrypt(token: str, key: str) -> str:
+    """XOR legacy — mantido como fallback."""
+    import base64
+    encrypted = bytes(b ^ ord(key[i % len(key)]) for i, b in enumerate(token.encode()))
     return base64.b64encode(encrypted).decode()
 
 
-def _decrypt_token(encrypted: str, key: str) -> str:
-    """Desofusca token."""
-    if not key:
-        return encrypted
+def _xor_decrypt(encrypted: str, key: str) -> str:
+    """Desofusca XOR legacy."""
     import base64
     decoded = base64.b64decode(encrypted)
-    decrypted = bytes(
-        b ^ ord(key[i % len(key)])
-        for i, b in enumerate(decoded)
-    )
-    return decrypted.decode()
+    return bytes(b ^ ord(key[i % len(key)]) for i, b in enumerate(decoded)).decode()
+
+
+def _encrypt_token(token: str, key: str) -> str:
+    """Encripta token com Fernet (AES-CBC + HMAC). Requer biblioteca 'cryptography'."""
+    if not key or not token:
+        return token
+    fernet = _try_get_fernet(key)  # lança ImportError se cryptography ausente
+    return _FERNET_PREFIX + fernet.encrypt(token.encode()).decode()
+
+
+def _decrypt_token(encrypted: str, key: str) -> str:
+    """Decripta token — suporta Fernet e XOR legacy."""
+    if not key or not encrypted:
+        return encrypted
+    if encrypted.startswith(_FERNET_PREFIX):
+        fernet = _try_get_fernet(key)
+        if fernet is None:
+            raise ValueError(
+                "Token encriptado com Fernet mas 'cryptography' não está instalado. "
+                "Execute: pip install cryptography"
+            )
+        try:
+            return fernet.decrypt(encrypted[len(_FERNET_PREFIX):].encode()).decode()
+        except Exception as exc:
+            raise ValueError(f"Falha ao decriptar token Fernet: {exc}") from exc
+    # Legacy XOR — tenta desofuscar
+    try:
+        return _xor_decrypt(encrypted, key)
+    except Exception:
+        return encrypted  # já estava em plaintext (sem encriptação)
+
+
+def _extract_chatgpt_account_id(id_token: str | None) -> str:
+    """Decodifica o JWT id_token (sem verificar assinatura) e extrai o
+    chatgpt_account_id do claim `https://api.openai.com/auth`.
+
+    Retorna "" se não encontrar — o backend pode aceitar sem o header em
+    algumas contas, e o erro fica explícito na primeira chamada.
+    """
+    if not id_token:
+        return ""
+    try:
+        import base64 as _b64
+        import json as _json
+        parts = id_token.split(".")
+        if len(parts) < 2:
+            return ""
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)  # padding base64url
+        payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+        auth_claim = payload.get("https://api.openai.com/auth", {})
+        return (
+            auth_claim.get("chatgpt_account_id")
+            or auth_claim.get("chatgpt_user_id")
+            or ""
+        )
+    except Exception:
+        return ""
 
 
 # ─── Token Storage ───────────────────────────────────────────────────────────
@@ -310,6 +394,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
     auth_code: str | None = None
     state: str | None = None
     actual_port: int = 1455
+    success_served: bool = False   # True depois que /success foi entregue ao browser
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -332,6 +417,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
                 b"<script>setTimeout(() => window.close(), 2000);</script>"
                 b"</body></html>"
             )
+            _OAuthCallbackHandler.success_served = True
         elif "error" in params:
             error = params.get("error", ["unknown"])[0]
             desc = params.get("error_description", [""])[0]
@@ -375,17 +461,31 @@ class OAuthCallbackServer:
             self.server.shutdown()
 
     def wait_for_code(self, timeout: int = 300) -> tuple[str | None, str | None]:
-        """Aguarda o código de autorização."""
+        """Aguarda o código de autorização e a entrega da página /success ao browser."""
         start = time.time()
+        # Fase 1: espera o /auth/callback ser recebido
         while time.time() - start < timeout:
             if _OAuthCallbackHandler.auth_code:
-                code = _OAuthCallbackHandler.auth_code
-                state = _OAuthCallbackHandler.state
-                _OAuthCallbackHandler.auth_code = None
-                _OAuthCallbackHandler.state = None
-                return code, state
+                break
             time.sleep(0.1)
-        return None, None
+
+        code = _OAuthCallbackHandler.auth_code
+        state = _OAuthCallbackHandler.state
+        _OAuthCallbackHandler.auth_code = None
+        _OAuthCallbackHandler.state = None
+
+        if not code:
+            return None, None
+
+        # Fase 2: aguarda o browser receber /success (até 3s extra)
+        success_deadline = time.time() + 3.0
+        while time.time() < success_deadline:
+            if _OAuthCallbackHandler.success_served:
+                break
+            time.sleep(0.05)
+        _OAuthCallbackHandler.success_served = False
+
+        return code, state
 
 
 # ─── Auth Manager ────────────────────────────────────────────────────────────
@@ -395,7 +495,19 @@ class AuthManager:
 
     def __init__(self, base_dir: Path | None = None):
         self.store = TokenStore(base_dir)
-        self._http = httpx.Client(timeout=30, follow_redirects=True)
+        # Lazy: criar httpx.Client custa ~260ms de SSL context no Windows, e
+        # AuthManager é instanciado a cada _build_client (62× no startup com
+        # a lista de fallbacks) — a maioria nunca faz requisição nenhuma.
+        self._http_client: "httpx.Client | None" = None
+
+    @property
+    def _http(self) -> "httpx.Client":
+        if self._http_client is None:
+            from .http_shared import shared_ssl_context
+            self._http_client = httpx.Client(
+                timeout=30, follow_redirects=True, verify=shared_ssl_context()
+            )
+        return self._http_client
 
     def login_oauth(self, provider: str, port: int | None = None) -> AuthToken:
         """Login via OAuth Authorization Code Flow com PKCE — igual ao Codex CLI.
@@ -456,15 +568,15 @@ class AuthManager:
         print(f"\n{'='*60}")
         print(f"Autenticar com {config['name']}")
         print(f"{'='*60}")
-        print(f"\nAbrindo browser para login...")
-        print(f"\nSe o browser nao abrir, acesse:")
+        print("\nAbrindo browser para login...")
+        print("\nSe o browser nao abrir, acesse:")
         print(f"  {auth_url}")
-        print(f"\nAguardando autenticacao...")
+        print("\nAguardando autenticacao...")
 
         # Abrir browser
         webbrowser.open(auth_url)
 
-        # Aguardar callback
+        # Aguardar callback + /success ser servido ao browser
         code, returned_state = server.wait_for_code(timeout=300)
         server.stop()
 
@@ -483,6 +595,10 @@ class AuthManager:
             code=code,
         )
 
+        # Extrai o chatgpt_account_id do id_token (JWT) — necessário para o
+        # backend ChatGPT (Responses API) billar na assinatura, igual ao Codex.
+        _account_id = _extract_chatgpt_account_id(token_data.get("id_token"))
+
         token = AuthToken(
             provider=provider,
             access_token=token_data["access_token"],
@@ -490,19 +606,32 @@ class AuthManager:
             expires_at=time.time() + token_data.get("expires_in", 3600),
             token_type=token_data.get("token_type", "Bearer"),
             api_base=config.get("api_base"),
-            extra={"id_token": token_data.get("id_token")},
+            extra={
+                "id_token": token_data.get("id_token"),
+                "chatgpt_account_id": _account_id,
+            },
         )
 
         self.store.save(token)
 
         # Tentar obter API key via token exchange (igual Codex CLI)
-        # Nota: requer organization_id na conta OpenAI
+        # Nota: requer organization_id na conta OpenAI.
+        # Contas pessoais (sem org) recebem 401/403 aqui — fallback para access_token.
         id_token = token_data.get("id_token")
         if id_token:
             api_key = self._obtain_api_key(issuer, client_id, id_token)
             if api_key:
                 token.api_key = api_key
                 self.store.save(token)
+                print("[✓] API key de sessão obtida via token exchange.")
+            else:
+                # Sem API key — usará access_token como Bearer.
+                # Isso funciona para autenticação mas requer billing na conta API da OpenAI.
+                print(
+                    "[!] Token exchange nao retornou API key (normal para contas pessoais sem org).\n"
+                    "    Usando access_token OAuth — requer billing em platform.openai.com/settings/billing\n"
+                    "    para usar a API developer. ChatGPT Plus (assinatura web) e separado."
+                )
 
         return token
 
@@ -813,7 +942,6 @@ class AuthManager:
         if config["auth_type"] == "device_flow":
             return self.login_device_flow(provider)
         elif config["auth_type"] == "oauth":
-            # Para OpenAI, tentar importar do Codex CLI primeiro
             if provider == "openai":
                 return self._login_openai_via_codex()
             return self.login_oauth(provider)
@@ -978,6 +1106,16 @@ class AuthManager:
             resp.raise_for_status()
             token_data = resp.json()
 
+            # Preserva extra (id_token, chatgpt_account_id); re-extrai o
+            # account_id se o refresh trouxer um id_token novo.
+            new_extra = dict(token.extra or {})
+            new_id_token = token_data.get("id_token")
+            if new_id_token:
+                new_extra["id_token"] = new_id_token
+                _acct = _extract_chatgpt_account_id(new_id_token)
+                if _acct:
+                    new_extra["chatgpt_account_id"] = _acct
+
             new_token = AuthToken(
                 provider=provider,
                 access_token=token_data["access_token"],
@@ -985,6 +1123,8 @@ class AuthManager:
                 expires_at=time.time() + token_data.get("expires_in", 3600),
                 token_type=token_data.get("token_type", "Bearer"),
                 api_base=token.api_base,
+                api_key=token.api_key,
+                extra=new_extra,
             )
             self.store.save(new_token)
             return new_token
@@ -993,7 +1133,8 @@ class AuthManager:
 
     def close(self) -> None:
         """Fecha conexões."""
-        self._http.close()
+        if self._http_client is not None:
+            self._http_client.close()
 
 
 # ─── Funções CLI ─────────────────────────────────────────────────────────────
@@ -1067,8 +1208,12 @@ def _switch_config_to_provider(provider: str) -> None:
 
     config["model"]["provider"] = cfg["provider"]
     config["model"]["name"] = cfg["model"]
-    config["model"]["requested_context"] = cfg["context"]
-    config["model"]["minimum_context"] = min(cfg["context"], 8192)
+    current_requested = int(config.get("model", {}).get("requested_context") or 16384)
+    safe_context = min(cfg["context"], current_requested)
+
+    config["model"]["requested_context"] = safe_context
+    config["model"]["minimum_context"] = min(safe_context, 8192)
+    config["model"]["think"] = False
 
     # Salvar
     with open(config_path, "w", encoding="utf-8") as f:
@@ -1076,11 +1221,11 @@ def _switch_config_to_provider(provider: str) -> None:
 
     from rich.console import Console
     console = Console()
-    console.print(f"\n[dim]Config atualizada:[/dim]")
+    console.print("\n[dim]Config atualizada:[/dim]")
     console.print(f"  Provider: {old_provider} -> [green]{cfg['provider']}[/green]")
     console.print(f"  Modelo:   {old_model} -> [green]{cfg['model']}[/green]")
     console.print(f"  Contexto: {cfg['context']} tokens")
-    console.print(f"\n[dim]Rode 'bauer doctor' para validar.[/dim]")
+    console.print("\n[dim]Rode 'bauer doctor' para validar.[/dim]")
 
 
 def cmd_status() -> None:

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch, call
 import json
 
 import pytest
+pytest.importorskip("typer")
 import yaml
 from typer.testing import CliRunner
 
@@ -120,7 +121,12 @@ class TestLoadOrDie:
     def test_config_error_raises_exit(self, tmp_path: Path):
         import typer
         bad_cfg = tmp_path / "bad.yaml"
-        bad_cfg.write_text("model:\n  name: phi4-mini\n", encoding="utf-8")  # Missing required fields
+        # provider inválido (fora do Literal) → ConfigError → typer.Exit.
+        # (campos ausentes não bastam: provider e requested_context têm default)
+        bad_cfg.write_text(
+            "model:\n  name: phi4-mini\n  provider: not_a_real_provider\n",
+            encoding="utf-8",
+        )
         mdl_file = _make_models_file(tmp_path)
         # ConfigError should cause typer.Exit
         with pytest.raises((typer.Exit, SystemExit)):
@@ -148,9 +154,9 @@ class TestGetOrRunState:
         reg = load_registry(mdl_file)
 
         report = _make_doctor_report()
-        with patch("bauer.cli.read_state", return_value=None), \
-             patch("bauer.cli.run_doctor", return_value=report), \
-             patch("bauer.cli.write_state", return_value=tmp_path / "state.json"):
+        with patch("bauer.commands._runtime.read_state", return_value=None), \
+             patch("bauer.commands._runtime.run_doctor", return_value=report), \
+             patch("bauer.commands._runtime.write_state", return_value=tmp_path / "state.json"):
             state = _get_or_run_state(cfg, reg, tmp_path / "state.json")
 
         assert state is not None
@@ -172,9 +178,9 @@ class TestGetOrRunState:
         }
 
         report = _make_doctor_report()
-        with patch("bauer.cli.read_state", return_value=existing_state), \
-             patch("bauer.cli.run_doctor", return_value=report), \
-             patch("bauer.cli.write_state", return_value=tmp_path / "state.json"):
+        with patch("bauer.commands._runtime.read_state", return_value=existing_state), \
+             patch("bauer.commands._runtime.run_doctor", return_value=report), \
+             patch("bauer.commands._runtime.write_state", return_value=tmp_path / "state.json"):
             state = _get_or_run_state(cfg, reg, tmp_path / "state.json")
 
         assert state is not None
@@ -197,8 +203,8 @@ class TestGetOrRunState:
             "context": {"applied": 4096, "requested": 4096, "reason": "ok"},
         }
 
-        with patch("bauer.cli.read_state", return_value=fresh_state), \
-             patch("bauer.cli.run_doctor") as mock_doctor:
+        with patch("bauer.commands._runtime.read_state", return_value=fresh_state), \
+             patch("bauer.commands._runtime.run_doctor") as mock_doctor:
             state = _get_or_run_state(cfg, reg, tmp_path / "state.json")
 
         mock_doctor.assert_not_called()

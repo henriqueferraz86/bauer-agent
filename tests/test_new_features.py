@@ -3,11 +3,14 @@ Prometheus metrics, bauer status/doctor, tool schemas."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 
 # ─── MemoryManager.search (TF-IDF) ───────────────────────────────────────────
@@ -136,6 +139,20 @@ class TestSecretsScanner:
         from bauer.secrets_scanner import has_secrets
         assert not has_secrets("Texto normal sem segredos aqui")
 
+    def test_redact_telegram_bot_token(self):
+        from bauer.secrets_scanner import redact
+        # Token SINTÉTICO no formato Telegram — não é um segredo real.
+        token = "1234567890:" + "A" * 35
+        out = redact(f"POST https://api.telegram.org/bot{token}/getUpdates")
+        assert token not in out
+        assert "REDACTED" in out
+
+    def test_discord_bot_token_detected(self):
+        from bauer.secrets_scanner import has_secrets
+        # Token SINTÉTICO no formato Discord — não é um segredo real.
+        fake = "M" + "A" * 24 + "." + "B" * 6 + "." + "C" * 30
+        assert has_secrets(fake)
+
     def test_scan_returns_match_details(self):
         from bauer.secrets_scanner import scan
         text = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
@@ -158,6 +175,18 @@ class TestSecretsScanner:
         text = "xai-abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
         result = scan(text)
         assert result.found
+
+    def test_scan_xai_image_url_nao_e_falso_positivo(self):
+        """Regressão: URL de imagem gerada via xai-imgen (hífens, sem trecho
+        de 20+ chars contíguos) não pode ser confundida com a API key real
+        — senão image_generate(provider=xai) devolve URL corrompida."""
+        from bauer.secrets_scanner import scan
+        text = (
+            "https://imgen.x.ai/xai-imgen/"
+            "xai-tmp-imgen-21617436-ffd6-9ffb-a255-c0cd6910cd0a-79bbebb3.jpeg"
+        )
+        result = scan(text)
+        assert not result.found
 
 
 # ─── OpenAIClient.chat_with_tools ────────────────────────────────────────────
@@ -335,6 +364,7 @@ class TestServerMetrics:
 
 # ─── bauer status / doctor CLI ───────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestStatusDoctorCLI:
     def test_status_command_runs(self, tmp_path):
         from typer.testing import CliRunner

@@ -1,0 +1,32 @@
+name: Docker Ops
+description: "Build, run, debug e deploy de containers Docker — multi-stage, compose, troubleshooting."
+content: |
+  # Docker Ops — Guia operacional
+
+  ## Build eficiente
+  - Use multi-stage builds: `FROM python:3.11-slim AS base`
+  - Copie `requirements.txt` ANTES do código (cache de camadas)
+  - `.dockerignore`: exclua `.git`, `__pycache__`, `*.pyc`, `venv/`
+
+  ## Comandos essenciais
+  ```bash
+  docker build -t app:local .
+  docker run --rm -p 8080:8080 app:local
+  docker exec -it <container> bash    # inspeciona container vivo
+  docker logs -f <container>          # tail de logs
+  docker stats                        # CPU/RAM em tempo real
+  ```
+
+  ## Compose
+  ```bash
+  docker compose up -d         # sobe em background
+  docker compose logs -f app   # logs de um serviço
+  docker compose restart app   # reinicia sem rebuild
+  docker compose down -v       # destrói volumes também
+  ```
+
+  ## Troubleshooting
+  - Container sai imediatamente? `docker run --rm --entrypoint sh app:local`
+  - Port conflict? `docker ps` + `netstat -tulpn | grep <porta>`
+  - Imagem grande? `docker history app:local` para ver camadas
+  - Sem espaço? `docker system prune -af --volumes`

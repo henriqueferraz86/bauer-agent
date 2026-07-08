@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 
 from rich.console import Console
-from rich.rule import Rule
+from .indicators import spinning
 
 from .context_manager import ContextManager
 from .ollama_client import OllamaClient, OllamaError
@@ -38,16 +38,30 @@ def run_chat_session(
     """Loop REPL de chat. Encerra com /exit, /quit ou Ctrl-C."""
     ctx = ContextManager(applied_context=applied_context, system_prompt=_SYSTEM_PROMPT)
 
-    console.print(Rule(f"[bold]Bauer Chat[/bold] — {model_name}"))
-    console.print(
-        f"[dim]Contexto: {applied_context} tokens | "
-        f"Budget historico: {ctx.budget} tokens | "
-        f"/exit para sair | /clear para limpar | /status para stats[/dim]\n"
-    )
+    from .ascii_intro import play_intro, session_panel
+    play_intro(console)
+    console.print(session_panel(
+        "Bauer Chat",
+        model_name,
+        applied_context,
+        commands=[
+            ("/status", "stats"),
+            ("/clear", "limpar"),
+            ("/exit", "sair"),
+        ],
+        extra_rows=[("Budget", f"{ctx.budget} tokens")],
+    ))
+    console.print()
 
     while True:
         try:
-            user_input = console.input("[bold cyan]voce>[/bold cyan] ").strip()
+            # Cursor sublinhado piscante (DECSCUSR), sem label "voce>".
+            try:
+                sys.stdout.write("\x1b[3 q")
+                sys.stdout.flush()
+            except Exception:
+                pass
+            user_input = console.input("").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Encerrando sessao.[/dim]")
             break
@@ -73,34 +87,32 @@ def run_chat_session(
 
         ctx.add_user(user_input)
 
-        # Prefixo da resposta — sem newline, o stream continua na mesma linha.
-        sys.stdout.write("\033[32mbauer>\033[0m ")
-        sys.stdout.flush()
-
         collected: list[str] = []
         error_occurred = False
 
         try:
-            for chunk in client.chat_stream(model_name, ctx.get_payload()):
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
-                collected.append(chunk)
+            # Spinner APENAS enquanto coleta — sem sys.stdout.write durante
+            with spinning(f"Consultando {model_name}...", console=console, transient=True) as sp:
+                for chunk in client.chat_stream(model_name, ctx.get_payload()):
+                    collected.append(chunk)
+                    sp.update(f"Recebendo resposta... [{len(''.join(collected))} chars]")
         except OllamaError as exc:
             error_occurred = True
-            sys.stdout.write("\n")
-            console.print(f"[red]Erro:[/red] {exc}")
+            console.print(f"\n[red]Erro Ollama:[/red] {exc}")
             console.print("[dim]Rode 'bauer doctor' para diagnostico completo.[/dim]")
-            # Remove a mensagem do usuario pois nao houve resposta.
             if ctx.messages and ctx.messages[-1]["role"] == "user":
                 ctx.messages.pop()
         except KeyboardInterrupt:
-            # Usuario interrompeu o stream — salva o que chegou ate aqui.
-            sys.stdout.write(" [interrompido]\n")
-        finally:
-            if not error_occurred:
-                sys.stdout.write("\n")
+            console.print("\n[dim]Interrompido pelo usuario.[/dim]")
+        else:
+            # Exibe resposta COMPLETA apos o spinner fechar (sem conflito)
+            full_response = "".join(collected)
+            sys.stdout.write("\033[32mbauer>\033[0m ")
+            sys.stdout.write(full_response)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
-        if collected:
+        if not error_occurred and collected:
             ctx.add_assistant("".join(collected))
 
         sys.stdout.flush()

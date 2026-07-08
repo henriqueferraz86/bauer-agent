@@ -1,0 +1,22 @@
+name: cost-analysis
+version: "1.0"
+description: Análise de custo de infraestrutura — identifica desperdícios e recomenda otimizações
+tags: [devops, cost, cloud, optimization]
+content: |
+  Realize análise de custo:
+  1. Liste os principais serviços e seus custos estimados
+  2. Identifique recursos ociosos ou superprovisionados
+  3. Calcule potencial de economia por categoria
+  4. Priorize otimizações por ROI (economia vs. esforço)
+  5. Gere relatório com recomendações concretas e estimativas
+  Foque em quick wins (< 1 semana de implementação) primeiro.
+tools: [run_command, web_search, read_file]
+params:
+  cloud_provider:
+    type: string
+    description: Provedor cloud (aws, gcp, azure, hetzner)
+    required: true
+  monthly_budget:
+    type: number
+    description: Budget mensal atual em USD
+    required: false

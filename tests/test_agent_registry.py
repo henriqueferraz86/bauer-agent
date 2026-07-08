@@ -67,6 +67,10 @@ def test_valid_name_max_length():
 def test_agentdef_defaults():
     a = AgentDef(name="x1", description="d", system="s")
     assert a.tools == DEFAULT_TOOLS
+    assert a.capabilities == []
+    assert a.lane == ""
+    assert a.max_concurrent == 1
+    assert a.priority_weight == 1
     assert a.model == ""
     assert a.provider == ""
     assert a.created_at  # deve ter timestamp
@@ -83,11 +87,19 @@ def test_agentdef_to_dict():
 
 def test_agentdef_from_dict_roundtrip():
     original = _sample_agent()
+    original.capabilities = ["python", "tests"]
+    original.lane = "dev"
+    original.max_concurrent = 2
+    original.priority_weight = 3
     d = original.to_dict()
     restored = AgentDef.from_dict(d)
     assert restored.name == original.name
     assert restored.system == original.system
     assert restored.tools == original.tools
+    assert restored.capabilities == ["python", "tests"]
+    assert restored.lane == "dev"
+    assert restored.max_concurrent == 2
+    assert restored.priority_weight == 3
 
 
 def test_agentdef_from_dict_defaults():
@@ -128,6 +140,23 @@ def test_get_not_found(tmp_path):
 def test_get_no_file(tmp_path):
     reg = _make_registry(tmp_path)
     assert reg.get("qualquer") is None
+
+
+def test_list_agents_ignores_malformed_entries(tmp_path):
+    agents_file = tmp_path / "agents.yaml"
+    agents_file.write_text(
+        """
+agents:
+  - broken-string
+  - description: sem nome
+  - name: valid-agent
+    description: ok
+    system: ok
+""".strip(),
+        encoding="utf-8",
+    )
+    agents = AgentRegistry(agents_file).list_agents()
+    assert [agent.name for agent in agents] == ["valid-agent"]
 
 
 def test_save_overwrites_existing(tmp_path):

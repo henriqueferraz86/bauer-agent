@@ -1,0 +1,722 @@
+"""Desktop API — endpoints REST/SSE que alimentam o Bauer Agent Desktop (SPA).
+
+O `bauer serve` (server.py) já expõe chat/stream/models/sessions. Este módulo
+adiciona um ``APIRouter`` montado em ``/api`` com os grupos que as 8 telas do
+desktop precisam — todos *reusando* módulos existentes, sem reescrever lógica:
+
+  Projetos   → projects_registry
+  Kanban     → workspace_manager.WorkspaceManager.list_tasks()
+  Modelos    → models_dev.catalog_models()
+  Gateway    → config_loader + gateway_service.read_process_status()
+  Obs        → cost_tracker (cost_history.jsonl) + otel (spans.jsonl)
+  Config     → config_admin + config_profiles
+  Logs       → tail de logs/*.log
+
+O router recebe `verify_key` (dependency de auth do server) e resolvers de
+workspace/config injetáveis — assim os endpoints derivam o projeto ativo ao vivo
+e os testes podem apontar para diretórios temporários.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+
+# ---------------------------------------------------------------------------
+# Helpers (puros — testáveis isoladamente)
+# ---------------------------------------------------------------------------
+
+_SECRET_RE = re.compile(r"(key|token|secret|password|api_key)", re.IGNORECASE)
+_SAFE_LOG_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+logger = logging.getLogger(__name__)
+
+
+def _mask_secrets(node: Any) -> Any:
+    """Mascara recursivamente valores de chaves sensíveis num dict de config."""
+    if isinstance(node, dict):
+        out: Dict[str, Any] = {}
+        for k, v in node.items():
+            if isinstance(v, (dict, list)):
+                out[k] = _mask_secrets(v)
+            elif _SECRET_RE.search(str(k)) and v:
+                s = str(v)
+                out[k] = (s[:4] + "…") if len(s) > 4 else "•••"
+            else:
+                out[k] = v
+        return out
+    if isinstance(node, list):
+        return [_mask_secrets(x) for x in node]
+    return node
+
+
+def _day_start(ts: float) -> float:
+    """Epoch da meia-noite local do dia de `ts`."""
+    lt = time.localtime(ts)
+    midnight = (lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)
+    return time.mktime(midnight)
+
+
+def _read_jsonl(path: Path, limit: int = 0) -> List[Dict[str, Any]]:
+    """Lê um JSONL defensivamente. `limit` > 0 retorna só as últimas N linhas."""
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    if limit > 0:
+        lines = lines[-limit:]
+    out: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            if isinstance(rec, dict):
+                out.append(rec)
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _percentile(values: List[float], pct: float) -> Optional[float]:
+    if not values:
+        return None
+    s = sorted(values)
+    k = max(0, min(len(s) - 1, int(round((pct / 100.0) * (len(s) - 1)))))
+    return round(s[k], 2)
+
+
+def cost_summary(cost_file: Path, *, now: Optional[float] = None) -> Dict[str, Any]:
+    """Resumo de custo/tokens do dia + acumulado, a partir do cost_history.jsonl."""
+    now = now if now is not None else time.time()
+    midnight = _day_start(now)
+    recs = _read_jsonl(cost_file)
+    today = [r for r in recs if float(r.get("ts", 0)) >= midnight]
+    sessions = {r.get("session_id") for r in today if r.get("session_id")}
+    return {
+        "cost_today_usd": round(sum(float(r.get("cost_usd", 0)) for r in today), 6),
+        "tokens_today": sum(int(r.get("total_tokens", 0)) for r in today),
+        "calls_today": len(today),
+        "sessions_today": len(sessions),
+        "cost_total_usd": round(sum(float(r.get("cost_usd", 0)) for r in recs), 6),
+    }
+
+
+def cost_by_model(cost_file: Path) -> List[Dict[str, Any]]:
+    """Breakdown de custo agregado por modelo (desc)."""
+    recs = _read_jsonl(cost_file)
+    agg: Dict[str, Dict[str, Any]] = {}
+    for r in recs:
+        model = r.get("model") or "unknown"
+        a = agg.setdefault(model, {"model": model, "cost_usd": 0.0, "total_tokens": 0, "calls": 0})
+        a["cost_usd"] += float(r.get("cost_usd", 0))
+        a["total_tokens"] += int(r.get("total_tokens", 0))
+        a["calls"] += 1
+    for a in agg.values():
+        a["cost_usd"] = round(a["cost_usd"], 6)
+    return sorted(agg.values(), key=lambda x: x["cost_usd"], reverse=True)
+
+
+def _http_ok(url: str, timeout: float = 2.0) -> bool:
+    import httpx
+
+    try:
+        return httpx.get(url, timeout=timeout).status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def wait_for_health(
+    url: str,
+    *,
+    timeout: float = 20.0,
+    interval: float = 0.3,
+    _probe: Optional[Callable[[str], bool]] = None,
+) -> bool:
+    """Poll ``url`` até responder 200 (ou estourar ``timeout``). Testável via ``_probe``."""
+    probe = _probe or _http_ok
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if probe(url):
+            return True
+        time.sleep(interval)
+    return False
+
+
+def tail_log(log_path: Path, lines: int = 200) -> List[str]:
+    if not log_path.exists():
+        return []
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return content[-max(1, lines):]
+
+
+# ---------------------------------------------------------------------------
+# Router factory
+# ---------------------------------------------------------------------------
+
+def _default_config_path() -> Path:
+    return Path("config.yaml")
+
+
+def _default_workspace() -> Path:
+    try:
+        from .config_loader import load_config
+
+        cfg = load_config("config.yaml")
+        ws = Path(cfg.agent.workspace)
+        return ws if ws.is_absolute() else (Path.cwd() / ws)
+    except Exception:  # noqa: BLE001
+        return Path.cwd() / "workspace"
+
+
+def build_desktop_router(
+    *,
+    verify_key: Optional[Callable] = None,
+    get_config_path: Optional[Callable[[], Path]] = None,
+    get_workspace: Optional[Callable[[], Path]] = None,
+    cost_file: Optional[Path] = None,
+    spans_file: Optional[Path] = None,
+    runtime_root: Optional[Path] = None,
+    logs_dir: Optional[Path] = None,
+):
+    """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes."""
+    from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+    get_config_path = get_config_path or _default_config_path
+    get_workspace = get_workspace or _default_workspace
+    _cost_file = cost_file or (Path.home() / ".bauer" / "cost_history.jsonl")
+    _spans_file = spans_file or (Path.home() / ".bauer" / "traces" / "spans.jsonl")
+    _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
+    _logs_dir = logs_dir or (Path.cwd() / "logs")
+
+    deps = [Depends(verify_key)] if verify_key else []
+    router = APIRouter(prefix="/api", dependencies=deps, tags=["desktop"])
+
+    # ── Projetos ──────────────────────────────────────────────────────────
+    from . import projects_registry as pr
+
+    @router.get("/projects")
+    def list_projects():
+        return {"projects": pr.list_projects(), "active": pr.get_active()}
+
+    @router.post("/projects")
+    def add_project(body: dict = Body(...)):
+        path = (body.get("path") or "").strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="Campo 'path' obrigatório.")
+        try:
+            return pr.add_project(path, body.get("name"))
+        except (NotADirectoryError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @router.post("/projects/{pid}/activate")
+    def activate_project(pid: str):
+        if not pr.set_active(pid):
+            raise HTTPException(status_code=404, detail=f"Projeto '{pid}' não encontrado.")
+        return {"active": pid}
+
+    @router.delete("/projects/{pid}")
+    def delete_project(pid: str):
+        if not pr.remove_project(pid):
+            raise HTTPException(status_code=404, detail=f"Projeto '{pid}' não encontrado.")
+        return {"removed": pid}
+
+    @router.get("/projects/{pid}/stats")
+    def project_stats(pid: str):
+        return pr.project_stats(pid)
+
+    # ── Kanban ────────────────────────────────────────────────────────────
+    @router.get("/kanban")
+    def kanban_board():
+        try:
+            from .workspace_manager import WorkspaceManager
+
+            wm = WorkspaceManager(get_workspace())
+            tasks = wm.list_tasks()
+        except Exception:  # noqa: BLE001
+            tasks = []
+        columns: Dict[str, List[Dict[str, Any]]] = {}
+        for t in tasks:
+            card = {
+                "id": getattr(t, "id", ""),
+                "title": getattr(t, "title", ""),
+                "status": getattr(t, "status", ""),
+                "priority": getattr(t, "priority", "medium"),
+                "assignee": getattr(t, "assignee", ""),
+            }
+            columns.setdefault(card["status"] or "TODO", []).append(card)
+        return {"columns": columns, "total": len(tasks)}
+
+    # ── Modelos (catálogo) ────────────────────────────────────────────────
+    # Providers primários exibidos no filtro do Desktop (ordem de exibição)
+    _PRIMARY_PROVIDERS = [
+        "openrouter", "openai", "anthropic", "google", "groq",
+        "mistral", "cohere", "deepseek", "nvidia", "azure",
+        "github-models", "github-copilot", "huggingface", "togetherai",
+        "fireworks-ai", "cerebras", "perplexity", "xai", "ollama-cloud",
+        "opencode",
+    ]
+
+    @router.get("/models/providers")
+    def models_providers():
+        try:
+            from .models_dev import catalog_models
+            all_models = catalog_models()
+        except Exception:
+            all_models = []
+        seen: dict[str, int] = {}
+        for m in all_models:
+            p = m.get("provider", "")
+            if p:
+                seen[p] = seen.get(p, 0) + 1
+        # Ordena: primários primeiro (na ordem acima), depois demais por contagem desc
+        primary = [p for p in _PRIMARY_PROVIDERS if p in seen]
+        others = sorted(
+            [p for p in seen if p not in _PRIMARY_PROVIDERS],
+            key=lambda p: -seen[p],
+        )
+        providers = primary + others[:20]
+        return {"providers": providers, "counts": seen}
+
+    @router.get("/models/catalog")
+    def models_catalog(
+        q: str = Query("", description="filtro de substring no id"),
+        provider: str = Query("", description="filtrar por provider"),
+        free: bool = Query(False, description="só modelos sem custo"),
+        limit: int = Query(200, ge=1, le=2000),
+        offset: int = Query(0, ge=0),
+    ):
+        try:
+            from .models_dev import catalog_models
+
+            models = catalog_models(provider=provider or None)
+        except Exception:  # noqa: BLE001
+            models = []
+        if q:
+            ql = q.lower()
+            models = [m for m in models if ql in str(m.get("id", "")).lower()]
+        if free:
+            # Fonte única: o campo is_free do catálogo (models_dev._is_free_model).
+            # Não reclassificar por cost==0 aqui — custo zero por token não
+            # significa gratuito (modelos de áudio/imagem cobram por request).
+            models = [m for m in models if m.get("is_free") is True]
+        total = len(models)
+        free_count = sum(1 for m in models if m.get("is_free"))
+        page = models[offset:offset + limit]
+        return {"total": total, "free_count": free_count, "models": page}
+
+    # ── Gateway ───────────────────────────────────────────────────────────
+    @router.get("/gateway/status")
+    def gateway_status():
+        out: Dict[str, Any] = {
+            "telegram": False, "discord": False,
+            "running": False, "pid": None, "uptime_s": None,
+        }
+        try:
+            from .config_loader import load_config
+
+            cfg = load_config(get_config_path())
+            out["telegram"] = bool(getattr(cfg.telegram, "enabled", False))
+            out["discord"] = bool(getattr(cfg.discord, "enabled", False))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime dashboard config load failed: %s", exc)
+        try:
+            from .gateway_service import read_process_status
+
+            pid, uptime, _mem = read_process_status(get_config_path().parent)
+            out["pid"] = pid
+            out["uptime_s"] = uptime
+            out["running"] = pid is not None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("agents dashboard load failed: %s", exc)
+        return out
+
+    @router.post("/gateway/{action}")
+    def gateway_control(action: str):
+        if action not in ("start", "stop"):
+            raise HTTPException(status_code=400, detail="Ação deve ser start ou stop.")
+        try:
+            from .gateway_service import GatewayServiceManager
+
+            mgr = GatewayServiceManager()
+            msg = mgr.start() if action == "start" else mgr.stop()
+            return {"action": action, "detail": msg}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    # ── Observabilidade ───────────────────────────────────────────────────
+    @router.get("/obs/summary")
+    def obs_summary():
+        summary = cost_summary(_cost_file)
+        spans = _read_jsonl(_spans_file, limit=2000)
+        durations = [
+            float(s["duration_ms"]) for s in spans
+            if isinstance(s.get("duration_ms"), (int, float))
+        ]
+        summary["p50_ms"] = _percentile(durations, 50)
+        summary["p95_ms"] = _percentile(durations, 95)
+        return summary
+
+    @router.get("/obs/cost")
+    def obs_cost():
+        budget = None
+        try:
+            from .config_loader import load_config
+
+            cfg = load_config(get_config_path())
+            budget = getattr(getattr(cfg, "observability", None), "daily_budget_usd", None)
+        except Exception:  # noqa: BLE001
+            pass
+        return {"by_model": cost_by_model(_cost_file), "daily_budget_usd": budget}
+
+    @router.get("/obs/traces")
+    def obs_traces(
+        session: str = Query("", description="filtra por session/trace id"),
+        limit: int = Query(200, ge=1, le=2000),
+    ):
+        spans = _read_jsonl(_spans_file, limit=limit * 4)
+        if session:
+            spans = [
+                s for s in spans
+                if session in (str(s.get("trace_id", "")), str(s.get("session_id", "")))
+            ]
+        return {"spans": spans[-limit:]}
+
+    @router.get("/obs/runs")
+    def obs_runs(limit: int = Query(50, ge=1, le=500)):
+        from dataclasses import asdict
+
+        from .core.runtime.run_manager import RunManager
+
+        runs = RunManager(root=_runtime_root).list_runs()
+        return {"runs": [asdict(run) for run in runs[-limit:]]}
+
+    @router.get("/obs/runs/{run_id}/trace")
+    def obs_run_trace(run_id: str):
+        from .core.events import EventBus
+        from .core.observability import RunTraceStore
+
+        return RunTraceStore(EventBus(root=_runtime_root).store).get_trace(run_id)
+
+    @router.get("/obs/runs/{run_id}/events")
+    def obs_run_events(run_id: str):
+        from .core.events import EventBus
+
+        bus = EventBus(root=_runtime_root)
+        return {"events": [EventBus.to_dict(event) for event in bus.list_events(run_id=run_id)]}
+
+    @router.get("/obs/approvals")
+    def obs_approvals(status: str = Query("pending", description="pending | approved | denied")):
+        from dataclasses import asdict
+
+        from .core.policy import ApprovalManager
+
+        return {"approvals": [asdict(record) for record in ApprovalManager(root=_runtime_root).list(status=status or None)]}
+
+    @router.get("/events")
+    def runtime_events(limit: int = Query(200, ge=1, le=2000)):
+        from .core.events import EventBus
+
+        bus = EventBus(root=_runtime_root)
+        return {"events": [EventBus.to_dict(event) for event in bus.list_events(limit=limit)]}
+
+    @router.get("/obs/budget")
+    def obs_budget():
+        from .core.runtime.autonomy import BudgetManager
+
+        return BudgetManager(root=_runtime_root).status()
+
+    @router.post("/os/command")
+    def os_command(body: dict = Body(...)):
+        from dataclasses import asdict
+
+        from .core.events import EventBus
+        from .core.policy import ApprovalManager, PolicyEngine
+        from .core.runtime.run_manager import RunManager
+        from .core.runtime.session_manager import SessionManager
+
+        text = str(body.get("text") or body.get("command") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Campo 'text' obrigatorio.")
+
+        normalized = text.casefold()
+        event_bus = EventBus(root=_runtime_root)
+
+        def navigation(path: str, label: str) -> dict[str, Any]:
+            return {
+                "kind": "navigate",
+                "label": label,
+                "path": path,
+                "message": f"Abrindo {label}.",
+            }
+
+        if any(term in normalized for term in ("ver runs", "mostrar runs", "listar runs", "runs")):
+            return navigation("/runs", "Runs")
+        if any(term in normalized for term in ("aprovar", "aprovacao", "aprova", "pendente")):
+            return navigation("/approvals", "Approvals")
+        if any(term in normalized for term in ("skill", "capability", "capabilities")):
+            return navigation("/skills", "Skills")
+        if any(term in normalized for term in ("pausar agente", "pausar agent", "pause agent", "pause agente")):
+            agent_id = "default"
+            for marker in ("pausar agente", "pausar agent", "pause agent", "pause agente"):
+                if marker in normalized:
+                    tail = text[normalized.index(marker) + len(marker):].strip()
+                    if tail:
+                        agent_id = tail.split()[0].strip(".,:;") or agent_id
+                    break
+            event_bus.publish(
+                "tool.call.requested",
+                agent_id=agent_id,
+                tool_name="bauer_os.pause_agent",
+                status="requested",
+                message=f"Pause requested for agent {agent_id}",
+                data={"source": "bauer_os_lite", "command": text},
+            )
+            return {
+                "kind": "agent_pause_requested",
+                "label": f"Agent {agent_id}",
+                "path": "/agents",
+                "agent_id": agent_id,
+                "message": f"Pausa registrada para agent {agent_id}.",
+            }
+        if any(term in normalized for term in ("agent", "agente")) and not any(term in normalized for term in ("rodar", "executar")):
+            return navigation("/agents", "Agents")
+        if any(term in normalized for term in ("runtime", "agno", "worker")):
+            return navigation("/runtime", "Runtime")
+        if any(term in normalized for term in ("arquivo", "workspace", "pesquisar arquivo")):
+            return navigation("/projects", "Workspace")
+        if any(term in normalized for term in ("abrir navegador", "navegador", "browser")):
+            return {
+                "kind": "open_external",
+                "label": "Navegador",
+                "url": "about:blank",
+                "message": "Abrindo o navegador.",
+            }
+
+        if any(term in normalized for term in ("painel de controle", "control panel")):
+            decision = PolicyEngine(workspace=get_workspace(), runtime_root=_runtime_root).evaluate(
+                "os.ui_control",
+                {"command": text, "source": "bauer_os_lite"},
+            )
+            event_bus.publish(
+                "policy.evaluated",
+                status=decision.action,
+                message=decision.reason,
+                data={"operation": "os.ui_control", "risk_level": decision.risk_level, "matched_rules": decision.matched_rules},
+            )
+            if decision.action == "deny":
+                return {
+                    "kind": "denied",
+                    "label": "Painel de controle",
+                    "message": decision.reason,
+                    "policy": asdict(decision),
+                }
+            if decision.action == "ask":
+                approval = ApprovalManager(root=_runtime_root, event_bus=event_bus).request(
+                    operation="os.ui_control",
+                    tool_name="bauer_os.open_control_panel",
+                    reason=decision.reason,
+                    risk_level=decision.risk_level,
+                    payload={"command": text, "target": "control_panel"},
+                )
+                return {
+                    "kind": "approval_required",
+                    "label": "Painel de controle",
+                    "approval": asdict(approval),
+                    "policy": asdict(decision),
+                    "message": "Acao sensivel enviada para aprovacao.",
+                }
+            return {
+                "kind": "open_external",
+                "label": "Painel de controle",
+                "url": "ms-settings:",
+                "message": "Abrindo painel de controle.",
+                "policy": asdict(decision),
+            }
+
+        wants_agent_run = any(term in normalized for term in ("rodar agent", "rodar agente", "executar agent", "executar agente"))
+        if wants_agent_run:
+            agent_id = "default"
+            for marker in ("rodar agent", "rodar agente", "executar agent", "executar agente"):
+                if marker in normalized:
+                    tail = text[normalized.index(marker) + len(marker):].strip()
+                    if tail:
+                        agent_id = tail.split()[0].strip(".,:;") or agent_id
+                    break
+            session = SessionManager(root=_runtime_root).create_session(
+                user_id="desktop",
+                agent_id=agent_id,
+                state={"source": "bauer_os_lite", "command": text},
+            )
+            run = RunManager(root=_runtime_root, event_bus=event_bus).create_run(
+                session_id=session.id,
+                agent_id=agent_id,
+                runtime_adapter=str(body.get("runtime_adapter") or "bauer_native"),
+                input={"message": text, "source": "bauer_os_lite"},
+                status="queued",
+            )
+            return {
+                "kind": "run_created",
+                "label": f"Agent {agent_id}",
+                "path": "/runs",
+                "run": asdict(run),
+                "session": asdict(session),
+                "message": f"Run criada para agent {agent_id}.",
+            }
+
+        return {
+            "kind": "unknown",
+            "label": "Bauer Command",
+            "message": "Nao reconheci esse comando ainda.",
+            "suggestions": [
+                "mostrar runs",
+                "aprovar acao pendente",
+                "rodar agent code",
+                "abrir navegador",
+                "abrir painel de controle",
+                "pesquisar arquivo",
+            ],
+        }
+
+    @router.get("/runtime/dashboard")
+    def runtime_dashboard():
+        from .core.runtime.adapters import list_runtime_adapters
+        from .core.runtime.resilience import RuntimeControl, WorkerRegistry
+
+        default_adapter = "bauer_native"
+        configured: Dict[str, Any] = {}
+        try:
+            from .config_loader import load_config
+
+            cfg = load_config(get_config_path())
+            runtime = getattr(cfg, "runtime", None)
+            default_adapter = getattr(runtime, "default_adapter", default_adapter)
+            configured = getattr(runtime, "adapters", {}) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime dashboard config load failed: %s", exc)
+
+        registered = list_runtime_adapters()
+        adapters: List[Dict[str, Any]] = []
+        for name in sorted(set(registered) | set(configured)):
+            cfg = configured.get(name, {}) if isinstance(configured, dict) else {}
+            adapters.append({
+                "name": name,
+                "registered": name in registered,
+                "enabled": bool(cfg.get("enabled", name == "bauer_native")) if isinstance(cfg, dict) else name == "bauer_native",
+                "default": name == default_adapter,
+                "mode": cfg.get("mode", "sdk" if name == "agno" else "local") if isinstance(cfg, dict) else "-",
+                "base_url": cfg.get("base_url", "") if isinstance(cfg, dict) else "",
+            })
+
+        return {
+            "default_adapter": default_adapter,
+            "adapters": adapters,
+            "workers": WorkerRegistry(root=_runtime_root).list(),
+            "kill_switch": RuntimeControl(root=_runtime_root).kill_switch_enabled(),
+        }
+
+    @router.get("/agents")
+    def agents_dashboard():
+        agents: List[Dict[str, Any]] = []
+        try:
+            from .agent_registry import AgentRegistry, list_builtin_specialists
+
+            agents.extend({**agent.to_dict(), "source": "agents.yaml"} for agent in AgentRegistry(Path("agents.yaml")).list_agents())
+            agents.extend({**agent.to_dict(), "source": "builtin"} for agent in list_builtin_specialists())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("agents dashboard load failed: %s", exc)
+        seen: Dict[str, Dict[str, Any]] = {}
+        for agent in agents:
+            seen.setdefault(str(agent.get("name") or ""), agent)
+        return {"agents": sorted(seen.values(), key=lambda item: str(item.get("name", "")))}
+
+    @router.get("/skills")
+    def skills_dashboard():
+        from .core.skills import SkillRegistry
+
+        return {"skills": [manifest.to_dict() for manifest in SkillRegistry().list()]}
+
+    @router.post("/approvals/{approval_id}/approve")
+    def approve_policy_request(approval_id: str):
+        from dataclasses import asdict
+
+        from .core.policy import ApprovalManager
+
+        try:
+            return asdict(ApprovalManager(root=_runtime_root).approve(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    @router.post("/approvals/{approval_id}/deny")
+    def deny_policy_request(approval_id: str):
+        from dataclasses import asdict
+
+        from .core.policy import ApprovalManager
+
+        try:
+            return asdict(ApprovalManager(root=_runtime_root).deny(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    # ── Config ────────────────────────────────────────────────────────────
+    from . import config_admin as ca
+    from . import config_profiles as cp
+
+    @router.get("/config")
+    def get_config():
+        raw = ca._read_raw_yaml(get_config_path())
+        return {"config": _mask_secrets(raw)}
+
+    @router.put("/config")
+    def put_config(body: dict = Body(...)):
+        key = (body.get("key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="Campo 'key' obrigatório.")
+        value = body.get("value", "")
+        try:
+            dest, path = ca.set_config_value(
+                key, str(value), config_path=str(get_config_path())
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=f"Chave inválida: {exc}")
+        return {"saved": key, "dest": dest, "path": str(path)}
+
+    @router.get("/config/profiles")
+    def get_profiles():
+        return {
+            "profiles": cp.list_profiles(get_config_path()),
+            "active": cp.get_active_profile(),
+        }
+
+    @router.post("/config/profiles/{name}/use")
+    def use_profile(name: str):
+        cp.set_active_profile(name)
+        return {"active": name}
+
+    # ── Logs ──────────────────────────────────────────────────────────────
+    @router.get("/logs/{name}/tail")
+    def logs_tail(name: str, lines: int = Query(200, ge=1, le=5000)):
+        if not _SAFE_LOG_NAME.match(name):
+            raise HTTPException(status_code=400, detail="Nome de log inválido.")
+        fname = name if name.endswith(".log") else f"{name}.log"
+        raw = tail_log(_logs_dir / fname, lines)
+        # Logs do gateway carregam tokens de bot em URLs — redige antes de expor à UI.
+        try:
+            from .secrets_scanner import redact
+
+            scrubbed = [redact(line) for line in raw]
+        except Exception:  # noqa: BLE001
+            scrubbed = raw
+        return {"name": fname, "lines": scrubbed}
+
+    return router

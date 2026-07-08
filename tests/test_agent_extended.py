@@ -14,7 +14,9 @@ from bauer.agent import (
     _run_orchestrator_inline,
     _try_parse_tool,
     run_one_turn,
+    run_one_turn_with_fallback,
 )
+from bauer.openai_client import OpenAIClientError
 from bauer.tool_router import ToolRouter
 
 
@@ -119,6 +121,35 @@ def test_try_parse_tool_not_dict(router: ToolRouter):
     assert result is None
 
 
+def test_try_parse_tool_prose_glued_before_json(router: ToolRouter):
+    """Modelo narra antes de chamar a tool, sem quebra de linha (bug real reportado):
+    'Vou verificar o diretório...{"action": "list_dir", "args": {"path": "."}}'
+    Nem estratégia 1 (resposta inteira é JSON) nem estratégia 2 (JSON no início)
+    cobrem esse caso — regressão da estratégia 3 (JSON embutido)."""
+    payload = (
+        'Vou verificar o diretório atual e também tentar localizar o executável '
+        '(caso esteja no PATH).{"action": "list_dir", "args": {"path": "."}}'
+    )
+    result = _try_parse_tool(payload, router)
+    assert result is not None
+    assert result["action"] == "list_dir"
+    assert result["args"] == {"path": "."}
+
+
+def test_try_parse_tool_prose_before_json_unknown_action_is_none(router: ToolRouter):
+    """JSON embutido mas com action desconhecida não deve ser tratado como tool call."""
+    payload = 'Deixa eu pensar.{"action": "fly_to_moon", "args": {}}'
+    result = _try_parse_tool(payload, router)
+    assert result is None
+
+
+def test_try_parse_tool_plain_text_with_braces_but_no_action(router: ToolRouter):
+    """Texto com chaves soltas (ex.: exemplo de código) sem action válida não vira tool call."""
+    payload = "Um dicionário em Python se parece com {'chave': 'valor'} — sem mais nada aqui."
+    result = _try_parse_tool(payload, router)
+    assert result is None
+
+
 # ─── _collect_response ────────────────────────────────────────────────────────
 
 
@@ -150,6 +181,152 @@ def test_build_system_prompt_is_string(router: ToolRouter):
     assert len(prompt) > 100
 
 
+# ─── minimal_code_mode (escada de decisão "código mínimo") ─────────────────
+
+
+def test_agent_section_minimal_code_mode_default_true():
+    from bauer.config_loader import AgentSection
+
+    assert AgentSection().minimal_code_mode is True
+
+
+def test_build_system_prompt_includes_ladder_when_enabled(router: ToolRouter):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(minimal_code_mode=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+    assert "ESCADA DE DECISAO" in prompt
+
+
+def test_build_system_prompt_excludes_ladder_when_disabled(router: ToolRouter):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(minimal_code_mode=False))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+    assert "ESCADA DE DECISAO" not in prompt
+
+
+def test_build_system_prompt_ladder_defaults_true_on_config_load_failure(router: ToolRouter):
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        prompt = _build_system_prompt(router)
+    assert "ESCADA DE DECISAO" in prompt
+
+
+# ─── specialist_delegation (delegate_task a agents especialistas) ──────────
+
+
+def _write_agents_yaml(tmp_path, agents: list[dict]) -> str:
+    import yaml as _yaml
+    p = tmp_path / "agents.yaml"
+    p.write_text(_yaml.dump({"agents": agents}, allow_unicode=True), encoding="utf-8")
+    return str(p)
+
+
+def test_agent_section_specialist_delegation_default_true():
+    from bauer.config_loader import AgentSection
+
+    assert AgentSection().specialist_delegation is True
+
+
+def test_build_system_prompt_lists_local_specialists_when_enabled(router: ToolRouter, tmp_path, monkeypatch):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "devops-specialist",
+        "description": "Docker, Kubernetes, CI/CD",
+        "system": "Voce e devops.",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" in prompt
+    assert "devops-specialist" in prompt
+    assert "Docker, Kubernetes, CI/CD" in prompt
+    assert "delegate_task" in prompt
+
+
+def test_build_system_prompt_excludes_specialists_when_disabled(router: ToolRouter, tmp_path, monkeypatch):
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "devops-specialist", "description": "d", "system": "s",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=False))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" not in prompt
+    assert "devops-specialist" not in prompt
+
+
+def test_build_system_prompt_no_stray_section_when_pool_empty(router: ToolRouter, tmp_path, monkeypatch):
+    """Toggle ligado mas sem nenhum especialista (embutido OU do usuário) —
+    não deve sobrar seção vazia. Os especialistas embutidos (bauer/data/
+    agents/specialists.yaml) SEMPRE existem em produção — mockar
+    list_builtin_specialists() é o único jeito de simular o pool
+    verdadeiramente vazio."""
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    monkeypatch.setenv("BAUER_AGENTS_FILE", str(tmp_path / "nao-existe.yaml"))
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg), \
+         patch("bauer.agent_registry.list_builtin_specialists", return_value=[]):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" not in prompt
+
+
+def test_build_system_prompt_includes_builtin_specialists_with_no_user_file(
+    router: ToolRouter, tmp_path, monkeypatch
+):
+    """Sem nenhum agents.yaml do usuário (BAUER_AGENTS_FILE aponta pra um
+    path inexistente): os especialistas EMBUTIDOS ainda aparecem — é
+    exatamente o cenário 'bauer agent rodado de qualquer pasta' que motivou
+    empacotar os especialistas junto com o Bauer em vez de depender de um
+    agents.yaml no cwd/home do usuário."""
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    monkeypatch.setenv("BAUER_AGENTS_FILE", str(tmp_path / "nao-existe.yaml"))
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "ESPECIALISTAS DISPONIVEIS" in prompt
+    assert "devops-specialist" in prompt
+
+
+def test_build_system_prompt_specialists_excludes_remote_agents(router: ToolRouter, tmp_path, monkeypatch):
+    """Agents remotos (com url) não entram na lista — não precisam de aviso
+    prévio no prompt, isso é decisão de infra do usuário."""
+    from bauer.config_loader import AgentSection, BauerConfig, ModelSection
+
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "worker-remoto", "description": "remoto", "system": "s",
+        "url": "http://localhost:9000",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"), agent=AgentSection(specialist_delegation=True))
+    with patch("bauer.config_loader.load_config", return_value=cfg):
+        prompt = _build_system_prompt(router)
+
+    assert "worker-remoto" not in prompt
+
+
+def test_specialist_delegation_defaults_true_on_config_load_failure(router: ToolRouter, tmp_path, monkeypatch):
+    agents_file = _write_agents_yaml(tmp_path, [{
+        "name": "devops-specialist", "description": "d", "system": "s",
+    }])
+    monkeypatch.setenv("BAUER_AGENTS_FILE", agents_file)
+    with patch("bauer.config_loader.load_config", side_effect=FileNotFoundError("no config")):
+        prompt = _build_system_prompt(router)
+    assert "devops-specialist" in prompt
+
+
 # ─── run_one_turn ─────────────────────────────────────────────────────────────
 
 
@@ -163,6 +340,68 @@ def test_run_one_turn_text_response(router: ToolRouter):
     response, tool_log = run_one_turn(ctx, router, client, "phi4-mini")
     assert response == "Olá! Como posso ajudar?"
     assert tool_log == []
+
+
+# ─── run_one_turn_with_fallback ───────────────────────────────────────────────
+
+
+def test_fallback_primary_429_cai_no_proximo(router: ToolRouter):
+    """Primário dá 429 (retryável) → wrapper cai no fallback e responde."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    fb = _client(["resposta do fallback"])
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+
+    response, _ = run_one_turn_with_fallback(
+        ctx, router, primary, "primary-model", [(fb, "fallback-model")],
+    )
+    assert response == "resposta do fallback"
+    fb.chat_stream.assert_called()
+
+
+def test_fallback_sem_lista_propaga_erro(router: ToolRouter):
+    """Sem fallback configurado, o erro do primário propaga (comportamento antigo)."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+
+    with pytest.raises(OpenAIClientError):
+        run_one_turn_with_fallback(ctx, router, primary, "primary-model", [])
+
+
+def test_fallback_erro_nao_retryavel_nao_cascateia(router: ToolRouter):
+    """Erro não-retryável (ex.: 401 auth) NÃO deve queimar fallbacks — propaga direto."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 401 API key invalida")
+    fb = _client(["nao deveria chegar aqui"])
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+
+    with pytest.raises(OpenAIClientError):
+        run_one_turn_with_fallback(
+            ctx, router, primary, "primary-model", [(fb, "fallback-model")],
+        )
+    fb.chat_stream.assert_not_called()
+
+
+def test_fallback_restaura_ctx_entre_tentativas(router: ToolRouter):
+    """ctx.messages volta ao estado pré-turno antes de tentar o fallback (sem lixo)."""
+    from bauer.context_manager import ContextManager
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 500 server error")
+    fb = _client(["ok"])
+    ctx = ContextManager(applied_context=4096, system_prompt="System")
+    ctx.add_user("oi")
+    n_antes = len(ctx.messages)
+
+    run_one_turn_with_fallback(ctx, router, primary, "m", [(fb, "m2")])
+    # fallback adicionou 1 assistant; não deve haver acúmulo do turno que falhou
+    assert len(ctx.messages) == n_antes + 1
 
 
 def test_run_one_turn_tool_call_then_text(ws: Path, router: ToolRouter):

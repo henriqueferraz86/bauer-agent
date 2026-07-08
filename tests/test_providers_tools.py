@@ -1,10 +1,13 @@
 """Testes para novos providers e tools expandidos."""
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 # ─── Providers — config sections ─────────────────────────────────────────────
 
@@ -138,6 +141,7 @@ class TestEnvLoaderNewProviders:
 
 # ─── _build_client — novos providers ─────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestBuildClientNewProviders:
     """Verifica que _build_client retorna o client correto para cada provider."""
 
@@ -389,6 +393,24 @@ class TestOpenAIClientChatStreamErrors:
 
         msg = str(exc_info.value)
         assert "autenticacao" in msg.lower() or "401" in msg
+
+    def test_402_error_shows_insufficient_credits_hint(self):
+        """HTTP 402: deve explicar créditos insuficientes e sugerir grátis."""
+        from bauer.openai_client import OpenAIClient, OpenAIClientError
+        from unittest.mock import patch
+
+        body_content = b'{"error":{"message":"Insufficient credits","code":402}}'
+        mock_resp = self._make_mock_stream_response(402, body_content)
+
+        c = OpenAIClient(host="https://openrouter.ai/api/v1", api_key="sk-test")
+        with patch("httpx.stream", return_value=mock_resp):
+            with pytest.raises(OpenAIClientError) as exc_info:
+                list(c.chat_stream("google/lyria-3-pro-preview",
+                                   [{"role": "user", "content": "hi"}]))
+
+        msg = str(exc_info.value).lower()
+        assert "creditos insuficientes" in msg or "402" in msg
+        assert ":free" in msg or "gratuit" in msg  # sugere alternativa grátis
 
     def test_429_error_shows_rate_limit_hint(self):
         """HTTP 429: deve mostrar hint de rate limit."""
@@ -738,7 +760,8 @@ class TestHttpRequest:
 
     def test_blocks_localhost(self, router_web):
         from bauer.tool_router import ToolError
-        with pytest.raises(ToolError, match="interno"):
+        # Blocked by Wave 4.5 url_safety (SSRF) or legacy blocklist.
+        with pytest.raises(ToolError, match=r"(?i)(interno|BLOCKED|SSRF|loopback|private|blocked)"):
             router_web.execute('{"action":"http_request","args":{"url":"http://localhost:8080/api"}}')
 
     def test_blocks_private_ip(self, router_web):
@@ -779,6 +802,7 @@ class TestHttpRequest:
 
 # ─── GitHub providers ────────────────────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestGithubProviders:
     def _make_cfg(self, provider: str):
         from bauer.config_loader import BauerConfig

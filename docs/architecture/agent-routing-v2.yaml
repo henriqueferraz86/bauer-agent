@@ -1,0 +1,26 @@
+id: agent-routing-v2
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  Agent routing uses explicit metadata first, then configured agents and
+  capabilities. Lanes are operational queues with capacity and optional
+  priority weighting.
+
+agent_fields:
+  capabilities: list[string]
+  lane: string
+  max_concurrent: integer
+  priority_weight: integer
+
+resolution_order:
+  - task metadata lane
+  - task assignee matching agent name
+  - task capability matching agent capabilities
+  - ad-hoc assignee lane
+  - default lane
+
+acceptance:
+  - configured lanes enforce max_concurrent.
+  - lane metadata is persisted in task_runs.
+  - ops status shows lane queued/running/done/failed counts.

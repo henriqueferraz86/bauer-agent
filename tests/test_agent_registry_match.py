@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import importlib.util
+
 import pytest
+
+_TYPER_AVAILABLE = importlib.util.find_spec("typer") is not None
 
 
 # ─── AgentRegistry.match / auto_select ───────────────────────────────────────
@@ -117,9 +121,33 @@ class TestAgentRegistryMatch:
         result = reg.match("qualquer tarefa")
         assert result is None
 
+    def test_match_short_task_against_verbose_agent_docs(self, tmp_path: Path):
+        """Regressão: com Jaccard puro, uma tarefa curta (3 tokens) contra um
+        agent com description+system ricos em palavras-chave (20+ tokens)
+        ficava presa perto de zero mesmo com boa cobertura real — o
+        denominador (união) cresce com o tamanho do doc, não com a relevância.
+        Overlap coefficient (|A∩B|/min(|A|,|B|)) normaliza pelo menor
+        conjunto (a tarefa), então cobertura real não é diluída."""
+        reg = self._make_registry(tmp_path, [
+            {
+                "name": "devops-specialist",
+                "description": "Especialista DevOps e infraestrutura — Docker, Kubernetes, CI/CD, deploy, containers e pipelines",
+                "system": (
+                    "Voce e um especialista em DevOps e infraestrutura.\n"
+                    "Domina Docker, Docker Compose, CI/CD (GitHub Actions, GitLab CI), "
+                    "Kubernetes, Terraform, Ansible e shell scripting.\n"
+                    "Priorize seguranca, idempotencia e observabilidade."
+                ),
+            },
+        ])
+        result = reg.match("configurar Docker e pipeline de CI/CD")
+        assert result is not None
+        assert result.name == "devops-specialist"
+
 
 # ─── Orchestrator list_saved_progress ────────────────────────────────────────
 
+@pytest.mark.skipif(not _TYPER_AVAILABLE, reason="typer not installed")
 class TestOrchestratorListProgress:
     def _make_orch(self, tmp_path: Path):
         from bauer.orchestrator import AgentOrchestrator, OrchestratorConfig

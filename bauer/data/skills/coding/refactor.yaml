@@ -1,0 +1,53 @@
+name: Refactoring
+description: "Estratégias de refatoração segura: strangler fig, extract method, inline, rename, sem quebrar comportamento."
+content: |
+  # Refactoring — Transformações seguras
+
+  ## Regra de ouro
+  Refatorar = mudar estrutura INTERNA sem alterar comportamento EXTERNO.
+  Sempre com testes passando antes de começar e após cada passo.
+
+  ## Padrões comuns
+
+  ### Extract Method
+  ```python
+  # Antes: bloco de código solto
+  total = price * qty
+  tax = total * 0.1
+  final = total + tax
+
+  # Depois: nome descreve intenção
+  def calculate_total_with_tax(price, qty, tax_rate=0.1):
+      subtotal = price * qty
+      return subtotal * (1 + tax_rate)
+  ```
+
+  ### Inline Variable / Method
+  Inverta Extract quando a variável/método não agrega clareza.
+
+  ### Replace Magic Number with Constant
+  ```python
+  # Antes
+  if retries > 3: ...
+  # Depois
+  MAX_RETRIES = 3
+  if retries > MAX_RETRIES: ...
+  ```
+
+  ### Strangler Fig (para sistemas grandes)
+  1. Crie nova implementação ao lado da antiga
+  2. Redirecione tráfego gradualmente (feature flag ou rota)
+  3. Monitore — sem regressões → desligue a antiga
+  4. Delete código morto
+
+  ## Processo seguro
+  1. Commit o estado atual (snapshot limpo)
+  2. Um refactoring por commit (atomic)
+  3. Rode testes após CADA passo
+  4. Se quebrou → `git stash` e analise antes de continuar
+
+  ## Sinais que É a hora
+  - Você leu o mesmo trecho 3× sem entender de imediato
+  - Copiar e colar código com pequenas variações (extract + param)
+  - Função > 30 linhas ou class > 200 linhas
+  - Teste difícil de escrever (acoplamento alto)

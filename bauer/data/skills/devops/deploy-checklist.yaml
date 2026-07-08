@@ -1,0 +1,24 @@
+name: deploy-checklist
+version: "1.0"
+description: Checklist de deploy — verifica testes, migrations, feature flags, rollback plan e monitoramento
+tags: [devops, deploy, checklist]
+content: |
+  Execute o checklist de deploy:
+  1. ✅ Testes passando (unit + integration + e2e)
+  2. ✅ Migrations reversíveis (down migration existe e foi testada)
+  3. ✅ Feature flags configuradas para rollout gradual
+  4. ✅ Secrets/configs de produção validados
+  5. ✅ Plano de rollback documentado (tempo estimado + comando)
+  6. ✅ Alertas/dashboards de monitoramento prontos
+  7. ✅ Janela de manutenção comunicada (se necessário)
+  Bloqueie o deploy se qualquer item crítico (1, 2, 5) falhar.
+tools: [run_command, read_file, list_dir]
+params:
+  service_name:
+    type: string
+    description: Nome do serviço a ser deployado
+    required: true
+  environment:
+    type: string
+    description: Ambiente alvo (staging, production)
+    default: staging

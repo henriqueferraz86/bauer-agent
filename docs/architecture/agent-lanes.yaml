@@ -1,0 +1,45 @@
+id: agent-lanes
+version: 1
+status: implemented
+owner: bauer-runtime
+summary: >
+  Agents may declare capabilities, lane, and max_concurrent. The dispatcher
+  resolves every claimed task to a lane so durable work can be observed and,
+  for explicitly configured agents, capacity-limited.
+
+agent_schema_extensions:
+  capabilities:
+    type: list[string]
+    default: []
+    meaning: Keywords/skills this agent can own.
+  lane:
+    type: string
+    default: agent.name
+    meaning: Operational queue lane for capacity accounting.
+  max_concurrent:
+    type: integer
+    default: 1
+    meaning: Maximum concurrent claimed tasks for this configured agent lane.
+
+task_metadata:
+  lane: Explicit lane override.
+  capability: Capability requested by the task.
+  agent: Resolved or explicit agent owner.
+
+resolution_order:
+  - explicit task metadata lane
+  - task assignee matching a configured agent
+  - task capability matching an agent capability
+  - task assignee as ad-hoc lane
+  - default lane with no capacity limit
+
+runtime_contract:
+  claim_metadata: task_runs.metadata includes lane, agent, capability, and max_concurrent.
+  task_projection: claimed TASKS.md blocks include lane/agent/capability when resolved.
+  capacity: configured agent lanes enforce max_concurrent during dispatch_once selection.
+  compatibility: tasks without explicit agents or lanes keep legacy global dispatch behavior.
+
+acceptance:
+  - AgentDef round-trips capabilities, lane, and max_concurrent through agents.yaml.
+  - dispatcher records lane metadata when claiming a task.
+  - configured lane capacity skips excess READY tasks without claiming them.

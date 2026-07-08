@@ -1,0 +1,25 @@
+id: macos.shell_safe
+name: macOS Shell Safe
+version: 1.0.0
+description: Run a policy-gated macOS shell command through zsh without shell=True.
+capabilities:
+  - os.macos.run_shell
+permissions:
+  - shell.execute
+risk: high
+platforms:
+  - darwin
+inputs:
+  command:
+    type: string
+    required: true
+  timeout_s:
+    type: number
+    default: 30
+outputs:
+  exit_code:
+    type: integer
+  stdout:
+    type: text
+  stderr:
+    type: text

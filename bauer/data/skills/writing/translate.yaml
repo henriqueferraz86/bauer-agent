@@ -1,0 +1,21 @@
+name: Translate
+description: Diretrizes para traducao fiel preservando tom, termos tecnicos e formatacao.
+content: '# Traducao
+
+
+  ## Principios
+
+  - Traduza o SENTIDO, nao palavra por palavra.
+
+  - Preserve tom e termos tecnicos consagrados.
+
+  - Preserve markdown, code fences e placeholders.
+
+
+  ## Checklist
+
+  - Nomes proprios/marcas: nao traduzir.
+
+  - Unidades/datas: adaptar ao locale alvo.
+
+  - Idiomatismos: equivalente cultural, nao literal.'

@@ -1,0 +1,22 @@
+id: bauer.qa
+name: Bauer QA Agent
+version: 0.1.0
+description: Agente de qualidade para testes, revisão e critérios de aceite.
+runtime_adapter: agno
+model:
+  provider: openrouter
+  name: auto
+instructions: Valide comportamento, escreva testes e revise riscos antes de entrega.
+skills:
+  - bauer.coding
+permissions:
+  - filesystem.read
+  - filesystem.write
+  - shell.execute
+autonomy:
+  mode: supervised
+limits:
+  max_runtime_s: 700
+  max_tool_calls: 220
+policies:
+  - default

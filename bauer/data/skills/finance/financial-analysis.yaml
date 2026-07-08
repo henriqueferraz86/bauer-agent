@@ -1,0 +1,35 @@
+name: Financial Analysis
+description: "Análise financeira estruturada: DRE, fluxo de caixa, valuation, métricas de performance."
+content: |
+  # Financial Analysis — Framework
+
+  ## Demonstrações financeiras
+  - **DRE** (P&L): Receita → Gross Profit (após COGS) → EBITDA → EBIT → EBT → Net Income
+  - **Balanço**: Ativos = Passivos + PL; verifique liquidez (corrente > 1.5)
+  - **Fluxo de Caixa**: operacional (qualidade do lucro) + investimento + financiamento
+
+  ## Métricas-chave
+  | Métrica | Fórmula | Bom sinal |
+  |---------|---------|-----------|
+  | Gross Margin | (Receita - COGS) / Receita | > 40% (SaaS > 70%) |
+  | EBITDA Margin | EBITDA / Receita | > 15% |
+  | Burn Rate | Saída caixa / mês | < Runway / 18m |
+  | LTV:CAC | LTV / CAC | > 3× |
+  | Churn | Clientes perdidos / total | < 5% a.a. (SaaS) |
+
+  ## Valuation (múltiplos)
+  - **EV/Revenue**: para empresas em crescimento sem lucro
+  - **EV/EBITDA**: para empresas maduras (ex: 8-12× setor)
+  - **P/E**: lucro real; compare com setor e histórico
+
+  ## DCF simplificado
+  1. Projete FCF livre para 5 anos
+  2. Taxa de desconto = WACC (custo de capital ponderado)
+  3. Valor terminal = FCF_5 × (1+g) / (WACC - g)
+  4. VPL = Σ FCF_t/(1+WACC)^t + VT/(1+WACC)^5
+
+  ## Red flags
+  - Receita cresce mas caixa operacional cai
+  - Clientes concentrados (top 3 > 50% da receita)
+  - Margem bruta comprimindo com escala (deveria expandir)
+  - Contas a receber crescendo mais que receita (problema de cobrança)

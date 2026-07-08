@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -74,7 +75,7 @@ def test_status_returns_model_and_tools(tmp_path: Path):
 
 def test_status_auth_enabled_with_key(tmp_path: Path):
     client = _make_app(tmp_path, api_key="secret123")
-    resp = client.get("/status")
+    resp = client.get("/status", headers={"X-API-Key": "secret123"})
     assert resp.json()["auth_enabled"] is True
 
 
@@ -282,6 +283,62 @@ def test_chat_error_returns_500(tmp_path: Path):
     assert resp.status_code == 500
 
 
+# ─── /transcribe ─────────────────────────────────────────────────────────────
+
+
+def test_transcribe_success(tmp_path: Path):
+    with patch("bauer.transcription.transcribe_audio") as mock_stt:
+        mock_stt.return_value = {"success": True, "transcript": "oi bauer", "provider": "local"}
+        client = _make_app(tmp_path)
+        resp = client.post(
+            "/transcribe",
+            files={"file": ("voice.webm", b"fake-audio-bytes", "audio/webm")},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["transcript"] == "oi bauer"
+    assert data["provider"] == "local"
+    called_path = mock_stt.call_args[0][0]
+    assert str(called_path).endswith(".webm")
+
+
+def test_transcribe_failure_returns_422(tmp_path: Path):
+    with patch("bauer.transcription.transcribe_audio") as mock_stt:
+        mock_stt.return_value = {"success": False, "transcript": "", "error": "sem provider STT"}
+        client = _make_app(tmp_path)
+        resp = client.post(
+            "/transcribe",
+            files={"file": ("voice.webm", b"fake-audio-bytes", "audio/webm")},
+        )
+
+    assert resp.status_code == 422
+    assert "sem provider STT" in resp.json()["detail"]
+
+
+def test_transcribe_requires_auth(tmp_path: Path):
+    client = _make_app(tmp_path, api_key="secret")
+    resp = client.post("/transcribe", files={"file": ("voice.webm", b"abc", "audio/webm")})
+    assert resp.status_code == 401
+
+
+def test_transcribe_cleans_up_temp_file(tmp_path: Path):
+    """O arquivo temporário não deve sobreviver após a transcrição."""
+    captured: dict = {}
+
+    def _fake_transcribe(path, model=None):
+        captured["path"] = Path(path)
+        assert captured["path"].exists()
+        return {"success": True, "transcript": "ok", "provider": "local"}
+
+    with patch("bauer.transcription.transcribe_audio", side_effect=_fake_transcribe):
+        client = _make_app(tmp_path)
+        resp = client.post("/transcribe", files={"file": ("voice.ogg", b"abc", "audio/ogg")})
+
+    assert resp.status_code == 200
+    assert not captured["path"].exists()
+
+
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 
@@ -329,6 +386,123 @@ def test_stream_response_sse_format(tmp_path: Path):
 
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
+
+
+def test_stream_turn_timeout_returns_friendly_message(tmp_path: Path):
+    """Turno que estoura o timeout de wall-clock retorna mensagem amigavel em
+    vez de ficar pendurado pra sempre (regressao: /stream nao tinha paridade
+    com o TurnTimeout ja existente no gateway/Telegram).
+
+    Usa um time.sleep real (curto) em vez de mockar time.monotonic — mockar o
+    relogio globalmente via "bauer.server.time.monotonic" afeta o modulo time
+    inteiro (o mesmo objeto usado pelo scheduling interno do asyncio/uvicorn),
+    o que trava o event loop em vez de so afetar o codigo sob teste.
+    """
+    from bauer.tool_router import ToolRouter
+
+    def _slow_response(*_a, **_k):
+        time.sleep(0.05)
+        return iter(['{"action": "datetime_now", "args": {}}'])
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = _slow_response
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+
+    with patch("bauer.server._STREAM_TURN_TIMEOUT_SECONDS", 0.03):
+        resp = tc.get("/stream?message=que horas sao")
+
+    assert resp.status_code == 200
+    assert "Demorei demais" in resp.text
+    assert "event: done" in resp.text
+    # 1o tool call ainda cabe no prazo (checagem eh no TOPO do loop); o
+    # timeout so dispara na 2a volta, antes de chamar o modelo de novo.
+    assert mock_client.chat_stream.call_count == 1
+
+
+def test_stream_falls_back_on_provider_429(tmp_path: Path):
+    """Primário dá 429 antes de qualquer chunk → /stream cai no fallback e
+    entrega a resposta do provider alternativo (paridade com o CLI)."""
+    from bauer.openai_client import OpenAIClientError
+    from bauer.tool_router import ToolRouter
+
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    fb = MagicMock()
+    fb.chat_stream.side_effect = lambda *a, **k: iter(["resposta ", "do fallback"])
+    router = ToolRouter(workspace=tmp_path)
+
+    with patch("bauer.agent._try_parse_tool", return_value=None):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=primary,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+            fallback_clients=[(fb, "fallback-model")],
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=oi")
+
+    assert resp.status_code == 200
+    assert "resposta do fallback" in resp.text.replace("data: ", "").replace("\n", "")
+    assert "event: done" in resp.text
+    fb.chat_stream.assert_called()
+
+
+def test_stream_no_fallback_shows_error(tmp_path: Path):
+    """Sem fallback, um erro de provider vira mensagem de erro (comportamento antigo)."""
+    from bauer.openai_client import OpenAIClientError
+    from bauer.tool_router import ToolRouter
+
+    primary = MagicMock()
+    primary.chat_stream.side_effect = OpenAIClientError("HTTP 429 do provider")
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=primary,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+    resp = tc.get("/stream?message=oi")
+
+    assert resp.status_code == 200
+    assert "[Erro:" in resp.text
+
+
+def test_stream_tool_loop_hard_stop(tmp_path: Path):
+    """Mesma tool com os mesmos args e resultado 5x seguidas -> interrompe
+    automaticamente (mesma protecao de _detect_loop que run_one_turn ja tem,
+    agora tambem em /stream)."""
+    from bauer.tool_router import ToolRouter
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = (
+        lambda *a, **k: iter(['{"action": "calculate", "args": {"expression": "1+1"}}'])
+    )
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+    resp = tc.get("/stream?message=calcule 1+1 varias vezes")
+
+    assert resp.status_code == 200
+    assert "Loop detectado" in resp.text
+    assert "event: done" in resp.text
+    # hard-stop em 5 repeticoes consecutivas — nao deve ter rodado ate MAX_TOOL_TURNS
+    assert mock_client.chat_stream.call_count <= 6
 
 
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────

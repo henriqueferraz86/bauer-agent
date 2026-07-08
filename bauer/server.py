@@ -8,6 +8,7 @@ Endpoints:
   GET  /sessions               — lista sessões ativas  [auth]
   DELETE /sessions/{id}        — remove sessão         [auth]
   POST /chat                   — envia mensagem, recebe resposta completa [auth]
+  POST /transcribe             — transcreve áudio (multipart) em texto [auth]
   GET  /stream?message=&session_id=  — resposta em tempo real via SSE [auth]
 
   # OpenAI-compatible (Claw3D / virtual office integration)
@@ -32,10 +33,20 @@ Claw3D / Virtual Office:
   Header X-Hermes-Session-Id é honrado para retomada de sessão.
 """
 
+import hmac
+import os
 import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
+
+# Timeout de turno (wall-clock) do loop de tool-calling em /stream — sem isso,
+# uma sessao que entra num loop de tool calls (ou uma chamada de LLM/tool
+# travada) fica pendurada pra sempre: a SSE nunca fecha, a UI mostra
+# "gerando..." indefinidamente e nao ha nenhum sinal de erro. Mesma logica do
+# BAUER_GATEWAY_TURN_TIMEOUT do gateway (channel_base.py), aplicada aqui pro
+# /stream do bauer serve.
+_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "120"))
 
 
 # ─── Métricas globais em memória (Prometheus-style) ───────────────────────────
@@ -52,9 +63,10 @@ class _Metrics:
         self.rate_limited_total: int = 0
         self._start_time: float = time.time()
 
-    def to_prometheus(self, model: str = "", provider: str = "") -> str:
-        """Serializa métricas no formato Prometheus text exposition."""
+    def to_prometheus(self, model: str = "", provider: str = "", runtime: dict | None = None) -> str:
+        """Serializa metricas no formato Prometheus text exposition."""
         uptime = time.time() - self._start_time
+        runtime = runtime or {}
         lines = [
             "# HELP bauer_uptime_seconds Tempo em segundos desde o inicio do servidor",
             "# TYPE bauer_uptime_seconds gauge",
@@ -83,6 +95,34 @@ class _Metrics:
             "# HELP bauer_rate_limited_total Total de requisicoes bloqueadas por rate limit",
             "# TYPE bauer_rate_limited_total counter",
             f'bauer_rate_limited_total {self.rate_limited_total}',
+            "",
+            "# HELP bauer_runs_total Total de runs registradas",
+            "# TYPE bauer_runs_total counter",
+            f'bauer_runs_total {int(runtime.get("runs_total", 0))}',
+            "",
+            "# HELP bauer_runs_active Runs em execucao ou aguardando aprovacao",
+            "# TYPE bauer_runs_active gauge",
+            f'bauer_runs_active {int(runtime.get("runs_active", 0))}',
+            "",
+            "# HELP bauer_runs_failed_total Total de runs com falha",
+            "# TYPE bauer_runs_failed_total counter",
+            f'bauer_runs_failed_total {int(runtime.get("runs_failed_total", 0))}',
+            "",
+            "# HELP bauer_approvals_pending Aprovacoes pendentes",
+            "# TYPE bauer_approvals_pending gauge",
+            f'bauer_approvals_pending {int(runtime.get("approvals_pending", 0))}',
+            "",
+            "# HELP bauer_policy_denied_total Total de decisoes de policy negadas",
+            "# TYPE bauer_policy_denied_total counter",
+            f'bauer_policy_denied_total {int(runtime.get("policy_denied_total", 0))}',
+            "",
+            "# HELP bauer_skill_executions_total Total de execucoes de skill",
+            "# TYPE bauer_skill_executions_total counter",
+            f'bauer_skill_executions_total {int(runtime.get("skill_executions_total", 0))}',
+            "",
+            "# HELP bauer_agent_runtime_adapter_calls_total Total de chamadas a runtime adapters",
+            "# TYPE bauer_agent_runtime_adapter_calls_total counter",
+            f'bauer_agent_runtime_adapter_calls_total {int(runtime.get("agent_runtime_adapter_calls_total", 0))}',
         ]
         if model:
             lines += [
@@ -94,30 +134,29 @@ class _Metrics:
         return "\n".join(lines) + "\n"
 
 
+
 _metrics = _Metrics()
 
 
 class _RateLimiter:
-    """Rate limiter em-memória baseado em sliding window por IP.
+    """Rate limiter em-memória baseado em sliding window por chave (IP ou API key).
 
     Thread-safe para uso com uvicorn (single-threaded async).
-    Cada IP tem uma deque de timestamps das últimas requisições.
+    Cada chave tem uma deque de timestamps das últimas requisições.
     """
 
     def __init__(self, max_requests: int = 60, window_s: float = 60.0):
         self.max_requests = max_requests
         self.window_s = window_s
-        # ip → deque de timestamps (float)
         self._windows: dict[str, deque] = defaultdict(deque)
 
-    def is_allowed(self, ip: str) -> bool:
-        """Verifica se o IP está dentro do limite. Registra a requisição se permitida."""
+    def is_allowed(self, key: str) -> bool:
+        """Verifica se a chave está dentro do limite. Registra a requisição se permitida."""
         if self.max_requests <= 0:
             return True  # desativado
         now = time.monotonic()
-        window = self._windows[ip]
+        window = self._windows[key]
         cutoff = now - self.window_s
-        # Remove entradas fora da janela deslizante
         while window and window[0] < cutoff:
             window.popleft()
         if len(window) >= self.max_requests:
@@ -125,9 +164,9 @@ class _RateLimiter:
         window.append(now)
         return True
 
-    def retry_after(self, ip: str) -> float:
-        """Segundos até a próxima requisição ser permitida para o IP."""
-        window = self._windows.get(ip)
+    def retry_after(self, key: str) -> float:
+        """Segundos até a próxima requisição ser permitida para a chave."""
+        window = self._windows.get(key)
         if not window:
             return 0.0
         oldest = window[0]
@@ -156,18 +195,36 @@ def create_app(
     api_key: str = "",
     rate_limit_requests: int = 60,
     rate_limit_window_s: float = 60.0,
+    rate_limit_per_key: bool = False,
+    cors_origins: list[str] | None = None,
+    enable_gzip: bool = True,
+    enable_access_log: bool = False,
+    config_path: Optional[Path] = None,
+    fallback_clients: list | None = None,
 ):
     """Cria e retorna o app FastAPI configurado."""
     _require_fastapi()
 
-    from fastapi import Depends, FastAPI, HTTPException, Query, Request
+    import json
+    import logging
+
+    from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel
 
-    from .agent import _build_system_prompt, run_one_turn
+    from .agent import run_one_turn, run_one_turn_with_fallback
+
+    _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
+    from .core.events import EventBus
+    from .core.observability import AuditLog, RunTraceStore
+    from .core.runtime.run_manager import RunManager
+    from .core.runtime.session_manager import SessionManager
     from .session_store import SessionStore
+
+    _access_logger = logging.getLogger("bauer.access")
+    _log = logging.getLogger("bauer.server")
 
     # --- schemas (definidas fora de qualquer função para Pydantic resolver corretamente) ---
 
@@ -190,10 +247,83 @@ def create_app(
         version="0.1.0",
         description="Bauer Agent como API REST. Modelos locais via Ollama.",
     )
-    store = SessionStore(sessions_dir)
 
-    # Estado mutável do modelo ativo (permite troca em runtime via /models/switch)
-    _state = {"model": model_name}
+    # --- middleware setup (ordem importa: outer-first em FastAPI) ----------------
+
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        # Wildcard "*" e allow_credentials=True são incompatíveis pela spec CORS:
+        # o navegador rejeita e o Starlette ecoa a origin em vez de "*".
+        # Com wildcard, desabilita credentials para retornar "*" corretamente.
+        _wildcard = "*" in cors_origins
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=not _wildcard,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    if enable_gzip:
+        from fastapi.middleware.gzip import GZipMiddleware
+        app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    store = SessionStore(sessions_dir)
+    runtime_root = sessions_dir.parent / "runtime"
+    event_bus = EventBus(root=runtime_root)
+    run_manager = RunManager(root=runtime_root, event_bus=event_bus)
+    session_manager = SessionManager(root=runtime_root)
+    from .core.policy import ApprovalManager
+    approval_manager = ApprovalManager(root=runtime_root, event_bus=event_bus)
+    audit_log = AuditLog(event_bus.store)
+    trace_store = RunTraceStore(event_bus.store)
+    try:
+        router._event_bus = event_bus  # type: ignore[attr-defined]
+        router._policy_root = runtime_root  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    def _runtime_metrics_snapshot() -> dict:
+        runs = run_manager.list_runs()
+        events = event_bus.list_events()
+        approvals = approval_manager.list()
+        return {
+            "runs_total": len(runs),
+            "runs_active": sum(1 for run in runs if run.status in {"queued", "running", "waiting_approval"}),
+            "runs_failed_total": sum(1 for run in runs if run.status == "failed"),
+            "approvals_pending": sum(1 for approval in approvals if approval.status == "pending"),
+            "policy_denied_total": sum(
+                1
+                for event in events
+                if event.event_type == "policy.evaluated" and event.status == "deny"
+            ),
+            "skill_executions_total": sum(1 for event in events if event.event_type == "skill.executed"),
+            "agent_runtime_adapter_calls_total": sum(1 for event in events if event.event_type == "run.created"),
+        }
+
+    # Detecta provider inicial pelo atributo _provider ou, como fallback, pela URL do host.
+    def _detect_provider(c) -> str:
+        # Só aceita _provider quando é string não-vazia (evita falsos truthy,
+        # ex: atributos auto-criados de mocks/proxies).
+        p = getattr(c, "_provider", "")
+        if isinstance(p, str) and p:
+            return p
+        host = getattr(c, "host", "")
+        host = host.lower() if isinstance(host, str) else ""
+        for kw in ("openrouter", "groq", "mistral", "deepseek", "together", "openai",
+                   "anthropic", "xai", "github", "opencode", "gemini"):
+            if kw in host:
+                return kw
+        if hasattr(c, "list_models"):  # OllamaClient
+            return "ollama"
+        return ""
+
+    # Estado mutável do modelo ativo e client (permite troca em runtime via /models/switch)
+    _state = {
+        "model": model_name,
+        "client": client,
+        "provider": _detect_provider(client),
+    }
 
     # Rate limiter (desativado se rate_limit_requests <= 0)
     _limiter = _RateLimiter(
@@ -204,6 +334,13 @@ def create_app(
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+        # A SPA buildada (Vite) referencia seus chunks em /assets/* a partir da
+        # raiz — monta esse diretório direto para o index.html servido em "/"
+        # encontrar JS/CSS/fontes (sem isso a página fica em branco: 404 nos assets).
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
         @app.get("/", include_in_schema=False)
         def web_ui():
@@ -218,10 +355,22 @@ def create_app(
             return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
+    def _extract_incoming_key(request: Request) -> str:
+        return (
+            request.headers.get("X-API-Key")
+            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+
+    def _rate_limit_key(request: Request) -> str:
+        if rate_limit_per_key:
+            k = _extract_incoming_key(request)
+            return f"key:{k}" if k else _get_client_ip(request)
+        return _get_client_ip(request)
+
     def _check_rate_limit(request: Request) -> None:
-        ip = _get_client_ip(request)
-        if not _limiter.is_allowed(ip):
-            retry = _limiter.retry_after(ip)
+        key = _rate_limit_key(request)
+        if not _limiter.is_allowed(key):
+            retry = _limiter.retry_after(key)
             raise HTTPException(
                 status_code=429,
                 detail=f"Rate limit excedido. Tente novamente em {retry:.0f}s.",
@@ -229,14 +378,10 @@ def create_app(
             )
 
     def _verify_key(request: Request) -> None:
-        _check_rate_limit(request)
         if not api_key:
             return
-        incoming = (
-            request.headers.get("X-API-Key")
-            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        )
-        if incoming != api_key:
+        incoming = _extract_incoming_key(request)
+        if not hmac.compare_digest(incoming or "", api_key):
             raise HTTPException(status_code=401, detail="API key invalida ou ausente.")
 
     # --- endpoints --------------------------------------------------------------
@@ -253,11 +398,38 @@ def create_app(
     @app.middleware("http")
     async def _metrics_middleware(request, call_next):
         _metrics.requests_total += 1
+
+        # Global rate limit (applies to every route, even /health)
+        if _limiter.max_requests > 0:
+            from fastapi.responses import JSONResponse
+            key = _rate_limit_key(request)
+            if not _limiter.is_allowed(key):
+                retry = _limiter.retry_after(key)
+                _metrics.rate_limited_total += 1
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": f"Rate limit excedido. Tente novamente em {retry:.0f}s."},
+                    headers={"Retry-After": str(int(retry) + 1)},
+                )
+
+        t0 = time.monotonic()
         response = await call_next(request)
         if response.status_code >= 500:
             _metrics.requests_errors += 1
         if response.status_code == 429:
             _metrics.rate_limited_total += 1
+        if enable_access_log:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            record = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": round(elapsed_ms, 1),
+                "client_ip": _get_client_ip(request),
+                "user_agent": request.headers.get("User-Agent", ""),
+            }
+            _access_logger.info(json.dumps(record))
         return response
 
     @app.get("/health")
@@ -265,27 +437,32 @@ def create_app(
         return {"status": "ok", "model": _state["model"]}
 
     @app.get("/status")
-    def status():
+    def status(_: None = Depends(_verify_key)):
         return {
             "model": _state["model"],
+            "provider": _state["provider"],
             "context_tokens": applied_context,
             "tools": router.available_tools(),
             "auth_enabled": bool(api_key),
         }
 
     @app.get("/metrics", include_in_schema=False)
-    def metrics():
+    def metrics(_: None = Depends(_verify_key)):
         """Endpoint Prometheus — retorna métricas em text exposition format."""
         from fastapi.responses import PlainTextResponse
-        text = _metrics.to_prometheus(model=_state["model"], provider=_provider_name)
+        text = _metrics.to_prometheus(
+            model=_state["model"],
+            provider=_provider_name,
+            runtime=_runtime_metrics_snapshot(),
+        )
         return PlainTextResponse(content=text, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/tools")
-    def tools_list():
+    def tools_list(_: None = Depends(_verify_key)):
         return [router.tool_info(name) for name in router.available_tools()]
 
     @app.get("/models")
-    def models_list():
+    def models_list(_: None = Depends(_verify_key)):
         try:
             installed = client.list_models()
         except Exception:
@@ -298,16 +475,113 @@ def create_app(
     @app.post("/models/switch")
     def models_switch(body: dict, _: None = Depends(_verify_key)):
         new_model = (body.get("model") or "").strip()
+        new_provider = (body.get("provider") or "").strip().lower()
         if not new_model:
             raise HTTPException(status_code=400, detail="Campo 'model' obrigatorio.")
-        if not client.has_model(new_model):
-            raise HTTPException(status_code=404, detail=f"Modelo '{new_model}' nao encontrado no Ollama.")
-        _state["model"] = new_model
-        return {"active": new_model}
+
+        current_provider = _state["provider"]
+        # Normaliza: se não veio provider, assume o atual
+        if not new_provider:
+            new_provider = current_provider
+
+        if new_provider == current_provider:
+            # Mesmo provider — valida com has_model() só para Ollama
+            if current_provider in ("ollama", "") and not _state["client"].has_model(new_model):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Modelo '{new_model}' nao encontrado no {current_provider or 'provider atual'}.",
+                )
+            _state["model"] = new_model
+        else:
+            # Provider diferente — tenta reconstruir o client
+            new_client = None
+            if config_path is not None:
+                try:
+                    from .auxiliary_client import _build_client_for_provider
+                    from .config_loader import load_config
+                    cfg = load_config(config_path)
+                    new_client = _build_client_for_provider(new_provider, new_model, cfg)
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Nao foi possivel construir client para provider '{new_provider}': {exc}",
+                    )
+            else:
+                # Sem config_path — aceita a troca mas mantém o client atual
+                # (o chat vai falhar se o provider for incompatível)
+                pass
+
+            _state["model"] = new_model
+            _state["provider"] = new_provider
+            if new_client is not None:
+                _state["client"] = new_client
+
+        return {"active": _state["model"], "provider": _state["provider"]}
 
     @app.get("/sessions")
     def list_sessions(_: None = Depends(_verify_key)):
         return {"sessions": store.list_sessions()}
+
+    @app.get("/events")
+    def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(_verify_key)):
+        return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(limit=limit)]}
+
+    @app.get("/runs")
+    def list_runs(_: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        return {"runs": [asdict(run) for run in run_manager.list_runs()]}
+
+    @app.get("/runs/{run_id}")
+    def get_run(run_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        run = run_manager.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(run)
+
+    @app.get("/runs/{run_id}/events")
+    def list_run_events(run_id: str, _: None = Depends(_verify_key)):
+        return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(run_id=run_id)]}
+
+    @app.get("/runs/{run_id}/trace")
+    def get_run_trace(run_id: str, _: None = Depends(_verify_key)):
+        if run_manager.get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return trace_store.get_trace(run_id)
+
+    @app.get("/audit")
+    def list_audit(
+        run_id: str = Query("", description="filtra por run_id"),
+        limit: int = Query(100, ge=1, le=1000),
+        _: None = Depends(_verify_key),
+    ):
+        return {
+            "audit": [
+                AuditLog.to_dict(record)
+                for record in audit_log.list_records(run_id=run_id or None, limit=limit)
+            ]
+        }
+
+    @app.get("/approvals")
+    def list_approvals(status: str = Query("", description="pending | approved | denied"), _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        return {"approvals": [asdict(record) for record in approval_manager.list(status=status or None)]}
+
+    @app.post("/approvals/{approval_id}/approve")
+    def approve_request(approval_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        try:
+            return asdict(approval_manager.approve(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    @app.post("/approvals/{approval_id}/deny")
+    def deny_request(approval_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        try:
+            return asdict(approval_manager.deny(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 
     @app.delete("/sessions/{session_id}")
     def delete_session(session_id: str, _: None = Depends(_verify_key)):
@@ -320,18 +594,42 @@ def create_app(
     def chat(req: ChatRequest, _: None = Depends(_verify_key)):
         _metrics.chat_requests_total += 1
         session_id = req.session_id or store.new_id()
+        session_manager.get_or_create_session(
+            session_id,
+            agent_id="serve.chat",
+            state={"transport": "http", "endpoint": "/chat"},
+        )
+        run = run_manager.create_run(
+            session_id=session_id,
+            agent_id="serve.chat",
+            runtime_adapter="bauer_native",
+            input={"message": req.message, "endpoint": "/chat"},
+            status="running",
+        )
 
         ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
         ctx.messages = store.load(session_id)
         ctx.add_user(req.message)
+        router._runtime_session_id = session_id  # type: ignore[attr-defined]
+        router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         try:
-            response, tool_log = run_one_turn(ctx, router, client, _state["model"])
+            response, tool_log = run_one_turn_with_fallback(
+                ctx, router, _state["client"], _state["model"], _fallback_clients,
+            )
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            _log.exception("Erro interno em /chat: %s", exc)
+            run_manager.fail_run(run.id, str(exc))
+            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
         store.save(session_id, ctx.messages)
+        session_manager.touch_session(session_id, state={"last_run_id": run.id})
+        run_manager.complete_run(
+            run.id,
+            output={"response": response},
+            tool_calls_count=len(tool_log),
+        )
 
         return ChatResponse(
             response=response,
@@ -339,6 +637,28 @@ def create_app(
             model=_state["model"],
             tool_calls=[ToolCallLog(**t) for t in tool_log],
         )
+
+    @app.post("/transcribe")
+    async def transcribe(file: UploadFile = File(...), _: None = Depends(_verify_key)):
+        """Transcreve áudio (gravado no microfone da UI) usando o mesmo pipeline
+        STT do gateway (Groq/OpenAI Whisper ou faster-whisper local, conforme
+        STT_PROVIDER) — ver bauer/transcription.py."""
+        import tempfile
+
+        from .transcription import transcribe_audio
+
+        suffix = Path(file.filename or "audio.webm").suffix or ".webm"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(await file.read())
+            tmp_path = Path(tmp.name)
+        try:
+            result = transcribe_audio(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        if not result["success"]:
+            raise HTTPException(status_code=422, detail=result["error"])
+        return {"transcript": result["transcript"], "provider": result["provider"]}
 
     @app.get("/stream")
     def stream(
@@ -349,24 +669,75 @@ def create_app(
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
+        session_manager.get_or_create_session(
+            sid,
+            agent_id="serve.stream",
+            state={"transport": "sse", "endpoint": "/stream"},
+        )
+        run = run_manager.create_run(
+            session_id=sid,
+            agent_id="serve.stream",
+            runtime_adapter="bauer_native",
+            input={"message": message, "endpoint": "/stream"},
+            status="running",
+        )
 
         ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
         ctx.messages = store.load(sid)
         ctx.add_user(message)
+        router._runtime_session_id = sid  # type: ignore[attr-defined]
+        router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         def _event_stream():
             from .tool_router import SandboxError, ToolError
-            from .agent import _try_parse_tool, _extract_text_from_pseudo_json, MAX_TOOL_TURNS
+            from .agent import (
+                _args_sig,
+                _detect_loop,
+                _extract_text_from_pseudo_json,
+                _try_parse_tool,
+                MAX_TOOL_TURNS,
+            )
 
             tool_count = 0
+            tool_log: list[dict] = []
+            turn_started = time.monotonic()
+            # Fallback de provider (429/5xx): client/model correntes avançam pela
+            # lista quando o primário falha ANTES de começar a stremar. _fb_idx
+            # sobrevive entre iterações do loop de tool calls (não reinicia no 0).
+            stream_client = _state["client"]
+            stream_model = _state["model"]
+            _fb_idx = 0
 
             while True:
+                current_run = run_manager.get_run(run.id)
+                if current_run is not None and current_run.status == "cancelled":
+                    store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    yield f"event: done\ndata: {sid}\n\n"
+                    return
+                if time.monotonic() - turn_started > _STREAM_TURN_TIMEOUT_SECONDS:
+                    yield (
+                        "data: ⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
+                        "turno. Tente reformular ou dividir em passos menores.\n\n"
+                    )
+                    store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    run_manager.fail_run(run.id, "stream turn timeout")
+                    yield f"event: done\ndata: {sid}\n\n"
+                    return
+
                 parts: list[str] = []
                 streaming = False   # True quando ja comecamos a enviar chunks ao cliente
                 buffering = False   # True quando response pode ser JSON (aguarda completar)
 
                 try:
-                    for chunk in client.chat_stream(_state["model"], ctx.get_payload()):
+                    for chunk in stream_client.chat_stream(stream_model, ctx.get_payload()):
+                        current_run = run_manager.get_run(run.id)
+                        if current_run is not None and current_run.status == "cancelled":
+                            store.save(sid, ctx.messages)
+                            session_manager.touch_session(sid, state={"last_run_id": run.id})
+                            yield f"event: done\ndata: {sid}\n\n"
+                            return
                         parts.append(chunk)
 
                         if streaming:
@@ -380,8 +751,28 @@ def create_app(
                                     yield f"data: {p}\n\n"
                                 streaming = True
                 except Exception as exc:
+                    # Fallback: se o provider falhou ANTES de qualquer chunk sair
+                    # (caso típico do 429 — request rejeitado de cara) e há
+                    # provider alternativo, troca e re-tenta o mesmo turno. Se já
+                    # streamamos algo, não dá pra reiniciar limpo → mostra o erro.
+                    _retryable = False
+                    if not streaming and not parts and _fb_idx < len(_fallback_clients):
+                        try:
+                            from .error_classifier import classify_api_error
+                            _retryable = classify_api_error(exc).should_fallback
+                        except Exception:
+                            _retryable = True
+                    if _retryable:
+                        _fb = _fallback_clients[_fb_idx]
+                        _fb_idx += 1
+                        stream_client, stream_model = (
+                            (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple)) else (_fb, stream_model)
+                        )
+                        continue  # re-tenta com o próximo provider (ctx intacto)
                     yield f"data: [Erro: {exc}]\n\n"
                     store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    run_manager.fail_run(run.id, str(exc))
                     yield f"event: done\ndata: {sid}\n\n"
                     return
 
@@ -391,6 +782,7 @@ def create_app(
                 action_dict = _try_parse_tool(response, router)
                 if action_dict and tool_count < MAX_TOOL_TURNS:
                     action_name = action_dict.get("action", "?")
+                    action_args = action_dict.get("args", {}) or {}
                     try:
                         tool_result = router.execute(action_dict)
                     except (ToolError, SandboxError) as exc:
@@ -400,19 +792,41 @@ def create_app(
                     ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
                     tool_count += 1
                     _metrics.tool_calls_total += 1
+
+                    tool_log.append({
+                        "tool": action_name,
+                        "args_sig": _args_sig(action_args),
+                        "result": str(tool_result)[:300],
+                    })
+                    loop_warn, hard_stop = _detect_loop(tool_log)
+                    if loop_warn:
+                        ctx.add_user(loop_warn)
+                    if hard_stop:
+                        yield "data: [Loop detectado — tarefa interrompida automaticamente]\n\n"
+                        store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.fail_run(run.id, "loop detected")
+                        yield f"event: done\ndata: {sid}\n\n"
+                        return
                 else:
                     # Se estava bufferizando JSON de conversa, envia o texto extraído
                     if buffering:
                         clean = _extract_text_from_pseudo_json(response) or response
                         yield f"data: {clean}\n\n"
                     store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                    run_manager.complete_run(
+                        run.id,
+                        output={"response": response},
+                        tool_calls_count=tool_count,
+                    )
                     yield f"event: done\ndata: {sid}\n\n"
                     break
 
         return StreamingResponse(
             _event_stream(),
             media_type="text/event-stream",
-            headers={"X-Session-ID": sid},
+            headers={"X-Session-ID": sid, "X-Bauer-Run-ID": run.id},
         )
 
     # ── OpenAI-compatible endpoint (Claw3D / virtual office) ─────────────────
@@ -455,6 +869,11 @@ def create_app(
             or req.session_id
             or store.new_id()
         )
+        session_manager.get_or_create_session(
+            sid,
+            agent_id="serve.openai",
+            state={"transport": "openai", "endpoint": "/v1/chat/completions"},
+        )
 
         ctx = ContextManager(applied_context=applied_context, system_prompt=system_prompt)
         ctx.messages = store.load(sid)
@@ -469,7 +888,20 @@ def create_app(
 
         active_model = _state["model"]
         completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
-        resp_headers = {"X-Hermes-Session-Id": sid}
+        run = run_manager.create_run(
+            session_id=sid,
+            agent_id="serve.openai",
+            runtime_adapter="bauer_native",
+            input={
+                "messages": [msg.model_dump() for msg in req.messages],
+                "stream": req.stream,
+                "endpoint": "/v1/chat/completions",
+            },
+            status="running",
+        )
+        router._runtime_session_id = sid  # type: ignore[attr-defined]
+        router._runtime_run_id = run.id  # type: ignore[attr-defined]
+        resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
 
         # ── modo streaming ────────────────────────────────────────────────────
         if req.stream:
@@ -481,9 +913,21 @@ def create_app(
                 parts: list[str] = []
 
                 while True:
+                    current_run = run_manager.get_run(run.id)
+                    if current_run is not None and current_run.status == "cancelled":
+                        store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        yield "data: [DONE]\n\n"
+                        return
                     parts = []
                     try:
-                        for chunk in client.chat_stream(active_model, ctx.get_payload()):
+                        for chunk in _state["client"].chat_stream(active_model, ctx.get_payload()):
+                            current_run = run_manager.get_run(run.id)
+                            if current_run is not None and current_run.status == "cancelled":
+                                store.save(sid, ctx.messages)
+                                session_manager.touch_session(sid, state={"last_run_id": run.id})
+                                yield "data: [DONE]\n\n"
+                                return
                             parts.append(chunk)
                             # Emite chunk no formato OpenAI delta
                             delta = _json.dumps({
@@ -498,6 +942,8 @@ def create_app(
                         err = _json.dumps({"error": {"message": str(exc), "type": "server_error"}})
                         yield f"data: {err}\n\n"
                         store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.fail_run(run.id, str(exc))
                         yield "data: [DONE]\n\n"
                         return
 
@@ -528,6 +974,12 @@ def create_app(
                         })
                         yield f"data: {final_delta}\n\n"
                         store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.complete_run(
+                            run.id,
+                            output={"response": response},
+                            tool_calls_count=tool_count,
+                        )
                         yield "data: [DONE]\n\n"
                         break
 
@@ -539,12 +991,20 @@ def create_app(
 
         # ── modo não-streaming (resposta completa) ────────────────────────────
         try:
-            response, tool_log = run_one_turn(ctx, router, client, active_model)
+            response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            _log.exception("Erro interno em /v1/chat/completions: %s", exc)
+            run_manager.fail_run(run.id, str(exc))
+            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
 
         _metrics.tool_calls_total += len(tool_log)
         store.save(sid, ctx.messages)
+        session_manager.touch_session(sid, state={"last_run_id": run.id})
+        run_manager.complete_run(
+            run.id,
+            output={"response": response},
+            tool_calls_count=len(tool_log),
+        )
 
         # Estima tokens (sem tokenizer real)
         prompt_tokens = sum(len(m.get("content", "")) // 4 for m in ctx.messages[:-1])
@@ -585,10 +1045,37 @@ def create_app(
             ],
         }
 
+    # --- Desktop API (SPA das 8 telas) ------------------------------------------
+    try:
+        from .desktop_api import build_desktop_router
+
+        app.include_router(build_desktop_router(verify_key=_verify_key, runtime_root=runtime_root))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("bauer.server").warning(
+            "Desktop API não montada: %s", exc
+        )
+
     return app
 
 
-def run_server(app, host: str = "0.0.0.0", port: int = 8000) -> None:
+def run_server(
+    app,
+    host: str = "0.0.0.0",
+    port: int = 8000,
+    pid_file: "Path | None" = None,
+) -> None:
+    import os
+    from pathlib import Path as _Path
     _require_fastapi()
     import uvicorn
-    uvicorn.run(app, host=host, port=port)
+    if pid_file is not None:
+        _Path(pid_file).parent.mkdir(parents=True, exist_ok=True)
+        _Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        uvicorn.run(app, host=host, port=port)
+    finally:
+        if pid_file is not None:
+            try:
+                _Path(pid_file).unlink(missing_ok=True)
+            except OSError:
+                pass

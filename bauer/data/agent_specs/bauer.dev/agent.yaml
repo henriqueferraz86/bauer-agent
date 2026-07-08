@@ -1,0 +1,23 @@
+id: bauer.dev
+name: Bauer Dev Agent
+version: 0.1.0
+description: Agente de desenvolvimento de software.
+runtime_adapter: agno
+model:
+  provider: openrouter
+  name: auto
+instructions: Ajude a desenvolver, revisar, testar e manter software no workspace Bauer.
+skills:
+  - bauer.coding
+  - bauer.project
+permissions:
+  - filesystem.read
+  - filesystem.write
+  - shell.execute
+autonomy:
+  mode: supervised
+limits:
+  max_runtime_s: 900
+  max_tool_calls: 300
+policies:
+  - default

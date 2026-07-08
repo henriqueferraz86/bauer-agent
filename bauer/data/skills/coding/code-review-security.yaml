@@ -1,0 +1,23 @@
+name: Security Code Review
+description: 'Revisao de codigo focada em seguranca: injection, authz, secrets, SSRF.'
+content: '# Code review de seguranca
+
+
+  ## Injection
+
+  - SQL parametrizado; shell sem input cru; escape de HTML.
+
+
+  ## AuthZ
+
+  - Checagem de posse do recurso; IDOR; expiracao de token.
+
+
+  ## Dados sensiveis
+
+  - Secrets em env; PII fora de URL/log; cripto atual.
+
+
+  ## Rede/arquivos
+
+  - SSRF: validar URL server-side; path traversal confinado.'

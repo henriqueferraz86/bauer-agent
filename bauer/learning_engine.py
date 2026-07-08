@@ -408,11 +408,29 @@ class LearningEngineV2:
             RuntimeError se o modelo não responder.
         """
         from .config_loader import load_config
-        from .ollama_client import OllamaClient
+        from .env_loader import apply_env_to_config
 
         cfg = load_config()
+        apply_env_to_config(cfg)
         model_name = model or cfg.model.name
-        client = OllamaClient(base_url=cfg.ollama.host)
+
+        # Usa o provider configurado (não hardcoded Ollama)
+        provider = cfg.model.provider
+        if provider in ("openai", "openrouter", "custom", "groq", "mistral",
+                        "xai", "together", "deepseek", "azure", "gemini",
+                        "github", "copilot"):
+            from .openai_client import OpenAIClient
+            if provider == "openrouter":
+                base_url = "https://openrouter.ai/api/v1"
+                api_key = cfg.openrouter.api_key
+            else:
+                oa = getattr(cfg, "openai", None)
+                base_url = oa.host if oa else "https://api.openai.com"
+                api_key = oa.api_key if oa else ""
+            client = OpenAIClient(base_url=base_url, api_key=api_key)
+        else:
+            from .ollama_client import OllamaClient
+            client = OllamaClient(base_url=cfg.ollama.host)
 
         memory_context, data_summary = self._build_memory_context()
         prompt = _ANALYZE_PROMPT.format(memory_sections=memory_context)
@@ -448,9 +466,9 @@ class LearningEngineV2:
         """Persiste o relatório em LEARNING_ANALYSIS.md."""
         p = self.mm.memory_dir / _ANALYSIS_FILE
         header = (
-            f"# LEARNING_ANALYSIS.md — Análise via LLM\n\n"
-            f"Gerado automaticamente por `bauer learning analyze`.\n"
-            f"Nunca editado manualmente. Não altera config.\n\n---\n\n"
+            "# LEARNING_ANALYSIS.md — Análise via LLM\n\n"
+            "Gerado automaticamente por `bauer learning analyze`.\n"
+            "Nunca editado manualmente. Não altera config.\n\n---\n\n"
         )
 
         entry = (

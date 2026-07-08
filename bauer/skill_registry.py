@@ -7,7 +7,9 @@ para aprovação manual do usuário.
 
 from __future__ import annotations
 
+import json
 import re
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -80,3 +82,61 @@ class SkillRegistry:
             )
         except Exception:
             pass
+
+    def pending_suggestions(self) -> list[dict[str, str]]:
+        """Return pending suggestions recorded in SKILLS_LEARNED.md."""
+        path = self.memory_dir / "SKILLS_LEARNED.md"
+        if not path.exists():
+            return []
+        suggestions: list[dict[str, str]] = []
+        current: dict[str, str] | None = None
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("## [") and "sugest" in line:
+                if current:
+                    suggestions.append(current)
+                name = line.split("sugest", 1)[-1].lstrip("ãÃ§ção: ").strip()
+                current = {"name": name, "status": "pendente_aprovacao", "title": line.strip("# ")}
+                continue
+            if current and line.startswith("- "):
+                key, sep, value = line[2:].partition(":")
+                if sep:
+                    current[key.strip()] = value.strip()
+        if current:
+            suggestions.append(current)
+        return [item for item in suggestions if item.get("status") == "pendente_aprovacao"]
+
+    def approve_suggestion(
+        self,
+        skill_name: str,
+        *,
+        workspace: str | Path = "workspace",
+        description: str = "",
+        content: str = "",
+        tags: list[str] | None = None,
+    ) -> Path:
+        """Promote a pending suggestion into workspace/.bauer_skills.json."""
+        name = skill_name.strip()
+        if not name:
+            raise ValueError("skill_name is required")
+        suggestions = {item["name"]: item for item in self.pending_suggestions()}
+        if name not in suggestions:
+            raise ValueError(f"pending skill suggestion not found: {name}")
+        workspace_path = Path(workspace)
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        skills_path = workspace_path / ".bauer_skills.json"
+        try:
+            skills = json.loads(skills_path.read_text(encoding="utf-8")) if skills_path.exists() else {}
+        except json.JSONDecodeError:
+            skills = {}
+        now = time.time()
+        skills[name] = {
+            "name": name,
+            "description": description or f"Skill aprovada a partir da sugestao {name}.",
+            "content": content or f"Procedimento aprovado manualmente para: {name}.",
+            "tags": tags or ["approved", "learned"],
+            "created_at": skills.get(name, {}).get("created_at", now),
+            "updated_at": now,
+            "source": "SKILLS_LEARNED.md",
+        }
+        skills_path.write_text(json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8")
+        return skills_path

@@ -35,7 +35,7 @@ _ACTIVE_FILE = Path(".bauer_active_company")
 _TASKS_TEMPLATE = """\
 # TASKS.md — Tarefas de {name}
 
-Status válidos: TODO | IN_PROGRESS | DONE | BLOCKED
+Status validos: TODO | READY | IN_PROGRESS | DONE | BLOCKED | FAILED
 
 ---
 """

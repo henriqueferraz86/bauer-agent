@@ -5,6 +5,10 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
+  schedule:
+    # Smoke E2E semanal com provider real (segunda 09:00 UTC)
+    - cron: "0 9 * * 1"
+  workflow_dispatch: {}
 
 jobs:
   test:
@@ -14,14 +18,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.12"]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -43,16 +47,16 @@ jobs:
       - name: Run tests
         run: pytest tests/ -q --tb=short
 
-  lint:
-    name: Lint (ruff)
+  lint-critical:
+    name: Lint critico (bloqueante)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -60,10 +64,63 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
-      - name: Run ruff (check only — não falha em warnings de estilo)
+      - name: Verificar erros criticos (sintaxe, imports, nomes indefinidos)
+        # E9xx: erros de sintaxe/runtime | F63x: asserts problemáticos
+        # F7xx: nomes indefinidos/variáveis não usadas | F82x: imports indefinidos
+        # Codigo que nao compila ou referencia nomes inexistentes nunca deve mergear.
+        run: ruff check bauer/ --select E9,F63,F7,F82
+
+  lint:
+    name: Lint informativo (estilo)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Avisos de estilo (nao bloqueante)
+        # Regras de estilo amplo — reporta mas nao bloqueia merge.
+        # Regras criticas estao no job lint-critical acima.
+        # Ignoradas intencionalmente: E501 (linhas longas), W291/W293 (trailing whitespace), E302/E303 (blank lines).
         run: ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303 || true
-        # E501 = line too long (intencionalmente ignorado — código tem linhas longas)
-        # || true = lint não bloqueia merge, apenas reporta
+
+  install-check:
+    name: Install limpo (uv)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Instalar dependencias (simula onboarding limpo)
+        run: uv sync --all-extras
+
+      - name: Verificar imports criticos
+        run: |
+          uv run python -c "from bauer.cli import app"
+          uv run python -c "from bauer.orchestrator import AgentOrchestrator"
+          uv run python -c "from bauer.agent import run_agent_session"
+          uv run python -c "from bauer.tool_router import ToolRouter"
+
+      - name: Coleta de testes sem erro de plugin
+        run: uv run pytest --collect-only -q
 
   coverage:
     name: Coverage report
@@ -72,10 +129,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -89,8 +146,127 @@ jobs:
           pytest tests/ --cov=bauer --cov-report=term-missing --cov-report=xml -q
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.xml
           retention-days: 7
+
+  desktop-build:
+    # Build smoke do SPA (Bauer Desktop Fase 1) — garante que o frontend
+    # React+Vite compila e emite para bauer/static/. Não roda testes de
+    # componente (fora de escopo desta fase).
+    name: Desktop SPA build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build SPA (tsc + vite)
+        working-directory: desktop
+        run: npm run build
+
+      - name: Verify build output
+        run: test -f bauer/static/index.html
+
+      - name: Audit de segurança npm (bloqueia HIGH+)
+        working-directory: desktop
+        run: npm audit --audit-level=high
+
+  tauri-build:
+    # Build do app nativo (Bauer Desktop Fase 2 — Tauri) nos 3 SOs.
+    # Em runners limpos (sem WDAC) o binário executa e o bundle é gerado.
+    # macOS/Linux non-blocking enquanto a toolchain cross-platform estabiliza.
+    name: Tauri build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os != 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Linux — deps do WebKit/Tauri
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf \
+            libayatana-appindicator3-dev build-essential curl wget file libssl-dev
+
+      - name: Install deps (desktop)
+        working-directory: desktop
+        run: npm ci
+
+      - name: Rust unit tests (lib)
+        working-directory: desktop/src-tauri
+        run: cargo test --lib
+
+      - name: Build app nativo (tauri build)
+        working-directory: desktop
+        run: npx tauri build
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: bauer-desktop-${{ matrix.os }}
+          path: desktop/src-tauri/target/release/bundle/
+          retention-days: 7
+          if-no-files-found: warn
+
+  e2e-real:
+    # Smoke com provider REAL (opencode free tier) — pega bugs de wiring que
+    # mocks não pegam (think field, contexto, compressão). Non-blocking:
+    # free tier é instável; falha aqui é sinal, não bloqueio de merge.
+    name: E2E smoke (provider real)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run E2E smoke against opencode free tier
+        env:
+          BAUER_E2E_REAL: "1"
+        run: pytest tests/test_e2e_smoke_real.py -v --tb=short

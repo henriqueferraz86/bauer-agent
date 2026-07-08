@@ -50,3 +50,17 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
 
 def get_logger(name: str = "bauer") -> logging.Logger:
     return logging.getLogger(name)
+
+
+def log_suppressed(context: str, exc: BaseException, *, logger_name: str = "bauer") -> None:
+    """Loga uma excecao suprimida em DEBUG para diagnosabilidade.
+
+    Use em lugar de `except Exception: pass` quando a supressao e intencional
+    mas voce quer rastro em modo debug. O chamador nao e interrompido.
+
+    Exemplo:
+        except Exception as exc:
+            log_suppressed("learning_engine.append_entry", exc)
+    """
+    log = logging.getLogger(logger_name)
+    log.debug("[suprimido] %s: %s(%s)", context, type(exc).__name__, exc)

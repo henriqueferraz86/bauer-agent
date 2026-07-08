@@ -23,6 +23,41 @@ def router(ws: Path) -> ToolRouter:
     return ToolRouter(workspace=ws)
 
 
+# ─── tool_allowlist (toolset enxuto) ──────────────────────────────────────────
+
+
+def test_tool_allowlist_restringe_available_tools(ws: Path):
+    """Com allowlist, available_tools() expõe SÓ as tools listadas."""
+    r = ToolRouter(workspace=ws, tool_allowlist=["read_file", "list_dir", "calculate"])
+    tools = set(r.available_tools())
+    assert tools == {"read_file", "list_dir", "calculate"}
+    assert "web_search" not in tools
+    assert "delegate_task" not in tools
+
+
+def test_tool_allowlist_encolhe_schemas(ws: Path):
+    """get_tool_schemas() (schema OpenAI native) respeita o allowlist."""
+    r = ToolRouter(workspace=ws, tool_allowlist=["read_file", "list_dir"])
+    names = {s["function"]["name"] for s in r.get_tool_schemas()}
+    assert names == {"read_file", "list_dir"}
+
+
+def test_tool_allowlist_bloqueia_execucao_fora_da_lista(ws: Path):
+    """Tool fora do allowlist não executa (denied), mesmo se o modelo tentar."""
+    r = ToolRouter(workspace=ws, tool_allowlist=["list_dir"])
+    with pytest.raises(ToolError, match="denied|nao permitido|não permitido"):
+        r.execute('{"action": "read_file", "args": {"path": "texto.txt"}}')
+
+
+def test_tool_allowlist_vazio_mantem_todas(ws: Path):
+    """Allowlist vazio (default) = todas as tools disponíveis (sem regressão)."""
+    r_none = ToolRouter(workspace=ws)
+    r_empty = ToolRouter(workspace=ws, tool_allowlist=[])
+    assert "web_fetch" not in r_none.available_tools()  # web_enabled=False por padrão
+    assert len(r_empty.available_tools()) == len(r_none.available_tools())
+    assert "list_dir" in r_empty.available_tools()
+
+
 # ─── tool_info ────────────────────────────────────────────────────────────────
 
 
@@ -206,11 +241,119 @@ def test_web_search_no_query_raises(ws: Path):
         router.execute({"action": "web_search", "args": {}})
 
 
-def test_web_search_ddgs_not_installed(ws: Path):
+def test_web_search_malformed_max_results_does_not_crash(ws: Path):
+    """Regressão de bug real reportado pelo usuário: um modelo fraco (free tier)
+    emitiu args mal-formados misturando sintaxe de outro protocolo de tool call
+    (`<parameter=10>\\nmax_results`) — o `int()` sem guarda em max_results
+    estourava ValueError não-capturado, derrubando a sessão inteira do
+    `bauer agent` com "Erro inesperado". Confirma que valores não-numéricos
+    caem no default (5) via _coerce_int em vez de propagar a exceção, e que
+    o max_results NUMÉRICO correto (5) chega até o backend de busca."""
     router = ToolRouter(workspace=ws, web_enabled=True)
-    with patch("builtins.__import__", side_effect=ImportError("ddgs not found")):
+    garbled = "10>\n</parameter\n<parameter=10>\nmax_results"
+    with patch.object(router._web, "search_as_text", return_value="ok") as mock_search:
+        result = router._web_search({"query": "Brazil next match", "max_results": garbled})
+    assert result == "ok"
+    mock_search.assert_called_once_with("Brazil next match", max_results=5)
+
+
+def test_web_fetch_malformed_max_chars_does_not_crash(ws: Path):
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    from bauer.web.dispatcher import WebError
+    with patch.object(router._web, "extract", side_effect=WebError("mock")):
         with pytest.raises(ToolError):
-            router._web_search({"query": "python", "max_results": 3})
+            # Levanta ToolError (do WebError mockado), não ValueError do int().
+            router._web_fetch({"url": "https://example.com", "max_chars": "abc"})
+
+
+# ─── web_fetch: fallback via browser em páginas JS-renderizadas (SPA) ───────
+
+
+def test_web_fetch_falls_back_to_browser_on_empty_static_extract(ws: Path):
+    """SPA (React/Next.js): o HTML estático (httpx) vem vazio — igual ao
+    caso real reproduzido com fifa.com. Confirma que web_fetch tenta o
+    browser real (Playwright, já embutido nas tools browser_*) e devolve
+    o texto renderizado em vez da mensagem de 'conteúdo vazio'."""
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    fake_page = MagicMock()
+    fake_page.content.return_value = "<html><body><p>Próximo jogo: 10 de julho.</p></body></html>"
+
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", return_value=fake_page):
+        result = router._web_fetch({"url": "https://www.fifa.com/en/tournaments/mens/world-cup"})
+
+    assert "Próximo jogo: 10 de julho." in result
+    fake_page.goto.assert_called_once()
+    assert fake_page.goto.call_args.kwargs.get("wait_until") == "networkidle"
+
+
+def test_web_fetch_keeps_original_message_when_browser_fallback_also_empty(ws: Path):
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    fake_page = MagicMock()
+    fake_page.content.return_value = "<html><body></body></html>"  # também vazio
+
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", return_value=fake_page):
+        result = router._web_fetch({"url": "https://example.com"})
+
+    assert result == EMPTY_EXTRACT_HTTPX
+
+
+def test_web_fetch_falls_back_gracefully_when_playwright_missing(ws: Path):
+    """Sem Playwright instalado, _ensure_browser levanta ToolError — o
+    fallback deve degradar pra mensagem original, NUNCA propagar esse erro
+    (o usuário só pediu web_fetch, não instalou browser de propósito)."""
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", side_effect=ToolError("Playwright ausente")):
+        result = router._web_fetch({"url": "https://example.com"})
+
+    assert result == EMPTY_EXTRACT_HTTPX
+
+
+def test_web_fetch_does_not_use_browser_when_static_extract_succeeds(ws: Path):
+    """Caminho feliz (site estático normal) não deve nem tentar o browser —
+    fallback só dispara quando a extração vem realmente vazia."""
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    with patch.object(router._web, "extract", return_value="conteúdo normal da página"), \
+         patch.object(router, "_ensure_browser") as mock_browser:
+        result = router._web_fetch({"url": "https://example.com"})
+
+    assert result == "conteúdo normal da página"
+    mock_browser.assert_not_called()
+
+
+def test_web_search_sem_ddgs_cai_em_wikipedia(ws: Path):
+    """Novo contrato (G18.3): sem ddgs/brave/searxng, web_search NAO falha —
+    cai no fallback open-source Wikipedia (zero setup, sem chave)."""
+    from unittest.mock import MagicMock
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    import os
+    old_brave = os.environ.pop("BRAVE_API_KEY", None)
+    old_searxng = os.environ.pop("SEARXNG_URL", None)
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"query": {"search": [
+        {"title": "Python (programming language)", "snippet": "linguagem"}
+    ]}}
+    mock_response.raise_for_status = MagicMock()
+    try:
+        with patch("bauer.web.dispatcher._package_available", return_value=False), \
+             patch("httpx.Client.get", return_value=mock_response):
+            out = router._web_search({"query": "python", "max_results": 3})
+        assert "wikipedia" in out.lower()
+        assert "Python" in out
+    finally:
+        if old_brave is not None:
+            os.environ["BRAVE_API_KEY"] = old_brave
+        if old_searxng is not None:
+            os.environ["SEARXNG_URL"] = old_searxng
 
 
 def test_web_fetch_no_url_raises(ws: Path):
@@ -228,7 +371,7 @@ def test_web_fetch_invalid_scheme_raises(ws: Path):
 def test_web_fetch_timeout(ws: Path):
     import httpx
     router = ToolRouter(workspace=ws, web_enabled=True)
-    with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
+    with patch("httpx.Client.get", side_effect=httpx.TimeoutException("timeout")):
         with pytest.raises(ToolError, match="Timeout"):
             router._web_fetch({"url": "https://example.com"})
 
@@ -238,14 +381,14 @@ def test_web_fetch_http_status_error(ws: Path):
     router = ToolRouter(workspace=ws, web_enabled=True)
     mock_resp = MagicMock()
     mock_resp.status_code = 404
-    with patch("httpx.get", side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)):
+    with patch("httpx.Client.get", side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)):
         with pytest.raises(ToolError, match="404"):
             router._web_fetch({"url": "https://example.com"})
 
 
 def test_web_fetch_generic_exception(ws: Path):
     router = ToolRouter(workspace=ws, web_enabled=True)
-    with patch("httpx.get", side_effect=RuntimeError("rede falhou")):
+    with patch("httpx.Client.get", side_effect=RuntimeError("rede falhou")):
         with pytest.raises(ToolError, match="rede falhou"):
             router._web_fetch({"url": "https://example.com"})
 
@@ -255,9 +398,9 @@ def test_web_fetch_binary_content_type(ws: Path):
     mock_resp = MagicMock()
     mock_resp.raise_for_status.return_value = None
     mock_resp.headers = {"content-type": "application/octet-stream"}
-    with patch("httpx.get", return_value=mock_resp):
+    with patch("httpx.Client.get", return_value=mock_resp):
         result = router._web_fetch({"url": "https://example.com"})
-    assert "binario" in result.lower() or "binary" in result.lower() or "ignorado" in result.lower()
+    assert "content-type" in result.lower() or "bin" in result.lower() or "ignorado" in result.lower()
 
 
 def test_web_fetch_returns_text(ws: Path):
@@ -267,7 +410,7 @@ def test_web_fetch_returns_text(ws: Path):
     mock_resp.headers = {"content-type": "text/html"}
     mock_resp.text = "Hello World linha 1\nHello World linha 2"
     # Simula falha ao importar bs4 dentro do _web_fetch
-    with patch("httpx.get", return_value=mock_resp):
+    with patch("httpx.Client.get", return_value=mock_resp):
         # Faz o except Exception do BeautifulSoup cair no fallback resp.text
         with patch("bauer.tool_router.ToolRouter._web_fetch", wraps=router._web_fetch) as _:
             # Injeta exceção no import de bs4 via builtins
@@ -288,6 +431,6 @@ def test_web_fetch_truncates_long_content(ws: Path):
     mock_resp.raise_for_status.return_value = None
     mock_resp.headers = {"content-type": "text/plain"}
     mock_resp.text = "x" * 10000
-    with patch("httpx.get", return_value=mock_resp):
+    with patch("httpx.Client.get", return_value=mock_resp):
         result = router._web_fetch({"url": "https://example.com", "max_chars": 100})
     assert "truncado" in result

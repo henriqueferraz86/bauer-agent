@@ -1,0 +1,831 @@
+# =============================================================================
+# Bauer Agent — Referência completa de configuração
+# =============================================================================
+#
+# Este arquivo documenta TODOS os campos suportados.
+# Copie apenas as seções que você precisa para o seu config.yaml.
+#
+# Boas práticas:
+#   • Coloque API keys no .env (nunca no config.yaml commitado)
+#   • Variáveis de ambiente têm prioridade sobre os valores aqui
+#   • Campos omitidos usam o valor padrão documentado abaixo
+#   • Campos desconhecidos causam ERRO (proteção contra typos)
+#
+# Início rápido:
+#   bauer init                  # wizard interativo
+#   bauer config show           # mostra config atual
+#   bauer config check          # valida sem iniciar
+#   bauer doctor                # checa providers + conectividade
+#
+# =============================================================================
+
+
+# =============================================================================
+# MODELO — qual LLM e provider usar
+# =============================================================================
+
+model:
+  # Provider (obrigatório). Valores aceitos:
+  #   ollama | openai | openrouter | opencode | custom
+  #   groq | mistral | xai | together | deepseek
+  #   anthropic | gemini | azure
+  #   github | copilot
+  #   cohere | perplexity | fireworks | huggingface | cerebras
+  #   sambanova | nvidia | lmstudio | databricks | moonshot | alibaba
+  provider: ollama
+
+  # Nome do modelo (obrigatório).
+  # Exemplos por provider:
+  #   ollama      → qwen2.5-coder:7b, llama3.2:3b, phi4, gemma2:9b
+  #   openai      → gpt-4o, gpt-4o-mini, o3-mini, o4-mini
+  #   anthropic   → claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-opus-4-8
+  #   groq        → llama-3.3-70b-versatile, llama-3.1-8b-instant, gemma2-9b-it
+  #   gemini      → gemini-2.0-flash, gemini-1.5-pro, gemini-2.5-pro
+  #   openrouter  → google/gemini-flash-1.5, meta-llama/llama-3.3-70b-instruct
+  #   mistral     → mistral-large-latest, codestral-latest, mistral-small-latest
+  #   xai         → grok-3, grok-3-mini, grok-2
+  #   together    → meta-llama/Llama-3.3-70B-Instruct-Turbo
+  #   deepseek    → deepseek-chat, deepseek-reasoner
+  #   azure       → gpt-4o (deployment name vai em azure.deployment)
+  #   github      → gpt-4o, gpt-4o-mini, Meta-Llama-3.3-70B-Instruct, DeepSeek-R1
+  #   cohere      → command-r-plus-08-2024, command-r7b-12-2024, command-a-03-2025
+  #   perplexity  → sonar-pro, sonar, sonar-reasoning
+  #   fireworks   → accounts/fireworks/models/llama-v3p3-70b-instruct
+  #   huggingface → meta-llama/Llama-3.3-70B-Instruct
+  #   cerebras    → llama3.3-70b, llama3.1-8b
+  #   nvidia      → meta/llama-3.3-70b-instruct, mistralai/mixtral-8x22b-instruct-v0.1
+  #   lmstudio    → lmstudio-community/Qwen2.5-Coder-7B-Instruct-GGUF
+  #   moonshot    → moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k
+  #   alibaba     → qwen-plus, qwen-max, qwen-turbo, qwen-long
+  name: qwen2.5-coder:3b
+
+  # Janela de contexto solicitada (tokens). Padrão varia por provider.
+  # O Bauer tentará usar este valor; se o modelo não suportar, usa minimum_context.
+  requested_context: 32768
+
+  # Contexto mínimo aceitável. Se o provider só disponibiliza menos,
+  # Bauer avisa e usa o máximo disponível.
+  minimum_context: 8192
+
+  # Se true (padrão), faz downgrade automático quando o provider retorna
+  # contexto menor que requested_context.
+  auto_downgrade_context: true
+
+  # Modo de raciocínio (Ollama only). Se false, desativa thinking mode
+  # para modelos que têm por padrão (qwq, gemma4, deepseek-r1 local).
+  # null = usa o padrão do modelo.
+  # think: false
+
+  # Providers alternativos para fallback automático em caso de erro.
+  # Tentados em ordem quando o provider principal retorna 5xx, 429, ou timeout.
+  # Exemplo: se openai falha, tenta groq, depois ollama.
+  # fallback_providers:
+  #   - groq
+  #   - ollama
+
+
+# =============================================================================
+# AGENTE — comportamento do loop principal
+# =============================================================================
+
+agent:
+  # Nome exibido nas sessões e logs.
+  name: Bauer Agent
+
+  # Diretório onde sessões, memória, arquivos gerados e bancos de dados ficam.
+  # Suporta caminhos absolutos e relativos ao diretório de execução.
+  workspace: ./workspace
+
+  # Timeout por execução de tool (segundos). 0 = sem limite.
+  # Evita que uma tool travada (web_fetch lento, subprocess infinito)
+  # bloqueie o agent loop indefinidamente.
+  # Range: 0.0 – 600.0 | Padrão: 30.0
+  tool_timeout_s: 30.0
+
+  # Checkpoint da App Factory: quando um projeto governado termina o
+  # planejamento (os 7 docs preenchidos → gate IMPLEMENTATION), o Bauer pausa
+  # e pergunta como seguir: (R)evisar os docs, (D)esenvolver — dispara o /loop
+  # autônomo e, opcionalmente, semeia o kanban a partir do BACKLOG.md — ou
+  # (C)ontinuar manual. Só em terminal interativo; em canal/CI vira no-op.
+  # Padrão: true
+  planning_checkpoint: true
+
+  # Auto-injeção de skill: a cada turno, casa sua mensagem com as skills
+  # disponíveis (pacote + ~/.bauer/skills) e injeta o conteúdo da mais
+  # relevante no contexto SE o match for confiante (overlap coefficient >=
+  # 0.30). Na dúvida injeta nada (falha seguro). Faz as skills dispararem
+  # sozinhas em vez de ficarem só no catálogo. Padrão: true
+  skill_auto_inject: true
+
+
+# =============================================================================
+# OLLAMA — LLM local (padrão)
+# =============================================================================
+
+ollama:
+  # URL do servidor Ollama. Mude para acesso remoto ou Docker.
+  # Env var: OLLAMA_HOST (tem prioridade)
+  host: http://localhost:11434
+
+  # Timeout de inferência (segundos). Modelos grandes podem precisar de mais.
+  timeout_seconds: 120
+
+  # API key para Ollama protegido por proxy (ou Ollama Cloud).
+  # Env var: OLLAMA_API_KEY (tem prioridade)
+  api_key: ""
+
+
+# =============================================================================
+# OPENAI — OpenAI oficial e endpoints OpenAI-compatible
+# =============================================================================
+
+openai:
+  # Endpoint base. Altere para usar LM Studio, vLLM, LocalAI, etc.
+  # Ex: http://localhost:1234  (LM Studio)
+  #     http://localhost:8000  (vLLM)
+  # Env var: não há — configure aqui ou use provider "lmstudio"
+  host: https://api.openai.com
+
+  # Env var: OPENAI_API_KEY (tem prioridade)
+  api_key: ""
+
+  timeout_seconds: 60
+
+# CUSTOM — alias para openai com host customizado. Use para qualquer
+# endpoint OpenAI-compatible não coberto pelos outros providers.
+# Ex: LM Studio, Ollama via /v1, LocalAI, TabbyML, etc.
+# custom:
+#   (usa os campos de openai acima — defina openai.host)
+
+
+# =============================================================================
+# OPENROUTER — 200+ modelos com uma chave só
+# =============================================================================
+
+openrouter:
+  # Env var: OPENROUTER_API_KEY
+  api_key: ""
+
+  timeout_seconds: 60
+
+  # Identificação do app — aparece nos rankings do openrouter.ai
+  http_referer: https://github.com/bauer-agent
+  x_title: Bauer Agent
+
+
+# =============================================================================
+# OPENCODE — endpoint gratuito sem cadastro (opencode.ai/zen)
+# =============================================================================
+
+opencode:
+  timeout_seconds: 60
+  # Env var: OPENCODE_API_KEY (opcional; "public" se omitido)
+  # Modelos: deepseek-v4-flash-free, mimo-v2.5-free, big-pickle
+
+
+# =============================================================================
+# GROQ — inferência ultra-rápida (open-source models)
+# =============================================================================
+
+groq:
+  # Env var: GROQ_API_KEY
+  api_key: ""
+  timeout_seconds: 30
+  # Modelos recomendados:
+  #   llama-3.3-70b-versatile  (inteligente, versatile)
+  #   llama-3.1-8b-instant     (velocidade máxima)
+  #   mixtral-8x7b-32768       (contexto longo)
+  #   gemma2-9b-it             (Google, leve)
+
+
+# =============================================================================
+# MISTRAL — modelos europeus GDPR-friendly
+# =============================================================================
+
+mistral:
+  # Env var: MISTRAL_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   mistral-large-latest     (mais capaz)
+  #   mistral-small-latest     (custo/benefício)
+  #   codestral-latest         (código especializado)
+  #   open-mixtral-8x22b       (open-source, longo contexto)
+
+
+# =============================================================================
+# XAI — Grok da xAI / Elon Musk
+# =============================================================================
+
+xai:
+  # Env var: XAI_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos: grok-3, grok-3-mini, grok-2, grok-beta
+
+
+# =============================================================================
+# TOGETHER — 200+ modelos open-source com preços agressivos
+# =============================================================================
+
+together:
+  # Env var: TOGETHER_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   meta-llama/Llama-3.3-70B-Instruct-Turbo
+  #   Qwen/Qwen2.5-72B-Instruct-Turbo
+  #   deepseek-ai/DeepSeek-R1
+
+
+# =============================================================================
+# DEEPSEEK — custo/benefício imbatível, raciocínio R1
+# =============================================================================
+
+deepseek:
+  # Env var: DEEPSEEK_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos: deepseek-chat (V3), deepseek-reasoner (R1)
+
+
+# =============================================================================
+# ANTHROPIC — Claude (protocolo nativo, não OAI-compat)
+# =============================================================================
+
+anthropic:
+  # Env var: ANTHROPIC_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  api_version: "2023-06-01"
+  # Modelos:
+  #   claude-sonnet-4-6          (mais capaz, equilíbrio)
+  #   claude-haiku-4-5-20251001  (rápido, econômico)
+  #   claude-opus-4-8            (máxima capacidade)
+
+
+# =============================================================================
+# GEMINI — Google Gemini via endpoint OpenAI-compatible
+# =============================================================================
+
+gemini:
+  # Env var: GEMINI_API_KEY ou GOOGLE_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   gemini-2.0-flash    (rápido, multimodal)
+  #   gemini-1.5-pro      (contexto até 1M tokens)
+  #   gemini-2.5-pro      (mais capaz)
+  #   gemini-1.5-flash    (econômico)
+
+
+# =============================================================================
+# AZURE OPENAI — OpenAI via Azure com autenticação corporativa
+# =============================================================================
+
+azure:
+  # Env var: AZURE_OPENAI_API_KEY
+  api_key: ""
+
+  # Env var: AZURE_OPENAI_ENDPOINT
+  # Ex: https://meu-recurso.openai.azure.com
+  endpoint: ""
+
+  # Nome do deployment no Azure (pode diferir do nome do modelo)
+  deployment: gpt-4o
+
+  # Versão da API Azure OpenAI
+  api_version: "2024-08-01-preview"
+
+  timeout_seconds: 60
+
+
+# =============================================================================
+# GITHUB MODELS — inferência gratuita via infraestrutura Microsoft/Azure
+# =============================================================================
+
+github:
+  # GitHub Personal Access Token (PAT) — permissões padrão suficientes
+  # Env var: GITHUB_TOKEN
+  token: ""
+  timeout_seconds: 60
+  # Modelos gratuitos:
+  #   gpt-4o, gpt-4o-mini
+  #   Meta-Llama-3.3-70B-Instruct
+  #   Mistral-large-2411
+  #   DeepSeek-R1, DeepSeek-V3-0324
+  #   Cohere-command-r-plus, Phi-4
+
+
+# =============================================================================
+# GITHUB COPILOT — modelos via assinatura Copilot
+# =============================================================================
+
+copilot:
+  # Token OAuth do Copilot. Obtenha com: bauer auth login -p copilot
+  # Env var: COPILOT_TOKEN
+  token: ""
+  timeout_seconds: 60
+  # Modelos: gpt-4o, claude-sonnet-4-5, gemini-2.0-flash, o3-mini
+
+
+# =============================================================================
+# COHERE — modelos Command com retrieval nativo
+# =============================================================================
+
+cohere:
+  # Env var: COHERE_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   command-a-03-2025        (mais capaz, 256K contexto)
+  #   command-r-plus-08-2024   (RAG e tool use avançado)
+  #   command-r7b-12-2024      (econômico)
+
+
+# =============================================================================
+# PERPLEXITY — modelos com busca na web integrada
+# =============================================================================
+
+perplexity:
+  # Env var: PERPLEXITY_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   sonar-pro         (busca premium + raciocínio)
+  #   sonar             (busca padrão)
+  #   sonar-reasoning   (busca + chain-of-thought)
+  #   r1-1776           (DeepSeek R1 sem censura, sem busca)
+
+
+# =============================================================================
+# FIREWORKS — inferência de alta velocidade para open-source
+# =============================================================================
+
+fireworks:
+  # Env var: FIREWORKS_API_KEY
+  api_key: ""
+  timeout_seconds: 30
+  # Modelos (prefixar com accounts/fireworks/models/):
+  #   llama-v3p3-70b-instruct
+  #   mixtral-8x22b-instruct
+  #   qwen2p5-coder-32b-instruct
+  #   deepseek-r1       (prefixo: accounts/deepseek/models/)
+
+
+# =============================================================================
+# HUGGINGFACE — Inference API (acesso a 300k+ modelos)
+# =============================================================================
+
+huggingface:
+  # Env var: HUGGINGFACE_API_KEY ou HF_TOKEN
+  api_key: ""
+  timeout_seconds: 120
+  # Endpoint da Inference API. Para Inference Endpoints dedicados, use a URL do endpoint.
+  host: https://api-inference.huggingface.co/v1
+  # Modelos populares via Serverless Inference:
+  #   meta-llama/Llama-3.3-70B-Instruct
+  #   Qwen/Qwen2.5-72B-Instruct
+  #   mistralai/Mistral-7B-Instruct-v0.3
+
+
+# =============================================================================
+# CEREBRAS — inferência mais rápida do mercado (wafer-scale chip)
+# =============================================================================
+
+cerebras:
+  # Env var: CEREBRAS_API_KEY
+  api_key: ""
+  timeout_seconds: 30
+  # Modelos: llama3.3-70b, llama3.1-70b, llama3.1-8b, qwen-3-32b
+
+
+# =============================================================================
+# SAMBANOVA — inferência empresarial de alta escala
+# =============================================================================
+
+sambanova:
+  # Env var: SAMBANOVA_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   Meta-Llama-3.3-70B-Instruct
+  #   DeepSeek-R1-Distill-Llama-70B
+  #   Qwen2.5-72B-Instruct
+
+
+# =============================================================================
+# NVIDIA NIM — inferência de modelos A100/H100 via NVIDIA Cloud
+# =============================================================================
+
+nvidia:
+  # Env var: NVIDIA_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Endpoint: integrate.api.nvidia.com/v1 (inclui /v1)
+  # Modelos:
+  #   meta/llama-3.3-70b-instruct
+  #   mistralai/mixtral-8x22b-instruct-v0.1
+  #   google/gemma-3-27b-it
+  #   nvidia/llama-3.3-nemotron-super-49b-v1
+
+
+# =============================================================================
+# LM STUDIO — modelo local via LM Studio (alternativa ao Ollama)
+# =============================================================================
+
+lmstudio:
+  # Host do LM Studio (padrão: localhost:1234)
+  host: http://localhost:1234
+  timeout_seconds: 120
+  # api_key não é necessária para LM Studio local
+  api_key: ""
+  # No LM Studio, o model.name deve ser o identificador exato do modelo carregado
+
+
+# =============================================================================
+# DATABRICKS — modelos servidos via MLflow no Databricks workspace
+# =============================================================================
+
+databricks:
+  # URL base do workspace: https://{workspace}.azuredatabricks.net
+  # Env var: DATABRICKS_HOST
+  host: ""
+
+  # Token de acesso pessoal do Databricks
+  # Env var: DATABRICKS_TOKEN
+  api_key: ""
+
+  timeout_seconds: 120
+  # Modelos (serving endpoint name configurado no Databricks):
+  #   databricks-meta-llama-3-3-70b-instruct
+  #   databricks-claude-3-7-sonnet
+
+
+# =============================================================================
+# MOONSHOT / KIMI — LLM chinês com foco em contexto longo
+# =============================================================================
+
+moonshot:
+  # Env var: MOONSHOT_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   moonshot-v1-8k    (8K contexto)
+  #   moonshot-v1-32k   (32K contexto)
+  #   moonshot-v1-128k  (128K contexto)
+  #   kimi-latest       (alias para o mais recente)
+
+
+# =============================================================================
+# ALIBABA / QWEN — família Qwen da Alibaba Cloud (DashScope)
+# =============================================================================
+
+alibaba:
+  # Env var: ALIBABA_API_KEY ou DASHSCOPE_API_KEY
+  api_key: ""
+  timeout_seconds: 60
+  # Modelos:
+  #   qwen-max          (mais capaz)
+  #   qwen-plus         (equilíbrio custo/qualidade)
+  #   qwen-turbo        (econômico, rápido)
+  #   qwen-long         (contexto até 1M tokens)
+  #   qwen2.5-72b-instruct (open-source via DashScope)
+
+
+# =============================================================================
+# RUNTIME — limites de recursos do processo
+# =============================================================================
+
+runtime:
+  # Perfil de uso de memória.
+  #   low    → conservador, ideal para máquinas com <8GB RAM (padrão)
+  #   medium → moderado, 8–16GB RAM
+  #   high   → agressivo, 16GB+ RAM; habilita paralelismo total
+  profile: low
+
+  # Limite total de RAM que o Bauer pode usar (MB).
+  ram_limit_mb: 4096
+
+  # Margem de segurança que o Bauer mantém livre no sistema (MB).
+  safety_margin_mb: 1024
+
+
+# =============================================================================
+# LOGGING — arquivo de log e verbosidade
+# =============================================================================
+
+logging:
+  # Nível de log: debug | info | warning | error
+  level: info
+
+  # Caminho do arquivo de log. null = apenas console.
+  file: ./logs/bauer.log
+
+
+# =============================================================================
+# TOOLS — comportamento das ferramentas do agente
+# =============================================================================
+
+tools:
+  # Se true, habilita a tool shell (execute_shell). CUIDADO: executa comandos
+  # arbitrários no sistema. Recomendado apenas em ambientes controlados.
+  shell_enabled: false
+
+  # Se true, habilita tools de web (web_search, web_fetch).
+  # Requer ddgs, httpx ou crawl4ai instalados.
+  web_enabled: false
+
+  # Se true, ativa sandboxing de caminhos (bloqueia traversal ../../../).
+  # false apenas se você precisar que o agente acesse arquivos fora do workspace.
+  safe_mode: true
+
+  # Timeout de execução de cada tool (segundos).
+  # Sobrescrito por agent.tool_timeout_s para o agent loop.
+  timeout_seconds: 30
+
+  # Tamanho máximo do output de uma tool antes de truncar (KB).
+  max_output_kb: 50
+
+  # Comandos de SHELL extras liberados para run_command, além da allowlist
+  # fixa embutida (git, python, npm, pytest, ls, cat...). Vazio = só a
+  # allowlist padrão. Ainda passam pela denylist (sempre bloqueada) e pelo
+  # safe_mode (comandos de risco médio exigem confirm=true).
+  extra_allowed_commands: []
+  # Exemplo para workflows de DevOps/containers:
+  # extra_allowed_commands: [docker, docker-compose, kubectl]
+
+  # Cap de tool calls DENTRO DE UM ÚNICO TURNO do chat interativo (protege
+  # contra o modelo entrar num loop de tool calls sem convergir). Diferente
+  # de max_tool_calls acima, que é o teto por SESSÃO inteira.
+  max_tool_turns: 150
+
+  # Confirmação interativa de comando (só em terminal TTY). Em vez de BLOQUEAR
+  # em silêncio um comando fora da allowlist (docker/pip/kubectl…), o Bauer
+  # PERGUNTA: [e]xecutar uma vez / [s]essão / [a]sempre / [n]egar. O "sempre"
+  # grava em ~/.bauer/allowed_commands.yaml e o Bauer APRENDE — pergunta uma
+  # vez, nunca mais (o allowlist deixa de ser engessado). Degrada para o
+  # comportamento antigo (bloquear) em canal/serve/CI e no /loop. Padrão: true
+  confirm_commands: true
+
+  # Captura de voz e transcrição via Whisper (local ou cloud).
+  # Ativa `bauer voice listen` para gravar do microfone e transcrever
+  # automaticamente. Requer:
+  #   • Captura: sounddevice + numpy (pip install sounddevice numpy)
+  #   • Transcrição: either
+  #     - Local offline: faster-whisper (pip install faster-whisper)
+  #     - Cloud: GROQ_API_KEY (grátis, rápido) OU OPENAI_API_KEY
+  # Padrão: false (opt-in, porque as deps são pesadas)
+  voice_input_enabled: false
+
+
+# =============================================================================
+# WEB — backends para web_search e web_fetch
+# =============================================================================
+
+web:
+  # Backend de busca:
+  #   auto    → tenta brave → searxng → ddgs (padrão)
+  #   brave   → Brave Search API (requer brave_api_key ou BRAVE_API_KEY)
+  #   searxng → SearXNG self-hosted (requer searxng_url)
+  #   ddgs    → DuckDuckGo via ddgs (sem config, gratuito)
+  search_backend: auto
+
+  # Backend de extração de conteúdo:
+  #   auto     → tenta crawl4ai → httpx (padrão)
+  #   crawl4ai → pip install crawl4ai; melhor extração LLM-friendly
+  #   httpx    → leve, sem deps extras; funciona sempre
+  extract_backend: auto
+
+  # URL do SearXNG self-hosted (usado apenas se search_backend: searxng)
+  searxng_url: http://localhost:8080
+
+  # Brave Search API key (ou BRAVE_API_KEY no .env)
+  brave_api_key: ""
+
+  # Máximo de resultados por busca.
+  max_results: 5
+
+  # Máximo de caracteres extraídos por página.
+  max_chars: 5000
+
+  # Timeout de requests web (segundos).
+  timeout_seconds: 15
+
+
+# =============================================================================
+# MCP — servidores Model Context Protocol (stdio)
+# =============================================================================
+
+mcp:
+  servers:
+    # Exemplo: servidor MCP de filesystem
+    # filesystem:
+    #   command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    #   timeout: 30
+
+    # Exemplo: servidor MCP Python customizado
+    # meu_server:
+    #   command: ["python", "-m", "meu_mcp_server"]
+    #   env:
+    #     MY_VAR: valor
+    #   cwd: /tmp/projeto
+    #   timeout: 60
+
+    # Exemplo: Graphify — grafo de conhecimento do codebase (9 tools MCP:
+    # query_graph, get_node, get_neighbors, get_community, god_nodes,
+    # graph_stats, shortest_path, list_prs, get_pr_impact, triage_prs).
+    # Requer `pip install "graphifyy[mcp]"` e `graphify .` rodado uma vez
+    # na raiz do repo pra construir o graph.json inicial. `cwd` deve ser a
+    # raiz do repo que se quer consultar. Ver docs/integrations/graphify.md.
+    # graphify:
+    #   command: ["graphify", "serve", "--transport", "stdio"]
+    #   cwd: /caminho/do/seu/repo
+    #   timeout: 30
+
+
+# =============================================================================
+# SERVE — HTTP API REST (bauer serve)
+# =============================================================================
+
+serve:
+  # Endereço de bind. 0.0.0.0 = todas interfaces; 127.0.0.1 = localhost only.
+  host: 0.0.0.0
+
+  # Porta TCP.
+  port: 8000
+
+  # Número de workers uvicorn. 1 é suficiente para uso pessoal.
+  # Para produção com múltiplos CPUs, use 2–4.
+  workers: 1
+
+  # API key de autenticação. Vazio = sem autenticação (use apenas internamente).
+  # Env var: BAUER_SERVE_API_KEY (tem prioridade)
+  # Clientes devem enviar: Authorization: Bearer <api_key>
+  api_key: ""
+
+  # Rate limiting global.
+  # 0 = desativado | >0 = máximo de requests por janela de tempo
+  rate_limit_requests: 60
+
+  # Janela de tempo para o rate limit (segundos).
+  rate_limit_window_s: 60.0
+
+  # Se true, o rate limit é por API key em vez de por IP.
+  # Útil quando múltiplos clientes compartilham o mesmo IP (NAT, proxy).
+  rate_limit_per_key: false
+
+  # Origens CORS permitidas.
+  # []     = CORS desativado (padrão, seguro para uso interno)
+  # ["*"]  = todas as origens (use apenas em dev)
+  # ["https://meu-app.com"] = origem específica
+  cors_origins: []
+
+  # Se true, comprime respostas maiores que 1KB com GZip.
+  # Reduz uso de banda em respostas longas do agente.
+  enable_gzip: true
+
+  # Se true, grava um JSON de acesso por request nos logs.
+  # Formato: {ts, method, path, status, duration_ms, client_ip, user_agent}
+  enable_access_log: false
+
+
+# =============================================================================
+# ROUTER — roteamento inteligente de modelos (Ollama only)
+# =============================================================================
+
+router:
+  # Se true, classifica cada mensagem do usuário e roteia para o modelo ideal.
+  # Apenas para Ollama — use apenas com múltiplos modelos instalados.
+  enabled: false
+
+  # Modelo leve para classificar a intenção do usuário.
+  router_model: llama3.2:3b
+
+  # Modelo para tarefas de código.
+  code_model: qwen2.5-coder:7b
+
+  # Modelo para tarefas de raciocínio complexo.
+  reasoning_model: deepseek-r1:7b
+
+  # Modelo para respostas diretas / chat simples.
+  direct_model: llama3.2:3b
+
+
+# =============================================================================
+# AUXILIARY — slots de modelos auxiliares para subtarefas
+# =============================================================================
+
+auxiliary:
+  # Modelo para decompor tarefas no Kanban (pode ser mais barato que o principal).
+  # Vazio = usa o modelo principal.
+  kanban_decomposer:
+    provider: ""  # ex: groq
+    model: ""     # ex: llama-3.1-8b-instant
+
+  # Modelo para especificação de tasks no Kanban.
+  triage_specifier:
+    provider: ""
+    model: ""
+
+  # Modelo para compressão semântica do contexto.
+  compression_model:
+    provider: ""
+    model: ""
+
+
+# =============================================================================
+# TELEGRAM — bot conversacional via long-polling
+# =============================================================================
+
+telegram:
+  # Ative para iniciar o bot ao rodar bauer gateway start.
+  enabled: false
+
+  # Token do bot. Obtenha com @BotFather no Telegram.
+  # Env var: TELEGRAM_BOT_TOKEN (RECOMENDADO — nunca commite o token aqui)
+  bot_token: ""
+
+  # Lista de user IDs numéricos autorizados.
+  # VAZIO = ninguém pode usar o bot (comportamento seguro por padrão).
+  # Para descobrir seu ID: envie /start ao bot e execute bauer gateway init.
+  allowed_users: []
+  # allowed_users:
+  #   - 123456789    # seu user ID
+
+  # Se true, qualquer usuário pode usar o bot. CUIDADO: não recomendado.
+  allow_all: false
+
+  # Intervalo de polling de updates (segundos). Mínimo 0.5.
+  poll_interval: 2.0
+
+  # Máximo de mensagens por minuto por usuário (proteção contra spam).
+  max_msgs_per_minute: 20
+
+
+# =============================================================================
+# DISCORD — bot via Gateway WebSocket v10
+# =============================================================================
+
+discord:
+  # Requer: pip install 'bauer-agent[gateway]'
+  # O bot precisa do intent MESSAGE_CONTENT habilitado no Developer Portal.
+  enabled: false
+
+  # Token do bot Discord.
+  # Env var: DISCORD_BOT_TOKEN (RECOMENDADO)
+  bot_token: ""
+
+  # IDs de usuário autorizados (snowflakes como strings).
+  # Vazio = ninguém pode usar o bot.
+  allowed_users: []
+  # allowed_users:
+  #   - "123456789012345678"
+
+  # Guilds permitidas. Vazio = qualquer guild onde o bot estiver.
+  allowed_guilds: []
+
+  # Canais permitidos. Vazio = qualquer canal.
+  allowed_channels: []
+
+  # Se true, qualquer usuário pode interagir. CUIDADO.
+  allow_all: false
+
+  # Se true (padrão), em guilds só responde quando mencionado (@bot).
+  # Em DMs, sempre responde independente deste valor.
+  mention_only: true
+
+  # Máximo de mensagens por minuto por usuário.
+  max_msgs_per_minute: 20
+
+
+# =============================================================================
+# GATEWAY — runtime unificado de canais
+# =============================================================================
+
+gateway:
+  # Intervalo de drenagem do outbox (segundos).
+  # O outbox acumula mensagens de saída do agente; o pump as entrega periodicamente.
+  outbox_drain_interval_s: 15
+
+
+# =============================================================================
+# OBSERVABILITY — rastreamento distribuído via Langfuse
+# =============================================================================
+
+observability:
+  # Ative para enviar traces de cada turno do agente ao Langfuse.
+  # Requer: pip install langfuse
+  langfuse_enabled: false
+
+  # Endpoint do Langfuse.
+  #   Cloud:       https://cloud.langfuse.com (padrão)
+  #   Self-hosted: http://localhost:3000
+  langfuse_host: https://cloud.langfuse.com
+
+  # Chaves de projeto do Langfuse.
+  # Env vars: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY (RECOMENDADO)
+  langfuse_public_key: ""
+  langfuse_secret_key: ""
+  # Traces incluem: sessão, modelo, tool calls (nome, args, resultado, latência),
+  # erros e timeouts. Não inclui conteúdo de mensagens do usuário por padrão.

@@ -1,0 +1,22 @@
+name: budget-analysis
+version: "1.0"
+description: Analisa orçamento, identifica desvios e sugere realocações
+tags: [finance, budget, analysis]
+content: |
+  Realize análise orçamentária:
+  1. Compile receitas e despesas por categoria
+  2. Compare realizado vs. planejado (variância %)
+  3. Identifique os 3 maiores desvios negativos com root cause
+  4. Sugira realocações para equilibrar o budget
+  5. Projete o fechamento do período com base na tendência atual
+  Apresente em tabela com status (✅ dentro, ⚠️ alerta, 🔴 crítico).
+tools: [read_file, calculate, write_file]
+params:
+  period:
+    type: string
+    description: "Período de análise (ex: 2026-Q2, 2026-06)"
+    required: true
+  data_source:
+    type: string
+    description: Arquivo CSV/JSON com os dados financeiros
+    required: false

@@ -1,0 +1,25 @@
+id: windows.control_panel
+name: Windows Control Panel
+version: 1.0.0
+description: Open Windows Settings or Control Panel after policy evaluation.
+capabilities:
+  - os.windows.open_control_panel
+  - os.windows.open_settings
+permissions:
+  - os.open_app
+  - os.ui_control
+risk: high
+platforms:
+  - windows
+inputs:
+  target:
+    type: string
+    enum:
+      - settings
+      - control_panel
+    default: settings
+outputs:
+  opened:
+    type: boolean
+  target:
+    type: string

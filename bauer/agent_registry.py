@@ -614,8 +614,14 @@ class AgentDef:
     description: str
     system: str
     tools: list[str] = field(default_factory=lambda: list(DEFAULT_TOOLS))
+    capabilities: list[str] = field(default_factory=list)
+    lane: str = ""
+    max_concurrent: int = 1
+    priority_weight: int = 1
     model: str = ""          # vazio = usa config.yaml
     provider: str = ""       # vazio = usa config.yaml
+    url: str = ""            # endpoint remoto: http://host:port (vazio = local)
+    api_key: str = ""        # X-API-Key para o servidor remoto (vazio = sem auth)
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
@@ -628,29 +634,137 @@ class AgentDef:
             "tools": self.tools,
             "created_at": self.created_at,
         }
+        if self.capabilities:
+            d["capabilities"] = self.capabilities
+        if self.lane:
+            d["lane"] = self.lane
+        if self.max_concurrent != 1:
+            d["max_concurrent"] = self.max_concurrent
+        if self.priority_weight != 1:
+            d["priority_weight"] = self.priority_weight
         if self.model:
             d["model"] = self.model
         if self.provider:
             d["provider"] = self.provider
+        if self.url:
+            d["url"] = self.url
+        if self.api_key:
+            d["api_key"] = self.api_key
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AgentDef":
         # Aceita system_prompt como alias de system (formato legado/workspace)
         system = d.get("system") or d.get("system_prompt", "")
+        capabilities = d.get("capabilities", [])
+        if isinstance(capabilities, str):
+            capabilities = [capabilities]
+        elif not isinstance(capabilities, (list, tuple, set)):
+            capabilities = []
+        try:
+            max_concurrent = max(1, int(d.get("max_concurrent", 1) or 1))
+        except (TypeError, ValueError):
+            max_concurrent = 1
+        try:
+            priority_weight = max(1, int(d.get("priority_weight", 1) or 1))
+        except (TypeError, ValueError):
+            priority_weight = 1
         return cls(
             name=d["name"],
             description=d.get("description", ""),
             system=system,
             tools=d.get("tools", list(DEFAULT_TOOLS)),
-            model=d.get("model", ""),
-            provider=d.get("provider", ""),
+            capabilities=[str(item).strip() for item in capabilities if str(item).strip()],
+            lane=str(d.get("lane", "")).strip(),
+            max_concurrent=max_concurrent,
+            priority_weight=priority_weight,
+            model=str(d.get("model", "") or ""),
+            provider=str(d.get("provider", "") or ""),
+            url=str(d.get("url", "") or ""),           # NOVO
+            api_key=str(d.get("api_key", "") or ""),   # NOVO
             created_at=d.get("created_at", ""),
         )
 
     @staticmethod
     def valid_name(name: str) -> bool:
         return bool(re.match(r"^[a-z0-9][a-z0-9_-]{1,30}$", name))
+
+
+def match_agents(task: str, agents: list[AgentDef], threshold: float = 0.05) -> "AgentDef | None":
+    """Encontra o agente mais adequado para uma tarefa via keyword matching.
+
+    Pontua cada agente pelo overlap coefficient (Szymkiewicz–Simpson:
+    |A∩B| / min(|A|, |B|)) entre os tokens da tarefa e os do agente
+    (description + name + system prompt). Jaccard (|A∩B|/|A∪B|) penaliza
+    agentes com descrição/system rica em palavras-chave — uma tarefa curta
+    de 3 tokens contra um doc de 20 tokens já fica presa a um denominador
+    grande mesmo com boa cobertura real. Overlap coefficient normaliza pelo
+    MENOR conjunto (quase sempre a tarefa do usuário), então "quanto da
+    tarefa está coberta pelo agente" não é diluído pelo tamanho do doc.
+
+    Função de módulo (não método) para ser reutilizável por resolvedores que
+    combinam listas de AgentDef de fontes diferentes (registry do usuário +
+    especialistas embutidos no pacote — ver `list_builtin_specialists()`).
+
+    Retorna None se nenhum agente superar o threshold ou se a lista/task
+    estiver vazia.
+    """
+    import re as _re
+
+    if not agents:
+        return None
+
+    def _tokens(text: str) -> set[str]:
+        return set(_re.findall(r"\b[a-zA-ZÀ-ú0-9]{3,}\b", text.lower()))
+
+    task_tokens = _tokens(task)
+    if not task_tokens:
+        return None
+
+    best_agent: "AgentDef | None" = None
+    best_score: float = 0.0
+
+    for agent in agents:
+        # Combina description, name e system prompt (primeiras 200 chars)
+        doc = f"{agent.description} {agent.name} {agent.system[:200]}"
+        doc_tokens = _tokens(doc)
+        if not doc_tokens:
+            continue
+
+        # Overlap coefficient: |A ∩ B| / min(|A|, |B|)
+        intersection = len(task_tokens & doc_tokens)
+        smaller = min(len(task_tokens), len(doc_tokens))
+        score = intersection / smaller if smaller > 0 else 0.0
+
+        if score > best_score:
+            best_score = score
+            best_agent = agent
+
+    return best_agent if best_score >= threshold else None
+
+
+# Especialistas de propósito geral que o Bauer sempre traz consigo — path
+# relativo ao PACOTE instalado (Path(__file__).parent), não ao cwd nem a
+# ~/.bauer/. Mesma convenção de bauer/data/skills/: funciona em qualquer
+# diretório onde `bauer agent` for executado, sem depender de nenhum
+# agents.yaml existir. `agents.yaml` (cwd ou ~/.bauer/) continua sendo só
+# para agents que o PRÓPRIO usuário criou/customizou — mesclados por cima
+# destes em `list_builtin_specialists()`.
+_BUILTIN_AGENTS_FILE = Path(__file__).parent / "data" / "agents" / "specialists.yaml"
+
+
+def list_builtin_specialists() -> list[AgentDef]:
+    """Carrega os especialistas embutidos do pacote. Best-effort: arquivo
+    ausente/corrompido nunca levanta, só degrada para lista vazia."""
+    try:
+        raw = yaml.safe_load(_BUILTIN_AGENTS_FILE.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    return [
+        AgentDef.from_dict(item)
+        for item in raw.get("agents", [])
+        if isinstance(item, dict) and item.get("name")
+    ]
 
 
 class AgentRegistry:
@@ -670,7 +784,12 @@ class AgentRegistry:
 
     def list_agents(self) -> list[AgentDef]:
         raw = self._load_raw()
-        return [AgentDef.from_dict(d) for d in raw.get("agents", [])]
+        agents: list[AgentDef] = []
+        for item in raw.get("agents", []):
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            agents.append(AgentDef.from_dict(item))
+        return agents
 
     def get(self, name: str) -> AgentDef | None:
         for ag in self.list_agents():
@@ -712,50 +831,11 @@ class AgentRegistry:
     def match(self, task: str, threshold: float = 0.05) -> "AgentDef | None":
         """Encontra o agente mais adequado para uma tarefa via keyword matching.
 
-        Pontua cada agente pelo overlap de palavras entre a tarefa e
-        o campo description + name do agente.
-        Retorna None se nenhum agente superar o threshold ou se não houver agentes.
-
-        Args:
-            task: Descrição da tarefa para matching.
-            threshold: Score mínimo para considerar um match (0.0–1.0).
-
-        Returns:
-            AgentDef com maior score ou None se sem match.
+        Ver `match_agents()` (função de módulo) para o algoritmo — extraída
+        para ser reutilizável por resolvedores que combinam esta lista com
+        outras fontes de AgentDef (ex.: especialistas embutidos no pacote).
         """
-        import re as _re
-
-        agents = self.list_agents()
-        if not agents:
-            return None
-
-        def _tokens(text: str) -> set[str]:
-            return set(_re.findall(r"\b[a-zA-ZÀ-ú0-9]{3,}\b", text.lower()))
-
-        task_tokens = _tokens(task)
-        if not task_tokens:
-            return None
-
-        best_agent: "AgentDef | None" = None
-        best_score: float = 0.0
-
-        for agent in agents:
-            # Combina description, name e system prompt (primeiras 200 chars)
-            doc = f"{agent.description} {agent.name} {agent.system[:200]}"
-            doc_tokens = _tokens(doc)
-            if not doc_tokens:
-                continue
-
-            # Jaccard similarity: |A ∩ B| / |A ∪ B|
-            intersection = len(task_tokens & doc_tokens)
-            union = len(task_tokens | doc_tokens)
-            score = intersection / union if union > 0 else 0.0
-
-            if score > best_score:
-                best_score = score
-                best_agent = agent
-
-        return best_agent if best_score >= threshold else None
+        return match_agents(task, self.list_agents(), threshold=threshold)
 
     def auto_select(self, task: str) -> "AgentDef | None":
         """Seleciona automaticamente o melhor agente para a tarefa.
@@ -763,3 +843,52 @@ class AgentRegistry:
         Wrapper de conveniência para match() com threshold padrão.
         """
         return self.match(task)
+
+
+def resolve_user_agents_path(explicit: "str | Path | None" = None) -> Path:
+    """Resolve o agents.yaml do USUÁRIO — agents customizados/remotos que a
+    pessoa criou, NÃO os especialistas embutidos do pacote (ver
+    `list_builtin_specialists()`, mesclados por cima disto em
+    `merged_specialist_pool()`).
+
+    Prioridade:
+      1. `explicit` — override do caller (ex.: `router._bauer_home`).
+      2. `BAUER_AGENTS_FILE` — isolamento hermético de testes (mesmo padrão
+         de BAUER_CONFIG/BAUER_HOME, ver tests/conftest.py).
+      3. `./agents.yaml` no cwd, SE existir — permite um agents.yaml
+         específico do projeto atual sobrepor o global.
+      4. `~/.bauer/agents.yaml` — instalação, mesma convenção de config.yaml
+         (bauer/paths.py::config_path). Sem isto, rodar `bauer agent` de uma
+         pasta qualquer (ex.: a home do usuário) nunca via os agents
+         definidos alhures — "agents.yaml tem que estar na pasta do bauer,
+         não na pasta do usuário" era exatamente esse gap.
+    """
+    import os as _os
+
+    if explicit:
+        return Path(explicit)
+    env = _os.environ.get("BAUER_AGENTS_FILE")
+    if env:
+        return Path(env)
+    cwd_file = Path("agents.yaml").resolve()
+    if cwd_file.exists():
+        return cwd_file
+    from .paths import agents_path as _agents_path
+    return _agents_path()
+
+
+def merged_specialist_pool(user_agents_file: "str | Path") -> list[AgentDef]:
+    """Especialistas embutidos do pacote + agents do agents.yaml do usuário.
+
+    Um agent do usuário com o mesmo `name` de um especialista embutido
+    SOBRESCREVE o embutido (permite customizar/desabilitar um especialista
+    redefinindo-o localmente). Best-effort: registry do usuário
+    ausente/corrompido não impede os embutidos de aparecerem.
+    """
+    pool: dict[str, AgentDef] = {a.name: a for a in list_builtin_specialists()}
+    try:
+        for a in AgentRegistry(user_agents_file).list_agents():
+            pool[a.name] = a
+    except Exception:
+        pass
+    return list(pool.values())

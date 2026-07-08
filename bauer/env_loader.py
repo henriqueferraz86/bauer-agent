@@ -21,8 +21,26 @@ Variáveis reconhecidas:
   AZURE_OPENAI_ENDPOINT  — Azure OpenAI endpoint URL
   GITHUB_TOKEN           — GitHub Models (PAT com acesso padrão)
   COPILOT_TOKEN          — GitHub Copilot API (token OAuth do Copilot)
+  OLLAMA_HOST            — Host do Ollama (Docker: http://ollama:11434)
   OLLAMA_API_KEY         — Ollama Cloud ou proxy protegido
   BAUER_SERVE_API_KEY    — chave de autenticação do bauer serve
+  COHERE_API_KEY         — Cohere Command
+  PERPLEXITY_API_KEY     — Perplexity AI (sonar, sonar-pro)
+  FIREWORKS_API_KEY      — Fireworks AI
+  HUGGINGFACE_API_KEY    — HuggingFace Inference API (também: HF_TOKEN)
+  HF_TOKEN               — HuggingFace (alias)
+  CEREBRAS_API_KEY       — Cerebras
+  SAMBANOVA_API_KEY      — Sambanova Cloud
+  NVIDIA_API_KEY         — NVIDIA NIM
+  LMSTUDIO_HOST          — LM Studio host customizado
+  DATABRICKS_TOKEN       — Databricks Personal Access Token
+  DATABRICKS_HOST        — Databricks workspace URL
+  MOONSHOT_API_KEY       — Moonshot / Kimi
+  ALIBABA_API_KEY        — Alibaba DashScope (também: DASHSCOPE_API_KEY)
+  DASHSCOPE_API_KEY      — Alibaba DashScope (alias)
+  VERTEX_ACCESS_TOKEN    — Google Vertex AI Bearer token
+  VERTEX_PROJECT_ID      — Google Vertex AI project ID
+  VERTEX_REGION          — Google Vertex AI region
 """
 
 from __future__ import annotations
@@ -132,3 +150,90 @@ def apply_env_to_config(cfg) -> None:
     # --- Bauer serve auth key ---
     if key := os.environ.get("BAUER_SERVE_API_KEY"):
         cfg.serve.api_key = key
+
+    # --- Cohere ---
+    if key := os.environ.get("COHERE_API_KEY"):
+        cfg.cohere.api_key = key
+
+    # --- Perplexity ---
+    if key := os.environ.get("PERPLEXITY_API_KEY"):
+        cfg.perplexity.api_key = key
+
+    # --- Fireworks ---
+    if key := os.environ.get("FIREWORKS_API_KEY"):
+        cfg.fireworks.api_key = key
+
+    # --- HuggingFace (aceita HF_TOKEN como alias) ---
+    if key := os.environ.get("HUGGINGFACE_API_KEY") or os.environ.get("HF_TOKEN"):
+        cfg.huggingface.api_key = key
+
+    # --- Cerebras ---
+    if key := os.environ.get("CEREBRAS_API_KEY"):
+        cfg.cerebras.api_key = key
+
+    # --- Sambanova ---
+    if key := os.environ.get("SAMBANOVA_API_KEY"):
+        cfg.sambanova.api_key = key
+
+    # --- NVIDIA NIM ---
+    if key := os.environ.get("NVIDIA_API_KEY"):
+        cfg.nvidia.api_key = key
+
+    # --- LM Studio (host override) ---
+    if host := os.environ.get("LMSTUDIO_HOST"):
+        cfg.lmstudio.host = host
+
+    # --- Databricks ---
+    if token := os.environ.get("DATABRICKS_TOKEN"):
+        cfg.databricks.api_key = token
+    if host := os.environ.get("DATABRICKS_HOST"):
+        cfg.databricks.host = host
+
+    # --- Moonshot / Kimi ---
+    if key := os.environ.get("MOONSHOT_API_KEY"):
+        cfg.moonshot.api_key = key
+
+    # --- Alibaba DashScope (aceita DASHSCOPE_API_KEY como alias) ---
+    if key := os.environ.get("ALIBABA_API_KEY") or os.environ.get("DASHSCOPE_API_KEY"):
+        cfg.alibaba.api_key = key
+
+    # --- Google Vertex AI ---
+    if token := os.environ.get("VERTEX_ACCESS_TOKEN"):
+        cfg.vertex.access_token = token
+    if project := os.environ.get("VERTEX_PROJECT_ID"):
+        cfg.vertex.project_id = project
+    if region := os.environ.get("VERTEX_REGION"):
+        cfg.vertex.region = region
+
+    # --- G16a: new providers ---
+    if key := os.environ.get("REPLICATE_API_KEY"):
+        cfg.replicate.api_key = key
+
+    if key := os.environ.get("NOVITA_API_KEY"):
+        cfg.novita.api_key = key
+
+    if key := os.environ.get("AI21_API_KEY"):
+        cfg.ai21.api_key = key
+
+    if key := os.environ.get("ANYSCALE_API_KEY"):
+        cfg.anyscale.api_key = key
+
+    if key := os.environ.get("FEATHERLESS_API_KEY"):
+        cfg.featherless.api_key = key
+
+    if key := os.environ.get("HYPERBOLIC_API_KEY"):
+        cfg.hyperbolic.api_key = key
+
+    if key := os.environ.get("INFERENCE_API_KEY"):
+        cfg.inference.api_key = key
+
+    if key := os.environ.get("NCOMPASS_API_KEY"):
+        cfg.ncompass.api_key = key
+
+    if key := os.environ.get("CLOUDFLARE_API_KEY"):
+        cfg.cloudflare.api_key = key
+    if account_id := os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+        cfg.cloudflare.account_id = account_id
+
+    if key := os.environ.get("LEPTON_API_KEY"):
+        cfg.lepton.api_key = key
