@@ -1359,7 +1359,7 @@ class ToolRouter(
                 },
             )
         except Exception as exc:
-            logger.debug("runtime tool event publish failed for %s: %s", tool_name, exc)
+            logger.debug("runtime tool event publish failed for %s: %s", name, exc)
 
     def available_tools(self) -> list[str]:
         """Retorna união de tools built-in e tools registradas externamente (ToolRegistry)."""
