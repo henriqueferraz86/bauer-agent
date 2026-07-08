@@ -1,0 +1,21 @@
+rules:
+  - id: shell.execute.ask
+    operation: shell.execute
+    action: ask
+  - id: filesystem.delete.ask
+    operation: filesystem.delete
+    action: ask
+  - id: social.publish.ask
+    operation: social.publish
+    action: ask
+  - id: os.ui_control.ask
+    operation: os.ui_control
+    action: ask
+  - id: filesystem.read.allow
+    operation: filesystem.read
+    action: allow
+  - id: filesystem.write.outside_workspace.ask
+    operation: filesystem.write
+    action: ask
+    when:
+      outside_workspace: true

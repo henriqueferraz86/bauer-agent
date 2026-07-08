@@ -184,6 +184,7 @@ def build_desktop_router(
     get_workspace: Optional[Callable[[], Path]] = None,
     cost_file: Optional[Path] = None,
     spans_file: Optional[Path] = None,
+    runtime_root: Optional[Path] = None,
     logs_dir: Optional[Path] = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes."""
@@ -193,6 +194,7 @@ def build_desktop_router(
     get_workspace = get_workspace or _default_workspace
     _cost_file = cost_file or (Path.home() / ".bauer" / "cost_history.jsonl")
     _spans_file = spans_file or (Path.home() / ".bauer" / "traces" / "spans.jsonl")
+    _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
     _logs_dir = logs_dir or (Path.cwd() / "logs")
 
     deps = [Depends(verify_key)] if verify_key else []
@@ -387,6 +389,37 @@ def build_desktop_router(
                 if session in (str(s.get("trace_id", "")), str(s.get("session_id", "")))
             ]
         return {"spans": spans[-limit:]}
+
+    @router.get("/obs/runs")
+    def obs_runs(limit: int = Query(50, ge=1, le=500)):
+        from dataclasses import asdict
+
+        from .core.runtime.run_manager import RunManager
+
+        runs = RunManager(root=_runtime_root).list_runs()
+        return {"runs": [asdict(run) for run in runs[-limit:]]}
+
+    @router.get("/obs/runs/{run_id}/trace")
+    def obs_run_trace(run_id: str):
+        from .core.events import EventBus
+        from .core.observability import RunTraceStore
+
+        return RunTraceStore(EventBus(root=_runtime_root).store).get_trace(run_id)
+
+    @router.get("/obs/runs/{run_id}/events")
+    def obs_run_events(run_id: str):
+        from .core.events import EventBus
+
+        bus = EventBus(root=_runtime_root)
+        return {"events": [EventBus.to_dict(event) for event in bus.list_events(run_id=run_id)]}
+
+    @router.get("/obs/approvals")
+    def obs_approvals(status: str = Query("pending", description="pending | approved | denied")):
+        from dataclasses import asdict
+
+        from .core.policy import ApprovalManager
+
+        return {"approvals": [asdict(record) for record in ApprovalManager(root=_runtime_root).list(status=status or None)]}
 
     # ── Config ────────────────────────────────────────────────────────────
     from . import config_admin as ca

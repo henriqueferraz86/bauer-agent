@@ -91,3 +91,56 @@ def test_events_endpoints_return_runtime_events(tmp_path: Path):
         "run.created",
         "run.completed",
     }
+
+
+def test_observability_endpoints_return_runs_trace_audit_and_metrics(tmp_path: Path):
+    mock_router = MagicMock()
+    mock_router.available_tools.return_value = []
+    mock_router.tool_info.side_effect = lambda name: {"name": name}
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter(["hello"])
+    mock_client.list_models.return_value = []
+
+    app = create_app(
+        model_name="test-model",
+        applied_context=4096,
+        router=mock_router,
+        client=mock_client,
+        system_prompt="system",
+        sessions_dir=tmp_path / "sessions",
+        rate_limit_requests=0,
+    )
+
+    async def _exercise():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            await client.post("/chat", json={"message": "hi", "session_id": "session-1"})
+            runs_response = await client.get("/runs")
+            run_id = runs_response.json()["runs"][0]["id"]
+            return (
+                runs_response,
+                await client.get(f"/runs/{run_id}"),
+                await client.get(f"/runs/{run_id}/trace"),
+                await client.get("/audit"),
+                await client.get("/metrics"),
+            )
+
+    runs_response, run_response, trace_response, audit_response, metrics_response = asyncio.run(_exercise())
+
+    assert runs_response.status_code == 200
+    assert run_response.status_code == 200
+    assert trace_response.status_code == 200
+    assert audit_response.status_code == 200
+    assert metrics_response.status_code == 200
+    assert runs_response.json()["runs"][0]["status"] == "completed"
+    assert {span["name"] for span in trace_response.json()["spans"]} >= {"run.created", "run.completed"}
+    assert {record["action"] for record in audit_response.json()["audit"]} >= {"run.created", "run.completed"}
+    metrics_text = metrics_response.text
+    assert "bauer_runs_total 1" in metrics_text
+    assert "bauer_runs_active 0" in metrics_text
+    assert "bauer_runs_failed_total 0" in metrics_text
+    assert "bauer_approvals_pending 0" in metrics_text
+    assert "bauer_policy_denied_total 0" in metrics_text
+    assert "bauer_skill_executions_total 0" in metrics_text
+    assert "bauer_agent_runtime_adapter_calls_total 1" in metrics_text

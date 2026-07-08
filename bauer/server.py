@@ -63,9 +63,10 @@ class _Metrics:
         self.rate_limited_total: int = 0
         self._start_time: float = time.time()
 
-    def to_prometheus(self, model: str = "", provider: str = "") -> str:
-        """Serializa métricas no formato Prometheus text exposition."""
+    def to_prometheus(self, model: str = "", provider: str = "", runtime: dict | None = None) -> str:
+        """Serializa metricas no formato Prometheus text exposition."""
         uptime = time.time() - self._start_time
+        runtime = runtime or {}
         lines = [
             "# HELP bauer_uptime_seconds Tempo em segundos desde o inicio do servidor",
             "# TYPE bauer_uptime_seconds gauge",
@@ -94,6 +95,34 @@ class _Metrics:
             "# HELP bauer_rate_limited_total Total de requisicoes bloqueadas por rate limit",
             "# TYPE bauer_rate_limited_total counter",
             f'bauer_rate_limited_total {self.rate_limited_total}',
+            "",
+            "# HELP bauer_runs_total Total de runs registradas",
+            "# TYPE bauer_runs_total counter",
+            f'bauer_runs_total {int(runtime.get("runs_total", 0))}',
+            "",
+            "# HELP bauer_runs_active Runs em execucao ou aguardando aprovacao",
+            "# TYPE bauer_runs_active gauge",
+            f'bauer_runs_active {int(runtime.get("runs_active", 0))}',
+            "",
+            "# HELP bauer_runs_failed_total Total de runs com falha",
+            "# TYPE bauer_runs_failed_total counter",
+            f'bauer_runs_failed_total {int(runtime.get("runs_failed_total", 0))}',
+            "",
+            "# HELP bauer_approvals_pending Aprovacoes pendentes",
+            "# TYPE bauer_approvals_pending gauge",
+            f'bauer_approvals_pending {int(runtime.get("approvals_pending", 0))}',
+            "",
+            "# HELP bauer_policy_denied_total Total de decisoes de policy negadas",
+            "# TYPE bauer_policy_denied_total counter",
+            f'bauer_policy_denied_total {int(runtime.get("policy_denied_total", 0))}',
+            "",
+            "# HELP bauer_skill_executions_total Total de execucoes de skill",
+            "# TYPE bauer_skill_executions_total counter",
+            f'bauer_skill_executions_total {int(runtime.get("skill_executions_total", 0))}',
+            "",
+            "# HELP bauer_agent_runtime_adapter_calls_total Total de chamadas a runtime adapters",
+            "# TYPE bauer_agent_runtime_adapter_calls_total counter",
+            f'bauer_agent_runtime_adapter_calls_total {int(runtime.get("agent_runtime_adapter_calls_total", 0))}',
         ]
         if model:
             lines += [
@@ -103,6 +132,7 @@ class _Metrics:
                 f'bauer_info{{model="{model}",provider="{provider}"}} 1',
             ]
         return "\n".join(lines) + "\n"
+
 
 
 _metrics = _Metrics()
@@ -188,6 +218,7 @@ def create_app(
     _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
     from .core.events import EventBus
+    from .core.observability import AuditLog, RunTraceStore
     from .core.runtime.run_manager import RunManager
     from .core.runtime.session_manager import SessionManager
     from .session_store import SessionStore
@@ -240,8 +271,35 @@ def create_app(
     store = SessionStore(sessions_dir)
     runtime_root = sessions_dir.parent / "runtime"
     event_bus = EventBus(root=runtime_root)
-    run_manager = RunManager(root=runtime_root)
+    run_manager = RunManager(root=runtime_root, event_bus=event_bus)
     session_manager = SessionManager(root=runtime_root)
+    from .core.policy import ApprovalManager
+    approval_manager = ApprovalManager(root=runtime_root, event_bus=event_bus)
+    audit_log = AuditLog(event_bus.store)
+    trace_store = RunTraceStore(event_bus.store)
+    try:
+        router._event_bus = event_bus  # type: ignore[attr-defined]
+        router._policy_root = runtime_root  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    def _runtime_metrics_snapshot() -> dict:
+        runs = run_manager.list_runs()
+        events = event_bus.list_events()
+        approvals = approval_manager.list()
+        return {
+            "runs_total": len(runs),
+            "runs_active": sum(1 for run in runs if run.status in {"queued", "running", "waiting_approval"}),
+            "runs_failed_total": sum(1 for run in runs if run.status == "failed"),
+            "approvals_pending": sum(1 for approval in approvals if approval.status == "pending"),
+            "policy_denied_total": sum(
+                1
+                for event in events
+                if event.event_type == "policy.evaluated" and event.status == "deny"
+            ),
+            "skill_executions_total": sum(1 for event in events if event.event_type == "skill.executed"),
+            "agent_runtime_adapter_calls_total": sum(1 for event in events if event.event_type == "run.created"),
+        }
 
     # Detecta provider inicial pelo atributo _provider ou, como fallback, pela URL do host.
     def _detect_provider(c) -> str:
@@ -392,7 +450,11 @@ def create_app(
     def metrics(_: None = Depends(_verify_key)):
         """Endpoint Prometheus — retorna métricas em text exposition format."""
         from fastapi.responses import PlainTextResponse
-        text = _metrics.to_prometheus(model=_state["model"], provider=_provider_name)
+        text = _metrics.to_prometheus(
+            model=_state["model"],
+            provider=_provider_name,
+            runtime=_runtime_metrics_snapshot(),
+        )
         return PlainTextResponse(content=text, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/tools")
@@ -464,9 +526,62 @@ def create_app(
     def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(_verify_key)):
         return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(limit=limit)]}
 
+    @app.get("/runs")
+    def list_runs(_: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        return {"runs": [asdict(run) for run in run_manager.list_runs()]}
+
+    @app.get("/runs/{run_id}")
+    def get_run(run_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        run = run_manager.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(run)
+
     @app.get("/runs/{run_id}/events")
     def list_run_events(run_id: str, _: None = Depends(_verify_key)):
         return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(run_id=run_id)]}
+
+    @app.get("/runs/{run_id}/trace")
+    def get_run_trace(run_id: str, _: None = Depends(_verify_key)):
+        if run_manager.get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return trace_store.get_trace(run_id)
+
+    @app.get("/audit")
+    def list_audit(
+        run_id: str = Query("", description="filtra por run_id"),
+        limit: int = Query(100, ge=1, le=1000),
+        _: None = Depends(_verify_key),
+    ):
+        return {
+            "audit": [
+                AuditLog.to_dict(record)
+                for record in audit_log.list_records(run_id=run_id or None, limit=limit)
+            ]
+        }
+
+    @app.get("/approvals")
+    def list_approvals(status: str = Query("", description="pending | approved | denied"), _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        return {"approvals": [asdict(record) for record in approval_manager.list(status=status or None)]}
+
+    @app.post("/approvals/{approval_id}/approve")
+    def approve_request(approval_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        try:
+            return asdict(approval_manager.approve(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    @app.post("/approvals/{approval_id}/deny")
+    def deny_request(approval_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        try:
+            return asdict(approval_manager.deny(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 
     @app.delete("/sessions/{session_id}")
     def delete_session(session_id: str, _: None = Depends(_verify_key)):
@@ -934,7 +1049,7 @@ def create_app(
     try:
         from .desktop_api import build_desktop_router
 
-        app.include_router(build_desktop_router(verify_key=_verify_key))
+        app.include_router(build_desktop_router(verify_key=_verify_key, runtime_root=runtime_root))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("bauer.server").warning(
             "Desktop API não montada: %s", exc
