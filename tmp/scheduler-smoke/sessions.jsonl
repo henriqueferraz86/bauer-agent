@@ -1,0 +1,1 @@
+{"agent_id": "productivity", "company_id": null, "created_at": "2026-07-08T05:34:23.754161+00:00", "id": "schedule-smoke_schedule", "state": {"scheduler": "local", "task_id": "smoke_schedule"}, "updated_at": "2026-07-08T05:34:23.754161+00:00", "user_id": "local"}
