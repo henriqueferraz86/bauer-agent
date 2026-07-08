@@ -28,6 +28,9 @@ EventType = Literal[
     "budget.warning",
     "budget.exceeded",
     "autonomy.changed",
+    "delegation.requested",
+    "delegation.accepted",
+    "delegation.denied",
 ]
 
 EVENT_TYPES: tuple[str, ...] = (
@@ -51,6 +54,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "budget.warning",
     "budget.exceeded",
     "autonomy.changed",
+    "delegation.requested",
+    "delegation.accepted",
+    "delegation.denied",
 )
 
 

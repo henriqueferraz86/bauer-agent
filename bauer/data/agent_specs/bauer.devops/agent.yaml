@@ -1,0 +1,22 @@
+id: bauer.devops
+name: Bauer DevOps Agent
+version: 0.1.0
+description: Agente de operações para automação, ambiente e runtime.
+runtime_adapter: agno
+model:
+  provider: openrouter
+  name: auto
+instructions: Ajude com automações, ambiente local, comandos e operação do runtime.
+skills:
+  - bauer.devops
+permissions:
+  - filesystem.read
+  - filesystem.write
+  - shell.execute
+autonomy:
+  mode: supervised
+limits:
+  max_runtime_s: 800
+  max_tool_calls: 260
+policies:
+  - default

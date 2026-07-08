@@ -46,9 +46,11 @@ class RunManager:
         store: JsonlStateStore | None = None,
         root: str | Path = "memory/runtime",
         event_bus: EventBus | None = None,
+        agent_registry: Any | None = None,
     ):
         self.store = store or JsonlStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
+        self.agent_registry = agent_registry
 
     def create_run(
         self,
@@ -79,6 +81,38 @@ class RunManager:
         if run.status == "running":
             self._publish_status_event(run)
         return run
+
+    def create_run_for_agent(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        input: dict[str, Any] | None = None,
+        version: str | None = None,
+        status: RunStatus = "queued",
+    ) -> Run:
+        from .agent_registry import AgentRegistry
+
+        registry = self.agent_registry or AgentRegistry()
+        spec = registry.get(agent_id, version=version)
+        if spec is None:
+            raise KeyError(f"Agent not found: {agent_id}")
+        payload = {
+            **(input or {}),
+            "agent_spec": spec.to_dict(),
+            "agent_version": spec.version,
+            "permissions": list(spec.permissions),
+            "skills": list(spec.skills),
+            "autonomy": dict(spec.autonomy),
+            "limits": dict(spec.limits),
+        }
+        return self.create_run(
+            session_id=session_id,
+            agent_id=spec.id,
+            runtime_adapter=spec.runtime_adapter,
+            input=payload,
+            status=status,
+        )
 
     def get_run(self, run_id: str) -> Run | None:
         data = self.store.latest("runs", run_id)

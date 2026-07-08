@@ -5,6 +5,9 @@ rules:
   - id: network.http.allow
     operation: network.http
     action: allow
+  - id: agent.delegate.allow
+    operation: agent.delegate
+    action: allow
   - id: shell.execute.ask
     operation: shell.execute
     action: ask
