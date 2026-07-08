@@ -882,27 +882,50 @@ def create_app(
         router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         def _event_stream():
-            from .tool_router import SandboxError, ToolError
-            from .agent import (
-                _args_sig,
-                _detect_loop,
-                _extract_text_from_pseudo_json,
-                _try_parse_tool,
-                MAX_TOOL_TURNS,
-            )
-
+            # O turno roda no MESMO motor do CLI e do POST /chat —
+            # run_one_turn_with_fallback: native function calling quando o
+            # provider suporta, batch de tool calls, guardrails, dedup, timeout
+            # de tool, recovery de resposta vazia, detecção de loop e fallback
+            # de provider. Antes o /stream reimplementava um mini-loop próprio
+            # (só tool-bridge, 1 tool por rodada, sem nada disso), e o
+            # comportamento do agente divergia visivelmente do `bauer agent`.
+            #
+            # Padrão do gateway (channel_base._execute_turn): o turno roda numa
+            # thread daemon com um delta-sink instalado (ContextVar não cruza
+            # threads); os eventos chegam por uma fila e viram frames SSE aqui.
             import json as _json
+            import queue as _queue
+            import threading as _threading
 
-            tool_count = 0
-            tool_log: list[dict] = []
-            turn_started = time.monotonic()
-            emitted_any = False  # texto já enviado em turnos anteriores (separador)
-            # Fallback de provider (429/5xx): client/model correntes avançam pela
-            # lista quando o primário falha ANTES de começar a stremar. _fb_idx
-            # sobrevive entre iterações do loop de tool calls (não reinicia no 0).
-            stream_client = _state["client"]
-            stream_model = _state["model"]
-            _fb_idx = 0
+            from .agent import _extract_text_from_pseudo_json, run_one_turn_with_fallback
+
+            events: "_queue.Queue[tuple[str, str]]" = _queue.Queue()
+            result: dict = {}
+
+            class _QueueSink:
+                def on_delta(self, chunk: str) -> None:
+                    events.put(("delta", chunk))
+
+                def on_round(self) -> None:
+                    events.put(("round", ""))
+
+                def on_tool(self, name: str) -> None:
+                    events.put(("tool", name))
+
+            def _worker() -> None:
+                from .delta_stream import reset_sink, set_sink
+                token = set_sink(_QueueSink())
+                try:
+                    resp, tool_log = run_one_turn_with_fallback(
+                        ctx, router, _state["client"], _state["model"], _fallback_clients,
+                    )
+                    result["response"] = resp
+                    result["tool_log"] = tool_log
+                except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
+                    result["error"] = exc
+                finally:
+                    reset_sink(token)
+                    events.put(("end", ""))
 
             # Sinaliza a skill auto-selecionada para a UI (paridade com a linha
             # "↳ skill 'X' (NN%)" que o CLI imprime). O conteúdo da skill já foi
@@ -918,14 +941,82 @@ def create_app(
                     event="skill",
                 )
 
-            while True:
-                current_run = run_manager.get_run(run.id)
-                if current_run is not None and current_run.status == "cancelled":
-                    store.save(sid, ctx.messages)
-                    session_manager.touch_session(sid, state={"last_run_id": run.id})
-                    yield _sse(sid, event="done")
-                    return
-                if time.monotonic() - turn_started > _STREAM_TURN_TIMEOUT_SECONDS:
+            worker = _threading.Thread(
+                target=_worker, name=f"bauer-stream:{sid[:8]}", daemon=True,
+            )
+            worker.start()
+
+            available = set(router.available_tools())
+            gate = _StreamGate()  # retém possíveis tool-call JSON (ver docstring)
+            emitted_any = False   # já mandamos texto ao cliente (p/ separador)
+            turn_sep = False      # próximo texto abre um bloco novo (pós-tool)
+            round_raw: list[str] = []  # deltas crus da rodada corrente do LLM
+            deadline = time.monotonic() + _STREAM_TURN_TIMEOUT_SECONDS
+
+            def _flush_gate() -> str:
+                leftover = _strip_action_block(gate.pending, available).strip("\n")
+                gate.pending = ""
+                return leftover
+
+            def _emit_text(text: str):
+                nonlocal emitted_any, turn_sep
+                if not text.strip():
+                    return None
+                if turn_sep:
+                    text = "\n\n" + text.lstrip("\n")
+                    turn_sep = False
+                emitted_any = True
+                return _sse(text)
+
+            ended = False
+            while not ended:
+                try:
+                    kind, payload = events.get(timeout=1.0)
+                except _queue.Empty:
+                    # Sem eventos: checa cancelamento e timeout de turno. Em
+                    # ambos os casos a thread órfã continua até o fim do turno
+                    # (mesma limitação do gateway) — só paramos de streamar.
+                    current_run = run_manager.get_run(run.id)
+                    if current_run is not None and current_run.status == "cancelled":
+                        store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        yield _sse(sid, event="done")
+                        return
+                    if time.monotonic() > deadline:
+                        yield _sse(
+                            "⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
+                            "turno. Tente reformular ou dividir em passos menores."
+                        )
+                        store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        run_manager.fail_run(run.id, "stream turn timeout")
+                        yield _sse(sid, event="done")
+                        return
+                    continue
+
+                if kind == "delta":
+                    round_raw.append(payload)
+                    frame = _emit_text(gate.feed(payload))
+                    if frame:
+                        yield frame
+                elif kind == "round":
+                    # Nova chamada ao LLM: o que sobrou da rodada anterior é
+                    # narração misturada com JSON de actions — manda a narração.
+                    frame = _emit_text(_flush_gate())
+                    if frame:
+                        yield frame
+                    round_raw = []
+                    turn_sep = emitted_any
+                elif kind == "tool":
+                    # Narração pendente sai antes do chip da tool.
+                    frame = _emit_text(_flush_gate())
+                    if frame:
+                        yield frame
+                    yield _sse(payload, event="tool")
+                else:  # "end"
+                    ended = True
+
+                if time.monotonic() > deadline and not ended:
                     yield _sse(
                         "⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
                         "turno. Tente reformular ou dividir em passos menores."
@@ -936,120 +1027,45 @@ def create_app(
                     yield _sse(sid, event="done")
                     return
 
-                parts: list[str] = []
-                gate = _StreamGate()  # retém possíveis tool-call JSON (ver docstring)
-                turn_sep = emitted_any  # separa visualmente turnos pós-tool-call
+            if "error" in result:
+                yield _sse(f"[Erro: {result['error']}]")
+                store.save(sid, ctx.messages)
+                session_manager.touch_session(sid, state={"last_run_id": run.id})
+                run_manager.fail_run(run.id, str(result["error"]))
+                yield _sse(sid, event="done")
+                return
 
-                try:
-                    for chunk in stream_client.chat_stream(stream_model, ctx.get_payload()):
-                        current_run = run_manager.get_run(run.id)
-                        if current_run is not None and current_run.status == "cancelled":
-                            store.save(sid, ctx.messages)
-                            session_manager.touch_session(sid, state={"last_run_id": run.id})
-                            yield _sse(sid, event="done")
-                            return
-                        parts.append(chunk)
+            raw_response = str(result.get("response", ""))
+            response = _format_server_response(raw_response)
+            tool_log = result.get("tool_log") or []
+            _metrics.tool_calls_total += len(tool_log)
 
-                        safe = gate.feed(chunk)
-                        if safe:
-                            if turn_sep:
-                                safe = "\n\n" + safe.lstrip("\n")
-                                turn_sep = False
-                            emitted_any = True
-                            yield _sse(safe)
-                except Exception as exc:
-                    # Fallback: se o provider falhou ANTES de qualquer chunk sair
-                    # (caso típico do 429 — request rejeitado de cara) e há
-                    # provider alternativo, troca e re-tenta o mesmo turno. Se já
-                    # streamamos algo, não dá pra reiniciar limpo → mostra o erro.
-                    _retryable = False
-                    if not parts and _fb_idx < len(_fallback_clients):
-                        try:
-                            from .error_classifier import classify_api_error
-                            _retryable = classify_api_error(exc).should_fallback
-                        except Exception:
-                            _retryable = True
-                    if _retryable:
-                        _fb = _fallback_clients[_fb_idx]
-                        _fb_idx += 1
-                        stream_client, stream_model = (
-                            (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple)) else (_fb, stream_model)
-                        )
-                        continue  # re-tenta com o próximo provider (ctx intacto)
-                    yield _sse(f"[Erro: {exc}]")
-                    store.save(sid, ctx.messages)
-                    session_manager.touch_session(sid, state={"last_run_id": run.id})
-                    run_manager.fail_run(run.id, str(exc))
-                    yield _sse(sid, event="done")
-                    return
+            # Cauda: o que ficou retido na gate + resposta que não passou pelo
+            # stream (native tool calling não emite deltas de texto; sínteses
+            # como "[Loop detectado]" e recovery também chegam só no retorno).
+            tail = _flush_gate()
+            if raw_response.strip() and raw_response.strip() != "".join(round_raw).strip():
+                final_text = _extract_text_from_pseudo_json(raw_response) or raw_response
+                final_text = _strip_action_block(final_text, available).strip("\n")
+                tail = f"{tail}\n\n{final_text}" if tail.strip() else final_text
+            elif not emitted_any and not tail.strip():
+                # Rodada única toda retida na gate (ex.: pseudo-JSON de conversa
+                # de modelos pequenos) — extrai o texto e manda.
+                clean = _extract_text_from_pseudo_json(raw_response)
+                if clean:
+                    tail = clean
+            frame = _emit_text(tail)
+            if frame:
+                yield frame
 
-                response = _format_server_response("".join(parts))
-                ctx.add_assistant(response)
-
-                action_dict = _try_parse_tool(response, router)
-                if action_dict and tool_count < MAX_TOOL_TURNS:
-                    action_name = action_dict.get("action", "?")
-                    action_args = action_dict.get("args", {}) or {}
-
-                    # Narração retida junto com o JSON da action vai pro chat;
-                    # o JSON em si (e o fence ao redor), não.
-                    leftover = _strip_action_block(
-                        gate.pending, set(router.available_tools())
-                    ).strip("\n")
-                    if leftover.strip():
-                        if turn_sep:
-                            leftover = "\n\n" + leftover
-                        emitted_any = True
-                        yield _sse(leftover)
-
-                    try:
-                        tool_result = router.execute(action_dict)
-                    except (ToolError, SandboxError) as exc:
-                        tool_result = f"[Erro: {exc}]"
-
-                    yield _sse(action_name, event="tool")
-                    ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
-                    tool_count += 1
-                    _metrics.tool_calls_total += 1
-
-                    tool_log.append({
-                        "tool": action_name,
-                        "args_sig": _args_sig(action_args),
-                        "result": str(tool_result)[:300],
-                    })
-                    loop_warn, hard_stop = _detect_loop(tool_log)
-                    if loop_warn:
-                        ctx.add_user(loop_warn)
-                    if hard_stop:
-                        yield _sse("[Loop detectado — tarefa interrompida automaticamente]")
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
-                        run_manager.fail_run(run.id, "loop detected")
-                        yield _sse(sid, event="done")
-                        return
-                else:
-                    # Flush do que ficou retido na gate. Se NADA foi enviado e a
-                    # resposta inteira é um pseudo-JSON de conversa (modelos
-                    # pequenos que abusam do formato), envia só o texto extraído.
-                    tail = gate.pending
-                    if not gate.sent_any:
-                        tail = _extract_text_from_pseudo_json(response) or tail
-                    # Remove qualquer JSON de action que tenha ficado no texto
-                    # (batch de tool calls acima do MAX_TOOL_TURNS, p.ex.).
-                    tail = _strip_action_block(tail, set(router.available_tools()))
-                    if tail.strip():
-                        if turn_sep:
-                            tail = "\n\n" + tail.lstrip("\n")
-                        yield _sse(tail)
-                    store.save(sid, ctx.messages)
-                    session_manager.touch_session(sid, state={"last_run_id": run.id})
-                    run_manager.complete_run(
-                        run.id,
-                        output={"response": response},
-                        tool_calls_count=tool_count,
-                    )
-                    yield _sse(sid, event="done")
-                    break
+            store.save(sid, ctx.messages)
+            session_manager.touch_session(sid, state={"last_run_id": run.id})
+            run_manager.complete_run(
+                run.id,
+                output={"response": response},
+                tool_calls_count=len(tool_log),
+            )
+            yield _sse(sid, event="done")
 
         return StreamingResponse(
             _event_stream(),

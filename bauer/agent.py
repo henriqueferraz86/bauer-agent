@@ -349,6 +349,13 @@ def _loop_fp(entry: dict) -> str:
     parecido; aí SIM os args diferentes devem contar como tentativas distintas).
     """
     result = entry.get("result", "")
+    # Replays do deduper vêm prefixados com um aviso que ESCALA a cada
+    # repetição ("[dedup] 2ª repetição…", "3ª…") — sem normalizar, cada replay
+    # gera uma fingerprint diferente e o hard-stop nunca acumula as 5
+    # repetições (bug real: modelo repetiu a mesma call 150x até estourar o
+    # budget). O resultado subjacente vem após o \n do aviso.
+    if result.startswith("[dedup]") and "\n" in result:
+        result = result.split("\n", 1)[1]
     if _is_failed_result(result):
         return f"{entry['tool']}:{result[:100]}"
     sig = entry.get("args_sig", "")

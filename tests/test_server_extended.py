@@ -720,6 +720,71 @@ def test_stream_releases_false_positive_braces(tmp_path: Path):
     assert _stream_text(resp.text) == reply
 
 
+def test_stream_runs_on_shared_agent_engine(tmp_path: Path):
+    """/stream roda no MESMO motor do CLI (run_one_turn_with_fallback) —
+    regressão da divergência de comportamento entre `bauer agent` e o serve
+    (o /stream reimplementava um mini-loop próprio, só tool-bridge)."""
+    from bauer.tool_router import ToolRouter
+
+    def fake_engine(ctx, router, client, model, fallbacks, **kw):
+        from bauer.delta_stream import emit_delta, emit_round_start, emit_tool
+        emit_round_start()
+        emit_delta("Analisando o Docker…")
+        emit_tool("run_command")
+        emit_round_start()
+        emit_delta("## Relatório\n- tudo ok")
+        return "## Relatório\n- tudo ok", [
+            {"tool": "run_command", "args_sig": "x", "result": "ok"}
+        ]
+
+    router = ToolRouter(workspace=tmp_path)
+    with patch("bauer.agent.run_one_turn_with_fallback", side_effect=fake_engine):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=MagicMock(),
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=analise docker")
+
+    assert resp.status_code == 200
+    events = _sse_events(resp.text)
+    text = _stream_text(resp.text)
+    assert "Analisando o Docker…" in text
+    assert "## Relatório\n- tudo ok" in text
+    assert ("tool", "run_command") in events
+
+
+def test_stream_delivers_final_response_without_deltas(tmp_path: Path):
+    """Native tool calling não emite deltas de texto — a resposta chega só no
+    retorno do run_one_turn e o /stream tem que entregá-la mesmo assim."""
+    from bauer.tool_router import ToolRouter
+
+    def fake_engine(ctx, router, client, model, fallbacks, **kw):
+        from bauer.delta_stream import emit_tool
+        emit_tool("calculate")
+        return "Resposta final sem streaming.", [
+            {"tool": "calculate", "args_sig": "x", "result": "2"}
+        ]
+
+    router = ToolRouter(workspace=tmp_path)
+    with patch("bauer.agent.run_one_turn_with_fallback", side_effect=fake_engine):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=MagicMock(),
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=calcule")
+
+    assert resp.status_code == 200
+    events = _sse_events(resp.text)
+    assert "Resposta final sem streaming." in _stream_text(resp.text)
+    assert ("tool", "calculate") in events
+
+
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────
 
 

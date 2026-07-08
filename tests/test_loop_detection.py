@@ -319,3 +319,21 @@ def test_detect_loop_does_not_falsely_stop_on_varying_successful_calls():
     ]
     warn, hard = _detect_loop(log)
     assert hard is False
+
+
+def test_detect_loop_hard_stops_through_dedup_replay_prefix():
+    """Regressão (2026-07-08): o prefixo do deduper ESCALA a cada replay
+    ("[dedup] 2ª repetição…", "3ª…"), mudando o resultado — e portanto a
+    fingerprint — a cada rodada. O hard-stop nunca acumulava as 5 repetições
+    e o modelo repetia a mesma call até estourar MAX_TOOL_TURNS (150 rounds
+    observados). _loop_fp agora normaliza o prefixo antes de fingerprintar."""
+    from bauer.tool_dedup import _REPLAY_PREFIX, _REPLAY_REPEAT_PREFIX
+
+    args = {"expression": "1+1"}
+    log = [_entry("calculate", "2", args=args)]
+    log.append(_entry("calculate", _REPLAY_PREFIX + "2", args=args))
+    for n in range(2, _LOOP_REPEAT_HARD):
+        log.append(_entry("calculate", _REPLAY_REPEAT_PREFIX.format(n=n) + "2", args=args))
+
+    warn, hard = _detect_loop(log)
+    assert hard is True
