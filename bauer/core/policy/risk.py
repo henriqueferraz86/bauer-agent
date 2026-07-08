@@ -15,6 +15,10 @@ class RiskClassifier:
         payload = payload or {}
         if operation in {"shell.execute", "filesystem.delete", "social.publish", "os.ui_control"}:
             return "high"
+        if operation in {"production.deploy", "data.exfiltrate"}:
+            return "high"
+        if operation == "network.http" and bool(payload.get("contains_secret")):
+            return "high"
         if operation == "agent.delegate":
             return "medium"
         if operation == "filesystem.write" and self._outside_workspace(payload.get("path")):

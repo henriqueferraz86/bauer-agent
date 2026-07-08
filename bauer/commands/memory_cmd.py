@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..core.runtime.memory import RuntimeMemoryManager
 from ..memory_manager import MemoryManager
 from pathlib import Path
 from rich.table import Table
@@ -11,6 +12,7 @@ import typer
 from ._common import _FILE_ALIASES, _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, console
 
 memory_app = typer.Typer(help="Operacoes com memoria Markdown")
+_RUNTIME_MEMORY_DIR = _MEMORY_DIR / "runtime"
 
 
 @memory_app.command("init")
@@ -215,6 +217,125 @@ def memory_search(
             r["snippet"][:120] + ("…" if len(r["snippet"]) > 120 else ""),
         )
 
+    console.print(table)
+
+
+@memory_app.command("runtime-add")
+def runtime_memory_add(
+    scope: str = typer.Argument(..., help="Escopo: user | company | project | agent | skill"),
+    content: str = typer.Argument(..., help="Conteudo da memoria"),
+    source: str = typer.Option(..., "--source", "-s", help="Origem da memoria"),
+    confidence: float = typer.Option(1.0, "--confidence", "-c", help="Confianca entre 0 e 1"),
+    valid_until: str | None = typer.Option(None, "--valid-until", help="ISO datetime de validade"),
+    runtime_root: Path = typer.Option(_RUNTIME_MEMORY_DIR, "--runtime-root"),
+):
+    """Registra memoria auditavel do runtime."""
+    manager = RuntimeMemoryManager(root=runtime_root)
+    try:
+        record = manager.write(
+            scope=scope,
+            content=content,
+            source=source,
+            confidence=confidence,
+            valid_until=valid_until,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]memoria registrada:[/green] {record.id}")
+
+
+@memory_app.command("runtime-list")
+def runtime_memory_list(
+    scope: str | None = typer.Option(None, "--scope", help="Filtra por escopo"),
+    include_expired: bool = typer.Option(False, "--include-expired", help="Inclui memorias expiradas"),
+    runtime_root: Path = typer.Option(_RUNTIME_MEMORY_DIR, "--runtime-root"),
+):
+    """Lista memorias auditaveis do runtime."""
+    manager = RuntimeMemoryManager(root=runtime_root)
+    try:
+        records = manager.list(scope=scope, include_expired=include_expired)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    _print_runtime_memory_table(records, title="Memoria runtime")
+
+
+@memory_app.command("runtime-search")
+def runtime_memory_search(
+    query: str = typer.Argument(..., help="Texto a buscar"),
+    scope: str | None = typer.Option(None, "--scope", help="Filtra por escopo"),
+    include_expired: bool = typer.Option(False, "--include-expired", help="Inclui memorias expiradas"),
+    runtime_root: Path = typer.Option(_RUNTIME_MEMORY_DIR, "--runtime-root"),
+):
+    """Busca memoria auditavel do runtime."""
+    manager = RuntimeMemoryManager(root=runtime_root)
+    try:
+        records = manager.search(query, scope=scope, include_expired=include_expired)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    _print_runtime_memory_table(records, title=f"Busca runtime: {query}")
+
+
+@memory_app.command("runtime-revise")
+def runtime_memory_revise(
+    memory_id: str = typer.Argument(..., help="ID da memoria"),
+    content: str | None = typer.Option(None, "--content", help="Novo conteudo"),
+    source: str | None = typer.Option(None, "--source", "-s", help="Nova origem"),
+    confidence: float | None = typer.Option(None, "--confidence", "-c", help="Nova confianca"),
+    valid_until: str | None = typer.Option(None, "--valid-until", help="Nova validade ISO"),
+    runtime_root: Path = typer.Option(_RUNTIME_MEMORY_DIR, "--runtime-root"),
+):
+    """Revisa uma memoria auditavel."""
+    manager = RuntimeMemoryManager(root=runtime_root)
+    try:
+        record = manager.revise(
+            memory_id,
+            content=content,
+            source=source,
+            confidence=confidence,
+            valid_until=valid_until,
+        )
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]memoria revisada:[/green] {record.id}")
+
+
+@memory_app.command("runtime-expire")
+def runtime_memory_expire(
+    memory_id: str = typer.Argument(..., help="ID da memoria"),
+    reason: str = typer.Option("manual", "--reason", help="Motivo da expiracao"),
+    runtime_root: Path = typer.Option(_RUNTIME_MEMORY_DIR, "--runtime-root"),
+):
+    """Expira uma memoria auditavel."""
+    manager = RuntimeMemoryManager(root=runtime_root)
+    try:
+        record = manager.expire(memory_id, reason=reason)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]memoria expirada:[/green] {record.id}")
+
+
+def _print_runtime_memory_table(records, *, title: str) -> None:
+    table = Table(title=title, show_lines=True)
+    table.add_column("id", style="cyan", no_wrap=True)
+    table.add_column("scope")
+    table.add_column("confidence", justify="right")
+    table.add_column("valid_until", style="dim")
+    table.add_column("source")
+    table.add_column("content")
+    for record in records:
+        table.add_row(
+            record.id,
+            record.scope,
+            f"{record.confidence:.2f}",
+            record.valid_until or "",
+            record.source,
+            record.content[:100],
+        )
     console.print(table)
 
 
