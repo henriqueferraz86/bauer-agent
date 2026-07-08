@@ -4,10 +4,12 @@ import { api, streamSSE } from "../api/client";
 import Markdown from "../components/Markdown";
 
 interface ToolCall { name: string; }
+interface SkillTag { name: string; score: number | null; }
 interface Message {
   role: "user" | "assistant";
   text: string;
   tools?: ToolCall[];
+  skill?: SkillTag;
   streaming?: boolean;
 }
 
@@ -165,7 +167,12 @@ export default function Chat() {
         setMessages((m) => {
           const copy = [...m];
           const last = copy[copy.length - 1];
-          if (e.event === "tool") {
+          if (e.event === "skill") {
+            try {
+              const s = JSON.parse(e.data) as { name: string; score: number | null };
+              if (s.name) last.skill = { name: s.name, score: s.score ?? null };
+            } catch { /* ignora payload malformado */ }
+          } else if (e.event === "tool") {
             last.tools = [...(last.tools || []), { name: e.data }];
           } else if (e.event === "done") {
             setSessionId(e.data);
@@ -271,6 +278,15 @@ export default function Chat() {
                   <span className="who">{m.role === "user" ? "Henrique" : "Bauer"}</span>
                   {m.streaming && <span className="when blink" style={{ color: "var(--accent)" }}>gerando…</span>}
                 </div>
+                {m.skill && (
+                  <div className="skillcall">
+                    <i className="ti ti-sparkles" style={{ color: "var(--accent)" }} />
+                    <span className="sname">
+                      skill <strong>{m.skill.name}</strong>
+                      {m.skill.score != null && ` · ${Math.round(m.skill.score * 100)}%`}
+                    </span>
+                  </div>
+                )}
                 {m.tools?.map((t, j) => (
                   <div className="toolcall" key={j}>
                     <i className="ti ti-tool" style={{ color: "var(--green)" }} />

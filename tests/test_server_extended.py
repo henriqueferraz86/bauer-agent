@@ -626,6 +626,37 @@ def test_stream_does_not_leak_action_json_after_narration(tmp_path: Path):
     assert ("tool", "datetime_now") in events
 
 
+def test_stream_emits_selected_skill_event(tmp_path: Path):
+    """A skill auto-selecionada é anunciada num evento SSE `skill` (paridade
+    com a linha "↳ skill 'X' (NN%)" do CLI) para a UI mostrar que disparou."""
+    import json as _json
+    from bauer.skill_match import MatchedSkill
+    from bauer.tool_router import ToolRouter
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter(["Rodando análise."])
+    router = ToolRouter(workspace=tmp_path)
+    fake_skill = MatchedSkill(name="Docker Ops", score=0.85, content="guia", source="builtin")
+
+    with patch("bauer.agent._try_parse_tool", return_value=None), \
+         patch("bauer.skill_match.match_skill", return_value=fake_skill):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=faça uma analise docker")
+
+    assert resp.status_code == 200
+    skill_events = [d for ev, d in _sse_events(resp.text) if ev == "skill"]
+    assert skill_events, "esperava um evento SSE 'skill'"
+    payload = _json.loads(skill_events[0])
+    assert payload["name"] == "Docker Ops"
+    assert payload["score"] == 0.85
+
+
 def test_stream_releases_false_positive_braces(tmp_path: Path):
     """Chaves legítimas no texto (ex.: `{{.ServerVersion}}` de um comando
     docker) não podem ficar presas na gate anti-vazamento — o texto completo

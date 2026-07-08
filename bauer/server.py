@@ -872,6 +872,8 @@ def create_app(
                 MAX_TOOL_TURNS,
             )
 
+            import json as _json
+
             tool_count = 0
             tool_log: list[dict] = []
             turn_started = time.monotonic()
@@ -882,6 +884,20 @@ def create_app(
             stream_client = _state["client"]
             stream_model = _state["model"]
             _fb_idx = 0
+
+            # Sinaliza a skill auto-selecionada para a UI (paridade com a linha
+            # "↳ skill 'X' (NN%)" que o CLI imprime). O conteúdo da skill já foi
+            # injetado no contexto por _apply_request_context; aqui é só o aviso
+            # visível de que ela disparou.
+            _selected_skill = resolved.get("skill")
+            if _selected_skill is not None:
+                yield _sse(
+                    _json.dumps({
+                        "name": getattr(_selected_skill, "name", ""),
+                        "score": getattr(_selected_skill, "score", None),
+                    }, ensure_ascii=False),
+                    event="skill",
+                )
 
             while True:
                 current_run = run_manager.get_run(run.id)

@@ -139,6 +139,12 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
   padding: 6px 10px; margin: 6px 0; display: flex; align-items: center; gap: 8px; font-size: 11px;
 }
 .toolcall .tname { font-family: var(--mono); color: var(--text-2); }
+.skillcall {
+  background: var(--accent-bg); border: 1px solid var(--accent-border); border-radius: 6px;
+  padding: 6px 10px; margin: 6px 0; display: flex; align-items: center; gap: 8px; font-size: 11px;
+}
+.skillcall .sname { color: var(--text-2); }
+.skillcall .sname strong { color: var(--accent); font-weight: 600; }
 .composer { border-top: 1px solid var(--border); background: var(--bg-2); padding: 10px 14px; flex-shrink: 0; }
 .composer .box {
   background: var(--bg); border: 1px solid var(--border-2); border-radius: 10px;
