@@ -36,7 +36,7 @@ Providers suportados:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -560,6 +560,13 @@ class RuntimeSection(_StrictSection):
     profile: Literal["low", "medium", "high"] = "low"
     ram_limit_mb: int = Field(ge=512, default=4096)
     safety_margin_mb: int = Field(ge=0, default=1024)
+    default_adapter: str = "bauer_native"
+    adapters: dict[str, dict[str, Any]] = Field(
+        default_factory=lambda: {
+            "bauer_native": {"enabled": True},
+            "agno": {"enabled": False, "base_url": "http://localhost:7777"},
+        }
+    )
 
 
 class RouterSection(_StrictSection):

@@ -40,7 +40,7 @@ class UtilityToolsMixin:
 
         class _SafeEval(ast.NodeVisitor):
             ALLOWED = (
-                ast.Expression, ast.BinOp, ast.UnaryOp, ast.Num, ast.Constant,
+                ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
                 ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow,
                 ast.FloorDiv, ast.USub, ast.UAdd, ast.Call, ast.Name,
                 ast.Load, ast.List, ast.Tuple,

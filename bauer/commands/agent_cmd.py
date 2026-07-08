@@ -912,6 +912,7 @@ def agent_run_one(
     """
     cfg, _ = _load_or_die(config, models)
     client = _build_client(cfg)
+    from ..core.runtime.adapters import get_runtime_adapter
 
     system = ""
     model_name = cfg.model.name
@@ -931,8 +932,17 @@ def agent_run_one(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": task})
     try:
-        chunks = list(client.chat_stream(model_name, messages))
-        console.print("".join(chunks))
+        adapter = get_runtime_adapter(config=cfg)
+        result = adapter.run_agent({
+            "client": client,
+            "model": model_name,
+            "messages": messages,
+            "agent_id": agent or "",
+            "source": "cli.agent.run_one",
+        })
+        if result.get("status") == "failed":
+            raise RuntimeError(str(result.get("error", "runtime adapter failed")))
+        console.print(str(result.get("output", "")))
     except Exception as exc:
         console.print(f"[red]run-one: {exc}[/red]", err=True)
         raise typer.Exit(code=1)

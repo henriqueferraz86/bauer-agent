@@ -24,6 +24,21 @@ from typing import Any
 
 logger = logging.getLogger("bauer.audio_capture")
 
+try:
+    import numpy as np  # type: ignore[import-not-found]
+except Exception:  # noqa: BLE001 - optional voice dependency
+    np = None  # type: ignore[assignment]
+
+try:
+    import sounddevice as sd  # type: ignore[import-not-found]
+except Exception:  # noqa: BLE001 - optional voice dependency
+    sd = None  # type: ignore[assignment]
+
+try:
+    from .transcription import transcribe_audio
+except Exception:  # noqa: BLE001 - optional transcription path
+    transcribe_audio = None  # type: ignore[assignment]
+
 
 def _has_sounddevice() -> bool:
     """True se sounddevice está disponível."""
@@ -76,10 +91,20 @@ def capture_voice_input(
             "  (ou: uv sync --extra voice)"
         )
 
-    import numpy as np
-    import sounddevice as sd
-
-    from .transcription import transcribe_audio
+    if np is None:
+        raise ImportError(
+            "numpy nÃ£o instalado. Para capturar Ã¡udio:\n"
+            "  pip install numpy sounddevice\n"
+            "  (ou: uv sync --extra voice)"
+        )
+    if sd is None:
+        raise ImportError(
+            "sounddevice nÃ£o instalado. Para capturar Ã¡udio:\n"
+            "  pip install sounddevice numpy\n"
+            "  (ou: uv sync --extra voice)"
+        )
+    if transcribe_audio is None:
+        raise ImportError("transcription indisponivel para captura de audio.")
 
     if console is not None:
         console.print("[cyan]🎤 Gravando áudio... Fale agora (silêncio de 1s para parar ou max 30s).[/cyan]")
