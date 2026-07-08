@@ -10,12 +10,154 @@ import typer
 from ._common import _PROJECT_WORKSPACE, console
 
 runtime_app = typer.Typer(help="Supervisor always-on: dispatcher, cron, outbox e kanban")
+runtime_agents_app = typer.Typer(help="Agents formais registrados no runtime")
+runtime_teams_app = typer.Typer(help="Times formais e delegacao governada")
 
 runtime_service_app = typer.Typer(
     help="Runtime como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
 )
 
+runtime_app.add_typer(runtime_agents_app, name="agents")
+runtime_app.add_typer(runtime_teams_app, name="teams")
 runtime_app.add_typer(runtime_service_app, name="service")
+
+
+@runtime_agents_app.command("list")
+def runtime_agents_list_cmd():
+    """Lista agents formais versionados do runtime."""
+    from ..core.runtime import AgentRegistry
+
+    table = Table(title="Bauer Runtime Agents", show_lines=False)
+    table.add_column("ID", style="cyan")
+    table.add_column("Version")
+    table.add_column("Runtime")
+    table.add_column("Model")
+    table.add_column("Permissions")
+    for spec in AgentRegistry().list():
+        table.add_row(
+            spec.id,
+            spec.version,
+            spec.runtime_adapter,
+            f"{spec.provider}/{spec.model}" if spec.provider or spec.model else "-",
+            ", ".join(spec.permissions),
+        )
+    console.print(table)
+
+
+@runtime_agents_app.command("show")
+def runtime_agents_show_cmd(
+    agent_id: str = typer.Argument(...),
+    version: str = typer.Option("", "--version"),
+):
+    """Mostra a AgentSpec formal."""
+    import json
+
+    from ..core.runtime import AgentRegistry
+
+    spec = AgentRegistry().get(agent_id, version=version or None)
+    if spec is None:
+        console.print(f"[red]Agent nao encontrado:[/red] {agent_id}")
+        raise typer.Exit(code=1)
+    console.print(json.dumps(spec.to_dict(), ensure_ascii=False, indent=2), soft_wrap=True)
+
+
+@runtime_agents_app.command("run")
+def runtime_agents_run_cmd(
+    agent_id: str = typer.Argument(...),
+    message: str = typer.Argument(""),
+    version: str = typer.Option("", "--version"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Registra uma run queued para um agent formal."""
+    from ..core.runtime import RunManager, SessionManager
+
+    session = SessionManager(root=state_dir).create_session(user_id="local", agent_id=agent_id)
+    try:
+        run = RunManager(root=state_dir).create_run_for_agent(
+            agent_id=agent_id,
+            version=version or None,
+            session_id=session.id,
+            input={"message": message},
+        )
+    except KeyError:
+        console.print(f"[red]Agent nao encontrado:[/red] {agent_id}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]queued[/green] {run.id} agent={run.agent_id} adapter={run.runtime_adapter}")
+
+
+@runtime_teams_app.command("list")
+def runtime_teams_list_cmd():
+    """Lista times formais do runtime."""
+    from ..core.runtime import TeamRegistry
+
+    table = Table(title="Bauer Runtime Teams", show_lines=False)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Mode")
+    table.add_column("Supervisor")
+    table.add_column("Agents")
+    table.add_column("Daily Budget")
+    for team in TeamRegistry().list():
+        table.add_row(
+            team.id,
+            str(team.coordination.get("mode") or "-"),
+            str(team.coordination.get("supervisor") or "-"),
+            ", ".join(team.agents),
+            str(team.limits.get("max_daily_budget_usd") or "-"),
+        )
+    console.print(table)
+
+
+@runtime_teams_app.command("show")
+def runtime_teams_show_cmd(team_id: str = typer.Argument(...)):
+    """Mostra a TeamSpec formal."""
+    import json
+
+    from ..core.runtime import TeamRegistry
+
+    team = TeamRegistry().get(team_id)
+    if team is None:
+        console.print(f"[red]Team nao encontrado:[/red] {team_id}")
+        raise typer.Exit(code=1)
+    console.print(json.dumps(team.to_dict(), ensure_ascii=False, indent=2), soft_wrap=True)
+
+
+@runtime_teams_app.command("delegate")
+def runtime_teams_delegate_cmd(
+    team_id: str = typer.Argument(...),
+    from_agent: str = typer.Argument(...),
+    to_agent: str = typer.Argument(...),
+    message: str = typer.Argument(""),
+    estimated_cost_usd: float = typer.Option(0.0, "--estimated-cost-usd"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Registra delegacao governada e cria uma run para o agent alvo."""
+    from ..core.runtime import DelegationManager
+
+    record = DelegationManager(root=state_dir).delegate(
+        team_id=team_id,
+        from_agent_id=from_agent,
+        to_agent_id=to_agent,
+        input={"message": message},
+        estimated_cost_usd=estimated_cost_usd,
+    )
+    if record.status != "accepted":
+        console.print(f"[red]denied[/red] {record.id} reason={record.reason}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]delegated[/green] {record.id} run={record.run_id} to={record.to_agent_id}")
+
+
+@runtime_teams_app.command("budget")
+def runtime_teams_budget_cmd(
+    team_id: str = typer.Argument(...),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Mostra budget diário do team."""
+    import json
+
+    from ..core.runtime import DelegationManager
+
+    status = DelegationManager(root=state_dir).team_budget_status(team_id)
+    console.print(json.dumps(status, ensure_ascii=False, indent=2), soft_wrap=True)
 
 
 @runtime_app.command("recover")

@@ -1,0 +1,15 @@
+id: bauer.software_team
+name: Bauer Software Team
+agents:
+  - bauer.product
+  - bauer.dev
+  - bauer.qa
+  - bauer.devops
+coordination:
+  mode: supervisor
+  supervisor: bauer.product
+limits:
+  max_parallel_runs: 3
+  max_daily_budget_usd: 3.00
+policies:
+  - default
