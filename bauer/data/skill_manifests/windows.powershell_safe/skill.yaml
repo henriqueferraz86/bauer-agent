@@ -1,0 +1,25 @@
+id: windows.powershell_safe
+name: Windows PowerShell Safe
+version: 1.0.0
+description: Run a policy-gated PowerShell command with safe subprocess defaults.
+capabilities:
+  - os.windows.run_powershell
+permissions:
+  - shell.execute
+risk: high
+platforms:
+  - windows
+inputs:
+  command:
+    type: string
+    required: true
+  timeout_s:
+    type: number
+    default: 30
+outputs:
+  exit_code:
+    type: integer
+  stdout:
+    type: text
+  stderr:
+    type: text

@@ -17,8 +17,10 @@ class RiskClassifier:
             return "high"
         if operation == "filesystem.write" and self._outside_workspace(payload.get("path")):
             return "high"
-        if operation in {"filesystem.write", "network.request"}:
+        if operation in {"filesystem.write", "network.request", "network.http"}:
             return "medium"
+        if operation == "os.open_app":
+            return "low"
         return "low"
 
     def _outside_workspace(self, raw_path: Any) -> bool:

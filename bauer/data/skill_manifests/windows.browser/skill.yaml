@@ -1,0 +1,25 @@
+id: windows.browser
+name: Windows Browser
+version: 1.0.0
+description: Open the default browser or a named browser and navigate to a URL.
+capabilities:
+  - os.windows.open_browser
+  - browser.navigate
+permissions:
+  - os.open_app
+  - network.http
+risk: medium
+platforms:
+  - windows
+inputs:
+  url:
+    type: string
+    default: about:blank
+  browser:
+    type: string
+    required: false
+outputs:
+  opened:
+    type: boolean
+  url:
+    type: string

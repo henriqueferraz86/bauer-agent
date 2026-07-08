@@ -1,0 +1,24 @@
+id: macos.open_app
+name: macOS Open App
+version: 1.0.0
+description: Open a macOS application or file using the native open command.
+capabilities:
+  - os.open_app
+  - os.macos.open_app
+permissions:
+  - os.open_app
+risk: low
+platforms:
+  - darwin
+inputs:
+  app:
+    type: string
+    required: true
+  bundle:
+    type: boolean
+    default: false
+outputs:
+  opened:
+    type: boolean
+  pid:
+    type: integer
