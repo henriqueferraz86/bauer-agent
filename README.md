@@ -7,6 +7,40 @@ Runtime adaptativo para LLMs locais e cloud.
 
 ---
 
+## Bauer Agent Runtime Beta
+
+Bauer Agent Runtime e a camada de execucao governada do Bauer. O beta fechado reune adapter nativo, adapter Agno, Policy Engine, Skill Registry, runs, sessions, Event Bus, scheduler, dashboard, Windows Skill Pack e observability em um fluxo unico.
+
+Use o runtime quando quiser operar agentes com historico auditavel, aprovacao para acoes sensiveis, agendamento persistente e visibilidade de eventos:
+
+```powershell
+# validar adapters disponiveis
+python -m bauer.cli runtime list
+python -m bauer.cli runtime test bauer_native
+python -m bauer.cli runtime test agno --config config.yaml
+
+# iniciar API/dashboard local
+python -m bauer.cli serve --config config.yaml --host 127.0.0.1 --port 8000
+
+# abrir dashboard
+# http://127.0.0.1:8000/
+```
+
+Principais comandos do beta:
+
+| Area | Comandos |
+|---|---|
+| Runtime | `bauer runtime list`, `bauer runtime test agno`, `bauer runtime use bauer_native`, `bauer runtime kill-switch on/off/status` |
+| Runs e sessions | `bauer runs list`, `bauer runs show <run_id>`, `bauer runs events <run_id>`, `bauer sessions list` |
+| Policy e approvals | `bauer approvals list`, `bauer approvals approve <id>`, `bauer approvals deny <id>` |
+| Skills | `bauer skills validate`, `bauer skills inspect <skill_id>`, `bauer skills find <capability>` |
+| Scheduler | `bauer schedule add`, `bauer schedule list`, `bauer schedule run <id>`, `bauer worker start`, `bauer worker status` |
+| Observability | `GET /runs`, `GET /events`, `GET /audit`, dashboard local |
+
+Roteiro de demo fechado: [docs/BETA_CLOSED.md](docs/BETA_CLOSED.md).
+
+---
+
 ## 📋 Índice
 
 - [⚡ Instalação](#instalação)

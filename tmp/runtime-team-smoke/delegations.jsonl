@@ -1,0 +1,1 @@
+{"created_at": "2026-07-08T12:02:42.028592+00:00", "from_agent_id": "bauer.product", "id": "deleg-1b68ff1c-3354-4c99-b4e2-fcedc5d11347", "input": {"message": "implemente smoke"}, "reason": null, "run_id": "run-bb3962d3-3a68-4269-baec-ef22c669923c", "status": "accepted", "team_id": "bauer.software_team", "to_agent_id": "bauer.dev"}

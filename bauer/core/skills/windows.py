@@ -45,6 +45,10 @@ def _open_app(inputs: dict[str, Any]) -> dict[str, Any]:
 def _open_browser(inputs: dict[str, Any]) -> dict[str, Any]:
     url = str(inputs.get("url") or "about:blank").strip()
     browser = str(inputs.get("browser") or "").strip()
+    # Aliases de "navegador padrão" que LLMs/usuários mandam com frequência —
+    # não são executáveis; caem no webbrowser.open default.
+    if browser.lower() in {"default", "padrao", "padrão", "system", "sistema"}:
+        browser = ""
     if browser:
         process = subprocess.Popen([browser, url], close_fds=True)  # noqa: S603 - target is policy-gated by SkillExecutor.
         return {"opened": True, "url": url, "browser": browser, "pid": process.pid}

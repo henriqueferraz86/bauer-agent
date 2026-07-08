@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bauer-agent"
-version = "0.2.0"
+version = "0.9.0b1"
 description = "Runtime adaptativo para LLMs locais — sobe com o que tem, ajusta o que precisa, avisa claramente."
 readme = "README.md"
 requires-python = ">=3.11"

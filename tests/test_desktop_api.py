@@ -332,6 +332,23 @@ class TestConfigEndpoints:
     def test_put_missing_key_400(self, env):
         assert env["client"].put("/api/config", json={"value": "x"}).status_code == 400
 
+    def test_put_env_key_routes_to_dotenv(self, env, monkeypatch):
+        """Chaves *_API_KEY vão pro .env (card 'Segredos' da tela Config)."""
+        # set_config_value usa env_path relativo ao CWD — isola no tmp para
+        # jamais tocar o .env real do repositório durante os testes.
+        monkeypatch.chdir(env["tmp"])
+        r = env["client"].put(
+            "/api/config",
+            json={"key": "OPENROUTER_API_KEY", "value": "sk-or-teste-nao-real"},
+        )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["dest"] == "env"
+        dotenv = (env["tmp"] / ".env").read_text(encoding="utf-8")
+        assert "OPENROUTER_API_KEY=sk-or-teste-nao-real" in dotenv
+        # E não vazou pro config.yaml (que é versionado).
+        assert "sk-or-teste-nao-real" not in env["config_path"].read_text(encoding="utf-8")
+
     def test_profiles_list(self, env):
         # cria um profile config.dev.yaml ao lado do config.yaml
         (env["config_path"].parent / "config.dev.yaml").write_text("model:\n  name: x\n")
@@ -444,6 +461,75 @@ class TestBauerOsCommandEndpoint:
         assert data["agent_id"] == "code"
         events = env["client"].get("/api/events").json()["events"]
         assert any(event["tool_name"] == "bauer_os.pause_agent" for event in events)
+
+    def test_os_command_long_text_routes_intent_to_skill(self, env):
+        """Fluxo de aceite Sprint 24: intenção → skill → policy → executa → evento."""
+        from bauer.os_intent import IntentDecision
+
+        decision = IntentDecision(
+            skill_id="windows.browser",
+            inputs={"url": "https://www.google.com/search?q=agno+docs"},
+            confidence=0.9,
+            reason="pesquisa na web",
+        )
+        with patch("bauer.os_intent.route_intent", return_value=decision), \
+                patch("bauer.core.skills.windows.webbrowser.open", return_value=True) as opened:
+            r = env["client"].post(
+                "/api/os/command",
+                json={"text": "abre o navegador e pesquisa docs do agno"},
+            )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "skill_executed"
+        assert data["skill_id"] == "windows.browser"
+        assert data["output"]["url"].startswith("https://www.google.com/search")
+        opened.assert_called_once()
+        # Execução auditada: eventos de skill publicados no Event Bus.
+        events = env["client"].get("/api/events").json()["events"]
+        types = {event["event_type"] for event in events}
+        assert "skill.selected" in types
+        assert "skill.executed" in types
+
+    def test_os_command_intent_high_risk_requires_approval(self, env):
+        """Skill com permissão shell.execute cai em approval, não executa direto."""
+        from bauer.os_intent import IntentDecision
+
+        decision = IntentDecision(
+            skill_id="windows.powershell_safe",
+            inputs={"command": "Get-Process"},
+            confidence=0.9,
+            reason="comando de sistema",
+        )
+        with patch("bauer.os_intent.route_intent", return_value=decision):
+            r = env["client"].post(
+                "/api/os/command",
+                json={"text": "roda um powershell listando os processos abertos"},
+            )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "approval_required"
+        assert data["approval"]["operation"] == "skill.execute"
+        approvals = env["client"].get("/api/obs/approvals").json()["approvals"]
+        assert any(item["id"] == data["approval"]["id"] for item in approvals)
+
+    def test_os_command_unknown_when_router_unavailable(self, env):
+        """Sem LLM configurado, o fallback determinístico continua respondendo."""
+        with patch("bauer.os_intent.route_intent", return_value=None):
+            r = env["client"].post(
+                "/api/os/command",
+                json={"text": "faz alguma coisa muito vaga que nada reconhece"},
+            )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "unknown"
+        assert data["suggestions"]
+
+    def test_os_command_short_navigation_still_wins_over_intent(self, env):
+        """Atalhos curtos não pagam o custo do LLM (nem podem ser sequestrados)."""
+        with patch("bauer.os_intent.route_intent") as router:
+            r = env["client"].post("/api/os/command", json={"text": "mostrar runs"})
+        assert r.json()["kind"] == "navigate"
+        router.assert_not_called()
 
 
 class TestAuthWiring:

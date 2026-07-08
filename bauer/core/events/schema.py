@@ -31,6 +31,9 @@ EventType = Literal[
     "delegation.requested",
     "delegation.accepted",
     "delegation.denied",
+    "memory.written",
+    "memory.revised",
+    "memory.expired",
 ]
 
 EVENT_TYPES: tuple[str, ...] = (
@@ -57,6 +60,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation.requested",
     "delegation.accepted",
     "delegation.denied",
+    "memory.written",
+    "memory.revised",
+    "memory.expired",
 )
 
 

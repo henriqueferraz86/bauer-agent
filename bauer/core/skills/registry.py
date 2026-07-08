@@ -12,7 +12,11 @@ class SkillRegistry:
     def __init__(self, roots: list[str | Path] | None = None):
         default_root = Path(__file__).resolve().parents[2] / "data" / "skills"
         formal_root = Path(__file__).resolve().parents[2] / "data" / "skill_manifests"
-        self.roots = [Path(root) for root in (roots or [formal_root, default_root])]
+        if roots is None:
+            from .marketplace import SkillMarketplace
+
+            roots = [formal_root, default_root, SkillMarketplace().installed_manifest_root()]
+        self.roots = [Path(root) for root in roots]
 
     def list(self) -> list[SkillManifest]:
         manifests: dict[str, SkillManifest] = {}

@@ -1,7 +1,8 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
 import CommandPalette from "./components/CommandPalette";
+import Home from "./screens/Home";
 import Chat from "./screens/Chat";
 import Projects from "./screens/Projects";
 import Kanban from "./screens/Kanban";
@@ -25,7 +26,7 @@ export default function App() {
       <div className="body">
         <Sidebar />
         <Routes>
-          <Route path="/" element={<Navigate to="/chat" replace />} />
+          <Route path="/" element={<Home />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/kanban" element={<Kanban />} />

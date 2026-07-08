@@ -708,6 +708,8 @@ class AuxiliarySection(_StrictSection):
       - `approval_model`     — llm_approval de tools de alto risco (G4)
       - `vision_model`       — tools de visão: browser_vision/vision_analyze/
                                video_analyze (G18.4; ex: ollama 'llava')
+      - `intent_router`      — Bauer OS Command Palette: texto livre → skill
+                               (os_intent.route_intent)
 
     All slots default to empty → the main `model.name` is used. This keeps
     the system working out of the box; users opt-in to per-slot routing as
@@ -719,6 +721,7 @@ class AuxiliarySection(_StrictSection):
     background_reviewer: AuxiliarySlot = AuxiliarySlot()
     approval_model:     AuxiliarySlot = AuxiliarySlot()
     vision_model:       AuxiliarySlot = AuxiliarySlot()
+    intent_router:      AuxiliarySlot = AuxiliarySlot()
 
 
 class WebSection(_StrictSection):

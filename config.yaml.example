@@ -510,6 +510,22 @@ runtime:
   # Margem de segurança que o Bauer mantém livre no sistema (MB).
   safety_margin_mb: 1024
 
+  # Adapter default do Agent Runtime.
+  # Use bauer_native para execucao local simples ou agno para validar o
+  # Runtime Adapter contra Agno.
+  default_adapter: bauer_native
+
+  # Adapters disponiveis. Campos omitidos usam os defaults do Bauer, entao
+  # configs antigas sem esta secao continuam validas.
+  adapters:
+    bauer_native:
+      enabled: true
+    agno:
+      enabled: true
+      mode: sdk
+      base_url: http://localhost:7777
+      timeout_s: 120
+
 
 # =============================================================================
 # LOGGING — arquivo de log e verbosidade
@@ -730,6 +746,13 @@ auxiliary:
 
   # Modelo para compressão semântica do contexto.
   compression_model:
+    provider: ""
+    model: ""
+
+  # Modelo do roteador de intenções do Bauer OS (Command Palette Ctrl+Space).
+  # Interpreta comandos livres ("abre o navegador e pesquisa X") e escolhe a
+  # skill correspondente. Um modelo pequeno e rápido é suficiente.
+  intent_router:
     provider: ""
     model: ""
 

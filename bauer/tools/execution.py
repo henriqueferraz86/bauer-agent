@@ -536,4 +536,3 @@ class ExecToolsMixin:
             output = output[:8000] + f"\n[... truncado — {len(result.stdout or '')} chars]"
 
         return f"[sub-agente]\n{output}"
-

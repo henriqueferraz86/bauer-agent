@@ -2,6 +2,12 @@ rules:
   - id: os.open_app.allow
     operation: os.open_app
     action: allow
+  - id: network.http.secret_exfiltration.deny
+    operation: network.http
+    action: deny
+    reason: network request contains secret material
+    when:
+      contains_secret: true
   - id: network.http.allow
     operation: network.http
     action: allow
@@ -16,6 +22,9 @@ rules:
     action: ask
   - id: social.publish.ask
     operation: social.publish
+    action: ask
+  - id: production.deploy.ask
+    operation: production.deploy
     action: ask
   - id: os.ui_control.ask
     operation: os.ui_control

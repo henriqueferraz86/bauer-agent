@@ -452,6 +452,11 @@ def build_desktop_router(
         normalized = text.casefold()
         event_bus = EventBus(root=_runtime_root)
 
+        # Atalhos de navegação só valem para comandos curtos ("mostrar runs").
+        # Frases longas ("abre o navegador e pesquisa docs do agno") carregam
+        # intenção composta e devem chegar ao roteador de intenção lá embaixo.
+        is_short = len(normalized.split()) <= 4
+
         def navigation(path: str, label: str) -> dict[str, Any]:
             return {
                 "kind": "navigate",
@@ -460,11 +465,11 @@ def build_desktop_router(
                 "message": f"Abrindo {label}.",
             }
 
-        if any(term in normalized for term in ("ver runs", "mostrar runs", "listar runs", "runs")):
+        if is_short and any(term in normalized for term in ("ver runs", "mostrar runs", "listar runs", "runs")):
             return navigation("/runs", "Runs")
-        if any(term in normalized for term in ("aprovar", "aprovacao", "aprova", "pendente")):
+        if is_short and any(term in normalized for term in ("aprovar", "aprovacao", "aprova", "pendente")):
             return navigation("/approvals", "Approvals")
-        if any(term in normalized for term in ("skill", "capability", "capabilities")):
+        if is_short and any(term in normalized for term in ("skill", "capability", "capabilities")):
             return navigation("/skills", "Skills")
         if any(term in normalized for term in ("pausar agente", "pausar agent", "pause agent", "pause agente")):
             agent_id = "default"
@@ -489,13 +494,13 @@ def build_desktop_router(
                 "agent_id": agent_id,
                 "message": f"Pausa registrada para agent {agent_id}.",
             }
-        if any(term in normalized for term in ("agent", "agente")) and not any(term in normalized for term in ("rodar", "executar")):
+        if is_short and any(term in normalized for term in ("agent", "agente")) and not any(term in normalized for term in ("rodar", "executar")):
             return navigation("/agents", "Agents")
-        if any(term in normalized for term in ("runtime", "agno", "worker")):
+        if is_short and any(term in normalized for term in ("runtime", "agno", "worker")):
             return navigation("/runtime", "Runtime")
-        if any(term in normalized for term in ("arquivo", "workspace", "pesquisar arquivo")):
+        if is_short and any(term in normalized for term in ("arquivo", "workspace", "pesquisar arquivo")):
             return navigation("/projects", "Workspace")
-        if any(term in normalized for term in ("abrir navegador", "navegador", "browser")):
+        if is_short and any(term in normalized for term in ("abrir navegador", "navegador", "browser")):
             return {
                 "kind": "open_external",
                 "label": "Navegador",
@@ -574,6 +579,59 @@ def build_desktop_router(
                 "message": f"Run criada para agent {agent_id}.",
             }
 
+        # Sem atalho determinístico → roteador de intenção (LLM auxiliar).
+        # O SkillExecutor cuida de policy → approval → execução → eventos;
+        # aqui só interpretamos a intenção e mapeamos o resultado pro palette.
+        intent = None
+        manifest = None
+        try:
+            from .core.skills import SkillExecutor, SkillRegistry
+            from .os_intent import route_intent
+
+            registry = SkillRegistry()
+            intent = route_intent(text, registry.list())
+            if intent is not None:
+                manifest = registry.get(intent.skill_id)
+        except Exception as exc:  # noqa: BLE001 — intent é best-effort.
+            logger.debug("os command intent routing failed: %s", exc)
+            intent = None
+        if intent is not None and manifest is not None:
+            result = SkillExecutor(
+                workspace=get_workspace(),
+                runtime_root=_runtime_root,
+                event_bus=event_bus,
+            ).execute(manifest, intent.inputs)
+            if result.status == "completed":
+                return {
+                    "kind": "skill_executed",
+                    "label": manifest.name,
+                    "skill_id": manifest.id,
+                    "output": result.output,
+                    "message": intent.reason or f"{manifest.name} executada.",
+                }
+            if result.status == "waiting_approval":
+                return {
+                    "kind": "approval_required",
+                    "label": manifest.name,
+                    "approval": result.output.get("approval"),
+                    "policy": result.output.get("decision"),
+                    "message": "Acao sensivel enviada para aprovacao.",
+                }
+            if result.status == "denied":
+                decision_data = result.output.get("decision") or {}
+                return {
+                    "kind": "denied",
+                    "label": manifest.name,
+                    "message": decision_data.get("reason") or "Acao negada pela policy.",
+                    "policy": decision_data,
+                }
+            return {
+                "kind": "skill_failed",
+                "label": manifest.name,
+                "skill_id": manifest.id,
+                "message": str(result.output.get("error") or "Falha ao executar a skill."),
+            }
+
         return {
             "kind": "unknown",
             "label": "Bauer Command",
@@ -587,6 +645,99 @@ def build_desktop_router(
                 "pesquisar arquivo",
             ],
         }
+
+    @router.get("/os/home")
+    def os_home():
+        """Painel unificado do Bauer OS: agentes ativos, aprovacoes pendentes,
+        tarefas agendadas com falha, budget do dia e ultimas execucoes.
+
+        Cada fonte e isolada em try/except: uma fonte indisponivel degrada o
+        cartao correspondente sem derrubar o painel inteiro.
+        """
+        from dataclasses import asdict
+
+        home: Dict[str, Any] = {}
+
+        # Runs: ativos (nao-terminais) + ultimas execucoes.
+        active_agents = 0
+        recent_runs: List[Dict[str, Any]] = []
+        try:
+            from .core.runtime.run_manager import TERMINAL_RUN_STATUSES, RunManager
+
+            runs = RunManager(root=_runtime_root).list_runs()
+            active_agents = sum(1 for r in runs if r.status not in TERMINAL_RUN_STATUSES)
+            recent_runs = [
+                {
+                    "id": r.id,
+                    "agent_id": r.agent_id,
+                    "status": r.status,
+                    "runtime_adapter": getattr(r, "runtime_adapter", ""),
+                    "started_at": getattr(r, "started_at", ""),
+                    "updated_at": getattr(r, "updated_at", ""),
+                }
+                for r in runs[-6:][::-1]
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home runs load failed: %s", exc)
+
+        # Aprovacoes pendentes.
+        pending_approvals: List[Dict[str, Any]] = []
+        try:
+            from .core.policy import ApprovalManager
+
+            pending_approvals = [
+                asdict(record)
+                for record in ApprovalManager(root=_runtime_root).list(status="pending")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home approvals load failed: %s", exc)
+
+        # Tarefas agendadas com falha na ultima execucao.
+        failed_scheduled: List[Dict[str, Any]] = []
+        try:
+            from .core.runtime.scheduler import Scheduler
+
+            for task in Scheduler(root=_runtime_root).list_tasks():
+                if task.last_error:
+                    failed_scheduled.append({
+                        "id": task.id,
+                        "name": getattr(task, "name", task.id),
+                        "last_error": task.last_error,
+                        "last_run_id": task.last_run_id,
+                        "next_run_at": task.next_run_at,
+                    })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home scheduler load failed: %s", exc)
+
+        # Budget do dia: limite/uso vem do autonomy profile; custo do dia do ledger.
+        budget: Dict[str, Any] = {}
+        try:
+            from .core.runtime.autonomy import BudgetManager
+
+            daily = BudgetManager(root=_runtime_root).status().get("daily", {})
+            budget = {
+                "used_usd": daily.get("used_usd"),
+                "limit_usd": daily.get("limit_usd"),
+                "remaining_usd": daily.get("remaining_usd"),
+                "exceeded": daily.get("exceeded"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home budget load failed: %s", exc)
+        try:
+            summary = cost_summary(_cost_file)
+            budget["cost_today_usd"] = summary.get("cost_today_usd")
+            budget["calls_today"] = summary.get("calls_today")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os home cost summary failed: %s", exc)
+
+        home["active_agents"] = active_agents
+        home["pending_approvals_count"] = len(pending_approvals)
+        home["pending_approvals"] = pending_approvals[:5]
+        home["failed_scheduled_count"] = len(failed_scheduled)
+        home["failed_scheduled"] = failed_scheduled[:5]
+        home["budget"] = budget
+        home["recent_runs"] = recent_runs
+        return home
 
     @router.get("/runtime/dashboard")
     def runtime_dashboard():

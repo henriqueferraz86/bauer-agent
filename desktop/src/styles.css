@@ -308,6 +308,7 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg-3); color: var(--text-2); }
 .tag.accent { background: #1f3a5f; color: var(--accent); border: 1px solid var(--accent-border); }
 .tag.green { background: #091a0f; color: var(--green); border: 1px solid #1a3a1a; }
+.tag.red { background: #2a0f0f; color: #f85149; border: 1px solid #3a1a1a; }
 
 /* ── Logs / code ── */
 .logbox { font-family: var(--mono); font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }

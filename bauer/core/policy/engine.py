@@ -22,11 +22,19 @@ class PolicyDecision:
 
 DEFAULT_RULES: list[dict[str, Any]] = [
     {"id": "os.open_app.allow", "operation": "os.open_app", "action": "allow"},
+    {
+        "id": "network.http.secret_exfiltration.deny",
+        "operation": "network.http",
+        "action": "deny",
+        "reason": "network request contains secret material",
+        "when": {"contains_secret": True},
+    },
     {"id": "network.http.allow", "operation": "network.http", "action": "allow"},
     {"id": "agent.delegate.allow", "operation": "agent.delegate", "action": "allow"},
     {"id": "shell.execute.ask", "operation": "shell.execute", "action": "ask"},
     {"id": "filesystem.delete.ask", "operation": "filesystem.delete", "action": "ask"},
     {"id": "social.publish.ask", "operation": "social.publish", "action": "ask"},
+    {"id": "production.deploy.ask", "operation": "production.deploy", "action": "ask"},
     {"id": "os.ui_control.ask", "operation": "os.ui_control", "action": "ask"},
     {"id": "filesystem.read.allow", "operation": "filesystem.read", "action": "allow"},
     {
@@ -124,5 +132,11 @@ class PolicyEngine:
             return True
         if "outside_workspace" in when:
             expected = bool(when["outside_workspace"])
-            return self.risk._outside_workspace(payload.get("path")) is expected
+            if self.risk._outside_workspace(payload.get("path")) is not expected:
+                return False
+        for key, expected in when.items():
+            if key == "outside_workspace":
+                continue
+            if payload.get(key) != expected:
+                return False
         return True
