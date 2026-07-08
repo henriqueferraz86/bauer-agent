@@ -23,6 +23,7 @@ def test_factory_returns_bauer_native_by_default():
 
     assert adapter.name == "bauer_native"
     assert "bauer_native" in list_runtime_adapters()
+    assert "agno" in list_runtime_adapters()
 
 
 def test_factory_uses_registered_adapter():

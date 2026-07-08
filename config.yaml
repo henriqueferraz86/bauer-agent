@@ -34,6 +34,15 @@ router:
   code_model: qwen2.5-coder:3b
   reasoning_model: qwen2.5-coder:3b
 runtime:
+  default_adapter: agno
+  adapters:
+    bauer_native:
+      enabled: true
+    agno:
+      enabled: true
+      mode: sdk
+      base_url: http://localhost:7777
+      timeout_s: 120
   profile: low
   ram_limit_mb: 8192
   safety_margin_mb: 2048

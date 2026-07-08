@@ -916,6 +916,7 @@ def agent_run_one(
 
     system = ""
     model_name = cfg.model.name
+    agent_spec = {}
     if agent:
         try:
             from ..agent_registry import AgentRegistry
@@ -924,6 +925,8 @@ def agent_run_one(
                 system = _ag.system
                 if _ag.model:
                     model_name = _ag.model
+                from ..core.runtime.agent_spec import agent_spec_from_mapping
+                agent_spec = agent_spec_from_mapping(_ag.to_dict()).to_dict()
         except Exception:
             pass  # registry indisponível — segue genérico
 
@@ -938,6 +941,7 @@ def agent_run_one(
             "model": model_name,
             "messages": messages,
             "agent_id": agent or "",
+            "agent_spec": agent_spec,
             "source": "cli.agent.run_one",
         })
         if result.get("status") == "failed":
