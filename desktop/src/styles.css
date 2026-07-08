@@ -164,6 +164,130 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 .slash-cmd { color: var(--accent); font-size: 13px; min-width: 86px; }
 .slash-desc { color: var(--text-3); font-size: 12px; }
 
+/* -- Bauer OS command palette -- */
+.cmd-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(1, 4, 9, 0.58);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 72px;
+}
+.cmd-panel {
+  width: min(720px, calc(100vw - 32px));
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  box-shadow: 0 22px 60px rgba(0,0,0,0.55);
+  overflow: hidden;
+}
+.cmd-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.cmd-input-row > i {
+  color: var(--accent);
+  font-size: 18px;
+}
+.cmd-input-row input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: #e6edf3;
+  font-size: 16px;
+  font-family: inherit;
+}
+.cmd-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+  background: var(--bg-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cmd-icon-btn:hover,
+.cmd-icon-btn.recording {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+.cmd-list {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 6px;
+}
+.cmd-item {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.cmd-item.active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+.cmd-item > i {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-size: 17px;
+}
+.cmd-item span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cmd-item strong {
+  font-size: 13px;
+  color: #e6edf3;
+  font-weight: 500;
+}
+.cmd-item small {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cmd-footer {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.cmd-footer strong {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 500;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Section labels ── */
 .section-label {
   padding: 6px 2px 3px;
