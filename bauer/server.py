@@ -49,6 +49,86 @@ from typing import Optional
 _STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "120"))
 
 
+def _sse(data: str, event: str | None = None) -> str:
+    """Codifica um evento SSE preservando quebras de linha.
+
+    O protocolo SSE exige que cada linha do payload tenha seu próprio prefixo
+    ``data:`` — um ``\\n`` cru dentro de ``data: {texto}`` corrompe o frame e o
+    cliente descarta tudo que vier depois da primeira linha (era assim que o
+    /stream colapsava markdown inteiro numa linha só)."""
+    lines = "".join(f"data: {ln}\n" for ln in data.split("\n"))
+    prefix = f"event: {event}\n" if event else ""
+    return f"{prefix}{lines}\n"
+
+
+class _StreamGate:
+    """Retém trechos do stream que podem ser um tool-call JSON.
+
+    Modelos bridge (sem tool calling nativo) às vezes narram antes de emitir o
+    JSON da action (``Vou verificar…{"action": ...}`` ou dentro de fence
+    ```` ```json ````). Sem retenção, o JSON cru vaza para o chat antes de o
+    turno terminar e a action ser parseada. A gate segura o texto a partir de
+    um candidato (``{`` ou ```` ``` ````); se a janela seguinte não contém
+    ``"action"``, era falso alarme e o trecho é liberado."""
+
+    _PROBE = 96  # chars após o marcador para decidir se parece uma action
+
+    def __init__(self) -> None:
+        self.pending = ""
+        self.sent_any = False
+
+    def _candidate_idx(self) -> int:
+        idxs = [i for i in (self.pending.find("{"), self.pending.find("```")) if i != -1]
+        return min(idxs) if idxs else -1
+
+    def feed(self, chunk: str) -> str:
+        """Acumula um chunk e devolve a parte segura para enviar ao cliente."""
+        self.pending += chunk
+        out: list[str] = []
+        while True:
+            idx = self._candidate_idx()
+            if idx == -1:
+                out.append(self.pending)
+                self.pending = ""
+                break
+            out.append(self.pending[:idx])
+            self.pending = self.pending[idx:]
+            probe = self.pending[: self._PROBE]
+            if '"action"' in probe or len(self.pending) < self._PROBE:
+                # Candidato plausível (ou cedo demais para saber) — retém.
+                break
+            # Falso alarme (ex.: "{{.ServerVersion}}" num comando docker):
+            # libera o 1º char do marcador e re-escaneia o restante.
+            out.append(self.pending[0])
+            self.pending = self.pending[1:]
+        text = "".join(out)
+        self.sent_any = self.sent_any or bool(text)
+        return text
+
+
+def _strip_action_block(text: str, available: set) -> str:
+    """Remove o primeiro JSON de action (e o fence markdown ao redor) do texto.
+
+    Usado no flush final da _StreamGate quando o turno terminou em tool call:
+    a narração retida junto com o JSON deve ir para o chat, o JSON não."""
+    import json as _json
+    import re as _re
+
+    decoder = _json.JSONDecoder()
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict) and obj.get("action") in available:
+                before = _re.sub(r"```(?:json)?\s*$", "", text[:idx])
+                after = _re.sub(r"^\s*```(?:json)?", "", text[end:])
+                return before + after
+        except _json.JSONDecodeError:
+            pass
+        idx = text.find("{", idx + 1)
+    return text
+
+
 # ─── Métricas globais em memória (Prometheus-style) ───────────────────────────
 
 class _Metrics:
@@ -795,6 +875,7 @@ def create_app(
             tool_count = 0
             tool_log: list[dict] = []
             turn_started = time.monotonic()
+            emitted_any = False  # texto já enviado em turnos anteriores (separador)
             # Fallback de provider (429/5xx): client/model correntes avançam pela
             # lista quando o primário falha ANTES de começar a stremar. _fb_idx
             # sobrevive entre iterações do loop de tool calls (não reinicia no 0).
@@ -807,22 +888,22 @@ def create_app(
                 if current_run is not None and current_run.status == "cancelled":
                     store.save(sid, ctx.messages)
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
-                    yield f"event: done\ndata: {sid}\n\n"
+                    yield _sse(sid, event="done")
                     return
                 if time.monotonic() - turn_started > _STREAM_TURN_TIMEOUT_SECONDS:
-                    yield (
-                        "data: ⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
-                        "turno. Tente reformular ou dividir em passos menores.\n\n"
+                    yield _sse(
+                        "⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
+                        "turno. Tente reformular ou dividir em passos menores."
                     )
                     store.save(sid, ctx.messages)
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
                     run_manager.fail_run(run.id, "stream turn timeout")
-                    yield f"event: done\ndata: {sid}\n\n"
+                    yield _sse(sid, event="done")
                     return
 
                 parts: list[str] = []
-                streaming = False   # True quando ja comecamos a enviar chunks ao cliente
-                buffering = False   # True quando response pode ser JSON (aguarda completar)
+                gate = _StreamGate()  # retém possíveis tool-call JSON (ver docstring)
+                turn_sep = emitted_any  # separa visualmente turnos pós-tool-call
 
                 try:
                     for chunk in stream_client.chat_stream(stream_model, ctx.get_payload()):
@@ -830,27 +911,24 @@ def create_app(
                         if current_run is not None and current_run.status == "cancelled":
                             store.save(sid, ctx.messages)
                             session_manager.touch_session(sid, state={"last_run_id": run.id})
-                            yield f"event: done\ndata: {sid}\n\n"
+                            yield _sse(sid, event="done")
                             return
                         parts.append(chunk)
 
-                        if streaming:
-                            yield f"data: {chunk}\n\n"
-                        elif not buffering:
-                            preview = "".join(parts).lstrip()
-                            if preview.startswith("{") or preview.startswith("```"):
-                                buffering = True
-                            else:
-                                for p in parts:
-                                    yield f"data: {p}\n\n"
-                                streaming = True
+                        safe = gate.feed(chunk)
+                        if safe:
+                            if turn_sep:
+                                safe = "\n\n" + safe.lstrip("\n")
+                                turn_sep = False
+                            emitted_any = True
+                            yield _sse(safe)
                 except Exception as exc:
                     # Fallback: se o provider falhou ANTES de qualquer chunk sair
                     # (caso típico do 429 — request rejeitado de cara) e há
                     # provider alternativo, troca e re-tenta o mesmo turno. Se já
                     # streamamos algo, não dá pra reiniciar limpo → mostra o erro.
                     _retryable = False
-                    if not streaming and not parts and _fb_idx < len(_fallback_clients):
+                    if not parts and _fb_idx < len(_fallback_clients):
                         try:
                             from .error_classifier import classify_api_error
                             _retryable = classify_api_error(exc).should_fallback
@@ -863,11 +941,11 @@ def create_app(
                             (_fb[0], _fb[1]) if isinstance(_fb, (list, tuple)) else (_fb, stream_model)
                         )
                         continue  # re-tenta com o próximo provider (ctx intacto)
-                    yield f"data: [Erro: {exc}]\n\n"
+                    yield _sse(f"[Erro: {exc}]")
                     store.save(sid, ctx.messages)
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
                     run_manager.fail_run(run.id, str(exc))
-                    yield f"event: done\ndata: {sid}\n\n"
+                    yield _sse(sid, event="done")
                     return
 
                 response = _format_server_response("".join(parts))
@@ -877,12 +955,24 @@ def create_app(
                 if action_dict and tool_count < MAX_TOOL_TURNS:
                     action_name = action_dict.get("action", "?")
                     action_args = action_dict.get("args", {}) or {}
+
+                    # Narração retida junto com o JSON da action vai pro chat;
+                    # o JSON em si (e o fence ao redor), não.
+                    leftover = _strip_action_block(
+                        gate.pending, set(router.available_tools())
+                    ).strip("\n")
+                    if leftover.strip():
+                        if turn_sep:
+                            leftover = "\n\n" + leftover
+                        emitted_any = True
+                        yield _sse(leftover)
+
                     try:
                         tool_result = router.execute(action_dict)
                     except (ToolError, SandboxError) as exc:
                         tool_result = f"[Erro: {exc}]"
 
-                    yield f"event: tool\ndata: {action_name}\n\n"
+                    yield _sse(action_name, event="tool")
                     ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
                     tool_count += 1
                     _metrics.tool_calls_total += 1
@@ -896,17 +986,23 @@ def create_app(
                     if loop_warn:
                         ctx.add_user(loop_warn)
                     if hard_stop:
-                        yield "data: [Loop detectado — tarefa interrompida automaticamente]\n\n"
+                        yield _sse("[Loop detectado — tarefa interrompida automaticamente]")
                         store.save(sid, ctx.messages)
                         session_manager.touch_session(sid, state={"last_run_id": run.id})
                         run_manager.fail_run(run.id, "loop detected")
-                        yield f"event: done\ndata: {sid}\n\n"
+                        yield _sse(sid, event="done")
                         return
                 else:
-                    # Se estava bufferizando JSON de conversa, envia o texto extraído
-                    if buffering:
-                        clean = _extract_text_from_pseudo_json(response) or response
-                        yield f"data: {clean}\n\n"
+                    # Flush do que ficou retido na gate. Se NADA foi enviado e a
+                    # resposta inteira é um pseudo-JSON de conversa (modelos
+                    # pequenos que abusam do formato), envia só o texto extraído.
+                    tail = gate.pending
+                    if not gate.sent_any:
+                        tail = _extract_text_from_pseudo_json(response) or tail
+                    if tail.strip():
+                        if turn_sep:
+                            tail = "\n\n" + tail.lstrip("\n")
+                        yield _sse(tail)
                     store.save(sid, ctx.messages)
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
                     run_manager.complete_run(
@@ -914,7 +1010,7 @@ def create_app(
                         output={"response": response},
                         tool_calls_count=tool_count,
                     )
-                    yield f"event: done\ndata: {sid}\n\n"
+                    yield _sse(sid, event="done")
                     break
 
         return StreamingResponse(

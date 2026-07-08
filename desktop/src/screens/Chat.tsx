@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, streamSSE } from "../api/client";
+import Markdown from "../components/Markdown";
 
 interface ToolCall { name: string; }
 interface Message {
@@ -276,7 +277,14 @@ export default function Chat() {
                     <span className="tname">{t.name}</span>
                   </div>
                 ))}
-                <div className="text" style={{ whiteSpace: "pre-wrap" }}>{m.text}{m.streaming && <span className="blink">▍</span>}</div>
+                {m.role === "user" ? (
+                  <div className="text" style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                ) : (
+                  <div className="text">
+                    <Markdown text={m.text} />
+                    {m.streaming && <span className="blink">▍</span>}
+                  </div>
+                )}
               </div>
             </div>
           ))}

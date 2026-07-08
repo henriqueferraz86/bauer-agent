@@ -545,6 +545,115 @@ def test_stream_tool_loop_hard_stop(tmp_path: Path):
     assert mock_client.chat_stream.call_count <= 6
 
 
+def _sse_events(raw: str) -> list[tuple[str, str]]:
+    """Decodifica SSE como o client web (desktop/src/api/client.ts): blocos
+    separados por linha em branco, múltiplas linhas `data:` unidas com \\n."""
+    events: list[tuple[str, str]] = []
+    for block in raw.split("\n\n"):
+        ev = "message"
+        datas: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                ev = line[6:].strip()
+            elif line.startswith("data:"):
+                datas.append(line[5:].removeprefix(" "))
+        if datas:
+            events.append((ev, "\n".join(datas)))
+    return events
+
+
+def _stream_text(raw: str) -> str:
+    return "".join(d for ev, d in _sse_events(raw) if ev == "message")
+
+
+def test_stream_preserves_newlines_in_markdown(tmp_path: Path):
+    """Regressão: chunks com \\n eram emitidos como `data: {chunk}\\n\\n` cru,
+    corrompendo o frame SSE — o client descartava as quebras e o markdown
+    chegava colapsado numa linha só."""
+    from bauer.tool_router import ToolRouter
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter(
+        ["## Análise\n", "- item 1\n- item 2\n\n", "fim"]
+    )
+    router = ToolRouter(workspace=tmp_path)
+
+    with patch("bauer.agent._try_parse_tool", return_value=None):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=analise")
+
+    assert resp.status_code == 200
+    assert _stream_text(resp.text) == "## Análise\n- item 1\n- item 2\n\nfim"
+
+
+def test_stream_does_not_leak_action_json_after_narration(tmp_path: Path):
+    """Regressão: modelo que narra antes do JSON da action (`Vou verificar…
+    ```json {"action": ...}```) vazava o JSON cru no chat, porque o streaming
+    já tinha começado quando o bloco chegava."""
+    from bauer.tool_router import ToolRouter
+
+    turns = [
+        iter(['Vou verificar a hora.\n', '```json\n', '{"action": "datetime_now"',
+              ', "args": {}}\n', '```']),
+        iter(["Agora sim: meio-dia."]),
+    ]
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = lambda *a, **k: turns.pop(0)
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+    resp = tc.get("/stream?message=que horas sao")
+
+    assert resp.status_code == 200
+    events = _sse_events(resp.text)
+    text = _stream_text(resp.text)
+    assert "Vou verificar a hora." in text
+    assert "Agora sim: meio-dia." in text
+    assert '"action"' not in text          # JSON não vaza pro chat
+    assert "```" not in text               # fence do bloco também não
+    assert ("tool", "datetime_now") in events
+
+
+def test_stream_releases_false_positive_braces(tmp_path: Path):
+    """Chaves legítimas no texto (ex.: `{{.ServerVersion}}` de um comando
+    docker) não podem ficar presas na gate anti-vazamento — o texto completo
+    tem que chegar ao cliente."""
+    from bauer.tool_router import ToolRouter
+
+    reply = (
+        "Use `docker info --format '{{.ServerVersion}}'` para ver a versão. "
+        "Depois compare com o changelog para decidir o upgrade — sem pressa."
+    )
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter([reply[i:i + 7] for i in range(0, len(reply), 7)])
+    router = ToolRouter(workspace=tmp_path)
+
+    with patch("bauer.agent._try_parse_tool", return_value=None):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=docker")
+
+    assert resp.status_code == 200
+    assert _stream_text(resp.text) == reply
+
+
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────
 
 
