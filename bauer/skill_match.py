@@ -27,6 +27,13 @@ _CONTENT_CAP = 2000
 
 _DOCS_CACHE: "list[dict] | None" = None
 
+_STOPWORDS = {
+    "uma", "uns", "umas", "para", "por", "com", "sem", "que", "qual", "quais",
+    "este", "esta", "isto", "isso", "esse", "essa", "deste", "desta", "desse",
+    "dessa", "faca", "faça", "fazer", "faz", "meu", "minha", "seu", "sua",
+    "the", "and", "for", "with", "from", "this", "that",
+}
+
 
 @dataclass
 class MatchedSkill:
@@ -37,7 +44,11 @@ class MatchedSkill:
 
 
 def _tokens(text: str) -> set[str]:
-    return set(re.findall(r"\b[a-zA-ZÀ-ú0-9]{3,}\b", text.lower()))
+    return {
+        token
+        for token in re.findall(r"\b\w{3,}\b", text.lower(), flags=re.UNICODE)
+        if token not in _STOPWORDS
+    }
 
 
 def _load_skill_docs() -> list[dict]:
@@ -122,13 +133,20 @@ def match_skill(
     best: "dict | None" = None
     best_score = 0.0
     for d in _get_docs(docs):
-        doc = f"{d['description']} {d['name']} {' '.join(d['tags'])} {d['content'][:200]}"
+        name_tags = f"{d['name']} {' '.join(d['tags'])}"
+        description = d["description"]
+        doc = f"{description} {name_tags} {d['content'][:200]}"
         dt = _tokens(doc)
         if not dt:
             continue
         inter = len(qt & dt)
         smaller = min(len(qt), len(dt))
         score = inter / smaller if smaller else 0.0
+        if qt & _tokens(name_tags):
+            score += 0.35
+        elif qt & _tokens(description):
+            score += 0.10
+        score = min(score, 1.0)
         if score > best_score:
             best_score = score
             best = d

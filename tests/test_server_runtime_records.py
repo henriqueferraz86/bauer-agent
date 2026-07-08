@@ -12,6 +12,8 @@ pytest.importorskip("fastapi")
 from bauer.core.runtime.run_manager import RunManager
 from bauer.core.runtime.session_manager import SessionManager
 from bauer.core.events import EventBus
+from bauer.agent_registry import AgentDef
+from bauer.skill_match import MatchedSkill
 from bauer.server import create_app
 
 
@@ -52,6 +54,117 @@ def test_chat_endpoint_records_run_and_session(tmp_path: Path):
     assert runs[0].output == {"response": "hello"}
     event_types = [event.event_type for event in EventBus(root=runtime_root).list_events(run_id=runs[0].id)]
     assert event_types == ["run.created", "run.started", "run.completed"]
+
+
+def test_chat_endpoint_selects_agent_and_skill_context(tmp_path: Path, monkeypatch):
+    mock_router = MagicMock()
+    mock_router.available_tools.return_value = []
+    mock_router.tool_info.side_effect = lambda name: {"name": name}
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter(["ok docker"])
+    mock_client.list_models.return_value = []
+
+    devops = AgentDef(
+        name="devops-specialist",
+        description="Docker e infraestrutura",
+        system="Voce e DevOps.",
+    )
+    skill = MatchedSkill(
+        name="docker-ops",
+        score=0.9,
+        content="Analise Docker com comandos e arquivos relevantes.",
+        source="builtin",
+    )
+    monkeypatch.setattr("bauer.agent_registry.merged_specialist_pool", lambda *_args, **_kwargs: [devops])
+    monkeypatch.setattr("bauer.agent_registry.resolve_user_agents_path", lambda *_args, **_kwargs: tmp_path / "agents.yaml")
+    monkeypatch.setattr("bauer.skill_match.match_skill", lambda *_args, **_kwargs: skill)
+
+    app = create_app(
+        model_name="test-model",
+        applied_context=4096,
+        router=mock_router,
+        client=mock_client,
+        system_prompt="system",
+        sessions_dir=tmp_path / "sessions",
+        rate_limit_requests=0,
+    )
+
+    async def _post_chat():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                "/chat",
+                json={"message": "faça uma analise docker", "session_id": "session-docker"},
+            )
+
+    response = asyncio.run(_post_chat())
+
+    assert response.status_code == 200
+    runtime_root = tmp_path / "runtime"
+    run = RunManager(root=runtime_root).list_runs()[0]
+    assert run.agent_id == "devops-specialist"
+    assert run.input["selected_agent"] == "devops-specialist"
+    assert run.input["selected_skill"] == "docker-ops"
+    payload = mock_client.chat_stream.call_args[0][1]
+    assert any("agent-especialista" in msg["content"] for msg in payload if msg["role"] == "system")
+    assert any("docker-ops" in msg["content"] for msg in payload if msg["role"] == "system")
+    events = EventBus(root=runtime_root).list_events(run_id=run.id)
+    assert any(event.event_type == "skill.selected" and event.skill_id == "docker-ops" for event in events)
+
+
+def test_stream_endpoint_selects_agent_and_skill_context(tmp_path: Path, monkeypatch):
+    mock_router = MagicMock()
+    mock_router.available_tools.return_value = []
+    mock_router.tool_info.side_effect = lambda name: {"name": name}
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter(["ok docker"])
+    mock_client.list_models.return_value = []
+
+    devops = AgentDef(
+        name="devops-specialist",
+        description="Docker e infraestrutura",
+        system="Voce e DevOps.",
+    )
+    skill = MatchedSkill(
+        name="docker-ops",
+        score=0.9,
+        content="Analise Docker com comandos e arquivos relevantes.",
+        source="builtin",
+    )
+    monkeypatch.setattr("bauer.agent_registry.merged_specialist_pool", lambda *_args, **_kwargs: [devops])
+    monkeypatch.setattr("bauer.agent_registry.resolve_user_agents_path", lambda *_args, **_kwargs: tmp_path / "agents.yaml")
+    monkeypatch.setattr("bauer.skill_match.match_skill", lambda *_args, **_kwargs: skill)
+
+    app = create_app(
+        model_name="test-model",
+        applied_context=4096,
+        router=mock_router,
+        client=mock_client,
+        system_prompt="system",
+        sessions_dir=tmp_path / "sessions",
+        rate_limit_requests=0,
+    )
+
+    async def _get_stream():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get(
+                "/stream",
+                params={"message": "faça uma analise docker", "session_id": "session-docker"},
+            )
+
+    response = asyncio.run(_get_stream())
+
+    assert response.status_code == 200
+    assert "ok docker" in response.text
+    runtime_root = tmp_path / "runtime"
+    run = RunManager(root=runtime_root).list_runs()[0]
+    assert run.agent_id == "devops-specialist"
+    assert run.input["selected_skill"] == "docker-ops"
+    events = EventBus(root=runtime_root).list_events(run_id=run.id)
+    assert any(event.event_type == "skill.selected" and event.skill_id == "docker-ops" for event in events)
 
 
 def test_events_endpoints_return_runtime_events(tmp_path: Path):

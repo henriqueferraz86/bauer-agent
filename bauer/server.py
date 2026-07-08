@@ -298,6 +298,70 @@ def create_app(
             system_prompt=_current_system_prompt(),
         )
 
+    def _resolve_request_context(message: str) -> dict:
+        resolved: dict = {"agent_id": "", "agent": None, "skill": None}
+        try:
+            from .agent_registry import match_agents, merged_specialist_pool, resolve_user_agents_path
+
+            agent = match_agents(message, merged_specialist_pool(resolve_user_agents_path()))
+            if agent is not None:
+                resolved["agent_id"] = agent.name
+                resolved["agent"] = agent
+        except Exception as exc:
+            _log.debug("agent match failed: %s", exc)
+        try:
+            from .skill_match import match_skill
+
+            resolved["skill"] = match_skill(message)
+        except Exception as exc:
+            _log.debug("skill match failed: %s", exc)
+        return resolved
+
+    def _apply_request_context(ctx: ContextManager, resolved: dict) -> None:
+        agent = resolved.get("agent")
+        if agent is not None:
+            ctx.add_ephemeral_system(
+                "<agent-especialista>\n"
+                f"[Agent '{agent.name}' selecionado automaticamente para este turno.]\n"
+                f"{agent.system}\n"
+                "</agent-especialista>"
+            )
+        skill = resolved.get("skill")
+        if skill is not None:
+            try:
+                from .skill_match import skill_injection_block
+
+                ctx.add_ephemeral_system(skill_injection_block(skill))
+            except Exception as exc:
+                _log.debug("skill injection failed: %s", exc)
+
+    def _run_input(message: str, endpoint: str, resolved: dict) -> dict:
+        payload = {"message": message, "endpoint": endpoint}
+        if resolved.get("agent_id"):
+            payload["selected_agent"] = resolved["agent_id"]
+        skill = resolved.get("skill")
+        if skill is not None:
+            payload["selected_skill"] = getattr(skill, "name", "")
+            payload["selected_skill_score"] = getattr(skill, "score", None)
+        return payload
+
+    def _publish_selected_skill(run_id: str, session_id: str, agent_id: str, resolved: dict) -> None:
+        skill = resolved.get("skill")
+        if skill is None:
+            return
+        event_bus.publish(
+            "skill.selected",
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            skill_id=getattr(skill, "name", ""),
+            status="selected",
+            data={
+                "score": getattr(skill, "score", None),
+                "source": getattr(skill, "source", ""),
+            },
+        )
+
     def _format_server_response(response: str) -> str:
         text = str(response or "").replace("\r\n", "\n").replace("\r", "\n").strip()
         while "\n\n\n" in text:
@@ -615,21 +679,25 @@ def create_app(
     def chat(req: ChatRequest, _: None = Depends(_verify_key)):
         _metrics.chat_requests_total += 1
         session_id = req.session_id or store.new_id()
+        resolved = _resolve_request_context(req.message)
+        request_agent_id = resolved.get("agent_id") or "serve.chat"
         session_manager.get_or_create_session(
             session_id,
-            agent_id="serve.chat",
+            agent_id=request_agent_id,
             state={"transport": "http", "endpoint": "/chat"},
         )
         run = run_manager.create_run(
             session_id=session_id,
-            agent_id="serve.chat",
+            agent_id=request_agent_id,
             runtime_adapter="bauer_native",
-            input={"message": req.message, "endpoint": "/chat"},
+            input=_run_input(req.message, "/chat", resolved),
             status="running",
         )
 
         ctx = _new_context()
         ctx.messages = store.load(session_id)
+        _apply_request_context(ctx, resolved)
+        _publish_selected_skill(run.id, session_id, request_agent_id, resolved)
         ctx.add_user(req.message)
         router._runtime_session_id = session_id  # type: ignore[attr-defined]
         router._runtime_run_id = run.id  # type: ignore[attr-defined]
@@ -691,21 +759,25 @@ def create_app(
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
+        resolved = _resolve_request_context(message)
+        request_agent_id = resolved.get("agent_id") or "serve.stream"
         session_manager.get_or_create_session(
             sid,
-            agent_id="serve.stream",
+            agent_id=request_agent_id,
             state={"transport": "sse", "endpoint": "/stream"},
         )
         run = run_manager.create_run(
             session_id=sid,
-            agent_id="serve.stream",
+            agent_id=request_agent_id,
             runtime_adapter="bauer_native",
-            input={"message": message, "endpoint": "/stream"},
+            input=_run_input(message, "/stream", resolved),
             status="running",
         )
 
         ctx = _new_context()
         ctx.messages = store.load(sid)
+        _apply_request_context(ctx, resolved)
+        _publish_selected_skill(run.id, sid, request_agent_id, resolved)
         ctx.add_user(message)
         router._runtime_session_id = sid  # type: ignore[attr-defined]
         router._runtime_run_id = run.id  # type: ignore[attr-defined]
@@ -891,9 +963,15 @@ def create_app(
             or req.session_id
             or store.new_id()
         )
+        last_user_message = next(
+            (msg.content for msg in reversed(req.messages) if msg.role == "user"),
+            "",
+        )
+        resolved = _resolve_request_context(last_user_message)
+        request_agent_id = resolved.get("agent_id") or "serve.openai"
         session_manager.get_or_create_session(
             sid,
-            agent_id="serve.openai",
+            agent_id=request_agent_id,
             state={"transport": "openai", "endpoint": "/v1/chat/completions"},
         )
 
@@ -912,15 +990,19 @@ def create_app(
         completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
         run = run_manager.create_run(
             session_id=sid,
-            agent_id="serve.openai",
+            agent_id=request_agent_id,
             runtime_adapter="bauer_native",
             input={
                 "messages": [msg.model_dump() for msg in req.messages],
                 "stream": req.stream,
                 "endpoint": "/v1/chat/completions",
+                "message": last_user_message,
+                "selected_agent": resolved.get("agent_id") or "",
+                "selected_skill": getattr(resolved.get("skill"), "name", ""),
             },
             status="running",
         )
+        _publish_selected_skill(run.id, sid, request_agent_id, resolved)
         router._runtime_session_id = sid  # type: ignore[attr-defined]
         router._runtime_run_id = run.id  # type: ignore[attr-defined]
         resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}

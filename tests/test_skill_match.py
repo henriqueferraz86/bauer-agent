@@ -102,5 +102,10 @@ class TestRealPackageSkills:
         assert m is not None
         assert "refactor" in m.name.lower()
 
+    def test_docker_casa_docker_ops(self):
+        m = match_skill("faça uma analise docker")
+        assert m is not None
+        assert "docker" in m.name.lower()
+
     def test_ruido_puro_nao_dispara(self):
         assert match_skill("qual a capital da franca") is None
