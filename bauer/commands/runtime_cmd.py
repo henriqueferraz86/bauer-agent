@@ -18,6 +18,106 @@ runtime_service_app = typer.Typer(
 runtime_app.add_typer(runtime_service_app, name="service")
 
 
+@runtime_app.command("list")
+def runtime_list_cmd(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    """Lista adapters de runtime registrados."""
+    from ..config_loader import load_config
+    from ..core.runtime.adapters import list_runtime_adapters
+
+    cfg = load_config(config)
+    configured = getattr(cfg.runtime, "adapters", {}) or {}
+    default_adapter = getattr(cfg.runtime, "default_adapter", "bauer_native")
+
+    table = Table(title="Bauer Runtime Adapters", show_lines=False)
+    table.add_column("Adapter", style="cyan")
+    table.add_column("Registered")
+    table.add_column("Enabled")
+    table.add_column("Default")
+    table.add_column("Mode")
+    for name in sorted(set(list_runtime_adapters()) | set(configured)):
+        adapter_cfg = configured.get(name, {}) if isinstance(configured, dict) else {}
+        table.add_row(
+            name,
+            "yes" if name in list_runtime_adapters() else "no",
+            "yes" if adapter_cfg.get("enabled", False) else "no",
+            "yes" if name == default_adapter else "no",
+            str(adapter_cfg.get("mode") or "-"),
+        )
+    console.print(table)
+
+
+@runtime_app.command("test")
+def runtime_test_cmd(
+    adapter_name: str = typer.Argument(..., help="Adapter para testar, ex: agno"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    """Executa um smoke test basico de um runtime adapter."""
+    from uuid import uuid4
+
+    from ..config_loader import load_config
+    from ..core.runtime.adapters import get_runtime_adapter
+
+    cfg = load_config(config)
+    adapter = get_runtime_adapter(adapter_name, config=cfg)
+    created = adapter.create_agent({"id": "runtime-test-agent", "name": "Runtime Test Agent"})
+    session_id = f"runtime-test-session-{uuid4()}"
+    result = adapter.run_agent(
+        {
+            "agent_id": created["agent_id"],
+            "session_id": session_id,
+            "user_id": "runtime-test-user",
+            "task": "Responda um smoke test simples do Bauer Runtime.",
+        }
+    )
+    if result.get("status") != "completed":
+        console.print(f"[red]Runtime test falhou:[/red] {result}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]ok[/green] adapter={adapter.name} run_id={result.get('run_id')}")
+    console.print(str(result.get("output", "")))
+
+
+@runtime_app.command("use")
+def runtime_use_cmd(
+    adapter_name: str = typer.Argument(..., help="Adapter para tornar default"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+):
+    """Define o adapter default em config.yaml."""
+    import yaml
+
+    from ..core.runtime.adapters import list_runtime_adapters
+
+    normalized = adapter_name.strip().lower().replace("-", "_")
+    if normalized not in list_runtime_adapters():
+        console.print(f"[red]Adapter nao registrado:[/red] {adapter_name}")
+        raise typer.Exit(code=1)
+
+    data = yaml.safe_load(config.read_text(encoding="utf-8")) if config.exists() else {}
+    if not isinstance(data, dict):
+        data = {}
+    runtime = data.setdefault("runtime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+        data["runtime"] = runtime
+    adapters = runtime.setdefault("adapters", {})
+    if not isinstance(adapters, dict):
+        adapters = {}
+        runtime["adapters"] = adapters
+    adapter_cfg = adapters.setdefault(normalized, {})
+    if not isinstance(adapter_cfg, dict):
+        adapter_cfg = {}
+        adapters[normalized] = adapter_cfg
+    adapter_cfg["enabled"] = True
+    if normalized == "agno":
+        adapter_cfg.setdefault("mode", "sdk")
+        adapter_cfg.setdefault("base_url", "http://localhost:7777")
+        adapter_cfg.setdefault("timeout_s", 120)
+    runtime["default_adapter"] = normalized
+    config.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    console.print(f"[green]Runtime default_adapter={normalized}[/green] em {config}")
+
+
 def _runtime_supervise_args(
     *,
     workspace: Path,

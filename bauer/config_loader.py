@@ -564,7 +564,12 @@ class RuntimeSection(_StrictSection):
     adapters: dict[str, dict[str, Any]] = Field(
         default_factory=lambda: {
             "bauer_native": {"enabled": True},
-            "agno": {"enabled": False, "base_url": "http://localhost:7777"},
+            "agno": {
+                "enabled": True,
+                "mode": "sdk",
+                "base_url": "http://localhost:7777",
+                "timeout_s": 120,
+            },
         }
     )
 
