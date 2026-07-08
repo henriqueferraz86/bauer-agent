@@ -16,6 +16,22 @@ function flatten(obj: Json, prefix = ""): [string, string][] {
   return rows;
 }
 
+// Chaves de provider mais comuns — o backend roteia qualquer *_API_KEY /
+// *_TOKEN para o .env (nunca pro config.yaml, que é versionado).
+const ENV_KEY_SUGGESTIONS = [
+  "OPENROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GROQ_API_KEY",
+  "MISTRAL_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "XAI_API_KEY",
+  "TOGETHER_API_KEY",
+  "GOOGLE_API_KEY",
+  "TELEGRAM_BOT_TOKEN",
+  "DISCORD_BOT_TOKEN",
+];
+
 export default function Config() {
   const [config, setConfig] = useState<Json>({});
   const [profiles, setProfiles] = useState<string[]>([]);
@@ -23,6 +39,27 @@ export default function Config() {
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [msg, setMsg] = useState("");
+  const [secretKey, setSecretKey] = useState("OPENROUTER_API_KEY");
+  const [secretValue, setSecretValue] = useState("");
+  const [secretMsg, setSecretMsg] = useState("");
+
+  async function saveSecret() {
+    const key = secretKey.trim().toUpperCase();
+    const value = secretValue.trim();
+    if (!key || !value) return;
+    setSecretMsg("");
+    try {
+      const r = await api.put<{ saved: string; dest: string }>("/api/config", { key, value });
+      setSecretValue("");
+      setSecretMsg(
+        r.dest === "env"
+          ? `${r.saved} salva no .env — reinicie o serve para aplicar.`
+          : `${r.saved} salva (${r.dest}).`
+      );
+    } catch (e) {
+      setSecretMsg(String(e));
+    }
+  }
 
   async function load() {
     api.get<{ config: Json }>("/api/config").then((r) => setConfig(r.config)).catch(() => {});
@@ -65,6 +102,41 @@ export default function Config() {
               value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} />
             <button className="btn primary" onClick={() => { setApiKey(apiKeyInput); setMsg("API key salva."); }}>Salvar</button>
           </div>
+        </div>
+
+        {/* Segredos de provider (.env) */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+            SEGREDOS DE PROVIDER (gravados no .env do projeto, nunca no config.yaml)
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              className="in mono"
+              style={{ width: 220 }}
+              list="env-key-suggestions"
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              placeholder="OPENROUTER_API_KEY"
+            />
+            <datalist id="env-key-suggestions">
+              {ENV_KEY_SUGGESTIONS.map((k) => <option key={k} value={k} />)}
+            </datalist>
+            <input
+              className="in"
+              type="password"
+              style={{ flex: 1 }}
+              value={secretValue}
+              onChange={(e) => setSecretValue(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && saveSecret()}
+              placeholder="cole a chave aqui"
+            />
+            <button className="btn primary" onClick={saveSecret} disabled={!secretValue.trim()}>
+              Salvar
+            </button>
+          </div>
+          {secretMsg && (
+            <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{secretMsg}</div>
+          )}
         </div>
 
         {/* Profiles */}
