@@ -1,12 +1,17 @@
 import { NavLink } from "react-router-dom";
 
 const NAV = [
-  { to: "/projects", icon: "ti-folders", label: "Projetos" },
   { to: "/chat", icon: "ti-message-2", label: "Chat" },
+  { to: "/agents", icon: "ti-users", label: "Agents" },
+  { to: "/skills", icon: "ti-puzzle", label: "Skills" },
+  { to: "/runs", icon: "ti-player-play", label: "Runs" },
+  { to: "/approvals", icon: "ti-shield-question", label: "Approvals" },
+  { to: "/runtime", icon: "ti-server-2", label: "Runtime" },
+  { to: "/observability", icon: "ti-chart-bar", label: "Observabilidade" },
+  { to: "/projects", icon: "ti-folders", label: "Projetos" },
   { to: "/kanban", icon: "ti-layout-kanban", label: "Kanban" },
   { to: "/models", icon: "ti-cpu", label: "Modelos" },
   { to: "/gateway", icon: "ti-router", label: "Gateway" },
-  { to: "/observability", icon: "ti-chart-bar", label: "Observabilidade" },
   { to: "/logs", icon: "ti-terminal-2", label: "Logs" },
 ];
 
@@ -25,7 +30,7 @@ export default function Sidebar() {
         </NavLink>
       ))}
       <div className="sb-spacer" />
-      <NavLink to="/config" title="Config" className={({ isActive }) => "sb-item" + (isActive ? " active" : "")}>
+      <NavLink to="/settings" title="Settings" className={({ isActive }) => "sb-item" + (isActive ? " active" : "")}>
         <i className="ti ti-settings" />
       </NavLink>
       <div className="sb-avatar">HF</div>

@@ -145,12 +145,14 @@ def env(tmp_path, monkeypatch):
         get_workspace=lambda: workspace,
         cost_file=cost_file,
         spans_file=spans_file,
+        runtime_root=tmp_path / "runtime",
         logs_dir=logs_dir,
     ))
     client = TestClient(app)
     return {
         "client": client, "tmp": tmp_path, "cost_file": cost_file,
         "spans_file": spans_file, "logs_dir": logs_dir, "config_path": config_path,
+        "runtime_root": tmp_path / "runtime",
     }
 
 
@@ -369,6 +371,79 @@ class TestLogsEndpoint:
     def test_missing_log_empty(self, env):
         r = env["client"].get("/api/logs/nonexistent/tail")
         assert r.json()["lines"] == []
+
+
+class TestRuntimeDashboardEndpoints:
+    def test_runtime_dashboard(self, env):
+        r = env["client"].get("/api/runtime/dashboard")
+        data = r.json()
+        assert r.status_code == 200
+        assert "bauer_native" in {adapter["name"] for adapter in data["adapters"]}
+        assert "agno" in {adapter["name"] for adapter in data["adapters"]}
+        assert "workers" in data
+        assert data["kill_switch"] is False
+
+    def test_agents_dashboard(self, env):
+        r = env["client"].get("/api/agents")
+        assert r.status_code == 200
+        assert isinstance(r.json()["agents"], list)
+
+    def test_skills_dashboard(self, env):
+        r = env["client"].get("/api/skills")
+        data = r.json()
+        assert r.status_code == 200
+        assert any(skill["id"] == "bauer.coding" for skill in data["skills"])
+
+    def test_approval_actions(self, env):
+        from bauer.core.policy import ApprovalManager
+
+        record = ApprovalManager(root=env["runtime_root"]).request(
+            operation="shell.execute",
+            tool_name="run_command",
+            reason="needs approval",
+            risk_level="high",
+        )
+        approved = env["client"].post(f"/api/approvals/{record.id}/approve")
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "approved"
+        missing = env["client"].post("/api/approvals/nope/deny")
+        assert missing.status_code == 404
+
+
+class TestBauerOsCommandEndpoint:
+    def test_os_command_navigates_to_runs(self, env):
+        r = env["client"].post("/api/os/command", json={"text": "mostrar runs"})
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "navigate"
+        assert data["path"] == "/runs"
+
+    def test_os_command_control_panel_requires_approval(self, env):
+        r = env["client"].post("/api/os/command", json={"text": "abrir painel de controle"})
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "approval_required"
+        assert data["approval"]["operation"] == "os.ui_control"
+        approvals = env["client"].get("/api/obs/approvals").json()["approvals"]
+        assert any(item["id"] == data["approval"]["id"] for item in approvals)
+
+    def test_os_command_creates_agent_run(self, env):
+        r = env["client"].post("/api/os/command", json={"text": "rodar agent code"})
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "run_created"
+        assert data["run"]["agent_id"] == "code"
+        runs = env["client"].get("/api/obs/runs").json()["runs"]
+        assert any(item["id"] == data["run"]["id"] for item in runs)
+
+    def test_os_command_pause_agent_is_audited(self, env):
+        r = env["client"].post("/api/os/command", json={"text": "pausar agente code"})
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "agent_pause_requested"
+        assert data["agent_id"] == "code"
+        events = env["client"].get("/api/events").json()["events"]
+        assert any(event["tool_name"] == "bauer_os.pause_agent" for event in events)
 
 
 class TestAuthWiring:

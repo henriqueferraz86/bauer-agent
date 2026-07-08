@@ -20,6 +20,7 @@ e os testes podem apontar para diretórios temporários.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -32,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 _SECRET_RE = re.compile(r"(key|token|secret|password|api_key)", re.IGNORECASE)
 _SAFE_LOG_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+logger = logging.getLogger(__name__)
 
 
 def _mask_secrets(node: Any) -> Any:
@@ -326,8 +328,8 @@ def build_desktop_router(
             cfg = load_config(get_config_path())
             out["telegram"] = bool(getattr(cfg.telegram, "enabled", False))
             out["discord"] = bool(getattr(cfg.discord, "enabled", False))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime dashboard config load failed: %s", exc)
         try:
             from .gateway_service import read_process_status
 
@@ -335,8 +337,8 @@ def build_desktop_router(
             out["pid"] = pid
             out["uptime_s"] = uptime
             out["running"] = pid is not None
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("agents dashboard load failed: %s", exc)
         return out
 
     @router.post("/gateway/{action}")
@@ -421,11 +423,250 @@ def build_desktop_router(
 
         return {"approvals": [asdict(record) for record in ApprovalManager(root=_runtime_root).list(status=status or None)]}
 
+    @router.get("/events")
+    def runtime_events(limit: int = Query(200, ge=1, le=2000)):
+        from .core.events import EventBus
+
+        bus = EventBus(root=_runtime_root)
+        return {"events": [EventBus.to_dict(event) for event in bus.list_events(limit=limit)]}
+
     @router.get("/obs/budget")
     def obs_budget():
         from .core.runtime.autonomy import BudgetManager
 
         return BudgetManager(root=_runtime_root).status()
+
+    @router.post("/os/command")
+    def os_command(body: dict = Body(...)):
+        from dataclasses import asdict
+
+        from .core.events import EventBus
+        from .core.policy import ApprovalManager, PolicyEngine
+        from .core.runtime.run_manager import RunManager
+        from .core.runtime.session_manager import SessionManager
+
+        text = str(body.get("text") or body.get("command") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Campo 'text' obrigatorio.")
+
+        normalized = text.casefold()
+        event_bus = EventBus(root=_runtime_root)
+
+        def navigation(path: str, label: str) -> dict[str, Any]:
+            return {
+                "kind": "navigate",
+                "label": label,
+                "path": path,
+                "message": f"Abrindo {label}.",
+            }
+
+        if any(term in normalized for term in ("ver runs", "mostrar runs", "listar runs", "runs")):
+            return navigation("/runs", "Runs")
+        if any(term in normalized for term in ("aprovar", "aprovacao", "aprova", "pendente")):
+            return navigation("/approvals", "Approvals")
+        if any(term in normalized for term in ("skill", "capability", "capabilities")):
+            return navigation("/skills", "Skills")
+        if any(term in normalized for term in ("pausar agente", "pausar agent", "pause agent", "pause agente")):
+            agent_id = "default"
+            for marker in ("pausar agente", "pausar agent", "pause agent", "pause agente"):
+                if marker in normalized:
+                    tail = text[normalized.index(marker) + len(marker):].strip()
+                    if tail:
+                        agent_id = tail.split()[0].strip(".,:;") or agent_id
+                    break
+            event_bus.publish(
+                "tool.call.requested",
+                agent_id=agent_id,
+                tool_name="bauer_os.pause_agent",
+                status="requested",
+                message=f"Pause requested for agent {agent_id}",
+                data={"source": "bauer_os_lite", "command": text},
+            )
+            return {
+                "kind": "agent_pause_requested",
+                "label": f"Agent {agent_id}",
+                "path": "/agents",
+                "agent_id": agent_id,
+                "message": f"Pausa registrada para agent {agent_id}.",
+            }
+        if any(term in normalized for term in ("agent", "agente")) and not any(term in normalized for term in ("rodar", "executar")):
+            return navigation("/agents", "Agents")
+        if any(term in normalized for term in ("runtime", "agno", "worker")):
+            return navigation("/runtime", "Runtime")
+        if any(term in normalized for term in ("arquivo", "workspace", "pesquisar arquivo")):
+            return navigation("/projects", "Workspace")
+        if any(term in normalized for term in ("abrir navegador", "navegador", "browser")):
+            return {
+                "kind": "open_external",
+                "label": "Navegador",
+                "url": "about:blank",
+                "message": "Abrindo o navegador.",
+            }
+
+        if any(term in normalized for term in ("painel de controle", "control panel")):
+            decision = PolicyEngine(workspace=get_workspace(), runtime_root=_runtime_root).evaluate(
+                "os.ui_control",
+                {"command": text, "source": "bauer_os_lite"},
+            )
+            event_bus.publish(
+                "policy.evaluated",
+                status=decision.action,
+                message=decision.reason,
+                data={"operation": "os.ui_control", "risk_level": decision.risk_level, "matched_rules": decision.matched_rules},
+            )
+            if decision.action == "deny":
+                return {
+                    "kind": "denied",
+                    "label": "Painel de controle",
+                    "message": decision.reason,
+                    "policy": asdict(decision),
+                }
+            if decision.action == "ask":
+                approval = ApprovalManager(root=_runtime_root, event_bus=event_bus).request(
+                    operation="os.ui_control",
+                    tool_name="bauer_os.open_control_panel",
+                    reason=decision.reason,
+                    risk_level=decision.risk_level,
+                    payload={"command": text, "target": "control_panel"},
+                )
+                return {
+                    "kind": "approval_required",
+                    "label": "Painel de controle",
+                    "approval": asdict(approval),
+                    "policy": asdict(decision),
+                    "message": "Acao sensivel enviada para aprovacao.",
+                }
+            return {
+                "kind": "open_external",
+                "label": "Painel de controle",
+                "url": "ms-settings:",
+                "message": "Abrindo painel de controle.",
+                "policy": asdict(decision),
+            }
+
+        wants_agent_run = any(term in normalized for term in ("rodar agent", "rodar agente", "executar agent", "executar agente"))
+        if wants_agent_run:
+            agent_id = "default"
+            for marker in ("rodar agent", "rodar agente", "executar agent", "executar agente"):
+                if marker in normalized:
+                    tail = text[normalized.index(marker) + len(marker):].strip()
+                    if tail:
+                        agent_id = tail.split()[0].strip(".,:;") or agent_id
+                    break
+            session = SessionManager(root=_runtime_root).create_session(
+                user_id="desktop",
+                agent_id=agent_id,
+                state={"source": "bauer_os_lite", "command": text},
+            )
+            run = RunManager(root=_runtime_root, event_bus=event_bus).create_run(
+                session_id=session.id,
+                agent_id=agent_id,
+                runtime_adapter=str(body.get("runtime_adapter") or "bauer_native"),
+                input={"message": text, "source": "bauer_os_lite"},
+                status="queued",
+            )
+            return {
+                "kind": "run_created",
+                "label": f"Agent {agent_id}",
+                "path": "/runs",
+                "run": asdict(run),
+                "session": asdict(session),
+                "message": f"Run criada para agent {agent_id}.",
+            }
+
+        return {
+            "kind": "unknown",
+            "label": "Bauer Command",
+            "message": "Nao reconheci esse comando ainda.",
+            "suggestions": [
+                "mostrar runs",
+                "aprovar acao pendente",
+                "rodar agent code",
+                "abrir navegador",
+                "abrir painel de controle",
+                "pesquisar arquivo",
+            ],
+        }
+
+    @router.get("/runtime/dashboard")
+    def runtime_dashboard():
+        from .core.runtime.adapters import list_runtime_adapters
+        from .core.runtime.resilience import RuntimeControl, WorkerRegistry
+
+        default_adapter = "bauer_native"
+        configured: Dict[str, Any] = {}
+        try:
+            from .config_loader import load_config
+
+            cfg = load_config(get_config_path())
+            runtime = getattr(cfg, "runtime", None)
+            default_adapter = getattr(runtime, "default_adapter", default_adapter)
+            configured = getattr(runtime, "adapters", {}) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime dashboard config load failed: %s", exc)
+
+        registered = list_runtime_adapters()
+        adapters: List[Dict[str, Any]] = []
+        for name in sorted(set(registered) | set(configured)):
+            cfg = configured.get(name, {}) if isinstance(configured, dict) else {}
+            adapters.append({
+                "name": name,
+                "registered": name in registered,
+                "enabled": bool(cfg.get("enabled", name == "bauer_native")) if isinstance(cfg, dict) else name == "bauer_native",
+                "default": name == default_adapter,
+                "mode": cfg.get("mode", "sdk" if name == "agno" else "local") if isinstance(cfg, dict) else "-",
+                "base_url": cfg.get("base_url", "") if isinstance(cfg, dict) else "",
+            })
+
+        return {
+            "default_adapter": default_adapter,
+            "adapters": adapters,
+            "workers": WorkerRegistry(root=_runtime_root).list(),
+            "kill_switch": RuntimeControl(root=_runtime_root).kill_switch_enabled(),
+        }
+
+    @router.get("/agents")
+    def agents_dashboard():
+        agents: List[Dict[str, Any]] = []
+        try:
+            from .agent_registry import AgentRegistry, list_builtin_specialists
+
+            agents.extend({**agent.to_dict(), "source": "agents.yaml"} for agent in AgentRegistry(Path("agents.yaml")).list_agents())
+            agents.extend({**agent.to_dict(), "source": "builtin"} for agent in list_builtin_specialists())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("agents dashboard load failed: %s", exc)
+        seen: Dict[str, Dict[str, Any]] = {}
+        for agent in agents:
+            seen.setdefault(str(agent.get("name") or ""), agent)
+        return {"agents": sorted(seen.values(), key=lambda item: str(item.get("name", "")))}
+
+    @router.get("/skills")
+    def skills_dashboard():
+        from .core.skills import SkillRegistry
+
+        return {"skills": [manifest.to_dict() for manifest in SkillRegistry().list()]}
+
+    @router.post("/approvals/{approval_id}/approve")
+    def approve_policy_request(approval_id: str):
+        from dataclasses import asdict
+
+        from .core.policy import ApprovalManager
+
+        try:
+            return asdict(ApprovalManager(root=_runtime_root).approve(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    @router.post("/approvals/{approval_id}/deny")
+    def deny_policy_request(approval_id: str):
+        from dataclasses import asdict
+
+        from .core.policy import ApprovalManager
+
+        try:
+            return asdict(ApprovalManager(root=_runtime_root).deny(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 
     # ── Config ────────────────────────────────────────────────────────────
     from . import config_admin as ca
