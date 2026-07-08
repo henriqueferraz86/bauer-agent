@@ -1,0 +1,21 @@
+id: bauer.project
+name: Bauer Project
+version: 1.0.0
+description: Project planning and workspace organization capability.
+capabilities:
+  - project.plan
+  - project.organize
+permissions:
+  - filesystem.read
+  - filesystem.write
+risk: medium
+platforms:
+  - windows
+  - linux
+  - darwin
+inputs:
+  prompt:
+    type: string
+outputs:
+  summary:
+    type: text

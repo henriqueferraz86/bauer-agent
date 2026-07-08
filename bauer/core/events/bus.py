@@ -48,6 +48,7 @@ class EventBus:
             data=data or {},
         )
         self.store.append("events", event)
+        self._record_observability(event)
         self._notify(event)
         return event
 
@@ -66,6 +67,15 @@ class EventBus:
                 handler(event)
             except Exception as exc:
                 logger.debug("event subscriber failed for %s: %s", event.event_type, exc)
+
+    def _record_observability(self, event: Event) -> None:
+        try:
+            from ..observability import AuditLog, RunTraceStore
+
+            AuditLog(self.store).record_event(event)
+            RunTraceStore(self.store).record_event(event)
+        except Exception as exc:
+            logger.debug("observability recording failed for %s: %s", event.event_type, exc)
 
     @staticmethod
     def to_dict(event: Event) -> dict[str, Any]:

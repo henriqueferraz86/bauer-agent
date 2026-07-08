@@ -1,0 +1,23 @@
+id: bauer.devops
+name: Bauer DevOps
+version: 1.0.0
+description: DevOps operations, Docker, CI/CD and deployment diagnostics.
+capabilities:
+  - devops.operate
+  - container.docker
+  - ci.cd
+permissions:
+  - filesystem.read
+  - shell.execute
+  - network.request
+risk: high
+platforms:
+  - windows
+  - linux
+  - darwin
+inputs:
+  task:
+    type: string
+outputs:
+  result:
+    type: text

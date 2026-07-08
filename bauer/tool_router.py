@@ -383,6 +383,9 @@ class ToolRouter(
         tool_context: str | None = None,
         tool_policy_path: str | Path | None = None,
         tool_allowlist: "list[str] | set[str] | None" = None,
+        policy_enabled: bool = False,
+        policy_rules_path: str | Path | None = None,
+        policy_root: str | Path = "memory/runtime",
         postiz_api_key: str = "",
         postiz_api_url: str = "",
     ):
@@ -413,6 +416,9 @@ class ToolRouter(
         self._tool_call_count = 0              # contador redefenido por sessão
         self.tool_context = _normalize_tool_context(tool_context)
         self._tool_policy = load_tool_policy(self.workspace, explicit_path=tool_policy_path)
+        self._policy_enabled = policy_enabled
+        self._policy_rules_path = policy_rules_path
+        self._policy_root = Path(policy_root)
         self._runtime_session_id = session_id or None
         self._runtime_run_id = run_id or None
         self._event_bus = None
@@ -1478,6 +1484,75 @@ class ToolRouter(
         action = {"action": tool_name, "args": tool_args}
         return self.execute(action)
 
+    def _evaluate_runtime_policy(self, tool_name: str, args: dict) -> None:
+        operation = _policy_operation_for_tool(tool_name)
+        if operation is None:
+            return
+        approval_id = str(args.get("approval_id") or "")
+        try:
+            from .core.policy import ApprovalManager, PolicyEngine
+
+            root = self._policy_root
+            approvals = ApprovalManager(root=root, event_bus=self._event_bus)
+            if approval_id and approvals.is_approved(approval_id, operation=operation, tool_name=tool_name):
+                return
+            engine = PolicyEngine(workspace=self.workspace, rules_path=self._policy_rules_path)
+            decision = engine.evaluate(operation, args)
+            if self._event_bus is not None:
+                self._event_bus.publish(
+                    "policy.evaluated",
+                    run_id=self._runtime_run_id,
+                    session_id=self._runtime_session_id,
+                    tool_name=tool_name,
+                    status=decision.action,
+                    message=decision.reason,
+                    data={
+                        "operation": operation,
+                        "risk_level": decision.risk_level,
+                        "matched_rules": decision.matched_rules,
+                    },
+                )
+            if decision.action == "deny":
+                if self._event_bus is not None:
+                    self._event_bus.publish(
+                        "approval.denied",
+                        run_id=self._runtime_run_id,
+                        session_id=self._runtime_session_id,
+                        tool_name=tool_name,
+                        status="denied",
+                        message=decision.reason,
+                        data={"operation": operation, "risk_level": decision.risk_level},
+                    )
+                raise ToolError(f"policy denied: {decision.reason}")
+            if decision.action == "ask":
+                record = approvals.request(
+                    operation=operation,
+                    tool_name=tool_name,
+                    reason=decision.reason,
+                    risk_level=decision.risk_level,
+                    payload=args,
+                    run_id=self._runtime_run_id,
+                    session_id=self._runtime_session_id,
+                )
+                if self._runtime_run_id:
+                    try:
+                        from .core.runtime.run_manager import RunManager
+
+                        RunManager(root=root, event_bus=self._event_bus).update_run(
+                            self._runtime_run_id,
+                            status="waiting_approval",
+                        )
+                    except Exception:
+                        pass
+                raise ToolError(
+                    f"waiting_approval: approval_id={record.id} operation={operation} "
+                    f"risk={decision.risk_level} reason={decision.reason}"
+                )
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"policy evaluation failed: {exc}") from exc
+
     def execute(self, action_json: str | dict) -> str:
         """Parseia, valida e executa uma tool action.
 
@@ -1523,6 +1598,9 @@ class ToolRouter(
             raise ToolError(
                 f"tool denied: '{name}' nao permitido no contexto '{self.tool_context}'."
             )
+
+        if self._policy_enabled:
+            self._evaluate_runtime_policy(name, args)
 
         # LIMITS-001: enforça max_tool_calls por sessão
         self._tool_call_count += 1
@@ -1772,7 +1850,6 @@ class ToolRouter(
             pass  # hooks nunca bloqueiam execução
 
         return result
-
     def _publish_tool_event(
         self,
         event_type: str,
@@ -1908,6 +1985,33 @@ class ToolRouter(
             raise ToolError("A action JSON deve ser um objeto ({{...}}), nao lista ou valor simples.")
 
         return result
+
+
+def _policy_operation_for_tool(tool_name: str) -> str | None:
+    mapping = {
+        "run_command": "shell.execute",
+        "execute_code": "shell.execute",
+        "process": "shell.execute",
+        "delete_file": "filesystem.delete",
+        "write_file": "filesystem.write",
+        "append_file": "filesystem.write",
+        "patch": "filesystem.write",
+        "move_file": "filesystem.write",
+        "create_dir": "filesystem.write",
+        "read_file": "filesystem.read",
+        "list_dir": "filesystem.read",
+        "glob_files": "filesystem.read",
+        "regex_search": "filesystem.read",
+        "search_text": "filesystem.read",
+        "social_post": "social.publish",
+        "channel_send": "social.publish",
+        "send_message": "social.publish",
+        "browser_click": "os.ui_control",
+        "browser_type": "os.ui_control",
+        "browser_press": "os.ui_control",
+        "browser_cdp": "os.ui_control",
+    }
+    return mapping.get(tool_name)
 
     # P4: todas as tools por categoria foram extraídas para bauer/tools/*.py
     # (mixins herdados na declaração da classe). Esta classe contém agora só o

@@ -318,6 +318,9 @@ class AgnoRuntimeAdapter:
             max_tool_calls=500,
             tool_context=self.tool_context,
             tool_policy_path=self.tool_policy_path,
+            policy_enabled=True,
+            policy_rules_path=self.adapter_config.get("policy_rules_path"),
+            policy_root=self.adapter_config.get("policy_root", "memory/runtime"),
             tool_allowlist=["read_file", "write_file", "list_dir", "run_command", "web_search", "memory"],
         )
 
