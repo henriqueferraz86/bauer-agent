@@ -563,7 +563,7 @@ class TestTabCompletion:
 
     def test_slash_base_has_expected_commands(self):
         from bauer.agent import _SLASH_BASE
-        required = {"/exit", "/clear", "/status", "/model", "/sessions",
+        required = {"/exit", "/clear", "/status", "/model", "/listen", "/sessions",
                     "/memory", "/task", "/spec", "/project", "/agents"}
         for cmd in required:
             assert cmd in _SLASH_BASE, f"Comando {cmd!r} ausente de _SLASH_BASE"
@@ -583,6 +583,17 @@ class TestTabCompletion:
         texts = [c.text for c in completions]
         # /memory e /memory search devem aparecer
         assert any("memory" in t for t in texts)
+
+    def test_slash_completer_returns_listen(self):
+        try:
+            from bauer.agent import _SlashCompleter
+            from prompt_toolkit.document import Document
+            from prompt_toolkit.completion import CompleteEvent
+        except ImportError:
+            pytest.skip("prompt_toolkit nÃ£o instalado")
+
+        completions = list(_SlashCompleter().get_completions(Document("/lis"), CompleteEvent()))
+        assert any(c.text == "/listen" for c in completions)
 
     def test_slash_completer_ignores_non_slash(self):
         try:

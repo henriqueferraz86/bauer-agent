@@ -288,6 +288,24 @@ def test_agent_text_response_no_tool(ws: Path, router: ToolRouter):
     assert client.chat_stream.call_count == 1
 
 
+def test_agent_listen_command_sends_transcript_to_model(ws: Path, router: ToolRouter):
+    """Comando /listen captura voz e usa a transcricao como turno do usuario."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Resposta por texto.")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input", return_value="resuma o projeto"):
+        with patch("builtins.input", side_effect=["/listen", EOFError]):
+            run_agent_session(client, "test-model", 4096, console, router)
+
+    assert client.chat_stream.call_count == 1
+    first_call_payload = client.chat_stream.call_args_list[0][0][1]
+    contents = [m["content"] for m in first_call_payload]
+    assert "resuma o projeto" in contents
+
+
 def test_agent_single_tool_call(ws: Path, router: ToolRouter):
     """Modelo chama uma tool e depois responde com texto."""
     from bauer.agent import run_agent_session

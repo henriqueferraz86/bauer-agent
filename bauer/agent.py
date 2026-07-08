@@ -55,6 +55,7 @@ _DISPATCH_CMDS = {"/dispatch"}
 _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
+_LISTEN_CMDS = {"/listen", "/ouvir"}
 _THUMBSUP_CMDS = {"/thumbsup", "/bom", "/positivo", "/like"}
 _THUMBSDOWN_CMDS = {"/thumbsdown", "/ruim", "/negativo", "/dislike"}
 
@@ -64,6 +65,7 @@ _SLASH_BASE = [
     "/clear",
     "/status",
     "/model",
+    "/listen",
     "/sessions",
     "/spec",
     "/spec new",
@@ -104,6 +106,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/clear":          "limpa o histórico",
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
+    "/listen":         "fala com o Bauer pelo microfone",
     "/sessions":       "lista sessões salvas",
     "/spec":           "lista specs do projeto",
     "/spec new":       "cria novo spec (wizard)",
@@ -236,6 +239,25 @@ except ImportError:
     _PT_AVAILABLE = False
     _make_prompt_session = None  # type: ignore[assignment]
     _PT_STYLE = None             # type: ignore[assignment]
+
+
+def _capture_listen_input(console: Console) -> str | None:
+    """Capture microphone input and return the transcribed text for a chat turn."""
+    try:
+        from .audio_capture import capture_voice_input
+
+        text = capture_voice_input(console=console)
+    except ImportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return None
+    except Exception as exc:
+        console.print(f"[red]Erro ao ouvir: {exc}[/red]")
+        return None
+
+    if not text or not text.strip():
+        console.print("[yellow]Nenhum audio capturado.[/yellow]")
+        return None
+    return text.strip()
 
 
 def _set_blink_underline() -> None:
@@ -4262,6 +4284,7 @@ def run_agent_session(
         provider=_provider or None,
         commands=[
             ("/model", "trocar"),
+            ("/listen", "falar"),
             ("/status", "stats"),
             ("/clear", "limpar"),
             ("/memory", "memoria"),
@@ -4402,6 +4425,12 @@ def run_agent_session(
 
         if not user_input:
             continue
+        if user_input.lower() in _LISTEN_CMDS:
+            listened = _capture_listen_input(console)
+            if not listened:
+                continue
+            console.print(f"[dim]Voce disse:[/dim] {listened}")
+            user_input = listened
         if user_input.lower() in _EXIT_CMDS:
             console.print("[dim]Ate logo.[/dim]")
             stats.save()
