@@ -749,6 +749,13 @@ auxiliary:
     provider: ""
     model: ""
 
+  # Modelo do roteador de intenções do Bauer OS (Command Palette Ctrl+Space).
+  # Interpreta comandos livres ("abre o navegador e pesquisa X") e escolhe a
+  # skill correspondente. Um modelo pequeno e rápido é suficiente.
+  intent_router:
+    provider: ""
+    model: ""
+
 
 # =============================================================================
 # TELEGRAM — bot conversacional via long-polling

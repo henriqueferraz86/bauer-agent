@@ -10,6 +10,8 @@ interface OsCommandResult {
   url?: string;
   approval?: { id: string; status: string; risk_level: string };
   run?: { id: string; status: string; agent_id: string };
+  skill_id?: string;
+  output?: Record<string, unknown>;
   suggestions?: string[];
 }
 
@@ -95,6 +97,14 @@ export default function CommandPalette() {
     if (result.kind === "open_external" && result.url) {
       window.open(result.url, "_blank", "noopener,noreferrer");
       close();
+      return;
+    }
+    if (result.kind === "skill_executed") {
+      setStatus(`✓ ${result.label || result.skill_id || "Skill"}: ${result.message}`);
+      return;
+    }
+    if (result.kind === "skill_failed" || result.kind === "denied") {
+      setStatus(`✗ ${result.label || "Comando"}: ${result.message}`);
     }
   }
 

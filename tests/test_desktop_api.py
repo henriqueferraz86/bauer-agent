@@ -445,6 +445,75 @@ class TestBauerOsCommandEndpoint:
         events = env["client"].get("/api/events").json()["events"]
         assert any(event["tool_name"] == "bauer_os.pause_agent" for event in events)
 
+    def test_os_command_long_text_routes_intent_to_skill(self, env):
+        """Fluxo de aceite Sprint 24: intenção → skill → policy → executa → evento."""
+        from bauer.os_intent import IntentDecision
+
+        decision = IntentDecision(
+            skill_id="windows.browser",
+            inputs={"url": "https://www.google.com/search?q=agno+docs"},
+            confidence=0.9,
+            reason="pesquisa na web",
+        )
+        with patch("bauer.os_intent.route_intent", return_value=decision), \
+                patch("bauer.core.skills.windows.webbrowser.open", return_value=True) as opened:
+            r = env["client"].post(
+                "/api/os/command",
+                json={"text": "abre o navegador e pesquisa docs do agno"},
+            )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "skill_executed"
+        assert data["skill_id"] == "windows.browser"
+        assert data["output"]["url"].startswith("https://www.google.com/search")
+        opened.assert_called_once()
+        # Execução auditada: eventos de skill publicados no Event Bus.
+        events = env["client"].get("/api/events").json()["events"]
+        types = {event["event_type"] for event in events}
+        assert "skill.selected" in types
+        assert "skill.executed" in types
+
+    def test_os_command_intent_high_risk_requires_approval(self, env):
+        """Skill com permissão shell.execute cai em approval, não executa direto."""
+        from bauer.os_intent import IntentDecision
+
+        decision = IntentDecision(
+            skill_id="windows.powershell_safe",
+            inputs={"command": "Get-Process"},
+            confidence=0.9,
+            reason="comando de sistema",
+        )
+        with patch("bauer.os_intent.route_intent", return_value=decision):
+            r = env["client"].post(
+                "/api/os/command",
+                json={"text": "roda um powershell listando os processos abertos"},
+            )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "approval_required"
+        assert data["approval"]["operation"] == "skill.execute"
+        approvals = env["client"].get("/api/obs/approvals").json()["approvals"]
+        assert any(item["id"] == data["approval"]["id"] for item in approvals)
+
+    def test_os_command_unknown_when_router_unavailable(self, env):
+        """Sem LLM configurado, o fallback determinístico continua respondendo."""
+        with patch("bauer.os_intent.route_intent", return_value=None):
+            r = env["client"].post(
+                "/api/os/command",
+                json={"text": "faz alguma coisa muito vaga que nada reconhece"},
+            )
+        data = r.json()
+        assert r.status_code == 200
+        assert data["kind"] == "unknown"
+        assert data["suggestions"]
+
+    def test_os_command_short_navigation_still_wins_over_intent(self, env):
+        """Atalhos curtos não pagam o custo do LLM (nem podem ser sequestrados)."""
+        with patch("bauer.os_intent.route_intent") as router:
+            r = env["client"].post("/api/os/command", json={"text": "mostrar runs"})
+        assert r.json()["kind"] == "navigate"
+        router.assert_not_called()
+
 
 class TestAuthWiring:
     def test_verify_key_applied(self, tmp_path):

@@ -72,6 +72,7 @@ VALID_SLOTS: frozenset[str] = frozenset({
     "background_reviewer",  # G10
     "approval_model",       # G4 — revisao LLM de tools de alto risco
     "vision_model",         # G18.4 — tools de visao (browser_vision/vision_analyze/video)
+    "intent_router",        # Bauer OS — Command Palette: texto livre → skill
 })
 
 

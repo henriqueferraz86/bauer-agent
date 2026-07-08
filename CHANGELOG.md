@@ -3,6 +3,15 @@
 Todas as mudanças notáveis são documentadas aqui.
 Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Bauer OS (Sprint 24 — alpha)
+- Home unificada: rota `/` do desktop agrega agentes ativos, aprovações pendentes, tarefas agendadas com falha, budget do dia e últimas execuções (`GET /api/os/home`).
+- Command Palette com roteador de intenções por LLM: comandos livres ("abre o navegador e pesquisa docs do Agno") viram skill + inputs via slot `auxiliary.intent_router`, executados pelo SkillExecutor (policy → approval → eventos). Fallback determinístico preservado quando o LLM está indisponível.
+- Atalhos de navegação do palette só disparam em comandos curtos; frases compostas vão pro roteador.
+- `windows.browser`: aliases de navegador padrão ("default", "padrão", "system") não são mais tratados como executável.
+- "Agno" removido das sugestões do palette ("status agno" → "status do runtime"); segue visível apenas em telas técnicas (RFC-005).
+
 ## [0.9.0b1] - 2026-07-08
 
 ### Adicionado

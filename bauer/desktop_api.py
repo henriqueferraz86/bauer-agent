@@ -452,6 +452,11 @@ def build_desktop_router(
         normalized = text.casefold()
         event_bus = EventBus(root=_runtime_root)
 
+        # Atalhos de navegação só valem para comandos curtos ("mostrar runs").
+        # Frases longas ("abre o navegador e pesquisa docs do agno") carregam
+        # intenção composta e devem chegar ao roteador de intenção lá embaixo.
+        is_short = len(normalized.split()) <= 4
+
         def navigation(path: str, label: str) -> dict[str, Any]:
             return {
                 "kind": "navigate",
@@ -460,11 +465,11 @@ def build_desktop_router(
                 "message": f"Abrindo {label}.",
             }
 
-        if any(term in normalized for term in ("ver runs", "mostrar runs", "listar runs", "runs")):
+        if is_short and any(term in normalized for term in ("ver runs", "mostrar runs", "listar runs", "runs")):
             return navigation("/runs", "Runs")
-        if any(term in normalized for term in ("aprovar", "aprovacao", "aprova", "pendente")):
+        if is_short and any(term in normalized for term in ("aprovar", "aprovacao", "aprova", "pendente")):
             return navigation("/approvals", "Approvals")
-        if any(term in normalized for term in ("skill", "capability", "capabilities")):
+        if is_short and any(term in normalized for term in ("skill", "capability", "capabilities")):
             return navigation("/skills", "Skills")
         if any(term in normalized for term in ("pausar agente", "pausar agent", "pause agent", "pause agente")):
             agent_id = "default"
@@ -489,13 +494,13 @@ def build_desktop_router(
                 "agent_id": agent_id,
                 "message": f"Pausa registrada para agent {agent_id}.",
             }
-        if any(term in normalized for term in ("agent", "agente")) and not any(term in normalized for term in ("rodar", "executar")):
+        if is_short and any(term in normalized for term in ("agent", "agente")) and not any(term in normalized for term in ("rodar", "executar")):
             return navigation("/agents", "Agents")
-        if any(term in normalized for term in ("runtime", "agno", "worker")):
+        if is_short and any(term in normalized for term in ("runtime", "agno", "worker")):
             return navigation("/runtime", "Runtime")
-        if any(term in normalized for term in ("arquivo", "workspace", "pesquisar arquivo")):
+        if is_short and any(term in normalized for term in ("arquivo", "workspace", "pesquisar arquivo")):
             return navigation("/projects", "Workspace")
-        if any(term in normalized for term in ("abrir navegador", "navegador", "browser")):
+        if is_short and any(term in normalized for term in ("abrir navegador", "navegador", "browser")):
             return {
                 "kind": "open_external",
                 "label": "Navegador",
@@ -572,6 +577,59 @@ def build_desktop_router(
                 "run": asdict(run),
                 "session": asdict(session),
                 "message": f"Run criada para agent {agent_id}.",
+            }
+
+        # Sem atalho determinístico → roteador de intenção (LLM auxiliar).
+        # O SkillExecutor cuida de policy → approval → execução → eventos;
+        # aqui só interpretamos a intenção e mapeamos o resultado pro palette.
+        intent = None
+        manifest = None
+        try:
+            from .core.skills import SkillExecutor, SkillRegistry
+            from .os_intent import route_intent
+
+            registry = SkillRegistry()
+            intent = route_intent(text, registry.list())
+            if intent is not None:
+                manifest = registry.get(intent.skill_id)
+        except Exception as exc:  # noqa: BLE001 — intent é best-effort.
+            logger.debug("os command intent routing failed: %s", exc)
+            intent = None
+        if intent is not None and manifest is not None:
+            result = SkillExecutor(
+                workspace=get_workspace(),
+                runtime_root=_runtime_root,
+                event_bus=event_bus,
+            ).execute(manifest, intent.inputs)
+            if result.status == "completed":
+                return {
+                    "kind": "skill_executed",
+                    "label": manifest.name,
+                    "skill_id": manifest.id,
+                    "output": result.output,
+                    "message": intent.reason or f"{manifest.name} executada.",
+                }
+            if result.status == "waiting_approval":
+                return {
+                    "kind": "approval_required",
+                    "label": manifest.name,
+                    "approval": result.output.get("approval"),
+                    "policy": result.output.get("decision"),
+                    "message": "Acao sensivel enviada para aprovacao.",
+                }
+            if result.status == "denied":
+                decision_data = result.output.get("decision") or {}
+                return {
+                    "kind": "denied",
+                    "label": manifest.name,
+                    "message": decision_data.get("reason") or "Acao negada pela policy.",
+                    "policy": decision_data,
+                }
+            return {
+                "kind": "skill_failed",
+                "label": manifest.name,
+                "skill_id": manifest.id,
+                "message": str(result.output.get("error") or "Falha ao executar a skill."),
             }
 
         return {
