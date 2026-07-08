@@ -421,6 +421,12 @@ def build_desktop_router(
 
         return {"approvals": [asdict(record) for record in ApprovalManager(root=_runtime_root).list(status=status or None)]}
 
+    @router.get("/obs/budget")
+    def obs_budget():
+        from .core.runtime.autonomy import BudgetManager
+
+        return BudgetManager(root=_runtime_root).status()
+
     # ── Config ────────────────────────────────────────────────────────────
     from . import config_admin as ca
     from . import config_profiles as cp

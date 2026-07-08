@@ -53,12 +53,18 @@ interface Approval {
   run_id?: string | null;
 }
 
+interface BudgetStatus {
+  profile: { mode: string };
+  daily: { used_usd: number; limit_usd: number | null; remaining_usd: number | null; exceeded: boolean };
+}
+
 export default function Observability() {
   const [sum, setSum] = useState<Summary | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [spans, setSpans] = useState<TraceSpan[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [selectedRunId, setSelectedRunId] = useState("");
 
   useEffect(() => {
@@ -72,6 +78,7 @@ export default function Observability() {
       api.get<{ approvals: Approval[] }>("/api/obs/approvals?status=pending").then((r) => {
         setApprovals(r.approvals);
       }).catch(() => {});
+      api.get<BudgetStatus>("/api/obs/budget").then(setBudget).catch(() => {});
     };
     load();
     const t = setInterval(load, 8000);
@@ -111,6 +118,8 @@ export default function Observability() {
           <div className="metric"><div className="lbl"><i className="ti ti-activity" /> ativas</div><div className="val">{active}</div></div>
           <div className="metric"><div className="lbl"><i className="ti ti-alert-triangle" /> falhas</div><div className="val">{failed}</div></div>
           <div className="metric"><div className="lbl"><i className="ti ti-shield-question" /> aprovacoes</div><div className="val">{approvals.length}</div></div>
+          <div className="metric"><div className="lbl"><i className="ti ti-lock-access" /> autonomia</div><div className="val">{budget?.profile.mode || "-"}</div></div>
+          <div className="metric"><div className="lbl"><i className="ti ti-coin" /> budget hoje</div><div className="val">${(budget?.daily.remaining_usd ?? 0).toFixed(2)}</div></div>
           <div className="metric"><div className="lbl"><i className="ti ti-brain" /> tokens hoje</div><div className="val">{(sum?.tokens_today ?? 0).toLocaleString()}</div></div>
           <div className="metric"><div className="lbl"><i className="ti ti-clock" /> p95</div><div className="val">{sum?.p95_ms ? `${Math.round(sum.p95_ms)}ms` : "-"}</div></div>
         </div>

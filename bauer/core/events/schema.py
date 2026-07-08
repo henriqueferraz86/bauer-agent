@@ -22,6 +22,12 @@ EventType = Literal[
     "approval.requested",
     "approval.accepted",
     "approval.denied",
+    "schedule.triggered",
+    "schedule.skipped",
+    "schedule.failed",
+    "budget.warning",
+    "budget.exceeded",
+    "autonomy.changed",
 ]
 
 EVENT_TYPES: tuple[str, ...] = (
@@ -39,6 +45,12 @@ EVENT_TYPES: tuple[str, ...] = (
     "approval.requested",
     "approval.accepted",
     "approval.denied",
+    "schedule.triggered",
+    "schedule.skipped",
+    "schedule.failed",
+    "budget.warning",
+    "budget.exceeded",
+    "autonomy.changed",
 )
 
 

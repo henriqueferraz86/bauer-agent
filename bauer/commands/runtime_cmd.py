@@ -18,6 +18,50 @@ runtime_service_app = typer.Typer(
 runtime_app.add_typer(runtime_service_app, name="service")
 
 
+@runtime_app.command("recover")
+def runtime_recover_cmd(
+    max_age_s: int = typer.Option(900, "--max-age-s", min=1),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Marca runs travadas como failed."""
+    from ..core.runtime.resilience import RuntimeRecovery
+
+    recovered = RuntimeRecovery(root=state_dir).recover_stuck_runs(max_age_s=max_age_s)
+    if not recovered:
+        console.print("[green]runtime recover[/green] nenhuma run travada encontrada")
+        return
+    table = Table(title="Recovered Runs", show_lines=False)
+    table.add_column("run_id", style="cyan")
+    table.add_column("status")
+    table.add_column("error")
+    for item in recovered:
+        table.add_row(item["run_id"], item["status"], item.get("error") or "")
+    console.print(table)
+
+
+@runtime_app.command("kill-switch")
+def runtime_kill_switch_cmd(
+    action: str = typer.Argument(..., help="on | off | status"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Liga/desliga bloqueio global de novas execucoes."""
+    from ..core.runtime.resilience import RuntimeControl
+
+    control = RuntimeControl(root=state_dir)
+    normalized = action.strip().lower()
+    if normalized in {"on", "enable", "enabled"}:
+        record = control.set_kill_switch(True)
+    elif normalized in {"off", "disable", "disabled"}:
+        record = control.set_kill_switch(False)
+    elif normalized == "status":
+        record = {"enabled": control.kill_switch_enabled()}
+    else:
+        console.print("[red]Uso:[/red] bauer runtime kill-switch on|off|status")
+        raise typer.Exit(code=1)
+    state = "on" if record["enabled"] else "off"
+    console.print(f"[green]kill-switch[/green] {state}")
+
+
 @runtime_app.command("list")
 def runtime_list_cmd(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
