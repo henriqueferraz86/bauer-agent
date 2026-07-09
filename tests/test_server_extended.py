@@ -437,6 +437,14 @@ def test_stream_turn_timeout_returns_friendly_message(tmp_path: Path):
     relogio globalmente via "bauer.server.time.monotonic" afeta o modulo time
     inteiro (o mesmo objeto usado pelo scheduling interno do asyncio/uvicorn),
     o que trava o event loop em vez de so afetar o codigo sob teste.
+
+    NÃO afirma `chat_stream.call_count`: desde que /stream passou a rodar
+    run_one_turn_with_fallback numa thread de fundo (motor compartilhado com
+    o CLI), o loop de tool calls do worker continua de propósito DEPOIS que o
+    gerador desiste e devolve a mensagem de timeout — é exatamente o
+    comportamento que permite o turno concluir em segundo plano. Quantas
+    chamadas já rodaram no instante exato do assert é ruído de agendamento de
+    thread, não um invariante do comportamento.
     """
     from bauer.tool_router import ToolRouter
 
@@ -460,11 +468,79 @@ def test_stream_turn_timeout_returns_friendly_message(tmp_path: Path):
         resp = tc.get("/stream?message=que horas sao")
 
     assert resp.status_code == 200
-    assert "Demorei demais" in resp.text
+    assert "passou de" in resp.text  # mensagem honesta sobre timeout (2026-07-09)
     assert "event: done" in resp.text
-    # 1o tool call ainda cabe no prazo (checagem eh no TOPO do loop); o
-    # timeout so dispara na 2a volta, antes de chamar o modelo de novo.
-    assert mock_client.chat_stream.call_count == 1
+
+
+def test_stream_timeout_worker_persists_full_history_after_background_completes(tmp_path: Path):
+    """Regressão real do usuário: turno estourou o timeout, a UI mostrou
+    'cancelei', mas o arquivo só apareceu na 2ª mensagem — porque a thread do
+    turno segue rodando em segundo plano após o timeout (é uma thread órfã,
+    não cancelada de verdade), e a persistência antiga só acontecia no
+    caminho feliz do gerador. Se o timeout cortava ANTES do turno terminar, a
+    sessão salva ficava incompleta (perdia os tool calls que rodaram DEPOIS
+    do corte) e a run ficava "failed" para sempre — mesmo quando o trabalho
+    real concluiu com sucesso.
+
+    Agora o `_worker` persiste sozinho, sempre, no fim do turno real — este
+    teste espera o trabalho de fundo terminar e confirma que a sessão salva
+    contém a conversa completa e a run convergiu para "completed"."""
+    import time as _time
+    from bauer.tool_router import ToolRouter
+
+    calls = {"n": 0}
+
+    def _slow_then_fast(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            _time.sleep(0.15)  # ultrapassa o deadline minúsculo do teste
+            return iter(['{"action": "calculate", "args": {"expression": "1+1"}}'])
+        return iter(["Cálculo concluído: 2."])
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = _slow_then_fast
+    router = ToolRouter(workspace=tmp_path)
+
+    app = create_app(
+        model_name="phi4-mini", applied_context=4096,
+        router=router, client=mock_client,
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0,
+    )
+    tc = TestClient(app)
+
+    with patch("bauer.server._STREAM_TURN_TIMEOUT_SECONDS", 0.05):
+        resp = tc.get("/stream?message=calcule 1+1")
+
+    assert resp.status_code == 200
+    assert "passou de" in resp.text  # timeout amigável já disparou na stream
+
+    sid = resp.headers["X-Session-ID"]
+    run_id = resp.headers["X-Bauer-Run-ID"]
+
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.session_store import SessionStore
+
+    runtime_root = tmp_path / "sessions" / ".." / "runtime"
+    rm = RunManager(root=(tmp_path / "runtime"))
+    store = SessionStore(tmp_path / "sessions")
+
+    # A thread de fundo ainda está terminando o turno real — espera convergir.
+    deadline = _time.monotonic() + 3.0
+    run = rm.get_run(run_id)
+    while _time.monotonic() < deadline and (run is None or run.status != "completed"):
+        _time.sleep(0.02)
+        run = rm.get_run(run_id)
+
+    assert run is not None and run.status == "completed", (
+        "run deveria convergir para 'completed' quando o trabalho de fundo termina"
+    )
+
+    saved = store.load(sid)
+    blob = "\n".join(str(m.get("content", "")) for m in saved)
+    assert "Cálculo concluído: 2." in blob, (
+        "sessão salva deveria conter a resposta final gerada DEPOIS do timeout"
+    )
 
 
 def test_stream_falls_back_on_provider_429(tmp_path: Path):

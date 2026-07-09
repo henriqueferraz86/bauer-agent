@@ -46,7 +46,12 @@ from typing import Optional
 # "gerando..." indefinidamente e nao ha nenhum sinal de erro. Mesma logica do
 # BAUER_GATEWAY_TURN_TIMEOUT do gateway (channel_base.py), aplicada aqui pro
 # /stream do bauer serve.
-_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "120"))
+#
+# 300s (5min), nao 120s: trabalho de dev real (scaffolding, varios arquivos,
+# builds) passa de 2min com modelos mais lentos (ex. deepseek via OpenRouter
+# fazendo varias rodadas de tool call) — o timeout curto cortava turnos que
+# estavam progredindo normalmente, so mais devagar.
+_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "300"))
 
 
 def _sse(data: str, event: str | None = None) -> str:
@@ -1016,6 +1021,38 @@ def create_app(
                 finally:
                     cost_sink.reset(cost_token)
                     reset_sink(token)
+                    # Persistência ÚNICA aqui (não no gerador): se o turno estourar
+                    # o _STREAM_TURN_TIMEOUT_SECONDS, o gerador já retornou e a SSE
+                    # já fechou, mas esta thread (órfã) continua rodando até o fim
+                    # do turno — write_file/run_command executam de verdade. Sem
+                    # isso, o `store.save` do timeout salvava um ctx.messages
+                    # META-DO-CAMINHO (perdendo os tool calls que rodaram DEPOIS do
+                    # corte), e a run ficava marcada "failed" mesmo quando o
+                    # trabalho terminou com sucesso — daí o usuário via "cancelei"
+                    # mas o arquivo já tinha sido criado (só a 2ª mensagem via o
+                    # resultado). Persistir aqui, sempre, faz a sessão e a run
+                    # convergirem para o estado real assim que o turno de fato
+                    # acaba — mesmo com o cliente HTTP já desconectado.
+                    try:
+                        current = run_manager.get_run(run.id)
+                        already_cancelled = current is not None and current.status == "cancelled"
+                        store.save(sid, ctx.messages)
+                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        if not already_cancelled:
+                            if "error" in result:
+                                run_manager.fail_run(run.id, str(result["error"]))
+                            else:
+                                _record_turn_budget(_cost, run.id, request_agent_id)
+                                _tlog = result.get("tool_log") or []
+                                _metrics.tool_calls_total += len(_tlog)
+                                run_manager.complete_run(
+                                    run.id,
+                                    output={"response": _format_server_response(str(result.get("response", "")))},
+                                    tool_calls_count=len(_tlog),
+                                    cost_estimate=round(_cost.total_usd, 6),
+                                )
+                    except Exception:  # noqa: BLE001 — persistência nunca derruba a thread
+                        _log.exception("Falha ao persistir turno /stream (run %s)", run.id)
                     events.put(("end", ""))
 
             # Sinaliza a skill auto-selecionada para a UI (paridade com a linha
@@ -1075,8 +1112,13 @@ def create_app(
                         return
                     if time.monotonic() > deadline:
                         yield _sse(
-                            "⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
-                            "turno. Tente reformular ou dividir em passos menores."
+                            "⏱ Essa tarefa passou de "
+                            f"{_STREAM_TURN_TIMEOUT_SECONDS}s e a conexão foi "
+                            "encerrada, mas o trabalho pode ter continuado (e "
+                            "concluído) em segundo plano — ações como criar/editar "
+                            "arquivos já executadas não são desfeitas. Confira o "
+                            "resultado antes de repetir o pedido, ou dê uma olhada "
+                            "no workspace/Kanban."
                         )
                         store.save(sid, ctx.messages)
                         session_manager.touch_session(sid, state={"last_run_id": run.id})
@@ -1109,8 +1151,13 @@ def create_app(
 
                 if time.monotonic() > deadline and not ended:
                     yield _sse(
-                        "⏱ Demorei demais nessa pesquisa/tarefa e cancelei este "
-                        "turno. Tente reformular ou dividir em passos menores."
+                        "⏱ Essa tarefa passou de "
+                        f"{_STREAM_TURN_TIMEOUT_SECONDS}s e a conexão foi "
+                        "encerrada, mas o trabalho pode ter continuado (e "
+                        "concluído) em segundo plano — ações como criar/editar "
+                        "arquivos já executadas não são desfeitas. Confira o "
+                        "resultado antes de repetir o pedido, ou dê uma olhada "
+                        "no workspace/Kanban."
                     )
                     store.save(sid, ctx.messages)
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
@@ -1118,19 +1165,17 @@ def create_app(
                     yield _sse(sid, event="done")
                     return
 
+            # Persistência (sessão + status/custo da run) já foi feita no
+            # `finally` do _worker acima — é a ÚNICA fonte de verdade, inclusive
+            # quando o timeout dispara e este trecho abaixo nunca roda (a thread
+            # segue sozinha até o fim e persiste por conta própria). Aqui só
+            # resta emitir o texto final ao cliente ainda conectado.
             if "error" in result:
                 yield _sse(f"[Erro: {result['error']}]")
-                store.save(sid, ctx.messages)
-                session_manager.touch_session(sid, state={"last_run_id": run.id})
-                run_manager.fail_run(run.id, str(result["error"]))
                 yield _sse(sid, event="done")
                 return
 
             raw_response = str(result.get("response", ""))
-            response = _format_server_response(raw_response)
-            tool_log = result.get("tool_log") or []
-            _metrics.tool_calls_total += len(tool_log)
-            _record_turn_budget(_cost, run.id, request_agent_id)
 
             # Cauda: o que ficou retido na gate + resposta que não passou pelo
             # stream (native tool calling não emite deltas de texto; sínteses
@@ -1150,14 +1195,6 @@ def create_app(
             if frame:
                 yield frame
 
-            store.save(sid, ctx.messages)
-            session_manager.touch_session(sid, state={"last_run_id": run.id})
-            run_manager.complete_run(
-                run.id,
-                output={"response": response},
-                tool_calls_count=len(tool_log),
-                cost_estimate=round(_cost.total_usd, 6),
-            )
             yield _sse(sid, event="done")
 
         return StreamingResponse(
