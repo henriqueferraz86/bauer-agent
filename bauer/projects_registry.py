@@ -146,6 +146,46 @@ def set_active(pid: str, *, registry_path: Optional[Path] = None) -> bool:
     return True
 
 
+# Pastas do workspace que não são projetos (infra do próprio Bauer / lixo).
+_SYNC_SKIP_DIRS = {
+    "__pycache__", "node_modules", "memory", "logs", "sessions",
+    ".bauer_serve", ".bauer_worktrees", "venv", ".venv",
+}
+
+
+def sync_workspace_projects(
+    workspace: str | Path,
+    *,
+    registry_path: Optional[Path] = None,
+) -> int:
+    """Semeia o registro com as pastas de projeto do workspace (idempotente).
+
+    O agente cria projetos como subpastas do workspace (barbearia-site,
+    bauerinvest…), mas o registro era só manual — a tela Projetos ficava
+    vazia até o usuário adicionar cada pasta à mão. Retorna quantas pastas
+    foram sincronizadas. Nunca levanta exceção."""
+    count = 0
+    try:
+        ws = Path(workspace).expanduser().resolve()
+        if not ws.is_dir():
+            return 0
+        for child in sorted(ws.iterdir()):
+            if (
+                not child.is_dir()
+                or child.name.startswith(".")
+                or child.name in _SYNC_SKIP_DIRS
+            ):
+                continue
+            try:
+                add_project(child, registry_path=registry_path)
+                count += 1
+            except Exception:  # noqa: BLE001 — uma pasta ruim não derruba o sync
+                continue
+    except Exception:  # noqa: BLE001
+        return count
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Enriquecimento (modelo / gateway / profile) — lido ao vivo do projeto
 # ---------------------------------------------------------------------------

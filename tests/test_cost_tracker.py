@@ -291,3 +291,42 @@ class TestSingleton:
         reset_cost_trackers()
         t2 = get_cost_tracker("s")
         assert t1 is not t2
+
+
+class TestRecordLlmUsage:
+    """record_llm_usage: persistência direta com custo pré-calculado (sink do serve)."""
+
+    def test_writes_record_with_openai_usage(self, tmp_path):
+        from bauer.cost_tracker import record_llm_usage
+        from bauer.desktop_api import cost_summary
+
+        f = tmp_path / "cost.jsonl"
+        rec = record_llm_usage(
+            "sess-1", "openrouter", "deepseek/deepseek-v4-flash",
+            {"prompt_tokens": 100, "completion_tokens": 50}, 0.0123, file_path=f,
+        )
+        assert rec is not None
+        assert rec.total_tokens == 150
+        summary = cost_summary(f)
+        assert summary["tokens_today"] == 150
+        assert summary["calls_today"] == 1
+        assert summary["cost_today_usd"] == 0.0123
+
+    def test_accepts_anthropic_usage_keys(self, tmp_path):
+        from bauer.cost_tracker import record_llm_usage
+
+        f = tmp_path / "cost.jsonl"
+        rec = record_llm_usage(
+            "sess-1", "anthropic", "claude-sonnet-5",
+            {"input_tokens": 30, "output_tokens": 20}, 0.001, file_path=f,
+        )
+        assert rec is not None
+        assert rec.prompt_tokens == 30
+        assert rec.completion_tokens == 20
+
+    def test_no_usage_is_noop(self, tmp_path):
+        from bauer.cost_tracker import record_llm_usage
+
+        f = tmp_path / "cost.jsonl"
+        assert record_llm_usage("s", "p", "m", None, 0.5, file_path=f) is None
+        assert not f.exists()

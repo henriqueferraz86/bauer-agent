@@ -192,6 +192,25 @@ class TestProjectsEndpoints:
         assert env["client"].get(f"/api/projects/{pid}/stats").status_code == 200
         assert env["client"].delete(f"/api/projects/{pid}").status_code == 200
 
+    def test_workspace_folders_auto_discovered(self, env):
+        """Regressão: as pastas de projeto do workspace (criadas pelo agente)
+        nunca apareciam na tela Projetos — o registro era só manual."""
+        ws = env["tmp"] / "workspace"
+        (ws / "barbearia-site").mkdir()
+        (ws / "bauerinvest").mkdir()
+        (ws / "__pycache__").mkdir()      # lixo: não deve virar projeto
+        (ws / ".git").mkdir()             # oculto: não deve virar projeto
+        (ws / "node_modules").mkdir()     # lixo: não deve virar projeto
+        (ws / "notas.txt").write_text("x", encoding="utf-8")  # arquivo: ignora
+
+        r = env["client"].get("/api/projects")
+        assert r.status_code == 200
+        names = {p["name"] for p in r.json()["projects"]}
+        assert {"barbearia-site", "bauerinvest"} <= names
+        assert "__pycache__" not in names
+        assert ".git" not in names
+        assert "node_modules" not in names
+
 
 class TestKanbanEndpoint:
     def test_empty_workspace(self, env):

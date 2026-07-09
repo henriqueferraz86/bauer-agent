@@ -1567,6 +1567,19 @@ def _run_native_tool_turn(
             raise _NativeToolsUnsupported(str(exc)) from exc
         return None  # transiente (timeout, 5xx, rede): tenta de novo no loop
 
+    # Cost meter — mesma medição que _collect_response faz no bridge; sem isto
+    # os turnos native (o caminho comum com OpenAI-compat) nunca reportavam
+    # custo/tokens a quem estivesse medindo (serve, daemon, goal tracker).
+    try:
+        from .cost_meter import provider_from_client, report_llm_cost
+        report_llm_cost(
+            provider_from_client(client),
+            model_name,
+            getattr(client, "last_usage", None),
+        )
+    except Exception:
+        pass
+
     tool_calls = msg.get("tool_calls") or []
     content = msg.get("content") or ""
 

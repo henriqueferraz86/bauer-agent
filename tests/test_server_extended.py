@@ -785,6 +785,51 @@ def test_stream_delivers_final_response_without_deltas(tmp_path: Path):
     assert ("tool", "calculate") in events
 
 
+def test_stream_records_cost_tokens_and_budget(tmp_path: Path):
+    """Regressão: o serve nunca registrava custo/tokens — a Observabilidade
+    ('tokens hoje') e o budget do painel ('budget usado') ficavam em zero para
+    sempre. Cada LLM call do turno vira linha no cost_history.jsonl, o total
+    do turno entra no ledger do BudgetManager e no cost_estimate da run."""
+    from bauer.tool_router import ToolRouter
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.return_value = iter(["Olá! Tudo certo."])
+    mock_client.last_usage = {"prompt_tokens": 100, "completion_tokens": 50}
+    router = ToolRouter(workspace=tmp_path)
+    cost_file = tmp_path / "cost_history.jsonl"
+
+    with patch("bauer.agent._try_parse_tool", return_value=None), \
+         patch("bauer.usage_pricing.estimate_cost_usd", return_value=0.0123), \
+         patch("bauer.cost_tracker._DEFAULT_COST_FILE", cost_file):
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=router, client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        tc = TestClient(app)
+        resp = tc.get("/stream?message=oi")
+
+    assert resp.status_code == 200
+
+    # cost_history.jsonl (fonte da Observabilidade / tokens hoje)
+    import json as _json
+    lines = [_json.loads(ln) for ln in cost_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert lines, "esperava registro no cost_history.jsonl"
+    assert lines[0]["total_tokens"] == 150
+    assert lines[0]["cost_usd"] == 0.0123
+
+    # Ledger de budget (fonte do 'budget usado' do painel)
+    from bauer.core.runtime.autonomy import BudgetManager
+    daily = BudgetManager(root=tmp_path / "runtime").status()["daily"]
+    assert daily["used_usd"] == 0.0123
+
+    # cost_estimate na run (coluna 'custo' da Observabilidade)
+    from bauer.core.runtime.run_manager import RunManager
+    runs = RunManager(root=tmp_path / "runtime").list_runs()
+    assert runs and runs[-1].cost_estimate == 0.0123
+
+
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────
 
 

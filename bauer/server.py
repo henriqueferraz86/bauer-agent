@@ -376,6 +376,8 @@ def create_app(
     approval_manager = ApprovalManager(root=runtime_root, event_bus=event_bus)
     audit_log = AuditLog(event_bus.store)
     trace_store = RunTraceStore(event_bus.store)
+    from .core.runtime.autonomy import BudgetManager
+    budget_manager = BudgetManager(root=runtime_root, event_bus=event_bus)
     try:
         router._event_bus = event_bus  # type: ignore[attr-defined]
         router._policy_root = runtime_root  # type: ignore[attr-defined]
@@ -466,6 +468,37 @@ def create_app(
         while "\n\n\n" in text:
             text = text.replace("\n\n\n", "\n\n")
         return text
+
+    class _TurnCostRecorder:
+        """Sink do cost_meter para um turno do serve.
+
+        run_one_turn reporta cada LLM call em report_llm_cost; sem um sink
+        instalado o serve nunca registrava custo/tokens — a Observabilidade e
+        o budget do painel ficavam eternamente em zero. Cada call vira uma
+        linha no cost_history.jsonl e o total do turno alimenta o ledger de
+        budget (BudgetManager) + cost_estimate da run."""
+
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+            self.total_usd = 0.0
+
+        def __call__(self, provider: str, model: str, usage: dict, cost_usd: float) -> None:
+            self.total_usd += float(cost_usd or 0.0)
+            try:
+                from .cost_tracker import record_llm_usage
+                record_llm_usage(self.session_id, provider, model, usage, cost_usd)
+            except Exception:
+                pass
+
+    def _record_turn_budget(recorder: "_TurnCostRecorder", run_id: str, agent_id: str) -> None:
+        if recorder.total_usd <= 0:
+            return
+        try:
+            budget_manager.record_run_cost(
+                run_id=run_id, agent_id=agent_id, cost_usd=recorder.total_usd,
+            )
+        except Exception as exc:  # noqa: BLE001 — medição nunca derruba o turno
+            _log.debug("budget record falhou: %s", exc)
 
     def _runtime_metrics_snapshot() -> dict:
         runs = run_manager.list_runs()
@@ -801,6 +834,9 @@ def create_app(
         router._runtime_session_id = session_id  # type: ignore[attr-defined]
         router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
+        from .cost_meter import cost_sink
+        _cost = _TurnCostRecorder(session_id)
+        _cost_token = cost_sink.set(_cost)
         try:
             response, tool_log = run_one_turn_with_fallback(
                 ctx, router, _state["client"], _state["model"], _fallback_clients,
@@ -809,8 +845,11 @@ def create_app(
             _log.exception("Erro interno em /chat: %s", exc)
             run_manager.fail_run(run.id, str(exc))
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
+        finally:
+            cost_sink.reset(_cost_token)
 
         _metrics.tool_calls_total += len(tool_log)
+        _record_turn_budget(_cost, run.id, request_agent_id)
         response = _format_server_response(response)
         store.save(session_id, ctx.messages)
         session_manager.touch_session(session_id, state={"last_run_id": run.id})
@@ -818,6 +857,7 @@ def create_app(
             run.id,
             output={"response": response},
             tool_calls_count=len(tool_log),
+            cost_estimate=round(_cost.total_usd, 6),
         )
 
         return ChatResponse(
@@ -912,9 +952,13 @@ def create_app(
                 def on_tool(self, name: str) -> None:
                     events.put(("tool", name))
 
+            _cost = _TurnCostRecorder(sid)
+
             def _worker() -> None:
+                from .cost_meter import cost_sink
                 from .delta_stream import reset_sink, set_sink
                 token = set_sink(_QueueSink())
+                cost_token = cost_sink.set(_cost)
                 try:
                     resp, tool_log = run_one_turn_with_fallback(
                         ctx, router, _state["client"], _state["model"], _fallback_clients,
@@ -924,6 +968,7 @@ def create_app(
                 except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
                     result["error"] = exc
                 finally:
+                    cost_sink.reset(cost_token)
                     reset_sink(token)
                     events.put(("end", ""))
 
@@ -1039,6 +1084,7 @@ def create_app(
             response = _format_server_response(raw_response)
             tool_log = result.get("tool_log") or []
             _metrics.tool_calls_total += len(tool_log)
+            _record_turn_budget(_cost, run.id, request_agent_id)
 
             # Cauda: o que ficou retido na gate + resposta que não passou pelo
             # stream (native tool calling não emite deltas de texto; sínteses
@@ -1064,6 +1110,7 @@ def create_app(
                 run.id,
                 output={"response": response},
                 tool_calls_count=len(tool_log),
+                cost_estimate=round(_cost.total_usd, 6),
             )
             yield _sse(sid, event="done")
 
@@ -1244,14 +1291,20 @@ def create_app(
             )
 
         # ── modo não-streaming (resposta completa) ────────────────────────────
+        from .cost_meter import cost_sink
+        _cost = _TurnCostRecorder(sid)
+        _cost_token = cost_sink.set(_cost)
         try:
             response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
         except Exception as exc:
             _log.exception("Erro interno em /v1/chat/completions: %s", exc)
             run_manager.fail_run(run.id, str(exc))
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
+        finally:
+            cost_sink.reset(_cost_token)
 
         _metrics.tool_calls_total += len(tool_log)
+        _record_turn_budget(_cost, run.id, request_agent_id)
         response = _format_server_response(response)
         store.save(sid, ctx.messages)
         session_manager.touch_session(sid, state={"last_run_id": run.id})
@@ -1259,6 +1312,7 @@ def create_app(
             run.id,
             output={"response": response},
             tool_calls_count=len(tool_log),
+            cost_estimate=round(_cost.total_usd, 6),
         )
 
         # Estima tokens (sem tokenizer real)
@@ -1304,7 +1358,16 @@ def create_app(
     try:
         from .desktop_api import build_desktop_router
 
-        app.include_router(build_desktop_router(verify_key=_verify_key, runtime_root=runtime_root))
+        # workspace/config REAIS deste serve — sem isso o router usa defaults
+        # relativos ao cwd e o Kanban/Projetos leem um workspace diferente do
+        # que as tools kanban_*/write_file do chat escrevem.
+        _dsk_workspace = getattr(router, "workspace", None)
+        app.include_router(build_desktop_router(
+            verify_key=_verify_key,
+            runtime_root=runtime_root,
+            get_workspace=(lambda: _dsk_workspace) if _dsk_workspace else None,
+            get_config_path=(lambda: config_path) if config_path else None,
+        ))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("bauer.server").warning(
             "Desktop API não montada: %s", exc

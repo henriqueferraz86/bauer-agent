@@ -216,6 +216,43 @@ class CostTracker:
                 logger.debug("cost_tracker: alert callback error: %s", exc)
 
 
+def record_llm_usage(
+    session_id: str,
+    provider: str,
+    model: str,
+    usage: Dict[str, Any] | None,
+    cost_usd: float,
+    file_path: Optional[Path] = None,
+) -> Optional[UsageRecord]:
+    """Persiste uma chamada LLM no cost_history.jsonl com custo JÁ calculado.
+
+    Pensado para o sink do cost_meter (serve/gateway): o custo vem do
+    usage_pricing no momento da call — sem lookup de catálogo (rede) no
+    caminho quente. Aceita usage no formato OpenAI (prompt/completion_tokens)
+    ou Anthropic (input/output_tokens). Nunca levanta exceção."""
+    if not usage:
+        return None
+    try:
+        prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        rec = UsageRecord(
+            session_id=session_id,
+            model=model,
+            provider=provider,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cost_usd=float(cost_usd or 0.0),
+        )
+        fp = file_path or _DEFAULT_COST_FILE
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        with open(fp, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec.to_dict()) + "\n")
+        return rec
+    except Exception as exc:  # noqa: BLE001 — medição não pode quebrar o turno
+        logger.debug("cost_tracker: record_llm_usage error: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Singleton global por sessão
 # ---------------------------------------------------------------------------

@@ -207,6 +207,12 @@ def build_desktop_router(
 
     @router.get("/projects")
     def list_projects():
+        # Auto-descoberta: pastas de projeto do workspace entram no registro
+        # (idempotente) — sem isso a tela fica vazia até adicionar à mão.
+        try:
+            pr.sync_workspace_projects(get_workspace())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("projects sync failed: %s", exc)
         return {"projects": pr.list_projects(), "active": pr.get_active()}
 
     @router.post("/projects")
