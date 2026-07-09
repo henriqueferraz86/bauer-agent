@@ -192,3 +192,90 @@ def test_run_one_unknown_agent_falls_back_to_bare_message(monkeypatch, tmp_path:
 class _FakeCfg:
     class model:
         name = "fake-model"
+
+
+# ─── _resolve_cwd_project (detecção/adoção da pasta atual como workspace) ─────
+
+
+class TestResolveCwdProject:
+    """A cola de CLI: detecção automática + adoção com uma confirmação."""
+
+    def _isolate(self, monkeypatch, tmp_path):
+        reg = tmp_path / "projects.json"
+        monkeypatch.setattr("bauer.projects_registry._DEFAULT_REGISTRY", reg)
+        return reg
+
+    def test_registered_dir_auto_used_without_prompt(self, monkeypatch, tmp_path):
+        import bauer.commands.agent_cmd as m
+        from bauer import projects_registry as pr
+
+        self._isolate(monkeypatch, tmp_path)
+        proj = tmp_path / "meu-projeto"
+        proj.mkdir()
+        pr.add_project(proj)
+
+        # confirm NUNCA deve ser chamado para pasta já registrada
+        def _boom(*a, **k):
+            raise AssertionError("não deveria pedir confirmação")
+        monkeypatch.setattr(m.typer, "confirm", _boom)
+
+        got = m._resolve_cwd_project(interactive=True, cwd=proj)
+        assert got is not None
+        assert got.resolve() == proj.resolve()
+
+    def test_new_folder_adopted_on_yes(self, monkeypatch, tmp_path):
+        import bauer.commands.agent_cmd as m
+        from bauer import projects_registry as pr
+
+        self._isolate(monkeypatch, tmp_path)
+        proj = tmp_path / "novo-vazio"
+        proj.mkdir()  # pasta VAZIA — o fluxo do usuário
+
+        monkeypatch.setattr(m.typer, "confirm", lambda *a, **k: True)
+        got = m._resolve_cwd_project(interactive=True, cwd=proj)
+
+        assert got is not None and got.resolve() == proj.resolve()
+        # adoção registrou o projeto (aparece na tela Projetos)
+        assert pr.find_project_for_cwd(proj) is not None
+
+    def test_new_folder_declined_keeps_default(self, monkeypatch, tmp_path):
+        import bauer.commands.agent_cmd as m
+        from bauer import projects_registry as pr
+
+        self._isolate(monkeypatch, tmp_path)
+        proj = tmp_path / "recusado"
+        proj.mkdir()
+
+        monkeypatch.setattr(m.typer, "confirm", lambda *a, **k: False)
+        got = m._resolve_cwd_project(interactive=True, cwd=proj)
+
+        assert got is None
+        assert pr.find_project_for_cwd(proj) is None  # não registrou
+
+    def test_non_interactive_never_adopts(self, monkeypatch, tmp_path):
+        import bauer.commands.agent_cmd as m
+        from bauer import projects_registry as pr
+
+        self._isolate(monkeypatch, tmp_path)
+        proj = tmp_path / "sem-tty"
+        proj.mkdir()
+
+        def _boom(*a, **k):
+            raise AssertionError("não deveria perguntar sem TTY")
+        monkeypatch.setattr(m.typer, "confirm", _boom)
+
+        got = m._resolve_cwd_project(interactive=False, cwd=proj)
+        assert got is None
+        assert pr.find_project_for_cwd(proj) is None
+
+    def test_sensitive_dir_never_adopts(self, monkeypatch, tmp_path):
+        import bauer.commands.agent_cmd as m
+
+        self._isolate(monkeypatch, tmp_path)
+
+        def _boom(*a, **k):
+            raise AssertionError("não deveria perguntar em pasta sensível")
+        monkeypatch.setattr(m.typer, "confirm", _boom)
+
+        got = m._resolve_cwd_project(interactive=True, cwd=Path.home())
+        assert got is None

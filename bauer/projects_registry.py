@@ -132,6 +132,57 @@ def get_project(pid: str, *, registry_path: Optional[Path] = None) -> Optional[D
     return next((p for p in reg["projects"] if p.get("id") == pid), None)
 
 
+def find_project_for_cwd(
+    cwd: str | Path,
+    *,
+    registry_path: Optional[Path] = None,
+) -> Optional[str]:
+    """project_id se ``cwd`` (ou um ancestral) já é um projeto registrado.
+
+    Sobe de ``cwd`` até a raiz do FS; o primeiro diretório cujo ``project_id``
+    consta no registro vence. Deixa `bauer agent` reconhecer a pasta do projeto
+    automaticamente quando o usuário roda de dentro dela (ou de uma subpasta).
+    Retorna None se nada casar."""
+    try:
+        cur = Path(cwd).expanduser().resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    ids = {p.get("id") for p in load_registry(registry_path)["projects"]}
+    if not ids:
+        return None
+    for d in [cur, *cur.parents]:
+        if project_id(d) in ids:
+            return project_id(d)
+    return None
+
+
+def is_sensitive_dir(path: str | Path) -> bool:
+    """True para diretórios que NUNCA devem virar workspace por auto-detecção.
+
+    Guard da adoção automática: raiz de disco/FS, a home do usuário e o
+    ``~/.bauer`` (home do Bauer). Adotar qualquer um desses daria à sandbox
+    acesso de escrita a praticamente tudo — a confirmação nem deve ser
+    oferecida. Um path que nem resolve é tratado como sensível (falha seguro)."""
+    try:
+        p = Path(path).expanduser().resolve()
+    except Exception:  # noqa: BLE001
+        return True
+    if p == p.parent:  # raiz de disco (C:\) ou do FS (/)
+        return True
+    try:
+        if p == Path.home().resolve():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .paths import get_bauer_home
+        if p == get_bauer_home().resolve():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def get_active(registry_path: Optional[Path] = None) -> Optional[str]:
     return load_registry(registry_path).get("active")
 

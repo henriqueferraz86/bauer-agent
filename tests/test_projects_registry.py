@@ -191,3 +191,51 @@ class TestProjectStats:
         pid = pr.add_project(proj_dir, registry_path=reg_path)["id"]
         s = pr.project_stats(pid, registry_path=reg_path)
         assert set(s) == {"sessions", "cost_usd", "total_tokens"}
+
+
+# ---------------------------------------------------------------------------
+# find_project_for_cwd (detecção do projeto pela pasta atual)
+# ---------------------------------------------------------------------------
+
+class TestFindProjectForCwd:
+    def test_none_when_empty_registry(self, reg_path, proj_dir):
+        assert pr.find_project_for_cwd(proj_dir, registry_path=reg_path) is None
+
+    def test_matches_exact_dir(self, reg_path, proj_dir):
+        pid = pr.add_project(proj_dir, registry_path=reg_path)["id"]
+        assert pr.find_project_for_cwd(proj_dir, registry_path=reg_path) == pid
+
+    def test_matches_from_subdir(self, reg_path, proj_dir):
+        """Rodar de uma subpasta do projeto ainda resolve o projeto (sobe a árvore)."""
+        pid = pr.add_project(proj_dir, registry_path=reg_path)["id"]
+        sub = proj_dir / "src" / "components"
+        sub.mkdir(parents=True)
+        assert pr.find_project_for_cwd(sub, registry_path=reg_path) == pid
+
+    def test_none_for_unrelated_dir(self, reg_path, proj_dir, tmp_path):
+        pr.add_project(proj_dir, registry_path=reg_path)
+        other = tmp_path / "outra"
+        other.mkdir()
+        assert pr.find_project_for_cwd(other, registry_path=reg_path) is None
+
+
+# ---------------------------------------------------------------------------
+# is_sensitive_dir (guard da adoção automática)
+# ---------------------------------------------------------------------------
+
+class TestIsSensitiveDir:
+    def test_project_dir_is_not_sensitive(self, proj_dir):
+        assert pr.is_sensitive_dir(proj_dir) is False
+
+    def test_home_is_sensitive(self):
+        assert pr.is_sensitive_dir(Path.home()) is True
+
+    def test_drive_or_fs_root_is_sensitive(self):
+        root = Path(Path.cwd().anchor or "/")
+        assert pr.is_sensitive_dir(root) is True
+
+    def test_bauer_home_is_sensitive(self, monkeypatch, tmp_path):
+        home = tmp_path / ".bauer"
+        home.mkdir()
+        monkeypatch.setenv("BAUER_HOME", str(home))
+        assert pr.is_sensitive_dir(home) is True

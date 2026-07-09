@@ -82,6 +82,61 @@ def _build_fallback_clients(cfg, *, console=None) -> list:
     return clients
 
 
+def _resolve_cwd_project(*, interactive: bool, cwd: "Path | None" = None) -> "Path | None":
+    """Workspace derivado da pasta atual quando `bauer agent` roda de dentro dela.
+
+    - cwd (ou ancestral) já registrado como projeto → usa direto (sem perguntar).
+    - pasta nova/não-registrada → oferece adoção com UMA confirmação; ao aceitar,
+      registra no projects.json (aparece na tela Projetos do desktop) e vira o
+      workspace. Uma pasta VAZIA é adotada normalmente — é justamente o fluxo de
+      "criei a pasta, entrei e quero começar a arquitetar o projeto".
+    - pasta sensível (home, raiz de disco, ~/.bauer) ou não-interativo → None.
+
+    Retorna o Path do workspace, ou None para manter o padrão (~/.bauer/workspace).
+    """
+    from .. import projects_registry as pr
+
+    try:
+        cur = (cwd or Path.cwd()).expanduser().resolve()
+    except Exception:  # noqa: BLE001
+        return None
+
+    if cur == Path(_WORKSPACE_DIR).resolve() or pr.is_sensitive_dir(cur):
+        return None
+
+    pid = pr.find_project_for_cwd(cur)
+    if pid:
+        entry = pr.get_project(pid) or {}
+        proj_path = Path(entry.get("path", cur))
+        console.print(
+            f"[dim]📂 Projeto detectado: [cyan]{entry.get('name', proj_path.name)}"
+            f"[/cyan] — {proj_path}[/dim]"
+        )
+        return proj_path
+
+    if not interactive:
+        return None
+
+    console.print(f"[yellow]Esta pasta ainda não é um projeto Bauer:[/yellow] {cur}")
+    try:
+        adopt = typer.confirm(
+            f"Adotar como workspace do projeto '{cur.name}'?", default=False
+        )
+    except Exception:  # noqa: BLE001 — sem TTY/EOF: não adota
+        return None
+    if not adopt:
+        return None
+    try:
+        entry = pr.add_project(cur)
+        console.print(
+            f"[green]✓ Projeto '{entry['name']}' registrado.[/green] Workspace: {cur}"
+        )
+        return cur
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Não consegui registrar o projeto: {exc}[/red]")
+        return None
+
+
 @agent_app.callback(invoke_without_command=True)
 def agent(
     ctx: typer.Context,
@@ -214,10 +269,21 @@ def agent(
             console.print(f"[dim]Modelo resolvido: '{model_name}' → '{resolved}'[/dim]")
             model_name = resolved
 
-    # ── Empresa ativa — redireciona workspace ANTES de construir o router ────
+    # ── Workspace: projeto da pasta atual OU empresa ativa — ANTES do router ──
     from ..company_manager import CompanyManager as _CompanyManager
     _cm_main = _CompanyManager(_COMPANIES_DIR)
     _active_company_main = _cm_main.get_active()
+
+    # `bauer agent` de dentro de uma pasta de projeto (sem --workspace explícito
+    # e sem empresa ativa): usa/adota essa pasta como workspace, em vez de cair
+    # sempre no ~/.bauer/workspace. Só quando o usuário NÃO passou --workspace.
+    _default_ws = Path(_WORKSPACE_DIR)
+    _ws_is_default = workspace == _default_ws or workspace == _default_ws.resolve()
+    if _ws_is_default and not _active_company_main:
+        _detected = _resolve_cwd_project(interactive=sys.stdin.isatty())
+        if _detected is not None:
+            workspace = _detected
+
     if _active_company_main:
         _default_ws = Path(_WORKSPACE_DIR)
         if workspace == _default_ws or workspace == _default_ws.resolve():
