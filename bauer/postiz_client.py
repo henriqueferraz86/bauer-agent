@@ -91,8 +91,15 @@ class PostizClient:
         """
         date = schedule_at or _dt.datetime.now(_dt.timezone.utc).isoformat()
         images = [{"id": str(i), "path": url} for i, url in enumerate(media_urls or [])]
+        # Normaliza post_type: se for "story", vira "schedule" + settings.post_type
+        effective_type = post_type
+        effective_settings = dict(settings or {})
+        if post_type == "story":
+            effective_type = "schedule"
+            effective_settings.setdefault("post_type", "story")
+
         body = {
-            "type": post_type,
+            "type": effective_type,
             "creationMethod": "bauer-agent",
             "date": date,
             "shortLink": False,
@@ -101,7 +108,7 @@ class PostizClient:
                 {
                     "integration": {"id": iid},
                     "value": [{"content": content, "image": images, "delay": 0}],
-                    "settings": settings,
+                    "settings": effective_settings,
                 }
                 for iid in integration_ids
             ],
