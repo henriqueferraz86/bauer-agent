@@ -830,6 +830,72 @@ def test_stream_records_cost_tokens_and_budget(tmp_path: Path):
     assert runs and runs[-1].cost_estimate == 0.0123
 
 
+def _payload_blob_after_stream(tmp_path, workspace, project_dir, message="cria um componente"):
+    """Sobe /stream com um projeto ativo e devolve o texto de todas as mensagens
+    de sistema enviadas ao modelo (para checar a injeção do hint de projeto)."""
+    from unittest.mock import patch as _patch
+    from bauer.tool_router import ToolRouter
+    from bauer import projects_registry as pr
+
+    reg = tmp_path / "projects.json"
+    captured: dict = {}
+
+    def _cap(model, payload):
+        captured["payload"] = payload
+        return iter(["ok"])
+
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = _cap
+    router = ToolRouter(workspace=workspace)
+
+    with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg), \
+         _patch("bauer.agent._try_parse_tool", return_value=None):
+        if project_dir is not None:
+            pr.add_project(project_dir)  # registra e vira ativo (primeiro projeto)
+        app = create_app(
+            model_name="m", applied_context=4096, router=router, client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        resp = TestClient(app).get(f"/stream?message={message}")
+
+    assert resp.status_code == 200
+    payload = captured.get("payload", [])
+    return "\n".join(m.get("content", "") for m in payload if isinstance(m, dict))
+
+
+def test_stream_injects_active_project_hint_for_subfolder(tmp_path: Path):
+    """Fase 0: projeto ativo que é subpasta do workspace → o turno recebe um
+    bloco <projeto-ativo> direcionando a edição para a pasta do projeto."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "barbearia-site"
+    proj.mkdir()
+
+    blob = _payload_blob_after_stream(tmp_path, ws, proj)
+    assert "<projeto-ativo>" in blob
+    assert "barbearia-site/" in blob
+
+
+def test_stream_no_hint_for_project_outside_workspace(tmp_path: Path):
+    """Projeto FORA do workspace do serve não é alcançável por caminho relativo
+    (a sandbox bloquearia) → Fase 0 não injeta nada (isso é Fase 1)."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "fora"
+    outside.mkdir()
+
+    blob = _payload_blob_after_stream(tmp_path, ws, outside)
+    assert "<projeto-ativo>" not in blob
+
+
+def test_stream_no_hint_when_no_active_project(tmp_path: Path):
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    blob = _payload_blob_after_stream(tmp_path, ws, None)
+    assert "<projeto-ativo>" not in blob
+
+
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────
 
 

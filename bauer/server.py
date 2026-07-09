@@ -399,6 +399,48 @@ def create_app(
             system_prompt=_current_system_prompt(),
         )
 
+    def _active_project_hint() -> "str | None":
+        """Bloco de contexto que direciona o turno para a pasta do projeto ativo.
+
+        Fase 0 (steer suave): o botão "Ativar" da tela Projetos grava o projeto
+        ativo no registry; aqui traduzimos isso num aviso efêmero para o modelo
+        manter a edição de arquivos DENTRO da subpasta do projeto. NÃO é parede
+        — a sandbox do serve continua sendo o workspace inteiro (a parede por
+        projeto é a Fase 1). Só funciona quando o projeto é subpasta do
+        workspace do serve: caminho relativo (`proj/arquivo`) resolve dentro da
+        sandbox; um projeto FORA do workspace não é alcançável por caminho
+        relativo (o sandbox bloquearia), então aí não injeta nada."""
+        try:
+            from . import projects_registry as pr
+
+            pid = pr.get_active()
+            if not pid:
+                return None
+            entry = pr.get_project(pid)
+            if not entry:
+                return None
+            proj = Path(entry["path"]).resolve()
+            try:
+                rel = proj.relative_to(Path(router.workspace).resolve())
+            except ValueError:
+                return None  # projeto fora do workspace do serve → Fase 1
+            rel_str = str(rel).replace("\\", "/")
+            if rel_str in (".", ""):
+                return None  # projeto == raiz do workspace: nada a direcionar
+            name = entry.get("name") or proj.name
+            return (
+                "<projeto-ativo>\n"
+                f"[Projeto ativo: '{name}' — pasta `{rel_str}/` dentro do workspace.]\n"
+                f"Trabalhe DENTRO dessa pasta: ao criar, ler ou editar arquivos, "
+                f"use caminhos começando por `{rel_str}/` "
+                f"(ex.: `{rel_str}/src/App.tsx`). Só use outra pasta se o usuário "
+                f"pedir explicitamente.\n"
+                "</projeto-ativo>"
+            )
+        except Exception as exc:  # noqa: BLE001 — hint é auxílio; nunca quebra o turno
+            _log.debug("active project hint failed: %s", exc)
+            return None
+
     def _resolve_request_context(message: str) -> dict:
         resolved: dict = {"agent_id": "", "agent": None, "skill": None}
         try:
@@ -416,9 +458,13 @@ def create_app(
             resolved["skill"] = match_skill(message)
         except Exception as exc:
             _log.debug("skill match failed: %s", exc)
+        resolved["project_hint"] = _active_project_hint()
         return resolved
 
     def _apply_request_context(ctx: ContextManager, resolved: dict) -> None:
+        project_hint = resolved.get("project_hint")
+        if project_hint:
+            ctx.add_ephemeral_system(project_hint)
         agent = resolved.get("agent")
         if agent is not None:
             ctx.add_ephemeral_system(
