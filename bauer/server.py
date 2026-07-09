@@ -335,6 +335,7 @@ def create_app(
     class ChatRequest(PydanticModel):
         message: str
         session_id: Optional[str] = None
+        project_id: Optional[str] = None
 
     class ToolCallLog(PydanticModel):
         tool: str
@@ -389,6 +390,53 @@ def create_app(
     except Exception:
         pass
 
+    # ── Router-por-projeto (Fase 1 do isolamento por projeto) ────────────────
+    #
+    # v1: todo projeto compartilha o MESMO llm_client/config do serve — só o
+    # workspace muda (sandbox/policy/kanban/audit ficam confinados na pasta do
+    # projeto). Modelo/policy por-projeto é uma fase futura.
+    def _build_project_router(project_path: Path):
+        from .commands._runtime import _build_router as _build_scoped_router
+        from .config_loader import load_config as _load_cfg
+        cfg = None
+        if config_path is not None:
+            try:
+                cfg = _load_cfg(config_path)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("project router: falha ao carregar config: %s", exc)
+        return _build_scoped_router(
+            cfg, project_path,
+            llm_client=getattr(router, "_llm_client", None),
+        )
+
+    from .project_routers import ProjectRouterCache
+    project_router_cache = ProjectRouterCache(router, _build_project_router)
+
+    def _resolve_project_router(sid: "str | None", explicit_project_id: "str | None"):
+        """(router, project_id) para este turno.
+
+        Precedência: project_id explícito no request > projeto já fixado
+        NESTA sessão (sticky — grava na 1ª vez que resolve, nunca troca
+        sozinho depois) > projeto ativo global (registry). `project_id` no
+        retorno é None quando o router usado é o default (nada para taggear).
+        """
+        pid = (explicit_project_id or "").strip() or None
+        if not pid and sid:
+            try:
+                existing = session_manager.get_session(sid)
+                pid = (existing.state or {}).get("project_id") if existing else None
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("project resolve: sessão indisponível: %s", exc)
+        if not pid:
+            try:
+                from . import projects_registry as pr
+                pid = pr.get_active()
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("project resolve: registry indisponível: %s", exc)
+        resolved_router = project_router_cache.get(pid)
+        active_project_id = pid if resolved_router is not router else None
+        return resolved_router, active_project_id
+
     def _current_system_prompt() -> str:
         """Refresh request-scoped prompt data such as current date/time."""
         try:
@@ -404,17 +452,21 @@ def create_app(
             system_prompt=_current_system_prompt(),
         )
 
-    def _active_project_hint() -> "str | None":
+    def _active_project_hint(effective_workspace: Path) -> "str | None":
         """Bloco de contexto que direciona o turno para a pasta do projeto ativo.
 
         Fase 0 (steer suave): o botão "Ativar" da tela Projetos grava o projeto
         ativo no registry; aqui traduzimos isso num aviso efêmero para o modelo
-        manter a edição de arquivos DENTRO da subpasta do projeto. NÃO é parede
-        — a sandbox do serve continua sendo o workspace inteiro (a parede por
-        projeto é a Fase 1). Só funciona quando o projeto é subpasta do
-        workspace do serve: caminho relativo (`proj/arquivo`) resolve dentro da
-        sandbox; um projeto FORA do workspace não é alcançável por caminho
-        relativo (o sandbox bloquearia), então aí não injeta nada."""
+        manter a edição de arquivos DENTRO da subpasta do projeto. NÃO é parede.
+
+        Desde a Fase 1 (router-por-projeto, ver project_routers.py), a maioria
+        dos casos nem chega a precisar deste aviso: quando o projeto ativo
+        resolve para um ToolRouter próprio, `effective_workspace` JÁ é a pasta
+        do projeto — a sandbox real supre a necessidade do nudge, e a função
+        devolve None (nada a "direcionar": já se está lá). Este bloco só
+        dispara no caminho de FALLBACK: o projeto está ativo mas, por algum
+        motivo (pasta sumida, sensível, cache falhou), o turno segue no router
+        default — aí o nudge ainda ajuda, mesmo sem ser uma parede real."""
         try:
             from . import projects_registry as pr
 
@@ -426,12 +478,12 @@ def create_app(
                 return None
             proj = Path(entry["path"]).resolve()
             try:
-                rel = proj.relative_to(Path(router.workspace).resolve())
+                rel = proj.relative_to(effective_workspace.resolve())
             except ValueError:
-                return None  # projeto fora do workspace do serve → Fase 1
+                return None  # projeto fora do workspace efetivo deste turno
             rel_str = str(rel).replace("\\", "/")
             if rel_str in (".", ""):
-                return None  # projeto == raiz do workspace: nada a direcionar
+                return None  # já é a raiz do workspace efetivo: nada a direcionar
             name = entry.get("name") or proj.name
             return (
                 "<projeto-ativo>\n"
@@ -446,7 +498,7 @@ def create_app(
             _log.debug("active project hint failed: %s", exc)
             return None
 
-    def _resolve_request_context(message: str) -> dict:
+    def _resolve_request_context(message: str, effective_workspace: Path) -> dict:
         resolved: dict = {"agent_id": "", "agent": None, "skill": None}
         try:
             from .agent_registry import match_agents, merged_specialist_pool, resolve_user_agents_path
@@ -463,7 +515,7 @@ def create_app(
             resolved["skill"] = match_skill(message)
         except Exception as exc:
             _log.debug("skill match failed: %s", exc)
-        resolved["project_hint"] = _active_project_hint()
+        resolved["project_hint"] = _active_project_hint(effective_workspace)
         return resolved
 
     def _apply_request_context(ctx: ContextManager, resolved: dict) -> None:
@@ -495,6 +547,10 @@ def create_app(
         if skill is not None:
             payload["selected_skill"] = getattr(skill, "name", "")
             payload["selected_skill_score"] = getattr(skill, "score", None)
+        if resolved.get("project_id"):
+            # Runs continuam GLOBAIS (não uma lista por projeto) — só marcadas
+            # com o project_id pra permitir filtrar depois na Observabilidade.
+            payload["project_id"] = resolved["project_id"]
         return payload
 
     def _publish_selected_skill(run_id: str, session_id: str, agent_id: str, resolved: dict) -> None:
@@ -862,12 +918,17 @@ def create_app(
     def chat(req: ChatRequest, _: None = Depends(_verify_key)):
         _metrics.chat_requests_total += 1
         session_id = req.session_id or store.new_id()
-        resolved = _resolve_request_context(req.message)
+        active_router, active_project_id = _resolve_project_router(session_id, req.project_id)
+        resolved = _resolve_request_context(req.message, Path(active_router.workspace))
+        resolved["project_id"] = active_project_id
         request_agent_id = resolved.get("agent_id") or "serve.chat"
+        session_state = {"transport": "http", "endpoint": "/chat"}
+        if active_project_id:
+            session_state["project_id"] = active_project_id  # sticky: fixa nesta sessão
         session_manager.get_or_create_session(
             session_id,
             agent_id=request_agent_id,
-            state={"transport": "http", "endpoint": "/chat"},
+            state=session_state,
         )
         run = run_manager.create_run(
             session_id=session_id,
@@ -882,15 +943,15 @@ def create_app(
         _apply_request_context(ctx, resolved)
         _publish_selected_skill(run.id, session_id, request_agent_id, resolved)
         ctx.add_user(req.message)
-        router._runtime_session_id = session_id  # type: ignore[attr-defined]
-        router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         from .cost_meter import cost_sink
+        from .tool_router import reset_runtime_ids, set_runtime_ids
         _cost = _TurnCostRecorder(session_id)
         _cost_token = cost_sink.set(_cost)
+        _ids_token = set_runtime_ids(session_id, run.id)
         try:
             response, tool_log = run_one_turn_with_fallback(
-                ctx, router, _state["client"], _state["model"], _fallback_clients,
+                ctx, active_router, _state["client"], _state["model"], _fallback_clients,
             )
         except Exception as exc:
             _log.exception("Erro interno em /chat: %s", exc)
@@ -898,6 +959,7 @@ def create_app(
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
         finally:
             cost_sink.reset(_cost_token)
+            reset_runtime_ids(_ids_token)
 
         _metrics.tool_calls_total += len(tool_log)
         _record_turn_budget(_cost, run.id, request_agent_id)
@@ -944,17 +1006,23 @@ def create_app(
     def stream(
         message: str = Query(..., description="Mensagem do usuario"),
         session_id: Optional[str] = Query(None, description="ID de sessao existente"),
+        project_id: Optional[str] = Query(None, description="Projeto explicito (sobrepoe sessao/ativo global)"),
         _: None = Depends(_verify_key),
     ):
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
-        resolved = _resolve_request_context(message)
+        active_router, active_project_id = _resolve_project_router(sid, project_id)
+        resolved = _resolve_request_context(message, Path(active_router.workspace))
+        resolved["project_id"] = active_project_id
         request_agent_id = resolved.get("agent_id") or "serve.stream"
+        session_state = {"transport": "sse", "endpoint": "/stream"}
+        if active_project_id:
+            session_state["project_id"] = active_project_id  # sticky: fixa nesta sessão
         session_manager.get_or_create_session(
             sid,
             agent_id=request_agent_id,
-            state={"transport": "sse", "endpoint": "/stream"},
+            state=session_state,
         )
         run = run_manager.create_run(
             session_id=sid,
@@ -969,8 +1037,6 @@ def create_app(
         _apply_request_context(ctx, resolved)
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
         ctx.add_user(message)
-        router._runtime_session_id = sid  # type: ignore[attr-defined]
-        router._runtime_run_id = run.id  # type: ignore[attr-defined]
 
         def _event_stream():
             # O turno roda no MESMO motor do CLI e do POST /chat —
@@ -1008,11 +1074,17 @@ def create_app(
             def _worker() -> None:
                 from .cost_meter import cost_sink
                 from .delta_stream import reset_sink, set_sink
+                from .tool_router import reset_runtime_ids, set_runtime_ids
                 token = set_sink(_QueueSink())
                 cost_token = cost_sink.set(_cost)
+                # ContextVar (não atributo de instância): active_router pode ser
+                # o router de projeto, reusado por outra sessão/turno concorrente
+                # no MESMO projeto — instalar aqui (nesta thread) evita a corrida
+                # de duas threads pisando no session/run id uma da outra.
+                ids_token = set_runtime_ids(sid, run.id)
                 try:
                     resp, tool_log = run_one_turn_with_fallback(
-                        ctx, router, _state["client"], _state["model"], _fallback_clients,
+                        ctx, active_router, _state["client"], _state["model"], _fallback_clients,
                     )
                     result["response"] = resp
                     result["tool_log"] = tool_log
@@ -1021,6 +1093,7 @@ def create_app(
                 finally:
                     cost_sink.reset(cost_token)
                     reset_sink(token)
+                    reset_runtime_ids(ids_token)
                     # Persistência ÚNICA aqui (não no gerador): se o turno estourar
                     # o _STREAM_TURN_TIMEOUT_SECONDS, o gerador já retornou e a SSE
                     # já fechou, mas esta thread (órfã) continua rodando até o fim
@@ -1074,7 +1147,7 @@ def create_app(
             )
             worker.start()
 
-            available = set(router.available_tools())
+            available = set(active_router.available_tools())
             gate = _StreamGate()  # retém possíveis tool-call JSON (ver docstring)
             emitted_any = False   # já mandamos texto ao cliente (p/ separador)
             turn_sep = False      # próximo texto abre um bloco novo (pós-tool)
@@ -1247,7 +1320,10 @@ def create_app(
             (msg.content for msg in reversed(req.messages) if msg.role == "user"),
             "",
         )
-        resolved = _resolve_request_context(last_user_message)
+        # /v1 (Claw3D/OpenAI-compat) fica FORA do router-por-projeto (Fase 1) —
+        # API externa, sem noção de "projeto ativo" da UI desktop; sempre usa
+        # o router default do serve.
+        resolved = _resolve_request_context(last_user_message, Path(router.workspace))
         request_agent_id = resolved.get("agent_id") or "serve.openai"
         session_manager.get_or_create_session(
             sid,

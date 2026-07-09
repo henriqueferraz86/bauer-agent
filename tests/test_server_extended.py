@@ -940,22 +940,26 @@ def _payload_blob_after_stream(tmp_path, workspace, project_dir, message="cria u
     return "\n".join(m.get("content", "") for m in payload if isinstance(m, dict))
 
 
-def test_stream_injects_active_project_hint_for_subfolder(tmp_path: Path):
-    """Fase 0: projeto ativo que é subpasta do workspace → o turno recebe um
-    bloco <projeto-ativo> direcionando a edição para a pasta do projeto."""
+def test_stream_no_hint_for_subfolder_project_once_phase1_routes_it(tmp_path: Path):
+    """Antes da Fase 1 (router-por-projeto), um projeto ativo que é subpasta
+    do workspace recebia o nudge de prompt <projeto-ativo> (Fase 0 sozinha).
+    Com a Fase 1 no ar, esse MESMO cenário resolve para um ToolRouter PRÓPRIO
+    do projeto — a sandbox real já confina a pasta, então o nudge fica
+    redundante e a função corretamente NÃO o injeta mais (ver
+    test_stream_uses_project_router_for_subfolder_project para a prova de que
+    o isolamento real está de fato em vigor)."""
     ws = tmp_path / "workspace"
     ws.mkdir()
     proj = ws / "barbearia-site"
     proj.mkdir()
 
     blob = _payload_blob_after_stream(tmp_path, ws, proj)
-    assert "<projeto-ativo>" in blob
-    assert "barbearia-site/" in blob
+    assert "<projeto-ativo>" not in blob
 
 
 def test_stream_no_hint_for_project_outside_workspace(tmp_path: Path):
-    """Projeto FORA do workspace do serve não é alcançável por caminho relativo
-    (a sandbox bloquearia) → Fase 0 não injeta nada (isso é Fase 1)."""
+    """Projeto fora do workspace do serve também ganha router próprio (Fase 1
+    não exige subpasta) — mesma razão do teste acima, o nudge fica redundante."""
     ws = tmp_path / "workspace"
     ws.mkdir()
     outside = tmp_path / "fora"
@@ -963,6 +967,195 @@ def test_stream_no_hint_for_project_outside_workspace(tmp_path: Path):
 
     blob = _payload_blob_after_stream(tmp_path, ws, outside)
     assert "<projeto-ativo>" not in blob
+
+
+# ─── Fase 1 — router-por-projeto (isolamento real) ───────────────────────────
+
+
+def _stream_with_project_router(
+    tmp_path: Path,
+    ws: Path,
+    *,
+    active_project: "Path | None" = None,
+    project_id_param: "str | None" = None,
+    reg_path: "Path | None" = None,
+    session_id: "str | None" = None,
+    write_target: str = "arquivo.txt",
+    message: str = "cria um arquivo",
+):
+    """Sobe /stream com um cache de router-por-projeto real, mandando o modelo
+    escrever um arquivo via `write_file`. Devolve (resp, app, reg).
+
+    O mock do LLM emite UM tool call (write_file) e depois texto final — o
+    mesmo padrão das outras regressões deste arquivo."""
+    from unittest.mock import patch as _patch
+    from bauer.tool_router import ToolRouter
+    from bauer import projects_registry as pr
+
+    reg = reg_path or (tmp_path / "projects.json")
+    turns = [
+        iter([
+            '{"action": "write_file", "args": {"path": "%s", '
+            '"content": "conteudo teste"}}' % write_target
+        ]),
+        iter(["Pronto."]),
+    ]
+    mock_client = MagicMock()
+    mock_client.chat_stream.side_effect = lambda *a, **k: turns.pop(0)
+    router = ToolRouter(workspace=ws)
+
+    with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg):
+        if active_project is not None:
+            pr.add_project(active_project)  # 1º projeto = ativo automaticamente
+        app = create_app(
+            model_name="m", applied_context=4096, router=router, client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        qs = f"/stream?message={message}"
+        if session_id:
+            qs += f"&session_id={session_id}"
+        if project_id_param:
+            qs += f"&project_id={project_id_param}"
+        resp = TestClient(app).get(qs)
+    return resp, app, reg
+
+
+def test_stream_uses_project_router_for_subfolder_project(tmp_path: Path):
+    """Isolamento real: com um projeto ativo, o write_file do turno grava
+    DENTRO da pasta do projeto — não na raiz do workspace do serve, e sem
+    precisar de prefixo (a sandbox do turno JÁ é a pasta do projeto)."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "barbearia-site"
+    proj.mkdir()
+
+    resp, _app, _reg = _stream_with_project_router(tmp_path, ws, active_project=proj)
+
+    assert resp.status_code == 200
+    assert (proj / "arquivo.txt").read_text(encoding="utf-8") == "conteudo teste"
+    assert not (ws / "arquivo.txt").exists()  # não vazou pro workspace do serve
+
+
+def test_stream_uses_project_router_for_project_outside_workspace(tmp_path: Path):
+    """Fase 1 não exige que o projeto seja subpasta do workspace do serve —
+    ao contrário da Fase 0 (que dependia de caminho relativo dentro da
+    sandbox), o router de projeto usa a pasta registrada como raiz própria."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outro-lugar" / "meu-projeto"
+    outside.mkdir(parents=True)
+
+    resp, _app, _reg = _stream_with_project_router(tmp_path, ws, active_project=outside)
+
+    assert resp.status_code == 200
+    assert (outside / "arquivo.txt").read_text(encoding="utf-8") == "conteudo teste"
+
+
+def test_stream_explicit_project_id_overrides_active(tmp_path: Path):
+    """project_id explícito no request vence o projeto ativo global."""
+    from bauer import projects_registry as pr
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj_a = ws / "projeto-a"
+    proj_a.mkdir()
+    proj_b = ws / "projeto-b"
+    proj_b.mkdir()
+    reg = tmp_path / "projects.json"
+
+    from unittest.mock import patch as _patch
+    with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg):
+        pr.add_project(proj_a)  # vira ativo
+        pid_b = pr.add_project(proj_b)["id"]
+
+    resp, _app, _reg = _stream_with_project_router(
+        tmp_path, ws, reg_path=reg, project_id_param=pid_b,
+    )
+
+    assert resp.status_code == 200
+    assert (proj_b / "arquivo.txt").exists()
+    assert not (proj_a / "arquivo.txt").exists()
+
+
+def test_stream_session_sticky_project_survives_active_change(tmp_path: Path):
+    """Uma vez fixado o projeto na sessão (1ª mensagem), trocar o ativo global
+    NÃO troca o projeto da sessão em andamento — só uma sessão NOVA (ou um
+    project_id explícito) usaria o novo ativo."""
+    from unittest.mock import patch as _patch
+    from bauer import projects_registry as pr
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj_a = ws / "projeto-a"
+    proj_a.mkdir()
+    proj_b = ws / "projeto-b"
+    proj_b.mkdir()
+    reg = tmp_path / "projects.json"
+
+    resp1, app, _reg = _stream_with_project_router(
+        tmp_path, ws, active_project=proj_a, reg_path=reg,
+        write_target="primeiro.txt",
+    )
+    assert resp1.status_code == 200
+    sid = resp1.headers["X-Session-ID"]
+    assert (proj_a / "primeiro.txt").exists()
+
+    # Troca o projeto ativo global para B...
+    with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg):
+        pid_b = pr.add_project(proj_b)["id"]
+        pr.set_active(pid_b)
+
+    # ...mas a MESMA sessão continua presa ao projeto A. O mock do client já
+    # esgotou seu roteiro de respostas (helper acima) — não importa: o que
+    # este teste verifica é a RESOLUÇÃO do projeto (gravada na sessão antes
+    # de qualquer chamada ao LLM), não o conteúdo da 2ª resposta.
+    resp2 = TestClient(app).get(f"/stream?message=oi de novo&session_id={sid}")
+    assert resp2.status_code == 200
+
+    # A run/sessão registrou projeto A (sticky), não B.
+    from bauer.core.runtime.session_manager import SessionManager
+    sm = SessionManager(root=tmp_path / "runtime")
+    session = sm.get_session(sid)
+    assert session is not None
+    assert session.state.get("project_id") == pr.project_id(proj_a)
+
+
+def test_stream_invalid_explicit_project_id_falls_back_safely(tmp_path: Path):
+    """project_id explícito mas inexistente/lixo não derruba o turno — cai no
+    router default do serve silenciosamente."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    resp, _app, _reg = _stream_with_project_router(
+        tmp_path, ws, project_id_param="lixo-nao-existe",
+    )
+
+    assert resp.status_code == 200
+    assert (ws / "arquivo.txt").read_text(encoding="utf-8") == "conteudo teste"
+
+
+def test_stream_run_input_tagged_with_project_id(tmp_path: Path):
+    """A run fica taggeada com project_id quando um router de projeto é usado
+    — runs continuam globais, só marcadas p/ filtrar na Observabilidade depois."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+
+    from bauer import projects_registry as pr
+    resp, _app, reg = _stream_with_project_router(tmp_path, ws, active_project=proj)
+    assert resp.status_code == 200
+
+    run_id = resp.headers["X-Bauer-Run-ID"]
+    from bauer.core.runtime.run_manager import RunManager
+    run = RunManager(root=tmp_path / "runtime").get_run(run_id)
+    assert run is not None
+
+    from unittest.mock import patch as _patch
+    with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg):
+        expected_pid = pr.find_project_for_cwd(proj)
+    assert run.input.get("project_id") == expected_pid
 
 
 def test_stream_no_hint_when_no_active_project(tmp_path: Path):

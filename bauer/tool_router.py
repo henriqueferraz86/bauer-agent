@@ -55,6 +55,7 @@ import json
 import logging
 import os
 import re
+from contextvars import ContextVar
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,42 @@ except ImportError:
 # circular com os mixins. Re-exportadas aqui — `from bauer.tool_router import
 # ToolError, SandboxError, DryRunResult` continua funcionando.
 from .tools.base import DryRunResult, SandboxError, ToolError  # noqa: E402
+
+# ─── Runtime ids (session/run) por turno — ContextVar, não atributo de instância ──
+#
+# O bauer serve reusa a MESMA instância de ToolRouter entre requests (o router
+# default, e — desde o router-por-projeto — cada router de projeto também é
+# reusado por qualquer sessão que trabalhe naquele projeto). Antes, o serve
+# fazia `router._runtime_session_id = sid` na instância compartilhada a cada
+# request: com dois turnos concorrentes no MESMO router (duas abas, mesmo
+# projeto), o segundo `=` sobrescrevia o id do primeiro NO MEIO da execução —
+# uma corrida real (policy/approval/audit atribuiriam eventos ao run/sessão
+# errada). Uma ContextVar isola por thread/task: o serve instala o par
+# (session_id, run_id) no início de cada turno (dentro da MESMA thread que
+# executa as tool calls) e restaura ao final — `self._runtime_session_id`/
+# `_runtime_run_id` (properties abaixo) sempre leem o valor do turno atual.
+_runtime_ids: "ContextVar[tuple[str | None, str | None] | None]" = ContextVar(
+    "bauer_tool_router_runtime_ids", default=None
+)
+
+
+def set_runtime_ids(session_id: "str | None", run_id: "str | None"):
+    """Instala (session_id, run_id) do turno atual nesta thread/task.
+
+    Retorna um token para `reset_runtime_ids` — mesmo padrão do
+    `delta_stream.set_sink`/`cost_meter.cost_sink` (também ContextVars
+    instaladas por turno). Chamar SEMPRE na mesma thread que executa as tool
+    calls do turno (contextvars não cruzam `threading.Thread` automaticamente
+    — se o turno roda numa thread de fundo, instale lá dentro, não no
+    request handler)."""
+    return _runtime_ids.set((session_id, run_id))
+
+
+def reset_runtime_ids(token) -> None:
+    try:
+        _runtime_ids.reset(token)
+    except Exception:  # noqa: BLE001
+        _runtime_ids.set(None)
 
 # Níveis de permissão: do menos ao mais privilegiado
 _PERMISSION_LEVELS = ("read", "write", "execute", "network", "system")
@@ -364,6 +401,35 @@ class ToolRouter(
 
     P4: tools por categoria vivem em mixins (bauer/tools/*.py) herdados aqui.
     """
+
+    # `_runtime_session_id`/`_runtime_run_id` são properties (não atributos
+    # simples): leem primeiro a ContextVar `_runtime_ids` (instalada pelo serve
+    # por turno via `set_runtime_ids`), caindo para o valor passado no
+    # construtor quando nenhum turno instalou a ContextVar (CLI e outros
+    # callers diretos, que não usam set_runtime_ids). Ver comentário da
+    # ContextVar acima — evita a corrida de sobrescrever a instância
+    # compartilhada entre turnos concorrentes.
+    @property
+    def _runtime_session_id(self) -> "str | None":
+        ids = _runtime_ids.get()
+        if ids is not None:
+            return ids[0]
+        return self.__dict__.get("_runtime_session_id_default")
+
+    @_runtime_session_id.setter
+    def _runtime_session_id(self, value: "str | None") -> None:
+        self.__dict__["_runtime_session_id_default"] = value
+
+    @property
+    def _runtime_run_id(self) -> "str | None":
+        ids = _runtime_ids.get()
+        if ids is not None:
+            return ids[1]
+        return self.__dict__.get("_runtime_run_id_default")
+
+    @_runtime_run_id.setter
+    def _runtime_run_id(self, value: "str | None") -> None:
+        self.__dict__["_runtime_run_id_default"] = value
 
     def __init__(
         self,
