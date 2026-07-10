@@ -93,6 +93,46 @@ def _percentile(values: List[float], pct: float) -> Optional[float]:
     return round(s[k], 2)
 
 
+def run_durations_ms(runtime_root: Path) -> List[float]:
+    """Duração wall-clock (ms) das runs terminais, de started_at→finished_at.
+
+    Fonte de latência para p50/p95 quando o serve não emite spans de tracing
+    (que é o caso: o serve registra runs/eventos, não spans OTel). Cai em
+    updated_at quando finished_at não foi gravado. Best-effort — timestamps
+    ilegíveis são pulados."""
+    from datetime import datetime
+
+    try:
+        from .core.runtime.run_manager import TERMINAL_RUN_STATUSES, RunManager
+    except Exception:  # noqa: BLE001
+        return []
+
+    def _parse(ts: Any) -> Optional[datetime]:
+        if not ts:
+            return None
+        try:
+            return datetime.fromisoformat(str(ts))
+        except (ValueError, TypeError):
+            return None
+
+    out: List[float] = []
+    try:
+        runs = RunManager(root=runtime_root).list_runs()
+    except Exception:  # noqa: BLE001
+        return []
+    for run in runs:
+        if getattr(run, "status", None) not in TERMINAL_RUN_STATUSES:
+            continue
+        start = _parse(getattr(run, "started_at", None))
+        end = _parse(getattr(run, "finished_at", None)) or _parse(getattr(run, "updated_at", None))
+        if start is None or end is None:
+            continue
+        ms = (end - start).total_seconds() * 1000.0
+        if ms >= 0:
+            out.append(ms)
+    return out
+
+
 def cost_summary(cost_file: Path, *, now: Optional[float] = None) -> Dict[str, Any]:
     """Resumo de custo/tokens do dia + acumulado, a partir do cost_history.jsonl."""
     now = now if now is not None else time.time()
@@ -389,6 +429,10 @@ def build_desktop_router(
             float(s["duration_ms"]) for s in spans
             if isinstance(s.get("duration_ms"), (int, float))
         ]
+        # O serve não emite spans OTel → sem isto o p95 do painel ficava
+        # eternamente "-". Fallback: latência wall-clock das runs terminais.
+        if not durations:
+            durations = run_durations_ms(_runtime_root)
         summary["p50_ms"] = _percentile(durations, 50)
         summary["p95_ms"] = _percentile(durations, 95)
         return summary

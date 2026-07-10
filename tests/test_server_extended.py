@@ -1273,6 +1273,30 @@ def test_stream_prefetches_project_memory_scoped_to_project(tmp_path: Path):
     assert seen.get("user_input") == "continua o trabalho"
 
 
+def test_stream_memory_prefetch_can_be_disabled(tmp_path: Path):
+    """BAUER_SERVE_MEMORY_PREFETCH=0 pula o prefetch (síncrono no request) —
+    escape hatch de time-to-first-token; nem chama prefetch_memory_context."""
+    from unittest.mock import patch as _patch
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+
+    called = {"n": 0}
+
+    def _fake_prefetch(*a, **k):
+        called["n"] += 1
+        return "<memory-context>\nnão deveria aparecer\n</memory-context>"
+
+    with _patch("bauer.server._MEMORY_PREFETCH_ENABLED", False), \
+         _patch("bauer.memory_context.prefetch_memory_context", side_effect=_fake_prefetch):
+        blob = _payload_blob_after_stream(tmp_path, ws, proj)
+
+    assert "<memory-context>" not in blob
+    assert called["n"] == 0
+
+
 def test_kanban_endpoint_reads_active_project_board(tmp_path: Path):
     """Fase 1 end-to-end: /api/kanban do serve resolve o projeto ativo e lê o
     board DELE (não o TASKS.md do workspace raiz). Fecha o gap em que tarefas

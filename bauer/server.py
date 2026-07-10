@@ -59,6 +59,14 @@ _STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "3
 # O resto fica sob demanda via read_file. Ajustável por env.
 _PROJECT_BRIEF_CAP = int(os.environ.get("BAUER_SERVE_PROJECT_BRIEF_CHARS", "1500"))
 
+# Prefetch de memória (decisões + sessões) por turno. Roda SÍNCRONO no handler
+# do request, antes do primeiro byte — com busca semântica que pode custar até
+# ~2s no pior caso (projeto com decisions.db grande). Ligado por padrão; quem
+# priorizar time-to-first-token pode desligar via env.
+_MEMORY_PREFETCH_ENABLED = os.environ.get(
+    "BAUER_SERVE_MEMORY_PREFETCH", "1"
+).strip().lower() not in ("0", "false", "no", "")
+
 
 def _sse(data: str, event: str | None = None) -> str:
     """Codifica um evento SSE preservando quebras de linha.
@@ -558,7 +566,10 @@ def create_app(
         Busca decisões passadas (decisions.db) + sessões similares, ambas já
         escopadas na pasta do projeto (Fase 1), e devolve o bloco
         <memory-context> pronto. O serve não fazia isso — toda a memória do
-        projeto era invisível pro chat web."""
+        projeto era invisível pro chat web. Desligável via
+        BAUER_SERVE_MEMORY_PREFETCH=0 (roda síncrono no request; ver constante)."""
+        if not _MEMORY_PREFETCH_ENABLED:
+            return None
         try:
             from .memory_context import prefetch_memory_context
 

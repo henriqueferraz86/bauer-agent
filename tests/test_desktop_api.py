@@ -233,6 +233,54 @@ class TestKanbanEndpoint:
         assert "TODO" in data["columns"] and "DONE" in data["columns"]
 
 
+class TestObsSummaryP95:
+    """p50/p95 do painel: como o serve não emite spans OTel, a latência vem do
+    wall-clock das runs terminais (senão o p95 fica eternamente '-')."""
+
+    def test_run_durations_ms_from_terminal_runs(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+        from bauer.core.runtime.run_manager import RunManager
+        from bauer.desktop_api import run_durations_ms
+
+        rm = RunManager(root=tmp_path / "runtime")
+        run = rm.create_run(session_id="s", agent_id="a", runtime_adapter="x",
+                            input={}, status="running")
+        # força um finished_at 250ms após o started_at
+        start = datetime.fromisoformat(run.started_at)
+        rm.update_run(run.id, status="completed",
+                      finished_at=(start + timedelta(milliseconds=250)).isoformat())
+
+        durations = run_durations_ms(tmp_path / "runtime")
+        assert len(durations) == 1
+        assert 240 <= durations[0] <= 260
+
+    def test_run_durations_skips_running(self, tmp_path):
+        from bauer.core.runtime.run_manager import RunManager
+        from bauer.desktop_api import run_durations_ms
+
+        rm = RunManager(root=tmp_path / "runtime")
+        rm.create_run(session_id="s", agent_id="a", runtime_adapter="x",
+                      input={}, status="running")  # não-terminal → ignorada
+        assert run_durations_ms(tmp_path / "runtime") == []
+
+    def test_obs_summary_p95_falls_back_to_run_durations(self, env):
+        from datetime import datetime, timedelta
+        from bauer.core.runtime.run_manager import RunManager
+
+        rm = RunManager(root=env["runtime_root"])
+        for ms in (100, 200, 300):
+            run = rm.create_run(session_id="s", agent_id="a", runtime_adapter="x",
+                                input={}, status="running")
+            start = datetime.fromisoformat(run.started_at)
+            rm.update_run(run.id, status="completed",
+                          finished_at=(start + timedelta(milliseconds=ms)).isoformat())
+
+        # sem spans → p95 vem do wall-clock das runs (não fica None)
+        data = env["client"].get("/api/obs/summary").json()
+        assert data["p95_ms"] is not None
+        assert data["p50_ms"] is not None
+
+
 class TestKanbanProjectAware:
     """Fase 1: /api/kanban lê o board do PROJETO resolvido (não o workspace
     raiz fixo) via resolve_project_workspace — mesma resolução do chat."""
