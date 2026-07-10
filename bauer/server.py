@@ -977,6 +977,71 @@ def create_app(
             ]
         }
 
+    @app.get("/audit/report")
+    def audit_report_endpoint(
+        last: str = Query("24h", description="janela: 24h, 7d, 2w"),
+        _: None = Depends(_verify_key),
+    ):
+        from dataclasses import asdict
+        from datetime import datetime, timedelta
+        import re
+        from .core.audit import build_report
+
+        match = re.fullmatch(r"(\d+)([mhdw])", last.strip().lower())
+        if not match:
+            raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
+        amount, unit = int(match.group(1)), match.group(2)
+        delta = {
+            "m": timedelta(minutes=amount), "h": timedelta(hours=amount),
+            "d": timedelta(days=amount), "w": timedelta(weeks=amount),
+        }[unit]
+        return asdict(build_report(runtime_root, since=datetime.now() - delta, window_label=last))
+
+    @app.get("/audit/runs/{run_id}")
+    def audit_run_endpoint(run_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        from .core.audit import audit_run
+
+        audited = audit_run(runtime_root, run_id, include_events=True, include_tools=True)
+        if audited is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(audited)
+
+    @app.get("/audit/runs/{run_id}/score")
+    def audit_score_endpoint(run_id: str, _: None = Depends(_verify_key)):
+        from dataclasses import asdict
+        from .core.audit import score_run_by_id
+
+        score = score_run_by_id(runtime_root, run_id)
+        if score is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(score)
+
+    @app.get("/audit/skills/insights")
+    def audit_skill_insights_endpoint(
+        last: str = Query("7d", description="janela: 24h, 7d, 2w"),
+        _: None = Depends(_verify_key),
+    ):
+        from dataclasses import asdict
+        from datetime import datetime, timedelta
+        import re
+        from .core.audit import build_skill_insights
+
+        match = re.fullmatch(r"(\d+)([mhdw])", last.strip().lower())
+        if not match:
+            raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
+        amount, unit = int(match.group(1)), match.group(2)
+        delta = {
+            "m": timedelta(minutes=amount), "h": timedelta(hours=amount),
+            "d": timedelta(days=amount), "w": timedelta(weeks=amount),
+        }[unit]
+        return asdict(build_skill_insights(
+            runtime_root,
+            since=datetime.now() - delta,
+            window_label=last,
+            suggest_new=True,
+        ))
+
     @app.get("/approvals")
     def list_approvals(status: str = Query("", description="pending | approved | denied"), _: None = Depends(_verify_key)):
         from dataclasses import asdict

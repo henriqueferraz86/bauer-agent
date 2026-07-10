@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -12,6 +14,76 @@ from ._common import console
 from ..core.skills import SkillMarketplace, SkillMarketplaceError, SkillRegistry
 
 skills_app = typer.Typer(help="Skill Registry formal: manifestos, capacidades e permissoes.")
+
+
+@skills_app.command("insights")
+def skills_insights_cmd(
+    last: str = typer.Option("7d", "--last", help="Janela: 24h, 7d, 2w, 30d."),
+    suggest_new: bool = typer.Option(False, "--suggest-new", help="Mostra candidatas a novas skills."),
+    fmt: str = typer.Option("table", "--format", help="table | json"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+) -> None:
+    """Analisa uso, falhas, lentidao e sequencias repetidas de skills/tools."""
+    from dataclasses import asdict
+    from ..core.audit import build_skill_insights
+
+    insights = build_skill_insights(
+        state_dir,
+        since=_parse_last(last),
+        window_label=last,
+        suggest_new=suggest_new,
+    )
+    if fmt == "json":
+        console.file.write(json.dumps(asdict(insights), ensure_ascii=False, indent=2) + "\n")
+        console.file.flush()
+        return
+
+    console.print(f"[bold]Skill Insights[/bold] - ultimos {last}")
+    _print_skill_metrics("Mais usadas", insights.most_used, lambda item: f"{item.uses} usos")
+    _print_skill_metrics(
+        "Maior taxa de falha",
+        insights.highest_failure_rate,
+        lambda item: f"{item.failure_rate * 100:.1f}% ({item.failures}/{item.uses})",
+    )
+    _print_skill_metrics(
+        "Mais lentas",
+        insights.slowest,
+        lambda item: f"{item.average_duration_ms or 0:.1f}ms",
+    )
+    if insights.repeated_sequences:
+        console.print("\n[bold]Sequencias repetidas[/bold]")
+        for item in insights.repeated_sequences:
+            console.print(f"  {item.occurrences:>3}  {' -> '.join(item.tools)}")
+    if insights.never_used:
+        console.print("\n[bold]Nunca usadas[/bold]")
+        for skill_id in insights.never_used:
+            console.print(f"  - {skill_id}")
+    if suggest_new and insights.suggestions:
+        console.print("\n[bold]Sugestoes (exigem aprovacao humana)[/bold]")
+        for item in insights.suggestions:
+            console.print(f"  {item.suggested_id}: {item.reason}")
+
+
+def _parse_last(value: str) -> datetime:
+    match = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", value.lower())
+    if not match:
+        raise typer.BadParameter("Use formatos como 24h, 7d, 2w.")
+    amount, unit = int(match.group(1)), match.group(2)
+    delta = {
+        "m": timedelta(minutes=amount),
+        "h": timedelta(hours=amount),
+        "d": timedelta(days=amount),
+        "w": timedelta(weeks=amount),
+    }[unit]
+    return datetime.now() - delta
+
+
+def _print_skill_metrics(title, items, render) -> None:
+    if not items:
+        return
+    console.print(f"\n[bold]{title}[/bold]")
+    for item in items:
+        console.print(f"  {item.skill_id}: {render(item)}")
 
 
 @skills_app.command("validate")
