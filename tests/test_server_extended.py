@@ -1165,6 +1165,83 @@ def test_stream_no_hint_when_no_active_project(tmp_path: Path):
     assert "<projeto-ativo>" not in blob
 
 
+# ─── Memória por projeto: PROJECT.md (B) + prefetch de memória (A) ───────────
+
+
+def test_stream_injects_project_brief_from_project_md(tmp_path: Path):
+    """B: o PROJECT.md do projeto ativo entra no turno como brief/convenções."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+    (proj / "PROJECT.md").write_text(
+        "# Projeto: Meu Projeto\n\n## Convenções\n\n"
+        "- commits em PT-BR\n- TypeScript strict mode\n",
+        encoding="utf-8",
+    )
+    blob = _payload_blob_after_stream(tmp_path, ws, proj)
+    assert "<projeto-brief>" in blob
+    assert "commits em PT-BR" in blob
+
+
+def test_stream_skips_placeholder_project_md(tmp_path: Path):
+    """O PROJECT.md boilerplate do `bauer project init` (descrição vazia) não
+    é injetado — seria só ruído."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+    (proj / "PROJECT.md").write_text(
+        "# Projeto: Meu Projeto\n\ncriado: 2026-07-09\n\n"
+        "## Descricao\n\nSem descricao.\n\n---\n",
+        encoding="utf-8",
+    )
+    blob = _payload_blob_after_stream(tmp_path, ws, proj)
+    assert "<projeto-brief>" not in blob
+
+
+def test_stream_truncates_large_project_md_with_readfile_pointer(tmp_path: Path):
+    """PROJECT.md acima do teto entra truncado + ponteiro pro read_file."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+    big = "# Projeto\n\n" + ("linha de contexto do projeto. " * 200)  # >> 1500 chars
+    (proj / "PROJECT.md").write_text(big, encoding="utf-8")
+
+    blob = _payload_blob_after_stream(tmp_path, ws, proj)
+    assert "<projeto-brief>" in blob
+    assert "read_file" in blob and "PROJECT.md" in blob  # aponta pro restante
+    # não despejou o arquivo inteiro
+    assert blob.count("linha de contexto do projeto.") < 200
+
+
+def test_stream_prefetches_project_memory_scoped_to_project(tmp_path: Path):
+    """A: o serve chama prefetch_memory_context com a pasta do PROJETO (não a
+    raiz do serve) e injeta o bloco <memory-context> retornado."""
+    from unittest.mock import patch as _patch
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+
+    seen: dict = {}
+
+    def _fake_prefetch(user_input, workspace=None, **kw):
+        seen["workspace"] = workspace
+        seen["user_input"] = user_input
+        return "<memory-context>\n[recordado]\n• decisão passada: usar Postgres\n</memory-context>"
+
+    with _patch("bauer.memory_context.prefetch_memory_context", side_effect=_fake_prefetch):
+        blob = _payload_blob_after_stream(tmp_path, ws, proj, message="continua o trabalho")
+
+    assert "<memory-context>" in blob
+    assert "usar Postgres" in blob
+    assert str(proj) in str(seen.get("workspace"))  # escopo = pasta do projeto
+    assert seen.get("user_input") == "continua o trabalho"
+
+
 def test_kanban_endpoint_reads_active_project_board(tmp_path: Path):
     """Fase 1 end-to-end: /api/kanban do serve resolve o projeto ativo e lê o
     board DELE (não o TASKS.md do workspace raiz). Fecha o gap em que tarefas

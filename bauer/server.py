@@ -53,6 +53,12 @@ from typing import Optional
 # estavam progredindo normalmente, so mais devagar.
 _STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "300"))
 
+# Teto de chars do PROJECT.md auto-injetado por turno (B da "memória por
+# projeto"). Cabeçalho, não o arquivo inteiro: é pago a cada turno e prompt
+# longo degrada modelos fracos (mesma razão do cap de skill em skill_match).
+# O resto fica sob demanda via read_file. Ajustável por env.
+_PROJECT_BRIEF_CAP = int(os.environ.get("BAUER_SERVE_PROJECT_BRIEF_CHARS", "1500"))
+
 
 def _sse(data: str, event: str | None = None) -> str:
     """Codifica um evento SSE preservando quebras de linha.
@@ -498,6 +504,54 @@ def create_app(
             _log.debug("active project hint failed: %s", exc)
             return None
 
+    def _project_brief_block(effective_workspace: Path) -> "str | None":
+        """(B) Auto-carrega o PROJECT.md do projeto como brief/convenções do turno.
+
+        Cabeçalho com teto (não o arquivo inteiro — é pago a cada turno e
+        modelos fracos sofrem com prompt longo; mesma razão do cap de skill).
+        Se truncar, aponta o read_file pro resto (barato, está na sandbox).
+        Enquadrado como REGRA a seguir (≠ memória, que é referência). Pula o
+        placeholder auto-gerado pelo `bauer project init` (sem conteúdo real)."""
+        try:
+            pf = Path(effective_workspace) / "PROJECT.md"
+            if not pf.is_file():
+                return None
+            text = pf.read_text(encoding="utf-8", errors="replace").strip()
+            # Placeholder do `bauer project init` (descrição vazia) → não injeta.
+            if not text or len(text) < 40 or "Sem descricao." in text:
+                return None
+            truncated = len(text) > _PROJECT_BRIEF_CAP
+            head = text[:_PROJECT_BRIEF_CAP].rstrip()
+            note = (
+                "\n\n(PROJECT.md continua — use `read_file` com path 'PROJECT.md' "
+                "para ver o restante.)" if truncated else ""
+            )
+            return (
+                "<projeto-brief>\n"
+                "[Contexto e convenções deste projeto (PROJECT.md). SIGA-AS ao "
+                "trabalhar aqui, salvo instrução explícita em contrário.]\n"
+                f"{head}{note}\n"
+                "</projeto-brief>"
+            )
+        except Exception as exc:  # noqa: BLE001 — brief é auxílio; nunca quebra o turno
+            _log.debug("project brief injection failed: %s", exc)
+            return None
+
+    def _memory_context_block(message: str, effective_workspace: Path) -> "str | None":
+        """(A) Prefetch de memória do projeto — paridade com o CLI.
+
+        Busca decisões passadas (decisions.db) + sessões similares, ambas já
+        escopadas na pasta do projeto (Fase 1), e devolve o bloco
+        <memory-context> pronto. O serve não fazia isso — toda a memória do
+        projeto era invisível pro chat web."""
+        try:
+            from .memory_context import prefetch_memory_context
+
+            return prefetch_memory_context(message, str(effective_workspace))
+        except Exception as exc:  # noqa: BLE001 — memória é auxílio; nunca quebra o turno
+            _log.debug("memory prefetch failed: %s", exc)
+            return None
+
     def _resolve_request_context(message: str, effective_workspace: Path) -> dict:
         resolved: dict = {"agent_id": "", "agent": None, "skill": None}
         try:
@@ -516,12 +570,17 @@ def create_app(
         except Exception as exc:
             _log.debug("skill match failed: %s", exc)
         resolved["project_hint"] = _active_project_hint(effective_workspace)
+        resolved["project_brief"] = _project_brief_block(effective_workspace)
+        resolved["memory_context"] = _memory_context_block(message, effective_workspace)
         return resolved
 
     def _apply_request_context(ctx: ContextManager, resolved: dict) -> None:
-        project_hint = resolved.get("project_hint")
-        if project_hint:
-            ctx.add_ephemeral_system(project_hint)
+        # Ordem: brief estável do projeto → especialista → skill → memória
+        # (referência) → nudge de pasta (fallback). Os mais "sempre-ligados"
+        # e estáveis primeiro.
+        project_brief = resolved.get("project_brief")
+        if project_brief:
+            ctx.add_ephemeral_system(project_brief)
         agent = resolved.get("agent")
         if agent is not None:
             ctx.add_ephemeral_system(
@@ -538,6 +597,12 @@ def create_app(
                 ctx.add_ephemeral_system(skill_injection_block(skill))
             except Exception as exc:
                 _log.debug("skill injection failed: %s", exc)
+        memory_context = resolved.get("memory_context")
+        if memory_context:
+            ctx.add_ephemeral_system(memory_context)
+        project_hint = resolved.get("project_hint")
+        if project_hint:
+            ctx.add_ephemeral_system(project_hint)
 
     def _run_input(message: str, endpoint: str, resolved: dict) -> dict:
         payload = {"message": message, "endpoint": endpoint}
