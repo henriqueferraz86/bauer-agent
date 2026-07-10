@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -172,7 +173,8 @@ class _AutomationTickLock:
                         self.path.unlink()
                         continue
                     except OSError:
-                        pass
+                        # Another scheduler may have replaced the lock.
+                        time.sleep(0.01)
                 if time.time() >= deadline:
                     raise TimeoutError(f"Timeout aguardando lock: {self.path}")
                 time.sleep(0.05)
@@ -181,10 +183,8 @@ class _AutomationTickLock:
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
-        try:
+        with suppress(FileNotFoundError):
             self.path.unlink()
-        except FileNotFoundError:
-            pass
 
     def _is_stale(self) -> bool:
         try:

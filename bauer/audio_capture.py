@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -178,10 +179,8 @@ def capture_voice_input(
         result = transcribe_audio(wav_path)
 
         # Limpa arquivo temporário
-        try:
+        with suppress(OSError):
             Path(wav_path).unlink()
-        except Exception:
-            pass
 
         if result.get("success"):
             text = result.get("transcript", "").strip()
