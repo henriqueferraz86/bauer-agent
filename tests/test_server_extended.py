@@ -1165,6 +1165,38 @@ def test_stream_no_hint_when_no_active_project(tmp_path: Path):
     assert "<projeto-ativo>" not in blob
 
 
+def test_kanban_endpoint_reads_active_project_board(tmp_path: Path):
+    """Fase 1 end-to-end: /api/kanban do serve resolve o projeto ativo e lê o
+    board DELE (não o TASKS.md do workspace raiz). Fecha o gap em que tarefas
+    criadas por projeto sumiam do painel."""
+    from unittest.mock import patch as _patch
+    from bauer.tool_router import ToolRouter
+    from bauer.workspace_manager import WorkspaceManager
+    from bauer import projects_registry as pr
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "bauerinvest"
+    proj.mkdir()
+    # Tarefa no board do PROJETO; e uma diferente no board da RAIZ do serve.
+    WorkspaceManager(proj).add_task("tarefa do projeto bauerinvest")
+    WorkspaceManager(ws).add_task("tarefa da raiz do serve")
+
+    reg = tmp_path / "projects.json"
+    with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg):
+        pr.add_project(proj)  # vira ativo
+        app = create_app(
+            model_name="m", applied_context=4096, router=ToolRouter(workspace=ws),
+            client=MagicMock(), system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+        data = TestClient(app).get("/api/kanban").json()
+
+    titles = [c["title"] for col in data["columns"].values() for c in col]
+    assert "tarefa do projeto bauerinvest" in titles  # mostra o board do projeto
+    assert "tarefa da raiz do serve" not in titles     # não o board da raiz
+
+
 # ─── /v1/chat/completions (OpenAI-compat / Claw3D) ───────────────────────────
 
 

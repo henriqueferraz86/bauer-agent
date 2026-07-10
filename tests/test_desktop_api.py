@@ -233,6 +233,64 @@ class TestKanbanEndpoint:
         assert "TODO" in data["columns"] and "DONE" in data["columns"]
 
 
+class TestKanbanProjectAware:
+    """Fase 1: /api/kanban lê o board do PROJETO resolvido (não o workspace
+    raiz fixo) via resolve_project_workspace — mesma resolução do chat."""
+
+    def _app_with_resolver(self, tmp_path, resolver):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        app.include_router(da.build_desktop_router(
+            get_workspace=lambda: tmp_path / "serve_ws",
+            resolve_project_workspace=resolver,
+            runtime_root=tmp_path / "runtime",
+        ))
+        return TestClient(app)
+
+    def _seed_tasks(self, workspace: Path, titles: list[str]):
+        from bauer.workspace_manager import WorkspaceManager
+
+        workspace.mkdir(parents=True, exist_ok=True)
+        wm = WorkspaceManager(workspace)
+        for t in titles:
+            wm.add_task(t)
+
+    def test_reads_active_project_board(self, tmp_path):
+        proj = tmp_path / "serve_ws" / "bauerinvest"
+        self._seed_tasks(proj, ["tarefa do bauerinvest"])
+        # resolver ignora project_id e sempre devolve o projeto ativo (bauerinvest)
+        client = self._app_with_resolver(tmp_path, lambda pid: proj)
+
+        data = client.get("/api/kanban").json()
+        titles = [c["title"] for col in data["columns"].values() for c in col]
+        assert "tarefa do bauerinvest" in titles
+
+    def test_explicit_project_id_is_forwarded_to_resolver(self, tmp_path):
+        seen = {}
+
+        def resolver(pid):
+            seen["pid"] = pid
+            return tmp_path / "serve_ws"
+
+        client = self._app_with_resolver(tmp_path, resolver)
+        client.get("/api/kanban?project_id=abc123")
+        assert seen["pid"] == "abc123"
+
+    def test_falls_back_to_default_when_resolver_raises(self, tmp_path):
+        default_ws = tmp_path / "serve_ws"
+        self._seed_tasks(default_ws, ["tarefa da raiz"])
+
+        def _boom(pid):
+            raise RuntimeError("resolver quebrado")
+
+        client = self._app_with_resolver(tmp_path, _boom)
+        data = client.get("/api/kanban").json()
+        titles = [c["title"] for col in data["columns"].values() for c in col]
+        assert "tarefa da raiz" in titles  # caiu no get_workspace() default
+
+
 class TestModelsCatalog:
     def _models(self):
         # catalog_models() sempre seta is_free — o filtro do endpoint confia

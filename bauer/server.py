@@ -1521,11 +1521,20 @@ def create_app(
         # relativos ao cwd e o Kanban/Projetos leem um workspace diferente do
         # que as tools kanban_*/write_file do chat escrevem.
         _dsk_workspace = getattr(router, "workspace", None)
+
+        def _kanban_project_workspace(pid: "str | None") -> Path:
+            # Mesma resolução do chat (Fase 1): project_id explícito > ativo
+            # global > default. Sem sessão aqui (o painel não tem session_id),
+            # então passa sid=None — cai direto no ativo global do registry.
+            proj_router, _ = _resolve_project_router(None, pid)
+            return Path(proj_router.workspace)
+
         app.include_router(build_desktop_router(
             verify_key=_verify_key,
             runtime_root=runtime_root,
             get_workspace=(lambda: _dsk_workspace) if _dsk_workspace else None,
             get_config_path=(lambda: config_path) if config_path else None,
+            resolve_project_workspace=_kanban_project_workspace,
         ))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("bauer.server").warning(

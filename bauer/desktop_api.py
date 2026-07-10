@@ -184,12 +184,20 @@ def build_desktop_router(
     verify_key: Optional[Callable] = None,
     get_config_path: Optional[Callable[[], Path]] = None,
     get_workspace: Optional[Callable[[], Path]] = None,
+    resolve_project_workspace: Optional[Callable[[Optional[str]], Path]] = None,
     cost_file: Optional[Path] = None,
     spans_file: Optional[Path] = None,
     runtime_root: Optional[Path] = None,
     logs_dir: Optional[Path] = None,
 ):
-    """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes."""
+    """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
+
+    ``resolve_project_workspace(project_id) -> Path``: quando fornecido, o
+    ``/api/kanban`` usa a MESMA resolução de projeto do chat (project_id
+    explícito > projeto ativo global > workspace default) para ler o board da
+    pasta do projeto — sem isso, o painel lê sempre o TASKS.md do workspace
+    raiz do serve, e as tarefas criadas por projeto (Fase 1) não aparecem.
+    """
     from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
     get_config_path = get_config_path or _default_config_path
@@ -198,6 +206,16 @@ def build_desktop_router(
     _spans_file = spans_file or (Path.home() / ".bauer" / "traces" / "spans.jsonl")
     _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
     _logs_dir = logs_dir or (Path.cwd() / "logs")
+
+    def _kanban_workspace(project_id: Optional[str]) -> Path:
+        """Workspace do board a exibir: projeto resolvido, com fallback seguro
+        para o workspace default do serve."""
+        if resolve_project_workspace is not None:
+            try:
+                return resolve_project_workspace(project_id)
+            except Exception:  # noqa: BLE001 — nunca derruba o painel
+                logger.debug("kanban: resolução de projeto falhou; usando default")
+        return get_workspace()
 
     deps = [Depends(verify_key)] if verify_key else []
     router = APIRouter(prefix="/api", dependencies=deps, tags=["desktop"])
@@ -243,11 +261,13 @@ def build_desktop_router(
 
     # ── Kanban ────────────────────────────────────────────────────────────
     @router.get("/kanban")
-    def kanban_board():
+    def kanban_board(
+        project_id: str = Query("", description="projeto explicito (default: ativo global)"),
+    ):
         try:
             from .workspace_manager import WorkspaceManager
 
-            wm = WorkspaceManager(get_workspace())
+            wm = WorkspaceManager(_kanban_workspace(project_id or None))
             tasks = wm.list_tasks()
         except Exception:  # noqa: BLE001
             tasks = []
