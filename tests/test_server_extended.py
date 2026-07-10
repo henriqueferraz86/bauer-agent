@@ -1158,6 +1158,37 @@ def test_stream_run_input_tagged_with_project_id(tmp_path: Path):
     assert run.input.get("project_id") == expected_pid
 
 
+def test_stream_project_tool_events_reach_serve_event_bus(tmp_path: Path):
+    """Regressão do wiring de eventos por-projeto: um turno que roda no router
+    de PROJETO publica os eventos de tool no EventBus do SERVE (runtime_root),
+    não num store próprio do router de projeto. Sem o override
+    `_wire_router_to_serve`, a atividade de tool dos turnos por-projeto sumia da
+    Observabilidade/`/audit` do serve — este teste trava essa regressão."""
+    import time as _t
+    from bauer.core.events import EventBus
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    proj = ws / "meu-projeto"
+    proj.mkdir()
+
+    resp, _app, _reg = _stream_with_project_router(tmp_path, ws, active_project=proj)
+    assert resp.status_code == 200
+    run_id = resp.headers["X-Bauer-Run-ID"]
+
+    bus = EventBus(root=tmp_path / "runtime")  # o runtime_root do serve
+    deadline = _t.monotonic() + 3.0
+    tool_events: list = []
+    while _t.monotonic() < deadline and not tool_events:
+        dicts = [EventBus.to_dict(e) for e in bus.list_events(run_id=run_id)]
+        tool_events = [d for d in dicts if str(d.get("event_type", "")).startswith("tool.call")]
+        if not tool_events:
+            _t.sleep(0.02)
+
+    assert tool_events, "eventos tool.call.* do turno por-projeto deveriam estar no event_bus do serve"
+    assert any(d.get("tool_name") == "write_file" for d in tool_events)
+
+
 def test_stream_no_hint_when_no_active_project(tmp_path: Path):
     ws = tmp_path / "workspace"
     ws.mkdir()

@@ -390,11 +390,24 @@ def create_app(
     trace_store = RunTraceStore(event_bus.store)
     from .core.runtime.autonomy import BudgetManager
     budget_manager = BudgetManager(root=runtime_root, event_bus=event_bus)
-    try:
-        router._event_bus = event_bus  # type: ignore[attr-defined]
-        router._policy_root = runtime_root  # type: ignore[attr-defined]
-    except Exception:
-        pass
+
+    def _wire_router_to_serve(r) -> None:
+        """Aponta o EventBus/policy_root de um ToolRouter para os DESTE serve.
+
+        Sem isto, cada ToolRouter usa um EventBus próprio rooteado em
+        `<workspace>.parent/runtime` (ToolRouter.__init__) — e todo tool call
+        publica `tool.call.completed` nesse bus (tool_router._publish_tool_event).
+        Para o router default o serve já sobrescrevia; para os routers de
+        PROJETO (Fase 1) não sobrescrevia, então a atividade de tool dos turnos
+        por-projeto ia pra um store diferente e sumia da Observabilidade/`/audit`
+        do serve. Aplicar em TODO router (default + projeto) fecha esse buraco."""
+        try:
+            r._event_bus = event_bus  # type: ignore[attr-defined]
+            r._policy_root = runtime_root  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+    _wire_router_to_serve(router)
 
     # ── Router-por-projeto (Fase 1 do isolamento por projeto) ────────────────
     #
@@ -410,10 +423,12 @@ def create_app(
                 cfg = _load_cfg(config_path)
             except Exception as exc:  # noqa: BLE001
                 _log.debug("project router: falha ao carregar config: %s", exc)
-        return _build_scoped_router(
+        proj_router = _build_scoped_router(
             cfg, project_path,
             llm_client=getattr(router, "_llm_client", None),
         )
+        _wire_router_to_serve(proj_router)  # eventos vão pro store do serve
+        return proj_router
 
     from .project_routers import ProjectRouterCache
     project_router_cache = ProjectRouterCache(router, _build_project_router)
@@ -1424,8 +1439,6 @@ def create_app(
             status="running",
         )
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
-        router._runtime_session_id = sid  # type: ignore[attr-defined]
-        router._runtime_run_id = run.id  # type: ignore[attr-defined]
         resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
 
         # ── modo streaming ────────────────────────────────────────────────────
@@ -1434,79 +1447,88 @@ def create_app(
 
             def _oai_stream():
                 from .agent import _try_parse_tool, MAX_TOOL_TURNS
+                from .tool_router import reset_runtime_ids, set_runtime_ids
+
+                # ContextVar (não atributo de instância): /v1 usa o router
+                # default, que pode rodar concorrente com /chat//stream — mutar
+                # a instância vazaria o id de um request pro outro. Instala aqui
+                # (na thread que roda o gerador e executa as tools).
+                _ids_token = set_runtime_ids(sid, run.id)
                 tool_count = 0
                 parts: list[str] = []
+                try:
+                    while True:
+                        current_run = run_manager.get_run(run.id)
+                        if current_run is not None and current_run.status == "cancelled":
+                            store.save(sid, ctx.messages)
+                            session_manager.touch_session(sid, state={"last_run_id": run.id})
+                            yield "data: [DONE]\n\n"
+                            return
+                        parts = []
+                        try:
+                            for chunk in _state["client"].chat_stream(active_model, ctx.get_payload()):
+                                current_run = run_manager.get_run(run.id)
+                                if current_run is not None and current_run.status == "cancelled":
+                                    store.save(sid, ctx.messages)
+                                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                                    yield "data: [DONE]\n\n"
+                                    return
+                                parts.append(chunk)
+                                # Emite chunk no formato OpenAI delta
+                                delta = _json.dumps({
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": int(_time.time()),
+                                    "model": active_model,
+                                    "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
+                                }, ensure_ascii=False)
+                                yield f"data: {delta}\n\n"
+                        except Exception as exc:
+                            err = _json.dumps({"error": {"message": str(exc), "type": "server_error"}})
+                            yield f"data: {err}\n\n"
+                            store.save(sid, ctx.messages)
+                            session_manager.touch_session(sid, state={"last_run_id": run.id})
+                            run_manager.fail_run(run.id, str(exc))
+                            yield "data: [DONE]\n\n"
+                            return
 
-                while True:
-                    current_run = run_manager.get_run(run.id)
-                    if current_run is not None and current_run.status == "cancelled":
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
-                        yield "data: [DONE]\n\n"
-                        return
-                    parts = []
-                    try:
-                        for chunk in _state["client"].chat_stream(active_model, ctx.get_payload()):
-                            current_run = run_manager.get_run(run.id)
-                            if current_run is not None and current_run.status == "cancelled":
-                                store.save(sid, ctx.messages)
-                                session_manager.touch_session(sid, state={"last_run_id": run.id})
-                                yield "data: [DONE]\n\n"
-                                return
-                            parts.append(chunk)
-                            # Emite chunk no formato OpenAI delta
-                            delta = _json.dumps({
+                        response = _format_server_response("".join(parts))
+                        ctx.add_assistant(response)
+
+                        action_dict = _try_parse_tool(response, router)
+                        if action_dict and tool_count < MAX_TOOL_TURNS:
+                            action_name = action_dict.get("action", "tool")
+                            try:
+                                tool_result = router.execute(action_dict)
+                            except Exception as exc:
+                                tool_result = f"[Erro: {exc}]"
+                            # Emite evento de progresso de tool (formato Hermes)
+                            tool_evt = _json.dumps({"tool": action_name, "label": action_name})
+                            yield f"event: hermes.tool.progress\ndata: {tool_evt}\n\n"
+                            ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
+                            tool_count += 1
+                            _metrics.tool_calls_total += 1
+                        else:
+                            # Chunk final com finish_reason
+                            final_delta = _json.dumps({
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
                                 "created": int(_time.time()),
                                 "model": active_model,
-                                "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
-                            }, ensure_ascii=False)
-                            yield f"data: {delta}\n\n"
-                    except Exception as exc:
-                        err = _json.dumps({"error": {"message": str(exc), "type": "server_error"}})
-                        yield f"data: {err}\n\n"
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
-                        run_manager.fail_run(run.id, str(exc))
-                        yield "data: [DONE]\n\n"
-                        return
-
-                    response = _format_server_response("".join(parts))
-                    ctx.add_assistant(response)
-
-                    action_dict = _try_parse_tool(response, router)
-                    if action_dict and tool_count < MAX_TOOL_TURNS:
-                        action_name = action_dict.get("action", "tool")
-                        try:
-                            tool_result = router.execute(action_dict)
-                        except Exception as exc:
-                            tool_result = f"[Erro: {exc}]"
-                        # Emite evento de progresso de tool (formato Hermes)
-                        tool_evt = _json.dumps({"tool": action_name, "label": action_name})
-                        yield f"event: hermes.tool.progress\ndata: {tool_evt}\n\n"
-                        ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
-                        tool_count += 1
-                        _metrics.tool_calls_total += 1
-                    else:
-                        # Chunk final com finish_reason
-                        final_delta = _json.dumps({
-                            "id": completion_id,
-                            "object": "chat.completion.chunk",
-                            "created": int(_time.time()),
-                            "model": active_model,
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                        })
-                        yield f"data: {final_delta}\n\n"
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
-                        run_manager.complete_run(
-                            run.id,
-                            output={"response": response},
-                            tool_calls_count=tool_count,
-                        )
-                        yield "data: [DONE]\n\n"
-                        break
+                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                            })
+                            yield f"data: {final_delta}\n\n"
+                            store.save(sid, ctx.messages)
+                            session_manager.touch_session(sid, state={"last_run_id": run.id})
+                            run_manager.complete_run(
+                                run.id,
+                                output={"response": response},
+                                tool_calls_count=tool_count,
+                            )
+                            yield "data: [DONE]\n\n"
+                            break
+                finally:
+                    reset_runtime_ids(_ids_token)
 
             return StreamingResponse(
                 _oai_stream(),
@@ -1516,8 +1538,10 @@ def create_app(
 
         # ── modo não-streaming (resposta completa) ────────────────────────────
         from .cost_meter import cost_sink
+        from .tool_router import reset_runtime_ids, set_runtime_ids
         _cost = _TurnCostRecorder(sid)
         _cost_token = cost_sink.set(_cost)
+        _ids_token = set_runtime_ids(sid, run.id)
         try:
             response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
         except Exception as exc:
@@ -1526,6 +1550,7 @@ def create_app(
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
         finally:
             cost_sink.reset(_cost_token)
+            reset_runtime_ids(_ids_token)
 
         _metrics.tool_calls_total += len(tool_log)
         _record_turn_budget(_cost, run.id, request_agent_id)

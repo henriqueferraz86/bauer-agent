@@ -71,3 +71,24 @@ class TestRuntimeIdsContextVar:
         reset_runtime_ids(token)
         reset_runtime_ids(token)  # não deve levantar
         assert router._runtime_session_id is None
+
+    def test_runtime_ids_reach_tool_timeout_thread(self, router: ToolRouter):
+        """Regressão real (achado da auditoria): a execução de tool roda numa
+        thread do executor via call_with_timeout. ContextVars NÃO cruzam para
+        threads filhas — sem o copy_context() em call_with_timeout, o run_id/
+        session_id ficavam None DENTRO da tool e os eventos perdiam atribuição.
+        Este teste liga o par via set_runtime_ids, roda algo através de
+        call_with_timeout e confirma que a thread filha vê o mesmo par."""
+        from bauer.tool_timeout import call_with_timeout
+
+        token = set_runtime_ids("sess-x", "run-x")
+        try:
+            def _inside_tool():
+                # roda na thread do ThreadPoolExecutor de call_with_timeout
+                return (router._runtime_session_id, router._runtime_run_id)
+
+            result, timed_out = call_with_timeout(_inside_tool, timeout_s=5.0)
+            assert timed_out is False
+            assert result == ("sess-x", "run-x")
+        finally:
+            reset_runtime_ids(token)
