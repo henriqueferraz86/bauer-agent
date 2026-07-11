@@ -1,12 +1,27 @@
 # Plano de Consolidação do Bauer Kernel (v2 — revisado sobre o código real)
 
 > **Status:** revisado em 2026-07-11 após auditoria do código.
-> **Progresso (branch `bauer-kernel`):** Sprints 1–5 ✅ CONCLUÍDOS em 2026-07-11
-> (fachada+estados, contrato de adapter+CLI, governança, resiliência, Evaluator
-> — 47 testes em `tests/test_kernel.py`). **Falta o Sprint 6** (migração dos
-> front-ends serve/agent atrás de `kernel.enabled`) — exige desenho de
-> streaming pelo Kernel (o `/stream` emite deltas no meio do turno; o
-> `execute()` é request/response), então merece sessão própria.
+> **Progresso:** Sprints 1–5 ✅ CONCLUÍDOS em 2026-07-11 (branch `bauer-kernel`,
+> mergeado no master via [PR #33](https://github.com/henriqueferraz86/bauer-agent/pull/33))
+> — fachada+estados, contrato de adapter+CLI, governança, resiliência,
+> Evaluator (47 testes). **Sprint 6 em andamento** (branch
+> `bauer-kernel-sprint6`), fatiado conforme o risco:
+> - **6a ✅** `kernel.stream()` — generator isolado, zero mudança em
+>   server.py/agent.py (55 testes em `test_kernel.py`).
+> - **6b ✅** `/chat` do serve migrado atrás de `kernel.enabled` (default
+>   false — caminho legado intocado). Achado importante: o adapter genérico
+>   `bauer_native` NÃO tem o loop de tool-calling/memória/skills — a
+>   integração correta injeta `run_one_turn_with_fallback` como **executor**
+>   do Kernel, não troca para o adapter. Governança nova e real quando ligado:
+>   kill-switch (503) e budget-gate (403) que o `/chat` nunca teve antes (8
+>   testes de paridade em `test_kernel_serve_chat.py`).
+> - **6c pendente** — `/stream` (SSE) + `bauer agent` interativo via
+>   `kernel.stream()`. Maior risco (é o caminho mais usado no dia a dia);
+>   mesmo padrão de executor do 6b, mas precisa mapear os eventos do
+>   generator para o formato SSE existente (`tool_phase`, `route`, etc.).
+> - **6d pendente** — absorver o scheduler (`core/runtime/scheduler.py` hoje
+>   reimplementa retry/budget/eventos inline — deveria delegar ao Kernel em
+>   vez de duplicar).
 > **Mudança de premissa:** o plano original foi escrito como se o Kernel fosse
 > construído do zero. **Não é.** ~80% dos componentes já existem e funcionam.
 > O trabalho real é de **consolidação** (compor o que existe atrás de um

@@ -412,6 +412,45 @@ def create_app(
     from .core.runtime.autonomy import BudgetManager
     budget_manager = BudgetManager(root=runtime_root, event_bus=event_bus)
 
+    # ── Bauer Kernel (Fase 12 / Sprint 6b) — opt-in via kernel.enabled ───────
+    #
+    # Quando ligado, /chat passa a executar pelo BauerKernel.execute() com um
+    # EXECUTOR que envolve o motor de turno JÁ EXISTENTE (run_one_turn_with_
+    # fallback) — não o adapter genérico bauer_native (que não tem o loop de
+    # tool-calling/memória/skills). O Kernel reusa run_manager/event_bus/
+    # approval_manager/budget_manager JÁ CONSTRUÍDOS acima — não duplica
+    # estado. Desligado (default): /chat roda EXATAMENTE como antes, zero
+    # kernel.execute() na hora, zero risco.
+    _kernel = None
+    try:
+        if config_path is not None:
+            from .config_loader import load_config as _load_kernel_cfg
+            _kcfg = _load_kernel_cfg(config_path)
+            if bool(getattr(getattr(_kcfg, "kernel", None), "enabled", False)):
+                from .core.kernel import BauerKernel
+                from .core.kernel.kernel import evaluator_from_config
+                from .core.policy.engine import PolicyEngine
+                from .core.runtime.resilience import RuntimeControl
+
+                _kernel = BauerKernel(
+                    runs=run_manager, bus=event_bus,
+                    policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
+                    control=RuntimeControl(store=event_bus.store),
+                    approvals=approval_manager,
+                    # budget=None DE PROPÓSITO: o executor do /chat já grava o
+                    # custo via _record_turn_budget; se o Kernel também gravasse
+                    # (_record_cost), cada turno contaria DOBRADO no orçamento
+                    # (_used_since soma todas as linhas de run_costs, sem dedup).
+                    # O gate pré-run continua funcionando: a PolicyEngine tem seu
+                    # próprio BudgetManager lendo o mesmo runtime_root.
+                    budget=None,
+                    evaluator=evaluator_from_config(_kcfg),
+                )
+    except Exception as exc:  # noqa: BLE001 — kernel é opt-in; falha de wiring nunca derruba o serve
+        from .logging_config import log_suppressed
+        log_suppressed("serve.kernel_wiring", exc)
+        _kernel = None
+
     def _wire_router_to_serve(r) -> None:
         """Aponta o EventBus/policy_root de um ToolRouter para os DESTE serve.
 
@@ -1160,6 +1199,86 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"Sessao '{session_id}' nao encontrada.")
         return {"deleted": session_id}
 
+    def _chat_via_kernel(req: ChatRequest, session_id: str, active_router, resolved: dict,
+                         request_agent_id: str, ctx, turn_client, turn_model, route):
+        """/chat pelo BauerKernel (kernel.enabled=true): estados+policy+budget
+        em volta do MESMO motor de turno (run_one_turn_with_fallback) — o
+        executor injetado, não o adapter genérico. Ver bloco de wiring do
+        `_kernel` acima para o porquê (adapter bauer_native não tem tool loop)."""
+        from .core.kernel import KernelRequest
+
+        captured: dict = {}
+        # Snapshot p/ replan: o executor MUTA o ctx (resposta + tool messages).
+        # Sem restaurar, a 2ª execução veria a própria resposta reprovada no
+        # histórico e o replan_feedback seria ignorado — replan viraria custo
+        # dobrado sem chance de correção.
+        _base_msgs = len(ctx.messages)
+
+        def _executor(payload):
+            run_id = payload["run_id"]
+            if payload.get("replan_attempt"):
+                del ctx.messages[_base_msgs:]  # descarta a tentativa reprovada
+                ctx.add_ephemeral_system(
+                    "Sua resposta anterior foi reprovada pelo quality gate: "
+                    f"{payload.get('replan_feedback', '')}. Responda novamente "
+                    "corrigindo esse problema."
+                )
+            else:  # eventos por-run: só na 1ª tentativa (replan repetiria)
+                _publish_selected_skill(run_id, session_id, request_agent_id, resolved)
+                _publish_route(run_id, session_id, request_agent_id, route)
+            from .cost_meter import cost_sink
+            from .tool_router import reset_runtime_ids, set_runtime_ids
+            cost = _TurnCostRecorder(session_id)
+            cost_token = cost_sink.set(cost)
+            ids_token = set_runtime_ids(session_id, run_id)
+            try:
+                response, tool_log = run_one_turn_with_fallback(
+                    ctx, active_router, turn_client, turn_model, _fallback_clients,
+                )
+            except Exception as exc:
+                return {"status": "failed", "error": str(exc)}
+            finally:
+                cost_sink.reset(cost_token)
+                reset_runtime_ids(ids_token)
+            _metrics.tool_calls_total += len(tool_log)
+            _record_turn_budget(cost, run_id, request_agent_id)
+            formatted = _format_server_response(response)
+            store.save(session_id, ctx.messages)
+            session_manager.touch_session(session_id, state={"last_run_id": run_id})
+            captured["tool_log"] = tool_log
+            return {"status": "completed", "output": formatted,
+                    "tool_calls_count": len(tool_log),
+                    "cost_estimate": round(cost.total_usd, 6)}
+
+        out = _kernel.execute(
+            KernelRequest(
+                task=req.message, session_id=session_id, agent_id=request_agent_id,
+                input=_run_input(req.message, "/chat", resolved),
+            ),
+            executor=_executor,
+        )
+
+        if out.status == "waiting_approval":
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=202, content={
+                "status": "waiting_approval", "run_id": out.run_id,
+                "approval_id": out.approval_id, "reason": out.policy_reason,
+            })
+        if out.status == "cancelled":
+            raise HTTPException(status_code=503, detail=out.error or "Execução bloqueada (kill switch).")
+        if out.status != "completed":
+            if out.policy_action == "deny":
+                raise HTTPException(status_code=403, detail=out.error or "Bloqueado pela politica.")
+            _log.error("Erro interno em /chat (kernel): %s", out.error)
+            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
+
+        return ChatResponse(
+            response=out.output or "",
+            session_id=session_id,
+            model=_state["model"],
+            tool_calls=[ToolCallLog(**t) for t in captured.get("tool_log", [])],
+        )
+
     @app.post("/chat", response_model=ChatResponse)
     def chat(req: ChatRequest, _: None = Depends(_verify_key)):
         _metrics.chat_requests_total += 1
@@ -1176,6 +1295,18 @@ def create_app(
             agent_id=request_agent_id,
             state=session_state,
         )
+
+        ctx = _new_context()
+        ctx.messages = store.load(session_id)
+        _apply_request_context(ctx, resolved)
+        ctx.add_user(req.message)
+        _turn_client, _turn_model, _route = _resolve_turn_model(req.message)
+
+        if _kernel is not None:
+            return _chat_via_kernel(req, session_id, active_router, resolved,
+                                    request_agent_id, ctx, _turn_client, _turn_model, _route)
+
+        # ── caminho legado (kernel.enabled=false — default, intocado) ────────
         run = run_manager.create_run(
             session_id=session_id,
             agent_id=request_agent_id,
@@ -1183,16 +1314,10 @@ def create_app(
             input=_run_input(req.message, "/chat", resolved),
             status="running",
         )
-
-        ctx = _new_context()
-        ctx.messages = store.load(session_id)
-        _apply_request_context(ctx, resolved)
         _publish_selected_skill(run.id, session_id, request_agent_id, resolved)
-        ctx.add_user(req.message)
 
         from .cost_meter import cost_sink
         from .tool_router import reset_runtime_ids, set_runtime_ids
-        _turn_client, _turn_model, _route = _resolve_turn_model(req.message)
         _publish_route(run.id, session_id, request_agent_id, _route)
         _cost = _TurnCostRecorder(session_id)
         _cost_token = cost_sink.set(_cost)

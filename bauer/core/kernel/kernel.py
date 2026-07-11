@@ -71,13 +71,9 @@ class BauerKernel:
 
     # ── ciclo de vida ─────────────────────────────────────────────────────────
 
-    def execute(self, request: KernelRequest, *, executor: Any | None = None) -> KernelRun:
-        """Roda o ciclo de vida completo de uma execução.
-
-        ``executor`` opcional: callable(payload) -> dict, substitui o runtime
-        adapter (útil em testes e para motores in-process). Sem ele, resolve o
-        adapter pelo Runtime Registry e chama ``run_agent`` (contrato existente).
-        """
+    def _open_run(self, request: KernelRequest, executor: Any | None):
+        """Cria o Run persistido + payload de execução. Compartilhado por
+        ``execute`` e ``stream`` (mesmo preflight, um só lugar p/ divergir)."""
         session_id = request.session_id or f"session-{uuid4()}"
         adapter = None
         adapter_name = request.runtime_adapter
@@ -95,14 +91,22 @@ class BauerKernel:
             input=stored_input,
             status="created",
         )
-        trajectory = ["created"]
+        payload = {**request.input, "run_id": run.id}
+        if request.task and "task" not in payload:
+            payload["task"] = request.task
+        return run, session_id, ["created"], adapter, payload
 
+    def _preflight(self, request: KernelRequest, run: Any, session_id: str,
+                   trajectory: list[str]):
+        """Kill-switch → planning → policy_check → queued. Retorna
+        ``(decision, early)`` — ``early`` é o KernelRun terminal quando a
+        governança impediu a execução (cancelled/deny/ask); None = prosseguir."""
         # kill-switch central ANTES de qualquer trabalho (RuntimeControl existente)
         if self.control is not None and self.control.kill_switch_enabled():
             self.runs.update_run(run.id, status="cancelled",
                                  error="runtime kill switch ativo")
             trajectory.append("cancelled")
-            return self._result(run.id, session_id, trajectory)
+            return None, self._result(run.id, session_id, trajectory)
 
         # planning — hook do Planner (no-op no Sprint 1; Sprint 5 usa p/ replan)
         self._transition(run, "planning", trajectory)
@@ -113,20 +117,118 @@ class BauerKernel:
         if decision is not None and decision.action == "deny":
             self.runs.fail_run(run.id, f"policy deny: {decision.reason}")
             trajectory.append("failed")
-            return self._result(run.id, session_id, trajectory, decision=decision)
+            return decision, self._result(run.id, session_id, trajectory, decision=decision)
         if decision is not None and decision.action == "ask":
             self._transition(run, "waiting_approval", trajectory)
             approval_id = self._request_approval(request, run, decision)
-            return self._result(run.id, session_id, trajectory, decision=decision,
-                                approval_id=approval_id)
+            return decision, self._result(run.id, session_id, trajectory, decision=decision,
+                                          approval_id=approval_id)
 
         self._transition(run, "queued", trajectory)
-        payload = {**request.input, "run_id": run.id}
-        if request.task and "task" not in payload:
-            payload["task"] = request.task
+        return decision, None
+
+    def execute(self, request: KernelRequest, *, executor: Any | None = None) -> KernelRun:
+        """Roda o ciclo de vida completo de uma execução.
+
+        ``executor`` opcional: callable(payload) -> dict, substitui o runtime
+        adapter (útil em testes e para motores in-process). Sem ele, resolve o
+        adapter pelo Runtime Registry e chama ``run_agent`` (contrato existente).
+        """
+        run, session_id, trajectory, adapter, payload = self._open_run(request, executor)
+        decision, early = self._preflight(request, run, session_id, trajectory)
+        if early is not None:
+            return early
         return self._run_to_completion(run, payload, session_id, trajectory,
                                        executor=executor, adapter=adapter,
                                        decision=decision, request=request)
+
+    def stream(self, request: KernelRequest, *, executor: Any | None = None):
+        """Generator: mesma máquina de estados de ``execute``, mas re-emite os
+        deltas do adapter/executor conforme chegam — para front-ends de
+        streaming (SSE do serve, chat interativo).
+
+        ``executor`` opcional: callable(payload) -> Iterator[dict] (contrato
+        de ``stream_agent``: eventos ``message.delta``/``run.completed``/
+        ``run.failed``). Sem ele, resolve o adapter e chama ``stream_agent``.
+
+        Cada item gerado é ``{"event": ...}``. O ÚLTIMO item sempre tem
+        ``event: "final"`` com o ``KernelRun`` completo (mesmo em falha).
+
+        ESCOPO REDUZIDO (v1, Sprint 6a): sem retry/fallback de executor no
+        laço de streaming — tokens já entregues ao caller não podem ser
+        "desmostrados"; reexecutar transparentemente duplicaria a saída
+        parcial já exibida. Retry/fallback continuam completos em
+        ``execute()``. O gate do Evaluator roda no final, sobre o texto
+        agregado (mesma semântica de ``execute``, sem replan em streaming —
+        replan reabriria running e re-emitiria do zero, confuso em UI).
+        """
+        run, session_id, trajectory, adapter, payload = self._open_run(request, executor)
+        decision, early = self._preflight(request, run, session_id, trajectory)
+        if early is not None:
+            yield {"event": "final", "run": early}
+            return
+
+        self.runs.start_run(run.id)
+        trajectory.append("running")
+
+        chunks: list[str] = []
+        last_meta: dict[str, Any] = {}
+        error: str | None = None
+        try:
+            source = executor(payload) if executor is not None else adapter.stream_agent(payload)
+            for evt in source:
+                evt = evt or {}
+                kind = evt.get("event")
+                if kind == "message.delta":
+                    content = str(evt.get("content", ""))
+                    chunks.append(content)
+                    yield {"event": "message.delta", "content": content}
+                elif kind == "run.failed":
+                    error = str(evt.get("error") or "executor failed")
+                    break
+                else:
+                    last_meta = evt
+        except GeneratorExit:
+            # Caller abandonou o stream (desconexão SSE, .close()) — sem isto o
+            # run ficaria preso em `running` até o recover() (15min). BaseException,
+            # então o `except Exception` abaixo não o captura.
+            self.runs.update_run(run.id, status="cancelled",
+                                 error="stream interrompido pelo cliente")
+            raise
+        except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+            error = str(exc)
+
+        if error is not None:
+            self.runs.fail_run(run.id, error)
+            trajectory.append("failed")
+            yield {"event": "final",
+                  "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                      output="".join(chunks))}
+            return
+
+        result = {"output": "".join(chunks), **{k: v for k, v in last_meta.items()
+                                                 if k not in {"event", "status", "run_id", "runtime_adapter"}}}
+
+        if self.evaluator is not None:
+            self._transition(run, "evaluating", trajectory)
+            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+            if not getattr(verdict, "passed", True):
+                self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
+                trajectory.append("failed")
+                yield {"event": "final",
+                      "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                          output=result.get("output"))}
+                return
+
+        cost = self._extract_cost(result)
+        self.runs.complete_run(run.id, output={"output": result.get("output")},
+                               cost_estimate=cost,
+                               tool_calls_count=int(result.get("tool_calls_count") or 0))
+        trajectory.append("completed")
+        self._record_cost(run, cost)
+        yield {"event": "final",
+              "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                  output=result.get("output"))}
 
     def continue_run(self, run_id: str, *, extra_input: dict[str, Any] | None = None,
                      executor: Any | None = None) -> KernelRun:
@@ -436,6 +538,16 @@ def kernel_enabled(cfg: Any) -> bool:
         return False
 
 
+def evaluator_from_config(cfg: Any):
+    """Evaluator montado a partir de ``kernel.evaluator_enabled``/``max_replans``
+    do config; None quando desligado. Aceita o config inteiro ou só a seção."""
+    ksec = getattr(cfg, "kernel", cfg)
+    if not bool(getattr(ksec, "evaluator_enabled", False)):
+        return None
+    from .evaluator import Evaluator
+    return Evaluator(max_replans=int(getattr(ksec, "max_replans", 1) or 0))
+
+
 def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
                  workspace: str = "workspace", with_policy: bool = True) -> BauerKernel:
     """Composição padrão do Kernel com os componentes existentes (produção)."""
@@ -453,13 +565,9 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     if with_policy:
         from ..policy.engine import PolicyEngine
         policy = PolicyEngine(workspace=workspace, runtime_root=root)
-    evaluator = None
-    ksec = getattr(cfg, "kernel", None)
-    if bool(getattr(ksec, "evaluator_enabled", False)):
-        from .evaluator import Evaluator
-        evaluator = Evaluator(max_replans=int(getattr(ksec, "max_replans", 1) or 0))
     return BauerKernel(
-        runs=runs, bus=bus, policy=policy, config=cfg, evaluator=evaluator,
+        runs=runs, bus=bus, policy=policy, config=cfg,
+        evaluator=evaluator_from_config(cfg),
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
         budget=BudgetManager(root=root),
