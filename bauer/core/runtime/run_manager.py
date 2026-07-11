@@ -11,11 +11,26 @@ from uuid import uuid4
 from ..events.bus import EventBus
 from .state_store import JsonlStateStore
 
-RunStatus = Literal["queued", "running", "waiting_approval", "completed", "failed", "cancelled"]
+# Estados base (caminho legado: queued → running → completed) + estados do
+# Kernel (created/planning/policy_check/evaluating/retrying/paused — só usados
+# quando a execução passa pelo BauerKernel; ver core/kernel/states.py).
+# EXTENSÃO ADITIVA: nenhum consumidor legado quebra — os terminais e o caminho
+# queued→running→completed permanecem intocados.
+RunStatus = Literal[
+    "created", "planning", "policy_check", "queued", "running",
+    "waiting_approval", "evaluating", "retrying", "paused",
+    "completed", "failed", "cancelled",
+]
 RUN_STATUSES: tuple[str, ...] = (
+    "created",
+    "planning",
+    "policy_check",
     "queued",
     "running",
     "waiting_approval",
+    "evaluating",
+    "retrying",
+    "paused",
     "completed",
     "failed",
     "cancelled",

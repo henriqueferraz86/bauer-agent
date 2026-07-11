@@ -505,6 +505,16 @@ def agent(
     except Exception:
         pass
 
+    # Roteamento heurístico por turno (Fase 12) — mesmo comportamento do serve:
+    # opt-in via model.router_enabled + model.profiles no config.yaml.
+    from ._runtime import heuristic_route_kit
+    _route_profiles, _route_client_fn = heuristic_route_kit(cfg)
+    if _route_profiles:
+        console.print(
+            f"[dim]Roteamento por turno ativo — tiers: "
+            f"{', '.join(sorted(_route_profiles))}[/dim]"
+        )
+
     import time as _time
     _session_start = _time.time()
     _session_result = "ok"
@@ -517,6 +527,8 @@ def agent(
             fallback_clients=_fallback_clients or None,
             tool_timeout_s=cfg.agent.tool_timeout_s,
             learning_hints=_learning_hints,
+            route_profiles=_route_profiles,
+            route_client_fn=_route_client_fn,
         )
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):

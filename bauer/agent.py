@@ -4234,6 +4234,8 @@ def run_agent_session(
     tool_timeout_s: float = 30.0,
     memory_provider: "Any | None" = None,
     learning_hints: "str | None" = None,
+    route_profiles: "dict | None" = None,
+    route_client_fn: "Any | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -4251,6 +4253,11 @@ def run_agent_session(
             lendo config.yaml atualizado. Permite live model switch via /model.
         fallback_clients: Lista de (client, model_name) para tentar quando o provider
             principal falha com erro retryável (PROVIDER_DOWN / QUOTA_EXCEEDED).
+        route_profiles: Profiles do roteamento heurístico (Fase 12) — quando
+            presentes, cada turno escolhe o modelo do tier via classify_task,
+            igual ao serve. Tem precedência sobre o ModelRouter legado (LLM).
+        route_client_fn: Callable(provider) -> client|None p/ providers ≠ do
+            principal (com cache). None/falha → o turno usa o modelo padrão.
     """
     # MAX_TOOL_TURNS é lido por dezenas de call sites como global do módulo
     # (inclusive dentro de funções aninhadas em _run_tool_loop_body) — em vez
@@ -4817,8 +4824,35 @@ def run_agent_session(
 
         # --- roteamento (se ativo) ---
         active_model = model_name
+        _turn_client = client
+        _hr_routed = False  # turno roteado pelo router heurístico (Fase 12)
         route_kind = "direct"
-        if routing and model_router is not None:
+        if route_profiles:
+            # Router heurístico por tier (mesma decisão do serve) — precedência
+            # sobre o ModelRouter legado. CONSERVADOR: tier sem profile, provider
+            # sem client, ou falha → o turno segue no modelo padrão da sessão.
+            try:
+                from .model_router import decide as _hr_decide
+                _d = _hr_decide(user_input, route_profiles)
+                if _d.model:
+                    if not _d.provider or _d.provider == _provider:
+                        _c = client  # mesmo provider → reusa o client vivo da sessão
+                    elif route_client_fn is not None:
+                        _c = route_client_fn(_d.provider)
+                    else:
+                        _c = None
+                    if _c is not None:
+                        _turn_client, active_model, _hr_routed = _c, _d.model, True
+                        # sem colchetes no chip — Rich interpretaria [fast]
+                        # como tag de markup e o engoliria do output
+                        console.print(
+                            f"[dim]  → tier {_d.profile}: {_d.model} "
+                            f"({_d.task_type}/{_d.complexity})[/dim]"
+                        )
+            except Exception as _hr_exc:  # noqa: BLE001 — routing é otimização; nunca bloqueia o turno
+                from .logging_config import log_suppressed as _hr_log
+                _hr_log("agent.heuristic_route", _hr_exc)
+        elif routing and model_router is not None:
             try:
                 selected_model, route = model_router.select_model(user_input)
                 route_kind = route.kind
@@ -4890,7 +4924,7 @@ def run_agent_session(
         # --- loop de tool turns (extraído p/ _run_tool_loop_body — usado
         # também pelo /loop autônomo, que passa budget/guardrail reais) ---
         _state = _TurnState(
-            client=client,
+            client=_turn_client,
             active_model=active_model,
             native_session_ok=_native_session_ok,
             fb_idx=_fb_idx,
@@ -4910,9 +4944,16 @@ def run_agent_session(
             turn_input_text=user_input,
             memprov=_memprov,
         )
-        client = _state.client
-        active_model = _state.active_model
-        _native_session_ok = _state.native_session_ok
+        # Turno roteado (heurístico): o client do profile vale SÓ para este
+        # turno — não adota na sessão, a menos que o fallback tenha trocado o
+        # client no meio do turno (aí a troca é intencional e permanece).
+        if not _hr_routed or _state.client is not _turn_client:
+            client = _state.client
+            active_model = _state.active_model
+            # Downgrade native→bridge só é adotado na sessão quando o turno
+            # rodou no client da sessão — um provider roteado sem tools nativas
+            # não deve rebaixar o provider principal.
+            _native_session_ok = _state.native_session_ok
         _fb_idx = _state.fb_idx
         _mem_turn_idx = _state.mem_turn_idx
 

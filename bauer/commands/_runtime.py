@@ -889,3 +889,52 @@ def _kill_bridge_processes(*needles: str) -> int:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return killed
+
+
+def heuristic_route_kit(cfg):
+    """(profiles, client_factory) para o roteamento heurístico por turno na CLI.
+
+    Espelho do bloco de routing do serve (server.py `_client_for_profile`):
+    quando ``model.router_enabled=True`` e há ``model.profiles``, retorna os
+    profiles resolvidos e uma factory ``(provider) -> client|None`` com cache
+    por provider. ``(None, None)`` quando o routing está desligado — o caller
+    segue o caminho de sempre sem nenhum custo extra.
+    """
+    try:
+        enabled = bool(getattr(cfg.model, "router_enabled", False))
+        if not enabled:
+            return None, None
+        from ..model_router import profiles_from_config
+        profiles = profiles_from_config(cfg)
+        if not profiles:
+            return None, None
+    except Exception as exc:  # noqa: BLE001 — routing é opt-in; falha → off
+        from ..logging_config import log_suppressed
+        log_suppressed("cli.heuristic_route_kit", exc)
+        return None, None
+
+    _cache: dict = {}
+
+    def _client_for(provider: str):
+        """Client p/ provider ≠ do principal (o caller reusa o client vivo da
+        sessão quando o provider coincide). None em falha → turno usa o default."""
+        if not provider:
+            return None
+        if provider in _cache:
+            return _cache[provider]
+        try:
+            from ..config_loader import BauerConfig
+            from ..env_loader import apply_env_to_config
+            raw = cfg.model_dump()
+            raw["model"]["provider"] = provider
+            vcfg = BauerConfig(**raw)
+            apply_env_to_config(vcfg)
+            c = _build_client(vcfg)
+            _cache[provider] = c
+            return c
+        except Exception as exc:  # noqa: BLE001
+            from ..logging_config import log_suppressed
+            log_suppressed("cli.route_client_factory", exc)
+            return None
+
+    return profiles, _client_for

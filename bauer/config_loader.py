@@ -580,6 +580,22 @@ class ServeSection(_StrictSection):
     enable_access_log: bool = False    # gravar JSON access log por request (método, path, status, latência)
 
 
+class KernelSection(_StrictSection):
+    """Bauer Kernel (core/kernel) — fachada de orquestração do ciclo de vida.
+
+    Opt-in: com ``enabled: true`` os front-ends migrados passam a executar via
+    ``BauerKernel.execute()`` (estados persistidos + policy + eventos). Default
+    False = caminhos de execução atuais, intocados.
+    """
+
+    enabled: bool = False
+    max_retries: int = Field(ge=0, default=0)          # re-tentativas por executor
+    retry_backoff_s: float = Field(ge=0.0, default=1.0)  # espera linear entre tentativas
+    fallback_adapters: list[str] = []                  # executores alternativos, em ordem
+    evaluator_enabled: bool = False                    # quality gates antes de concluir
+    max_replans: int = Field(ge=0, default=1)          # loop evaluating→planning (budget)
+
+
 class RuntimeSection(_StrictSection):
     profile: Literal["low", "medium", "high"] = "low"
     ram_limit_mb: int = Field(ge=512, default=4096)
@@ -884,6 +900,7 @@ class BauerConfig(_StrictSection):
     cloudflare: CloudflareSection = CloudflareSection()
     lepton: LeptonSection = LeptonSection()
     runtime: RuntimeSection = RuntimeSection()
+    kernel: KernelSection = KernelSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()
     loop: LoopSection = LoopSection()
