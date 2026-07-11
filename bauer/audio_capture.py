@@ -91,19 +91,6 @@ def capture_voice_input(
             "  pip install numpy sounddevice\n"
             "  (ou: uv sync --extra voice)"
         )
-
-    if np is None:
-        raise ImportError(
-            "numpy nÃ£o instalado. Para capturar Ã¡udio:\n"
-            "  pip install numpy sounddevice\n"
-            "  (ou: uv sync --extra voice)"
-        )
-    if sd is None:
-        raise ImportError(
-            "sounddevice nÃ£o instalado. Para capturar Ã¡udio:\n"
-            "  pip install sounddevice numpy\n"
-            "  (ou: uv sync --extra voice)"
-        )
     if transcribe_audio is None:
         raise ImportError("transcription indisponivel para captura de audio.")
 
