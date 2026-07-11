@@ -128,6 +128,51 @@ def kernel_cancel_cmd(
     console.print(f"[red]{result['status']}[/red] {run_id}")
 
 
+@kernel_app.command("approve")
+def kernel_approve_cmd(
+    approval_id: str = typer.Argument(...),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Aprova um run em waiting_approval e continua a execução."""
+    kernel, cfg = _build(config, state_dir, with_policy=False)
+    # Re-injeta o client (não persiste no JSONL) p/ o continue_run do bauer_native
+    extra: dict = {}
+    try:
+        from ._runtime import _build_client
+        extra = {"client": _build_client(cfg), "model": cfg.model.name}
+    except Exception:  # noqa: BLE001 — sem client, o run volta p/ queued
+        pass
+    try:
+        out = kernel.approve(approval_id, continue_with=extra or None)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    if isinstance(out, dict):
+        console.print(f"[green]approved[/green] {approval_id} → run {out.get('run_id')} queued")
+        return
+    color = "green" if out.ok else "red"
+    console.print(f"[{color}]{out.status}[/{color}] run={out.run_id}")
+    if out.output:
+        console.print(str(out.output))
+
+
+@kernel_app.command("deny")
+def kernel_deny_cmd(
+    approval_id: str = typer.Argument(...),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Nega uma aprovação pendente (run → failed)."""
+    kernel, _ = _build(config, state_dir, with_policy=False)
+    try:
+        out = kernel.deny(approval_id)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[red]denied[/red] {approval_id} (run {out.get('run_id')})")
+
+
 @kernel_app.command("health")
 def kernel_health_cmd(
     adapter: str = typer.Option("", "--adapter", help="Adapter (vazio = default do config)"),

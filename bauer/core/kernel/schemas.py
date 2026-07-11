@@ -37,6 +37,7 @@ class KernelRun:
     error: str | None = None
     policy_action: str | None = None   # allow | ask | deny (None = sem policy)
     policy_reason: str | None = None
+    approval_id: str | None = None     # ApprovalRecord criado quando policy = ask
     trajectory: list[str] = field(default_factory=list)
 
     @property

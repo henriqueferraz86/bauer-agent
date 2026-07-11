@@ -1,11 +1,16 @@
 """BauerKernel — fachada de orquestração do ciclo de vida de execução.
 
 CONSOLIDA, não reimplementa: recebe por injeção os componentes que já existem
-(RunManager, PolicyEngine, EventBus, Runtime Registry) e coordena a máquina de
-estados por cima deles. Nenhuma lógica de persistência/policy/execução vive
-aqui — só a ORDEM do ciclo de vida:
+(RunManager, PolicyEngine, EventBus, Runtime Registry, RuntimeControl,
+ApprovalManager, BudgetManager) e coordena a máquina de estados por cima
+deles. Nenhuma lógica de persistência/policy/execução vive aqui — só a ORDEM
+do ciclo de vida:
 
     created → planning → policy_check → queued → running → [evaluating] → completed
+
+Governança no ciclo (Sprint 3): kill-switch antes de tudo; policy_check com
+gate de orçamento (operation runtime.execute); ask → waiting_approval com
+ApprovalRecord real; custo registrado no BudgetManager ao concluir.
 
 Opt-in por config (``kernel.enabled``, default False) — os caminhos atuais de
 execução permanecem intocados até a migração (Sprint 6 do plano).
@@ -13,11 +18,26 @@ execução permanecem intocados até a migração (Sprint 6 do plano).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
 from .schemas import KernelRequest, KernelRun
 from .states import KERNEL_ONLY_STATES, ensure_transition
+
+
+def _persistable(data: dict[str, Any]) -> dict[str, Any]:
+    """Cópia JSON-serializável do payload — objetos vivos (client, callables)
+    viram marcador. O payload ORIGINAL segue intacto para o adapter; só o que
+    vai para o JsonlStateStore é saneado."""
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        try:
+            json.dumps(value)
+            out[key] = value
+        except (TypeError, ValueError):
+            out[key] = f"<non-serializable: {type(value).__name__}>"
+    return out
 
 
 class BauerKernel:
@@ -30,12 +50,18 @@ class BauerKernel:
         adapter_factory: Any | None = None,  # callable(name, config) -> RuntimeAdapter
         config: Any | None = None,
         evaluator: Any | None = None,        # Sprint 5 — None pula o estado evaluating
+        control: Any | None = None,          # core.runtime.resilience.RuntimeControl
+        approvals: Any | None = None,        # core.policy.approvals.ApprovalManager
+        budget: Any | None = None,           # core.runtime.autonomy.BudgetManager
     ) -> None:
         self.runs = runs
         self.bus = bus or getattr(runs, "event_bus", None)
         self.policy = policy
         self.config = config
         self.evaluator = evaluator
+        self.control = control
+        self.approvals = approvals
+        self.budget = budget
         if adapter_factory is None:
             from ..runtime.adapters import get_runtime_adapter
             adapter_factory = get_runtime_adapter
@@ -57,14 +83,24 @@ class BauerKernel:
             adapter = self.adapter_factory(request.runtime_adapter or None, config=self.config)
             adapter_name = getattr(adapter, "name", adapter_name or "bauer_native")
 
+        stored_input = _persistable(
+            {**request.input, "task": request.task} if request.task else dict(request.input)
+        )
         run = self.runs.create_run(
             session_id=session_id,
             agent_id=request.agent_id,
             runtime_adapter=adapter_name or "bauer_native",
-            input={**request.input, "task": request.task} if request.task else dict(request.input),
+            input=stored_input,
             status="created",
         )
         trajectory = ["created"]
+
+        # kill-switch central ANTES de qualquer trabalho (RuntimeControl existente)
+        if self.control is not None and self.control.kill_switch_enabled():
+            self.runs.update_run(run.id, status="cancelled",
+                                 error="runtime kill switch ativo")
+            trajectory.append("cancelled")
+            return self._result(run.id, session_id, trajectory)
 
         # planning — hook do Planner (no-op no Sprint 1; Sprint 5 usa p/ replan)
         self._transition(run, "planning", trajectory)
@@ -78,45 +114,63 @@ class BauerKernel:
             return self._result(run.id, session_id, trajectory, decision=decision)
         if decision is not None and decision.action == "ask":
             self._transition(run, "waiting_approval", trajectory)
-            self._publish("approval.requested", run, message=decision.reason,
-                          data={"operation": request.operation})
-            return self._result(run.id, session_id, trajectory, decision=decision)
+            approval_id = self._request_approval(request, run, decision)
+            return self._result(run.id, session_id, trajectory, decision=decision,
+                                approval_id=approval_id)
 
         self._transition(run, "queued", trajectory)
-        self.runs.start_run(run.id)  # → running (evento run.started existente)
-        trajectory.append("running")
-
         payload = {**request.input, "run_id": run.id}
         if request.task and "task" not in payload:
             payload["task"] = request.task
+        return self._run_to_completion(run, payload, session_id, trajectory,
+                                       executor=executor, adapter=adapter,
+                                       decision=decision, request=request)
+
+    def continue_run(self, run_id: str, *, extra_input: dict[str, Any] | None = None,
+                     executor: Any | None = None) -> KernelRun:
+        """Continua um run em ``queued`` (após resume/aprovação) até o fim.
+
+        ``extra_input`` re-injeta objetos vivos que não persistem (ex.: client
+        do bauer_native). O payload persiste saneado; a execução usa o real.
+        """
+        run = self._require_run(run_id)
+        ensure_transition(run.status, "running")
+        payload = {**(run.input or {}), **(extra_input or {}), "run_id": run.id}
+        return self._run_to_completion(run, payload, run.session_id, [run.status],
+                                       executor=executor, adapter=None,
+                                       decision=None, request=None)
+
+    # ── aprovações (Sprint 3) ────────────────────────────────────────────────
+
+    def approve(self, approval_id: str, *, continue_with: dict[str, Any] | None = None,
+                executor: Any | None = None) -> KernelRun | dict[str, Any]:
+        """Aprova e retoma: waiting_approval → queued (→ execução, se possível).
+
+        Sem ApprovalManager injetado, KeyError. Retorna o KernelRun final se a
+        continuação rodou; senão o dict do resume (run fica queued).
+        """
+        if self.approvals is None:
+            raise RuntimeError("ApprovalManager não injetado no Kernel")
+        record = self.approvals.approve(approval_id)
+        if not record.run_id:
+            return {"approval_id": approval_id, "status": "approved", "run_id": None}
+        resumed = self.resume(record.run_id)
         try:
-            result = executor(payload) if executor is not None else adapter.run_agent(payload)
-        except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
-            self.runs.fail_run(run.id, str(exc))
-            trajectory.append("failed")
-            return self._result(run.id, session_id, trajectory, decision=decision)
+            return self.continue_run(record.run_id, extra_input=continue_with,
+                                     executor=executor)
+        except Exception:  # noqa: BLE001 — sem payload executável fica queued
+            return resumed
 
-        result = result or {}
-        if result.get("status") == "failed" or result.get("event") == "run.failed":
-            self.runs.fail_run(run.id, str(result.get("error") or "executor failed"))
-            trajectory.append("failed")
-            return self._result(run.id, session_id, trajectory, decision=decision,
-                                output=result.get("output"))
-
-        # evaluating — quality gate antes de concluir (Sprint 5; None = pula)
-        if self.evaluator is not None:
-            self._transition(run, "evaluating", trajectory)
-            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
-            if not getattr(verdict, "passed", True):
-                self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
-                trajectory.append("failed")
-                return self._result(run.id, session_id, trajectory, decision=decision,
-                                    output=result.get("output"))
-
-        self.runs.complete_run(run.id, output={"output": result.get("output")})
-        trajectory.append("completed")
-        return self._result(run.id, session_id, trajectory, decision=decision,
-                            output=result.get("output"))
+    def deny(self, approval_id: str) -> dict[str, Any]:
+        """Nega a aprovação: waiting_approval → failed (policy denied)."""
+        if self.approvals is None:
+            raise RuntimeError("ApprovalManager não injetado no Kernel")
+        record = self.approvals.deny(approval_id)
+        if record.run_id:
+            run = self.runs.get_run(record.run_id)
+            if run is not None and run.status == "waiting_approval":
+                self.runs.fail_run(record.run_id, f"aprovação negada: {record.reason}")
+        return {"approval_id": approval_id, "status": "denied", "run_id": record.run_id}
 
     # ── operações de ciclo de vida (Sprint 2) ────────────────────────────────
 
@@ -158,17 +212,50 @@ class BauerKernel:
         adapter = self.adapter_factory(adapter_name or None, config=self.config)
         return adapter_healthcheck(adapter)
 
+    # ── fase de execução (compartilhada por execute e continue_run) ──────────
+
+    def _run_to_completion(self, run: Any, payload: dict[str, Any], session_id: str,
+                           trajectory: list[str], *, executor: Any | None,
+                           adapter: Any | None, decision: Any, request: Any) -> KernelRun:
+        self.runs.start_run(run.id)  # → running (evento run.started existente)
+        trajectory.append("running")
+        if adapter is None and executor is None:
+            adapter = self._adapter_for(run)
+
+        try:
+            result = executor(payload) if executor is not None else adapter.run_agent(payload)
+        except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+            self.runs.fail_run(run.id, str(exc))
+            trajectory.append("failed")
+            return self._result(run.id, session_id, trajectory, decision=decision)
+
+        result = result or {}
+        if result.get("status") == "failed" or result.get("event") == "run.failed":
+            self.runs.fail_run(run.id, str(result.get("error") or "executor failed"))
+            trajectory.append("failed")
+            return self._result(run.id, session_id, trajectory, decision=decision,
+                                output=result.get("output"))
+
+        # evaluating — quality gate antes de concluir (Sprint 5; None = pula)
+        if self.evaluator is not None:
+            self._transition(run, "evaluating", trajectory)
+            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+            if not getattr(verdict, "passed", True):
+                self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
+                trajectory.append("failed")
+                return self._result(run.id, session_id, trajectory, decision=decision,
+                                    output=result.get("output"))
+
+        cost = self._extract_cost(result)
+        self.runs.complete_run(run.id, output={"output": result.get("output")},
+                               cost_estimate=cost,
+                               tool_calls_count=int(result.get("tool_calls_count") or 0))
+        trajectory.append("completed")
+        self._record_cost(run, cost)
+        return self._result(run.id, session_id, trajectory, decision=decision,
+                            output=result.get("output"))
+
     # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _require_run(self, run_id: str) -> Any:
-        run = self.runs.get_run(run_id)
-        if run is None:
-            raise KeyError(f"Run not found: {run_id}")
-        return run
-
-    def _adapter_for(self, run: Any) -> Any:
-        return self.adapter_factory(getattr(run, "runtime_adapter", None) or None,
-                                    config=self.config)
 
     def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
         current = self.runs.get_run(run.id).status
@@ -191,6 +278,39 @@ class BauerKernel:
         )
         return decision
 
+    def _request_approval(self, request: KernelRequest, run: Any, decision: Any) -> str | None:
+        """ApprovalRecord real quando há manager (ele publica approval.requested);
+        senão só o evento — o run fica waiting_approval de qualquer forma."""
+        if self.approvals is not None:
+            record = self.approvals.request(
+                operation=request.operation, tool_name="kernel",
+                reason=decision.reason, risk_level=decision.risk_level,
+                payload={"agent_id": request.agent_id, **request.metadata},
+                run_id=run.id, session_id=run.session_id,
+            )
+            return record.id
+        self._publish("approval.requested", run, message=decision.reason,
+                      data={"operation": request.operation})
+        return None
+
+    def _extract_cost(self, result: dict[str, Any]) -> float | None:
+        try:
+            raw = result.get("cost_estimate") or result.get("cost_usd")
+            return float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _record_cost(self, run: Any, cost: float | None) -> None:
+        if self.budget is None or not cost:
+            return
+        try:
+            self.budget.record_run_cost(run_id=run.id, agent_id=run.agent_id,
+                                        company_id=None, cost_usd=cost,
+                                        metadata={"source": "kernel"})
+        except Exception as exc:  # noqa: BLE001 — contabilidade nunca derruba o run
+            from ...logging_config import log_suppressed
+            log_suppressed("kernel.record_cost", exc)
+
     def _publish(self, event_type: str, run: Any, *, status: str | None = None,
                  message: str | None = None, data: dict | None = None) -> None:
         if self.bus is None:
@@ -203,8 +323,19 @@ class BauerKernel:
             from ...logging_config import log_suppressed
             log_suppressed("kernel.publish", exc)
 
+    def _require_run(self, run_id: str) -> Any:
+        run = self.runs.get_run(run_id)
+        if run is None:
+            raise KeyError(f"Run not found: {run_id}")
+        return run
+
+    def _adapter_for(self, run: Any) -> Any:
+        return self.adapter_factory(getattr(run, "runtime_adapter", None) or None,
+                                    config=self.config)
+
     def _result(self, run_id: str, session_id: str, trajectory: list[str], *,
-                decision: Any = None, output: Any = None) -> KernelRun:
+                decision: Any = None, output: Any = None,
+                approval_id: str | None = None) -> KernelRun:
         run = self.runs.get_run(run_id)
         return KernelRun(
             run_id=run_id,
@@ -214,6 +345,7 @@ class BauerKernel:
             error=run.error,
             policy_action=getattr(decision, "action", None),
             policy_reason=getattr(decision, "reason", None),
+            approval_id=approval_id,
             trajectory=trajectory,
         )
 
@@ -233,6 +365,9 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
                  workspace: str = "workspace", with_policy: bool = True) -> BauerKernel:
     """Composição padrão do Kernel com os componentes existentes (produção)."""
     from ..events.bus import EventBus
+    from ..policy.approvals import ApprovalManager
+    from ..runtime.autonomy import BudgetManager
+    from ..runtime.resilience import RuntimeControl
     from ..runtime.run_manager import RunManager
     from ..runtime.state_store import JsonlStateStore
 
@@ -243,4 +378,9 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     if with_policy:
         from ..policy.engine import PolicyEngine
         policy = PolicyEngine(workspace=workspace, runtime_root=root)
-    return BauerKernel(runs=runs, bus=bus, policy=policy, config=cfg)
+    return BauerKernel(
+        runs=runs, bus=bus, policy=policy, config=cfg,
+        control=RuntimeControl(store=store),
+        approvals=ApprovalManager(root=root, event_bus=bus),
+        budget=BudgetManager(root=root),
+    )

@@ -320,6 +320,130 @@ def test_native_adapter_healthcheck():
     assert BauerNativeRuntimeAdapter().healthcheck()["status"] == "healthy"
 
 
+# ─── Sprint 3: governança no ciclo de vida ───────────────────────────────────
+
+
+class _KillSwitch:
+    def __init__(self, enabled: bool):
+        self._enabled = enabled
+
+    def kill_switch_enabled(self) -> bool:
+        return self._enabled
+
+
+def test_kill_switch_cancels_before_any_work(kit):
+    _, bus, runs = kit
+    called = {"n": 0}
+
+    def _exec(payload):
+        called["n"] += 1
+        return {"status": "completed"}
+
+    kernel = BauerKernel(runs=runs, bus=bus, control=_KillSwitch(True))
+    out = kernel.execute(KernelRequest(task="x"), executor=_exec)
+    assert out.status == "cancelled" and called["n"] == 0
+    assert "kill switch" in (out.error or "")
+    assert runs.get_run(out.run_id).status == "cancelled"
+
+
+def test_kill_switch_off_executes_normally(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus, control=_KillSwitch(False))
+    out = kernel.execute(KernelRequest(task="x"), executor=_ok_executor)
+    assert out.ok
+
+
+def test_ask_creates_real_approval_and_approve_continues(kit, tmp_path):
+    from bauer.core.policy.approvals import ApprovalManager
+
+    _, bus, runs = kit
+    approvals = ApprovalManager(root=tmp_path / "runtime", event_bus=bus)
+    kernel = BauerKernel(runs=runs, bus=bus, policy=_StubPolicy("ask", "operação sensível"),
+                         approvals=approvals)
+    out = kernel.execute(KernelRequest(task="deploy"), executor=_ok_executor)
+    assert out.status == "waiting_approval" and out.approval_id
+
+    record = approvals.get(out.approval_id)
+    assert record is not None and record.status == "pending"
+    assert record.run_id == out.run_id
+
+    # aprovação humana → run continua até o fim pelo MESMO trilho
+    final = kernel.approve(out.approval_id, executor=_ok_executor)
+    assert final.ok and final.run_id == out.run_id
+    assert approvals.get(out.approval_id).status == "approved"
+    assert runs.get_run(out.run_id).status == "completed"
+
+
+def test_deny_fails_the_waiting_run(kit, tmp_path):
+    from bauer.core.policy.approvals import ApprovalManager
+
+    _, bus, runs = kit
+    approvals = ApprovalManager(root=tmp_path / "runtime", event_bus=bus)
+    kernel = BauerKernel(runs=runs, bus=bus, policy=_StubPolicy("ask"),
+                         approvals=approvals)
+    out = kernel.execute(KernelRequest(task="deploy"), executor=_ok_executor)
+    result = kernel.deny(out.approval_id)
+    assert result["status"] == "denied"
+    run = runs.get_run(out.run_id)
+    assert run.status == "failed" and "negada" in (run.error or "")
+
+
+def test_cost_recorded_in_budget_on_completion(kit):
+    _, bus, runs = kit
+    recorded: list[dict] = []
+
+    class _Budget:
+        def record_run_cost(self, **kw):
+            recorded.append(kw)
+
+    kernel = BauerKernel(runs=runs, bus=bus, budget=_Budget())
+    out = kernel.execute(
+        KernelRequest(task="x", agent_id="a9"),
+        executor=lambda p: {"status": "completed", "output": "ok", "cost_estimate": 0.042},
+    )
+    assert out.ok
+    assert recorded and recorded[0]["cost_usd"] == 0.042
+    assert recorded[0]["run_id"] == out.run_id
+    assert runs.get_run(out.run_id).cost_estimate == 0.042
+
+
+def test_non_serializable_input_does_not_crash_persistence(kit):
+    """client (objeto vivo) no input não pode quebrar o JsonlStateStore."""
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus)
+    seen: dict = {}
+
+    class _FakeClient:
+        pass
+
+    def _exec(payload):
+        seen.update(payload)
+        return {"status": "completed", "output": "ok"}
+
+    client = _FakeClient()
+    out = kernel.execute(KernelRequest(task="x", input={"client": client, "model": "m1"}),
+                         executor=_exec)
+    assert out.ok
+    # o executor recebeu o objeto VIVO...
+    assert seen["client"] is client and seen["model"] == "m1"
+    # ...mas o persistido foi saneado (marcador em vez do objeto)
+    stored = runs.get_run(out.run_id).input
+    assert stored["model"] == "m1"
+    assert "non-serializable" in str(stored["client"])
+
+
+def test_build_kernel_composes_governance(tmp_path):
+    """build_kernel liga control/approvals/budget por padrão (produção)."""
+    from bauer.core.kernel import build_kernel
+
+    kernel = build_kernel(None, root=str(tmp_path / "runtime"),
+                          workspace=str(tmp_path / "ws"))
+    assert kernel.control is not None
+    assert kernel.approvals is not None
+    assert kernel.budget is not None
+    assert kernel.policy is not None
+
+
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 
