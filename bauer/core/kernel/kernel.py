@@ -233,72 +233,93 @@ class BauerKernel:
         backoff_s = max(0.0, float(getattr(request, "retry_backoff_s", 0.0) or 0.0))
         fallbacks = list(getattr(request, "fallback_adapters", None) or [])
 
-        self.runs.start_run(run.id)  # → running (evento run.started existente)
-        trajectory.append("running")
         if adapter is None and executor is None:
             adapter = self._adapter_for(run)
 
-        # Laço de resiliência (Sprint 4): até max_retries no MESMO executor
-        # (estado retrying auditável), depois fallback de executor em ordem —
-        # cada fallback ganha seu próprio orçamento de retries.
-        attempt = 0
-        last_error = ""
+        max_replans = (max(0, int(getattr(self.evaluator, "max_replans", 0) or 0))
+                       if self.evaluator is not None else 0)
+        replans_used = 0
+
+        # Laço de replan (Sprint 5): executa → avalia; gate reprovado com
+        # orçamento volta a planning e re-executa com feedback. Uma volta só
+        # quando não há evaluator.
         while True:
-            try:
-                result = (executor(payload) if executor is not None
-                          else adapter.run_agent(payload)) or {}
-                if result.get("status") == "failed" or result.get("event") == "run.failed":
-                    last_error = str(result.get("error") or "executor failed")
-                else:
-                    break  # sucesso
-            except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
-                last_error = str(exc)
-                result = {}
+            self.runs.start_run(run.id)  # → running (evento run.started existente)
+            trajectory.append("running")
 
-            if attempt < max_retries:
-                attempt += 1
-                self._transition(run, "retrying", trajectory)
-                if backoff_s > 0:
-                    import time
-                    time.sleep(backoff_s * attempt)  # backoff linear
-                self._transition(run, "queued", trajectory)
-                self.runs.start_run(run.id)
-                trajectory.append("running")
-                continue
-
-            switched = False
-            while fallbacks:
-                next_name = fallbacks.pop(0)
+            # Laço de resiliência (Sprint 4): até max_retries no MESMO executor
+            # (estado retrying auditável), depois fallback de executor em ordem —
+            # cada fallback ganha seu próprio orçamento de retries.
+            attempt = 0
+            last_error = ""
+            while True:
                 try:
-                    adapter = self.adapter_factory(next_name, config=self.config)
-                except Exception as exc:  # noqa: BLE001 — tenta o próximo da lista
-                    last_error = f"{last_error}; fallback '{next_name}' indisponível: {exc}"
+                    result = (executor(payload) if executor is not None
+                              else adapter.run_agent(payload)) or {}
+                    if result.get("status") == "failed" or result.get("event") == "run.failed":
+                        last_error = str(result.get("error") or "executor failed")
+                    else:
+                        break  # sucesso
+                except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+                    last_error = str(exc)
+                    result = {}
+
+                if attempt < max_retries:
+                    attempt += 1
+                    self._transition(run, "retrying", trajectory)
+                    if backoff_s > 0:
+                        import time
+                        time.sleep(backoff_s * attempt)  # backoff linear
+                    self._transition(run, "queued", trajectory)
+                    self.runs.start_run(run.id)
+                    trajectory.append("running")
                     continue
-                executor = None      # fallback é sempre via adapter
-                attempt = 0          # orçamento de retries zerado p/ o novo executor
-                self.runs.update_run(run.id, runtime_adapter=next_name)
-                self._publish("run.state.changed", run, status="running",
-                              message=f"fallback de executor → {next_name}",
-                              data={"fallback_adapter": next_name})
-                switched = True
-                break
-            if switched:
-                continue
 
-            self.runs.fail_run(run.id, last_error)
-            trajectory.append("failed")
-            return self._result(run.id, session_id, trajectory, decision=decision,
-                                output=result.get("output"))
+                switched = False
+                while fallbacks:
+                    next_name = fallbacks.pop(0)
+                    try:
+                        adapter = self.adapter_factory(next_name, config=self.config)
+                    except Exception as exc:  # noqa: BLE001 — tenta o próximo da lista
+                        last_error = f"{last_error}; fallback '{next_name}' indisponível: {exc}"
+                        continue
+                    executor = None      # fallback é sempre via adapter
+                    attempt = 0          # orçamento de retries zerado p/ o novo executor
+                    self.runs.update_run(run.id, runtime_adapter=next_name)
+                    self._publish("run.state.changed", run, status="running",
+                                  message=f"fallback de executor → {next_name}",
+                                  data={"fallback_adapter": next_name})
+                    switched = True
+                    break
+                if switched:
+                    continue
 
-        # evaluating — quality gate antes de concluir (Sprint 5; None = pula)
-        if self.evaluator is not None:
-            self._transition(run, "evaluating", trajectory)
-            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
-            if not getattr(verdict, "passed", True):
-                self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
+                self.runs.fail_run(run.id, last_error)
                 trajectory.append("failed")
                 return self._result(run.id, session_id, trajectory, decision=decision,
                                     output=result.get("output"))
+
+            # evaluating — quality gate antes de concluir (Sprint 5; None = pula)
+            if self.evaluator is None:
+                break
+            self._transition(run, "evaluating", trajectory)
+            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+            if getattr(verdict, "passed", True):
+                break
+            reason = getattr(verdict, "reason", "")
+            if replans_used >= max_replans:
+                self.runs.fail_run(run.id, f"quality gate: {reason}")
+                trajectory.append("failed")
+                return self._result(run.id, session_id, trajectory, decision=decision,
+                                    output=result.get("output"))
+            # replan: evaluating → planning → policy_check → queued → running,
+            # com o motivo do gate no payload p/ o executor corrigir o rumo.
+            replans_used += 1
+            self._transition(run, "planning", trajectory)
+            self._transition(run, "policy_check", trajectory)
+            self._transition(run, "queued", trajectory)
+            payload = {**payload, "replan_feedback": reason,
+                       "replan_attempt": replans_used}
 
         cost = self._extract_cost(result)
         self.runs.complete_run(run.id, output={"output": result.get("output")},
@@ -432,8 +453,13 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     if with_policy:
         from ..policy.engine import PolicyEngine
         policy = PolicyEngine(workspace=workspace, runtime_root=root)
+    evaluator = None
+    ksec = getattr(cfg, "kernel", None)
+    if bool(getattr(ksec, "evaluator_enabled", False)):
+        from .evaluator import Evaluator
+        evaluator = Evaluator(max_replans=int(getattr(ksec, "max_replans", 1) or 0))
     return BauerKernel(
-        runs=runs, bus=bus, policy=policy, config=cfg,
+        runs=runs, bus=bus, policy=policy, config=cfg, evaluator=evaluator,
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
         budget=BudgetManager(root=root),

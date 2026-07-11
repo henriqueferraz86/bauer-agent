@@ -1,6 +1,12 @@
 # Plano de Consolidação do Bauer Kernel (v2 — revisado sobre o código real)
 
 > **Status:** revisado em 2026-07-11 após auditoria do código.
+> **Progresso (branch `bauer-kernel`):** Sprints 1–5 ✅ CONCLUÍDOS em 2026-07-11
+> (fachada+estados, contrato de adapter+CLI, governança, resiliência, Evaluator
+> — 47 testes em `tests/test_kernel.py`). **Falta o Sprint 6** (migração dos
+> front-ends serve/agent atrás de `kernel.enabled`) — exige desenho de
+> streaming pelo Kernel (o `/stream` emite deltas no meio do turno; o
+> `execute()` é request/response), então merece sessão própria.
 > **Mudança de premissa:** o plano original foi escrito como se o Kernel fosse
 > construído do zero. **Não é.** ~80% dos componentes já existem e funcionam.
 > O trabalho real é de **consolidação** (compor o que existe atrás de um

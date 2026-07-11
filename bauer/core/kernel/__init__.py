@@ -4,9 +4,13 @@ from __future__ import annotations
 
 __all__ = [
     "BauerKernel",
+    "CallableGate",
+    "Evaluator",
+    "GateResult",
     "KernelRequest",
     "KernelRun",
     "KernelStateError",
+    "Verdict",
     "build_kernel",
     "kernel_enabled",
 ]
@@ -26,4 +30,9 @@ def __getattr__(name: str):
         from .states import KernelStateError
 
         return KernelStateError
+    if name in {"CallableGate", "Evaluator", "GateResult", "Verdict"}:
+        from .evaluator import CallableGate, Evaluator, GateResult, Verdict
+
+        return {"CallableGate": CallableGate, "Evaluator": Evaluator,
+                "GateResult": GateResult, "Verdict": Verdict}[name]
     raise AttributeError(name)

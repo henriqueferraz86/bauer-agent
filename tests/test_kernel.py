@@ -564,6 +564,110 @@ def test_recover_marks_stuck_runs_failed(kit):
     assert runs.get_run(fresh.id).status == "running"
 
 
+# ─── Sprint 5: Evaluator + quality gates + replan ────────────────────────────
+
+
+def test_default_gates_pass_good_output():
+    from bauer.core.kernel.evaluator import Evaluator
+
+    v = Evaluator().evaluate(run_id="r", request=None,
+                             result={"output": "resultado útil"})
+    assert v.passed and len(v.gates) == 2
+
+
+def test_empty_output_reproved():
+    from bauer.core.kernel.evaluator import Evaluator
+
+    v = Evaluator().evaluate(run_id="r", request=None, result={"output": "  "})
+    assert not v.passed and "non_empty_output" in v.reason
+
+
+def test_traceback_in_output_reproved():
+    from bauer.core.kernel.evaluator import Evaluator
+
+    v = Evaluator().evaluate(run_id="r", request=None, result={
+        "output": "fiz tudo!\nTraceback (most recent call last):\n  File ..."
+    })
+    assert not v.passed and "no_traceback" in v.reason
+
+
+def test_callable_gate_with_reason():
+    from bauer.core.kernel.evaluator import CallableGate, Evaluator
+
+    gate = CallableGate("tem_oi", lambda req, res: "" if "oi" in str(res.get("output"))
+                        else "faltou 'oi' no output")
+    ev = Evaluator([gate])
+    assert ev.evaluate(run_id="r", request=None, result={"output": "oi!"}).passed
+    v = ev.evaluate(run_id="r", request=None, result={"output": "tchau"})
+    assert not v.passed and "faltou 'oi'" in v.reason
+
+
+def test_broken_gate_does_not_reprove():
+    from bauer.core.kernel.evaluator import CallableGate, Evaluator
+
+    def _boom(req, res):
+        raise RuntimeError("gate bugado")
+
+    v = Evaluator([CallableGate("bugado", _boom)]).evaluate(
+        run_id="r", request=None, result={"output": "x"})
+    assert v.passed  # gate quebrado é problema do gate, não do resultado
+
+
+def test_replan_fixes_on_second_execution(kit):
+    """Gate reprova a 1ª execução → replan re-executa com feedback → passa."""
+    from bauer.core.kernel.evaluator import Evaluator
+
+    _, bus, runs = kit
+    calls: list[dict] = []
+
+    def _exec(payload):
+        calls.append(dict(payload))
+        if payload.get("replan_attempt"):
+            return {"status": "completed", "output": "agora sim, corrigido"}
+        return {"status": "completed", "output": ""}  # 1ª volta: output vazio
+
+    kernel = BauerKernel(runs=runs, bus=bus, evaluator=Evaluator(max_replans=1))
+    out = kernel.execute(KernelRequest(task="x"), executor=_exec)
+    assert out.ok and out.output == "agora sim, corrigido"
+    assert len(calls) == 2
+    # a 2ª execução recebeu o motivo da reprovação
+    assert "output vazio" in calls[1]["replan_feedback"]
+    # trajetória: ... running → evaluating → planning → ... → running → evaluating → completed
+    assert out.trajectory.count("evaluating") == 2
+    assert out.trajectory.count("planning") == 2  # 1 inicial + 1 replan
+
+
+def test_replan_budget_exhausted_fails(kit):
+    from bauer.core.kernel.evaluator import Evaluator
+
+    _, bus, runs = kit
+    calls = {"n": 0}
+
+    def _always_empty(payload):
+        calls["n"] += 1
+        return {"status": "completed", "output": ""}
+
+    kernel = BauerKernel(runs=runs, bus=bus, evaluator=Evaluator(max_replans=2))
+    out = kernel.execute(KernelRequest(task="x"), executor=_always_empty)
+    assert out.status == "failed" and "quality gate" in (out.error or "")
+    assert calls["n"] == 3  # 1 + 2 replans
+
+
+def test_build_kernel_wires_evaluator_from_config(tmp_path):
+    from bauer.config_loader import BauerConfig, KernelSection, ModelSection
+    from bauer.core.kernel import build_kernel
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"),
+                      kernel=KernelSection(evaluator_enabled=True, max_replans=3))
+    kernel = build_kernel(cfg, root=str(tmp_path / "rt"), workspace=str(tmp_path / "ws"))
+    assert kernel.evaluator is not None and kernel.evaluator.max_replans == 3
+
+    cfg_off = BauerConfig(model=ModelSection(provider="ollama", name="x"))
+    kernel_off = build_kernel(cfg_off, root=str(tmp_path / "rt2"),
+                              workspace=str(tmp_path / "ws"))
+    assert kernel_off.evaluator is None
+
+
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 

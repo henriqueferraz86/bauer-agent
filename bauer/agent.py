@@ -4849,8 +4849,9 @@ def run_agent_session(
                             f"[dim]  → tier {_d.profile}: {_d.model} "
                             f"({_d.task_type}/{_d.complexity})[/dim]"
                         )
-            except Exception:
-                pass  # routing é otimização; nunca bloqueia o turno
+            except Exception as _hr_exc:  # noqa: BLE001 — routing é otimização; nunca bloqueia o turno
+                from .logging_config import log_suppressed as _hr_log
+                _hr_log("agent.heuristic_route", _hr_exc)
         elif routing and model_router is not None:
             try:
                 selected_model, route = model_router.select_model(user_input)

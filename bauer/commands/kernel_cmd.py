@@ -30,8 +30,9 @@ def _build(config: Path, state_dir: Path, *, with_policy: bool):
     try:
         if cfg is not None and getattr(cfg.agent, "workspace", ""):
             workspace = str(cfg.agent.workspace)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 — workspace default é aceitável
+        from ..logging_config import log_suppressed
+        log_suppressed("kernel_cmd.workspace", exc)
     return build_kernel(cfg, root=str(state_dir), workspace=workspace,
                         with_policy=with_policy), cfg
 
@@ -161,8 +162,9 @@ def kernel_approve_cmd(
     try:
         from ._runtime import _build_client
         extra = {"client": _build_client(cfg), "model": cfg.model.name}
-    except Exception:  # noqa: BLE001 — sem client, o run volta p/ queued
-        pass
+    except Exception as exc:  # noqa: BLE001 — sem client, o run volta p/ queued
+        from ..logging_config import log_suppressed
+        log_suppressed("kernel_cmd.approve_client", exc)
     try:
         out = kernel.approve(approval_id, continue_with=extra or None)
     except Exception as exc:  # noqa: BLE001
