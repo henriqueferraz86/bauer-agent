@@ -118,7 +118,57 @@ class BauerKernel:
         return self._result(run.id, session_id, trajectory, decision=decision,
                             output=result.get("output"))
 
+    # ── operações de ciclo de vida (Sprint 2) ────────────────────────────────
+
+    def pause(self, run_id: str) -> dict[str, Any]:
+        """running → paused. Notifica o adapter (best-effort; "unsupported" ok)."""
+        from ..runtime.adapters.base import adapter_pause
+        run = self._require_run(run_id)
+        ensure_transition(run.status, "paused")
+        self.runs.update_run(run_id, status="paused")
+        self._publish("run.state.changed", run, status="paused")
+        adapter_result = adapter_pause(self._adapter_for(run), run_id)
+        return {"run_id": run_id, "status": "paused", "adapter": adapter_result}
+
+    def resume(self, run_id: str) -> dict[str, Any]:
+        """paused|waiting_approval → queued. Notifica o adapter (best-effort)."""
+        from ..runtime.adapters.base import adapter_resume
+        run = self._require_run(run_id)
+        ensure_transition(run.status, "queued")
+        self.runs.update_run(run_id, status="queued")
+        self._publish("run.state.changed", run, status="queued",
+                      message=f"resumed from {run.status}")
+        adapter_result = adapter_resume(self._adapter_for(run), run_id)
+        return {"run_id": run_id, "status": "queued", "adapter": adapter_result}
+
+    def cancel(self, run_id: str) -> dict[str, Any]:
+        """Cancela o run (idempotente em terminais) e avisa o adapter."""
+        run = self._require_run(run_id)
+        cancelled = self.runs.cancel_run(run_id)
+        adapter_result: dict[str, Any] = {}
+        try:
+            adapter_result = dict(self._adapter_for(run).stop_run(run_id))
+        except Exception as exc:  # noqa: BLE001 — stop é best-effort
+            adapter_result = {"status": "error", "error": str(exc)}
+        return {"run_id": run_id, "status": cancelled.status, "adapter": adapter_result}
+
+    def healthcheck(self, adapter_name: str | None = None) -> dict[str, Any]:
+        """Saúde do adapter (ou do default do config)."""
+        from ..runtime.adapters.base import adapter_healthcheck
+        adapter = self.adapter_factory(adapter_name or None, config=self.config)
+        return adapter_healthcheck(adapter)
+
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _require_run(self, run_id: str) -> Any:
+        run = self.runs.get_run(run_id)
+        if run is None:
+            raise KeyError(f"Run not found: {run_id}")
+        return run
+
+    def _adapter_for(self, run: Any) -> Any:
+        return self.adapter_factory(getattr(run, "runtime_adapter", None) or None,
+                                    config=self.config)
 
     def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
         current = self.runs.get_run(run.id).status

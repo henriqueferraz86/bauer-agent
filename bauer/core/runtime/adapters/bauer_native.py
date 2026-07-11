@@ -106,3 +106,7 @@ class BauerNativeRuntimeAdapter:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         return []
+
+    def healthcheck(self) -> dict[str, Any]:
+        """Runtime in-process: saudável por definição se o import funcionou."""
+        return {"status": "healthy", "runtime_adapter": self.name, "mode": "in-process"}

@@ -194,6 +194,132 @@ def test_evaluator_pass_completes(kit):
     assert out.ok and "evaluating" in out.trajectory
 
 
+# ─── Sprint 2: execução via adapter + operações de ciclo de vida ────────────
+
+
+class _StubAdapter:
+    """Adapter mínimo do contrato existente + healthcheck opcional."""
+
+    name = "stub"
+
+    def __init__(self):
+        self.paused: list[str] = []
+        self.stopped: list[str] = []
+
+    def run_agent(self, request):
+        return {"status": "completed", "output": f"adapter:{request.get('task', '')}",
+                "run_id": request.get("run_id")}
+
+    def stop_run(self, run_id):
+        self.stopped.append(run_id)
+        return {"status": "stopped", "run_id": run_id}
+
+    def healthcheck(self):
+        return {"status": "healthy", "runtime_adapter": self.name}
+
+
+def test_execute_via_adapter_contract(kit):
+    """Sem executor injetado, o Kernel resolve o adapter e chama run_agent."""
+    _, bus, runs = kit
+    adapter = _StubAdapter()
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: adapter)
+    out = kernel.execute(KernelRequest(task="oi", runtime_adapter="stub"))
+    assert out.ok and out.output == "adapter:oi"
+    assert runs.get_run(out.run_id).runtime_adapter == "stub"
+
+
+def test_adapter_payload_carries_run_id(kit):
+    _, bus, runs = kit
+    seen: dict = {}
+
+    class _Cap(_StubAdapter):
+        def run_agent(self, request):
+            seen.update(request)
+            return {"status": "completed", "output": "x"}
+
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: _Cap())
+    out = kernel.execute(KernelRequest(task="t"))
+    assert seen["run_id"] == out.run_id and seen["task"] == "t"
+
+
+def test_pause_resume_cycle(kit):
+    _, bus, runs = kit
+    adapter = _StubAdapter()
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: adapter)
+    run = runs.create_run(session_id="s1", runtime_adapter="stub", status="queued")
+    runs.start_run(run.id)
+
+    paused = kernel.pause(run.id)
+    assert paused["status"] == "paused"
+    assert runs.get_run(run.id).status == "paused"
+    # adapter sem pause_run → helper degrada p/ unsupported, sem quebrar
+    assert paused["adapter"]["status"] == "unsupported"
+
+    resumed = kernel.resume(run.id)
+    assert resumed["status"] == "queued"
+    assert runs.get_run(run.id).status == "queued"
+
+
+def test_pause_illegal_state_raises(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: _StubAdapter())
+    run = runs.create_run(session_id="s1", status="queued")  # não está running
+    with pytest.raises(KernelStateError):
+        kernel.pause(run.id)
+
+
+def test_cancel_notifies_adapter(kit):
+    _, bus, runs = kit
+    adapter = _StubAdapter()
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: adapter)
+    run = runs.create_run(session_id="s1", runtime_adapter="stub", status="queued")
+    result = kernel.cancel(run.id)
+    assert result["status"] == "cancelled"
+    assert adapter.stopped == [run.id]
+
+
+def test_cancel_idempotent_on_terminal(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: _StubAdapter())
+    run = runs.create_run(session_id="s1", status="queued")
+    runs.start_run(run.id)
+    runs.complete_run(run.id)
+    result = kernel.cancel(run.id)
+    assert result["status"] == "completed"  # terminal não muda
+
+
+def test_healthcheck_via_kernel(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: _StubAdapter())
+    assert kernel.healthcheck()["status"] == "healthy"
+
+
+def test_healthcheck_helper_degrades_gracefully():
+    from bauer.core.runtime.adapters.base import (
+        adapter_healthcheck, adapter_pause, adapter_resume,
+    )
+
+    class _Bare:  # contrato antigo, sem os métodos opcionais
+        name = "bare"
+
+    assert adapter_healthcheck(_Bare())["status"] == "unknown"
+    assert adapter_pause(_Bare(), "r1")["status"] == "unsupported"
+    assert adapter_resume(_Bare(), "r1")["status"] == "unsupported"
+
+
+def test_native_adapter_healthcheck():
+    from bauer.core.runtime.adapters.bauer_native import BauerNativeRuntimeAdapter
+
+    assert BauerNativeRuntimeAdapter().healthcheck()["status"] == "healthy"
+
+
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 

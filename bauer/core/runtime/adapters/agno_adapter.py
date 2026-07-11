@@ -174,6 +174,15 @@ class AgnoRuntimeAdapter:
             )
         return sessions
 
+    def healthcheck(self) -> dict[str, Any]:
+        """Verifica se o SDK do Agno está importável (sem tocar a rede)."""
+        try:
+            self._require_agno()
+        except RuntimeAdapterError as exc:
+            return {"status": "unhealthy", "runtime_adapter": self.name,
+                    "mode": self.mode, "error": str(exc)}
+        return {"status": "healthy", "runtime_adapter": self.name, "mode": self.mode}
+
     @classmethod
     def from_config(cls, config: Any | None = None) -> "AgnoRuntimeAdapter":
         return cls(config=config)
