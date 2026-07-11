@@ -67,6 +67,19 @@ _MEMORY_PREFETCH_ENABLED = os.environ.get(
     "BAUER_SERVE_MEMORY_PREFETCH", "1"
 ).strip().lower() not in ("0", "false", "no", "")
 
+# Modo da Policy Engine no serve (B0 — governança). Regras default classificam
+# shell.execute/filesystem.delete como "ask"; num serve local de um operador só,
+# bloquear todo shell quebraria o uso normal — daí o default "audit":
+#   off     — não avalia policy (comportamento pré-B0).
+#   audit   — avalia e emite policy.evaluated (popula o audit report); "deny"
+#             BLOQUEIA (segurança real, ex.: exfiltração de segredo); "ask" PASSA
+#             com registro approval.accepted (auto — operador presente).
+#   enforce — "ask" BLOQUEIA e cria approval pendente (para uso desatendido ou
+#             quando existir fluxo de aprovar-e-retomar no chat).
+_SERVE_POLICY_MODE = os.environ.get("BAUER_SERVE_POLICY", "audit").strip().lower()
+if _SERVE_POLICY_MODE not in ("off", "audit", "enforce"):
+    _SERVE_POLICY_MODE = "audit"
+
 
 def _sse(data: str, event: str | None = None) -> str:
     """Codifica um evento SSE preservando quebras de linha.
@@ -412,6 +425,10 @@ def create_app(
         try:
             r._event_bus = event_bus  # type: ignore[attr-defined]
             r._policy_root = runtime_root  # type: ignore[attr-defined]
+            # B0: liga a avaliação de policy no serve (allow/ask/deny auditáveis).
+            # Modo controla o que "ask" faz — ver _SERVE_POLICY_MODE.
+            r._policy_enabled = _SERVE_POLICY_MODE != "off"  # type: ignore[attr-defined]
+            r._policy_mode = _SERVE_POLICY_MODE  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
 
