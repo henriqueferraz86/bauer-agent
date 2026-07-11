@@ -53,6 +53,7 @@ class BauerKernel:
         control: Any | None = None,          # core.runtime.resilience.RuntimeControl
         approvals: Any | None = None,        # core.policy.approvals.ApprovalManager
         budget: Any | None = None,           # core.runtime.autonomy.BudgetManager
+        recovery: Any | None = None,         # core.runtime.resilience.RuntimeRecovery
     ) -> None:
         self.runs = runs
         self.bus = bus or getattr(runs, "event_bus", None)
@@ -62,6 +63,7 @@ class BauerKernel:
         self.control = control
         self.approvals = approvals
         self.budget = budget
+        self.recovery = recovery
         if adapter_factory is None:
             from ..runtime.adapters import get_runtime_adapter
             adapter_factory = get_runtime_adapter
@@ -212,26 +214,78 @@ class BauerKernel:
         adapter = self.adapter_factory(adapter_name or None, config=self.config)
         return adapter_healthcheck(adapter)
 
+    def recover(self, *, max_age_s: int = 900) -> list[dict[str, Any]]:
+        """Recuperação pós-restart: runs presos em estados não-terminais há mais
+        de ``max_age_s`` são marcados como failed (RuntimeRecovery existente) —
+        prontos para re-submissão pelo caller."""
+        recovery = self.recovery
+        if recovery is None:
+            from ..runtime.resilience import RuntimeRecovery
+            recovery = RuntimeRecovery(store=self.runs.store)
+        return recovery.recover_stuck_runs(max_age_s=max_age_s)
+
     # ── fase de execução (compartilhada por execute e continue_run) ──────────
 
     def _run_to_completion(self, run: Any, payload: dict[str, Any], session_id: str,
                            trajectory: list[str], *, executor: Any | None,
                            adapter: Any | None, decision: Any, request: Any) -> KernelRun:
+        max_retries = max(0, int(getattr(request, "max_retries", 0) or 0))
+        backoff_s = max(0.0, float(getattr(request, "retry_backoff_s", 0.0) or 0.0))
+        fallbacks = list(getattr(request, "fallback_adapters", None) or [])
+
         self.runs.start_run(run.id)  # → running (evento run.started existente)
         trajectory.append("running")
         if adapter is None and executor is None:
             adapter = self._adapter_for(run)
 
-        try:
-            result = executor(payload) if executor is not None else adapter.run_agent(payload)
-        except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
-            self.runs.fail_run(run.id, str(exc))
-            trajectory.append("failed")
-            return self._result(run.id, session_id, trajectory, decision=decision)
+        # Laço de resiliência (Sprint 4): até max_retries no MESMO executor
+        # (estado retrying auditável), depois fallback de executor em ordem —
+        # cada fallback ganha seu próprio orçamento de retries.
+        attempt = 0
+        last_error = ""
+        while True:
+            try:
+                result = (executor(payload) if executor is not None
+                          else adapter.run_agent(payload)) or {}
+                if result.get("status") == "failed" or result.get("event") == "run.failed":
+                    last_error = str(result.get("error") or "executor failed")
+                else:
+                    break  # sucesso
+            except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+                last_error = str(exc)
+                result = {}
 
-        result = result or {}
-        if result.get("status") == "failed" or result.get("event") == "run.failed":
-            self.runs.fail_run(run.id, str(result.get("error") or "executor failed"))
+            if attempt < max_retries:
+                attempt += 1
+                self._transition(run, "retrying", trajectory)
+                if backoff_s > 0:
+                    import time
+                    time.sleep(backoff_s * attempt)  # backoff linear
+                self._transition(run, "queued", trajectory)
+                self.runs.start_run(run.id)
+                trajectory.append("running")
+                continue
+
+            switched = False
+            while fallbacks:
+                next_name = fallbacks.pop(0)
+                try:
+                    adapter = self.adapter_factory(next_name, config=self.config)
+                except Exception as exc:  # noqa: BLE001 — tenta o próximo da lista
+                    last_error = f"{last_error}; fallback '{next_name}' indisponível: {exc}"
+                    continue
+                executor = None      # fallback é sempre via adapter
+                attempt = 0          # orçamento de retries zerado p/ o novo executor
+                self.runs.update_run(run.id, runtime_adapter=next_name)
+                self._publish("run.state.changed", run, status="running",
+                              message=f"fallback de executor → {next_name}",
+                              data={"fallback_adapter": next_name})
+                switched = True
+                break
+            if switched:
+                continue
+
+            self.runs.fail_run(run.id, last_error)
             trajectory.append("failed")
             return self._result(run.id, session_id, trajectory, decision=decision,
                                 output=result.get("output"))
@@ -367,7 +421,7 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     from ..events.bus import EventBus
     from ..policy.approvals import ApprovalManager
     from ..runtime.autonomy import BudgetManager
-    from ..runtime.resilience import RuntimeControl
+    from ..runtime.resilience import RuntimeControl, RuntimeRecovery
     from ..runtime.run_manager import RunManager
     from ..runtime.state_store import JsonlStateStore
 
@@ -383,4 +437,5 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
         budget=BudgetManager(root=root),
+        recovery=RuntimeRecovery(store=store),
     )

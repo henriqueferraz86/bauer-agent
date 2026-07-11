@@ -63,8 +63,12 @@ def kernel_run_cmd(
             console.print(f"[red]Nao consegui montar o client:[/red] {exc}")
             raise typer.Exit(code=1)
 
+    ksec = getattr(cfg, "kernel", None)
     out = kernel.execute(KernelRequest(
         task=task, agent_id=agent_id, runtime_adapter=adapter, input=request_input,
+        max_retries=int(getattr(ksec, "max_retries", 0) or 0),
+        retry_backoff_s=float(getattr(ksec, "retry_backoff_s", 0.0) or 0.0),
+        fallback_adapters=list(getattr(ksec, "fallback_adapters", None) or []),
     ))
 
     color = {"completed": "green", "waiting_approval": "yellow"}.get(out.status, "red")
@@ -126,6 +130,22 @@ def kernel_cancel_cmd(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[red]{result['status']}[/red] {run_id}")
+
+
+@kernel_app.command("recover")
+def kernel_recover_cmd(
+    max_age_s: int = typer.Option(900, "--max-age-s", help="Idade minima (s) p/ considerar preso"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+):
+    """Recupera runs presos em estados nao-terminais (pos-restart/crash)."""
+    kernel, _ = _build(config, state_dir, with_policy=False)
+    recovered = kernel.recover(max_age_s=max_age_s)
+    if not recovered:
+        console.print("[green]Nenhum run preso.[/green]")
+        return
+    for item in recovered:
+        console.print(f"[yellow]recuperado[/yellow] {item['run_id']} → {item['status']}")
 
 
 @kernel_app.command("approve")

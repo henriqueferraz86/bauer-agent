@@ -444,6 +444,126 @@ def test_build_kernel_composes_governance(tmp_path):
     assert kernel.policy is not None
 
 
+# ─── Sprint 4: resiliência in-loop ───────────────────────────────────────────
+
+
+def test_retry_succeeds_on_second_attempt(kit):
+    _, bus, runs = kit
+    calls = {"n": 0}
+
+    def _flaky(payload):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("falha transitória")
+        return {"status": "completed", "output": "ok"}
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    out = kernel.execute(KernelRequest(task="x", max_retries=2), executor=_flaky)
+    assert out.ok and calls["n"] == 2
+    # trajetória mostra o ciclo retrying → queued → running
+    assert "retrying" in out.trajectory
+    assert out.trajectory.count("running") == 2
+
+
+def test_retry_exhausted_fails(kit):
+    _, bus, runs = kit
+    calls = {"n": 0}
+
+    def _always_fails(payload):
+        calls["n"] += 1
+        raise RuntimeError("permanente")
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    out = kernel.execute(KernelRequest(task="x", max_retries=2), executor=_always_fails)
+    assert out.status == "failed" and calls["n"] == 3  # 1 + 2 retries
+    assert out.trajectory.count("retrying") == 2
+
+
+def test_no_retry_by_default(kit):
+    _, bus, runs = kit
+    calls = {"n": 0}
+
+    def _fails(payload):
+        calls["n"] += 1
+        raise RuntimeError("x")
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    out = kernel.execute(KernelRequest(task="x"), executor=_fails)
+    assert out.status == "failed" and calls["n"] == 1
+    assert "retrying" not in out.trajectory
+
+
+def test_fallback_adapter_takes_over(kit):
+    _, bus, runs = kit
+
+    class _Broken(_StubAdapter):
+        name = "broken"
+
+        def run_agent(self, request):
+            raise RuntimeError("adapter primário caiu")
+
+    good = _StubAdapter()
+    good.name = "good"
+    adapters = {"broken": _Broken(), "good": good}
+
+    kernel = BauerKernel(
+        runs=runs, bus=bus,
+        adapter_factory=lambda name, config=None: adapters[name or "broken"],
+    )
+    out = kernel.execute(KernelRequest(task="oi", runtime_adapter="broken",
+                                       fallback_adapters=["good"]))
+    assert out.ok and out.output == "adapter:oi"
+    # o run reflete o adapter que efetivamente executou
+    assert runs.get_run(out.run_id).runtime_adapter == "good"
+    # evento de fallback auditável
+    msgs = [e.message for e in bus.list_events(run_id=out.run_id) if e.message]
+    assert any("fallback" in m for m in msgs)
+
+
+def test_unresolvable_fallback_skipped_to_next(kit):
+    _, bus, runs = kit
+    good = _StubAdapter()
+    good.name = "good"
+
+    def _factory(name, config=None):
+        if name == "good":
+            return good
+        raise RuntimeError(f"adapter {name} não registrado")
+
+    def _fails(payload):
+        raise RuntimeError("primário caiu")
+
+    kernel = BauerKernel(runs=runs, bus=bus, adapter_factory=_factory)
+    out = kernel.execute(
+        KernelRequest(task="oi", fallback_adapters=["fantasma", "good"]),
+        executor=_fails,
+    )
+    assert out.ok and out.output == "adapter:oi"
+
+
+def test_recover_marks_stuck_runs_failed(kit):
+    from datetime import UTC, datetime, timedelta
+
+    _, bus, runs = kit
+    # run preso em running com updated_at antigo (simula crash)
+    run = runs.create_run(session_id="s1", status="queued")
+    runs.start_run(run.id)
+    old = (datetime.now(UTC) - timedelta(seconds=3600)).isoformat()
+    data = runs.get_run(run.id).__dict__ | {"updated_at": old}
+    runs.store.upsert("runs", data)
+
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: _StubAdapter())
+    recovered = kernel.recover(max_age_s=900)
+    assert any(r["run_id"] == run.id for r in recovered)
+    assert runs.get_run(run.id).status == "failed"
+    # run recente NÃO é tocado
+    fresh = runs.create_run(session_id="s2", status="queued")
+    runs.start_run(fresh.id)
+    assert kernel.recover(max_age_s=900) == []
+    assert runs.get_run(fresh.id).status == "running"
+
+
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 

@@ -589,6 +589,9 @@ class KernelSection(_StrictSection):
     """
 
     enabled: bool = False
+    max_retries: int = Field(ge=0, default=0)          # re-tentativas por executor
+    retry_backoff_s: float = Field(ge=0.0, default=1.0)  # espera linear entre tentativas
+    fallback_adapters: list[str] = []                  # executores alternativos, em ordem
 
 
 class RuntimeSection(_StrictSection):
