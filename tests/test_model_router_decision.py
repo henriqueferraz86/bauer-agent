@@ -62,16 +62,30 @@ class TestDecideWithProfiles:
         assert d.profile == "fast"
         assert d.model == ""
 
-    def test_profiles_from_config(self):
-        class _Models:
-            profiles = {"fast": {"provider": "openrouter", "model": "gemini-flash-lite"}}
+    def test_profiles_from_config_dict_spec(self):
+        # spec como dict (caller genérico)
+        class _Model:
+            profiles = {"fast": {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}}
 
         class _Cfg:
-            models = _Models()
+            model = _Model()
 
         profs = profiles_from_config(_Cfg())
         assert profs["fast"].provider == "openrouter"
-        assert profs["fast"].model == "gemini-flash-lite"
+        assert profs["fast"].model == "deepseek/deepseek-v4-flash"
+
+    def test_profiles_from_config_typed_spec(self):
+        # spec como objeto (ModelProfileSpec real do schema)
+        from bauer.config_loader import ModelProfileSpec
+
+        class _Model:
+            profiles = {"heavy": ModelProfileSpec(provider="openrouter", model="deepseek/deepseek-r1")}
+
+        class _Cfg:
+            model = _Model()
+
+        profs = profiles_from_config(_Cfg())
+        assert profs["heavy"].model == "deepseek/deepseek-r1"
 
     def test_profiles_from_config_absent_is_empty(self):
         class _Cfg:

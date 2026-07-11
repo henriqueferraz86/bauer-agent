@@ -497,6 +497,18 @@ class FallbackModel(BaseModel):
     name: str
 
 
+class ModelProfileSpec(BaseModel):
+    """Modelo de um tier do roteador (Fase 12 / Sprint 34).
+
+    Mapeado em `model.profiles` (fast/balanced/coding/heavy → provider+model).
+    O ModelRouter heurístico decide o tier; este spec resolve o modelo concreto."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = ""
+    model: str = ""
+
+
 class ModelSection(_StrictSection):
     provider: Literal[
         "ollama", "openai", "openrouter", "opencode", "custom",
@@ -524,6 +536,12 @@ class ModelSection(_StrictSection):
     fallback_providers: list[str] = Field(
         default_factory=list,
         description="[deprecated] Use fallback_models.",
+    )
+    # Fase 12 / Sprint 34 — tiers do roteador por tipo/complexidade de tarefa.
+    # fast/balanced/coding/heavy → provider+model. Opcional (vazio = sem routing).
+    profiles: dict[str, ModelProfileSpec] = Field(
+        default_factory=dict,
+        description="Perfis de modelo por tier (fast/balanced/coding/heavy).",
     )
 
     @field_validator("minimum_context")

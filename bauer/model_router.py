@@ -242,25 +242,32 @@ def decide(message: str, profiles: "dict[str, ModelProfile] | None" = None) -> R
     return d
 
 
+def _spec_field(spec, key: str) -> str:
+    if isinstance(spec, dict):
+        return str(spec.get(key, "") or "")
+    return str(getattr(spec, key, "") or "")
+
+
 def profiles_from_config(cfg) -> "dict[str, ModelProfile]":
-    """Lê `models.profiles` do config (best-effort). Vazio se ausente.
+    """Lê `model.profiles` do config (best-effort). Vazio se ausente.
 
     Formato esperado (config.yaml):
-        models:
+        model:
           profiles:
-            fast:     {provider: openrouter, model: google/gemini-2.5-flash-lite}
-            balanced: {provider: openrouter, model: google/gemini-2.5-flash}
+            fast:     {provider: openrouter, model: deepseek/deepseek-v4-flash}
+            balanced: {provider: openrouter, model: deepseek/deepseek-v3.2}
             coding:   {provider: openrouter, model: qwen/qwen3-coder-flash}
-            heavy:    {provider: openrouter, model: anthropic/claude-sonnet-4}
+            heavy:    {provider: openrouter, model: deepseek/deepseek-r1}
     """
     out: dict[str, ModelProfile] = {}
     try:
-        raw = getattr(getattr(cfg, "models", None), "profiles", None) or {}
+        # `model` (singular) é o campo real do schema; tolera `models` p/ callers de teste.
+        section = getattr(cfg, "model", None) or getattr(cfg, "models", None)
+        raw = getattr(section, "profiles", None) or {}
         if isinstance(raw, dict):
             for name, spec in raw.items():
-                if isinstance(spec, dict):
-                    out[name] = ModelProfile(name=name, provider=str(spec.get("provider", "")),
-                                             model=str(spec.get("model", "")))
+                out[name] = ModelProfile(name=name, provider=_spec_field(spec, "provider"),
+                                         model=_spec_field(spec, "model"))
     except Exception:  # noqa: BLE001
         pass
     return out
