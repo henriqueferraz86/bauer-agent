@@ -46,7 +46,7 @@ interface RunAudit {
   tools_used: string[];
   policy_decisions: Array<{ action: string; operation: string; risk_level: string }>;
   approvals: Array<{ type: string; tool_name: string; status: string; message: string }>;
-  event_details: Array<{ id: string; timestamp: string; event_type: string; status?: string | null; message?: string | null }>;
+  event_details: Array<{ id: string; timestamp: string; event_type: string; status?: string | null; message?: string | null; tool_name?: string | null; skill_id?: string | null; data?: Record<string, unknown> }>;
 }
 
 interface RunScore {
@@ -181,7 +181,7 @@ export default function Audit() {
                   <EventList title="Policy" items={detail.policy_decisions.map((item) => ({ name: item.operation || "policy", value: item.action }))} />
                   <EventList title="Approvals" items={detail.approvals.map((item) => ({ name: item.tool_name || item.type, value: item.status }))} />
                 </div>
-                <EventList title="Eventos" items={detail.event_details.map((item) => ({ name: item.event_type, value: item.status || "" }))} />
+                <Timeline events={detail.event_details} />
                 {score && (score.warnings.length > 0 || score.reasons.length > 0) && (
                   <div className="audit-score-notes">
                     {score.reasons.map((item) => <span className="ok" key={item}><i className="ti ti-check" />{item}</span>)}
@@ -226,6 +226,56 @@ function TagList({ title, items }: { title: string; items: string[] }) {
 
 function EventList({ title, items }: { title: string; items: Array<{ name: string; value: string }> }) {
   return <div className="audit-events"><h3>{title}</h3>{items.length ? items.map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}</span><em>{item.value}</em></div>) : <small>Sem registros.</small>}</div>;
+}
+
+// Rótulos amigáveis das tools (espelha bauer/core/ux/progress.py — as principais).
+const TOOL_LABEL: Record<string, string> = {
+  run_command: "Executou comando", execute_code: "Executou código", process: "Executou processo",
+  read_file: "Leu arquivos", list_dir: "Explorou arquivos", glob_files: "Procurou arquivos",
+  search_text: "Procurou no código", write_file: "Escreveu arquivo", append_file: "Escreveu arquivo",
+  create_dir: "Criou pasta", patch: "Editou arquivo", move_file: "Moveu arquivo",
+  delete_file: "Removeu arquivo", web_search: "Pesquisou na web", web_fetch: "Leu página web",
+  image_generate: "Gerou imagem", delegate_task: "Delegou a especialista", calculate: "Calculou",
+};
+
+function eventLabel(e: RunAudit["event_details"][number]): { label: string; icon: string; tone: string } {
+  const t = e.event_type;
+  const d = (e.data || {}) as Record<string, string>;
+  if (t === "run.created" || t === "run.started") return { label: "Iniciou a run", icon: "ti-player-play", tone: "" };
+  if (t === "run.completed") return { label: "Concluiu", icon: "ti-circle-check", tone: "ok" };
+  if (t === "run.failed") return { label: "Falhou", icon: "ti-alert-triangle", tone: "bad" };
+  if (t === "run.cancelled") return { label: "Cancelou", icon: "ti-ban", tone: "warn" };
+  if (t === "skill.selected") return { label: `Skill: ${e.skill_id || "?"}`, icon: "ti-sparkles", tone: "" };
+  if (t === "model.route.selected") return { label: `Modelo: ${d.model || "?"} (${d.tier || "?"})`, icon: "ti-arrows-shuffle", tone: "" };
+  if (t.startsWith("tool.call")) return { label: TOOL_LABEL[e.tool_name || ""] || e.tool_name || "tool", icon: "ti-tool", tone: t.endsWith("failed") ? "bad" : "" };
+  if (t === "policy.evaluated") return { label: `Policy: ${d.operation || "?"}`, icon: "ti-shield-half", tone: "" };
+  if (t.startsWith("approval")) return { label: `Aprovação (${e.tool_name || "?"})`, icon: "ti-shield-question", tone: "warn" };
+  if (t.startsWith("budget")) return { label: "Budget", icon: "ti-coin", tone: "warn" };
+  return { label: t, icon: "ti-point", tone: "" };
+}
+
+function Timeline({ events }: { events: RunAudit["event_details"] }) {
+  if (!events.length) return <div className="audit-timeline"><h3><i className="ti ti-timeline" /> Timeline</h3><small>Sem eventos.</small></div>;
+  const t0 = new Date(events[0].timestamp).getTime();
+  return (
+    <div className="audit-timeline">
+      <h3><i className="ti ti-timeline" /> Timeline</h3>
+      <ol>
+        {events.map((e, i) => {
+          const dt = (new Date(e.timestamp).getTime() - t0) / 1000;
+          const { label, icon, tone } = eventLabel(e);
+          return (
+            <li key={e.id || i} className={tone}>
+              <span className="tl-time">+{isFinite(dt) ? dt.toFixed(1) : "0.0"}s</span>
+              <i className={`ti ${icon}`} />
+              <span className="tl-label">{label}</span>
+              {e.status && <em className="tl-status">{e.status}</em>}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
 }
 
 function formatDuration(value?: number | null) {
