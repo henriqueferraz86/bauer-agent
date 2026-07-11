@@ -143,16 +143,24 @@ _TIER: dict[tuple[str, str], str] = {
     ("architecture", "high"): "heavy",
 }
 
+# Sinais de CÓDIGO/build. `api` NÃO entra (casa "FastAPI"/"rápida" e engolia
+# buscas); use "endpoint"/"rest api" para intenção de API.
 _CODING = ("código", "codigo", "code", "script", "função", "funcao", "function",
-           "bug", "debug", "refator", "refactor", "classe", "class", "endpoint",
-           "api", "implementa", "implement", "compil", "stacktrace", "traceback",
-           "teste unit", "unit test", "typescript", "python", "javascript")
+           "bug", "debug", "refator", "refactor", "classe", "endpoint", "rest api",
+           "implementa", "implement", "compil", "stacktrace", "traceback",
+           "teste unit", "unit test", "typescript", "python", "javascript",
+           # build/frontend
+           "site", "frontend", "front-end", "webapp", "aplicativo", "componente",
+           "landing page", "página web", "pagina web", "react", "vue", "html", "css")
 _ARCH = ("arquitetur", "architecture", "redesenh", "redesign", "múltiplos backends",
          "multiplos backends", "migra", "migrat", "sistema inteiro", "reescrev",
          "rewrite", "projete o", "design a system", "escalabilidade", "trade-off",
          "tradeoff", "compare abordagens")
 _TOOL = ("liste", "list", "leia", "read", "rode", "run ", "execute", "pesquis",
-         "search", "abra", "mostre", "show", "busque", "fetch", "baixe", "download")
+         "search", "abra", "mostre", "show", "busque", "fetch", "baixe", "download",
+         # arquivos / infra / kanban — operações que rodam tools, não raciocínio
+         "arquivo", "pasta", "diretório", "diretorio", "docker", "compose",
+         "container", "logs", "kanban", "tarefa no kanban", "no kanban")
 _CONVERSATION = ("oi", "olá", "ola", "hi", "hello", "hey", "bom dia", "boa tarde",
                  "boa noite", "obrigado", "obrigada", "valeu", "thanks", "quem é você",
                  "quem e voce", "o que você faz", "o que voce faz", "tudo bem")
