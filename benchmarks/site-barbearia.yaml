@@ -1,0 +1,10 @@
+id: site-barbearia
+name: Criar site de barbearia
+prompt: |
+  Leia a especificacao disponivel no workspace e crie um site responsivo de barbearia. Valide a entrega e resuma os arquivos criados.
+expected:
+  files:
+    - index.html
+  events:
+    - run.completed
+min_score: 4

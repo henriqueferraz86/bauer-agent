@@ -109,3 +109,166 @@ class ModelRouter:
         kind = self.classify(user_input)
         route = self.config.route_for(kind)
         return route.model, route
+
+
+# ─── Fase 12 / Sprint 34: roteamento por task_type/complexity + profiles ──────
+#
+# Evolução do router acima: em vez de gastar uma CHAMADA LLM só para classificar
+# (o que adiciona latência — contraproducente para o objetivo de performance),
+# um classificador HEURÍSTICO (sem rede) decide o tipo/complexidade da tarefa e
+# aponta um "tier" de modelo (fast/balanced/coding/heavy). Conservador: na
+# dúvida cai em `balanced`, e só escala para `heavy` com sinais claros de
+# complexidade. Isto é a CAMADA DE DECISÃO — não troca o modelo do turno por si
+# só; `bauer models route` a expõe para inspeção/ajuste antes de confiar nela.
+
+TaskType = Literal["conversation", "tool_call", "coding", "reasoning", "architecture"]
+Complexity = Literal["low", "medium", "high"]
+
+#: tier recomendado por (task_type, complexity). Tiers: fast|balanced|coding|heavy.
+_TIER: dict[tuple[str, str], str] = {
+    ("conversation", "low"): "fast",
+    ("conversation", "medium"): "fast",
+    ("conversation", "high"): "balanced",
+    ("tool_call", "low"): "fast",
+    ("tool_call", "medium"): "balanced",
+    ("tool_call", "high"): "balanced",
+    ("reasoning", "low"): "balanced",
+    ("reasoning", "medium"): "balanced",
+    ("reasoning", "high"): "heavy",
+    ("coding", "low"): "coding",
+    ("coding", "medium"): "coding",
+    ("coding", "high"): "heavy",
+    ("architecture", "low"): "heavy",
+    ("architecture", "medium"): "heavy",
+    ("architecture", "high"): "heavy",
+}
+
+# Sinais de CÓDIGO/build. `api` NÃO entra (casa "FastAPI"/"rápida" e engolia
+# buscas); use "endpoint"/"rest api" para intenção de API.
+_CODING = ("código", "codigo", "code", "script", "função", "funcao", "function",
+           "bug", "debug", "refator", "refactor", "classe", "endpoint", "rest api",
+           "implementa", "implement", "compil", "stacktrace", "traceback",
+           "teste unit", "unit test", "typescript", "python", "javascript",
+           # build/frontend
+           "site", "frontend", "front-end", "webapp", "aplicativo", "componente",
+           "landing page", "página web", "pagina web", "react", "vue", "html", "css")
+_ARCH = ("arquitetur", "architecture", "redesenh", "redesign", "múltiplos backends",
+         "multiplos backends", "migra", "migrat", "sistema inteiro", "reescrev",
+         "rewrite", "projete o", "design a system", "escalabilidade", "trade-off",
+         "tradeoff", "compare abordagens")
+_TOOL = ("liste", "list", "leia", "read", "rode", "run ", "execute", "pesquis",
+         "search", "abra", "mostre", "show", "busque", "fetch", "baixe", "download",
+         # arquivos / infra / kanban — operações que rodam tools, não raciocínio
+         "arquivo", "pasta", "diretório", "diretorio", "docker", "compose",
+         "container", "logs", "kanban", "tarefa no kanban", "no kanban")
+_CONVERSATION = ("oi", "olá", "ola", "hi", "hello", "hey", "bom dia", "boa tarde",
+                 "boa noite", "obrigado", "obrigada", "valeu", "thanks", "quem é você",
+                 "quem e voce", "o que você faz", "o que voce faz", "tudo bem")
+
+
+@dataclass
+class ModelProfile:
+    name: str            # fast | balanced | coding | heavy
+    provider: str = ""
+    model: str = ""
+
+
+@dataclass
+class RouteDecision:
+    task_type: str
+    complexity: str
+    profile: str                 # tier: fast|balanced|coding|heavy
+    reason: str = ""
+    matched: list[str] = field(default_factory=list)  # sinais que dispararam
+    provider: str = ""           # resolvido se profiles configurados
+    model: str = ""
+
+
+def _has(text: str, needles: tuple[str, ...]) -> list[str]:
+    return [n for n in needles if n in text]
+
+
+def classify_task(message: str) -> RouteDecision:
+    """Classifica a mensagem em (task_type, complexity) → tier, SEM chamar LLM.
+
+    Conservador: sinal de código/arquitetura escala; ausência de sinal cai em
+    `reasoning`/`balanced` (nunca no tier fraco por engano)."""
+    text = (message or "").strip().lower()
+    words = len(text.split())
+    matched: list[str] = []
+
+    arch = _has(text, _ARCH)
+    coding = _has(text, _CODING)
+    tool = _has(text, _TOOL)
+    conv = _has(text, _CONVERSATION)
+    has_code_block = "```" in message
+
+    # Complexidade: tamanho + múltiplos objetivos como sinais.
+    multi = any(s in text for s in (" e depois", "; ", " e também", " e tambem", "vários", "varios"))
+    if words <= 12 and not (arch or has_code_block):
+        complexity = "low"
+    elif words >= 40 or arch or multi:
+        complexity = "high"
+    else:
+        complexity = "medium"
+
+    # Tipo de tarefa (ordem = prioridade). Arquitetura > código > tool > conversa.
+    if arch:
+        task, matched = "architecture", arch
+    elif coding or has_code_block:
+        task = "coding"
+        matched = coding + (["```code-block```"] if has_code_block else [])
+    elif conv and words <= 12 and not tool:
+        task, complexity, matched = "conversation", "low", conv
+    elif tool:
+        task, matched = "tool_call", tool
+    else:
+        task = "reasoning"
+
+    tier = _TIER.get((task, complexity), "balanced")
+    reason = (
+        f"tarefa '{task}' de complexidade '{complexity}' → tier '{tier}'"
+        + (f" (sinais: {', '.join(matched[:4])})" if matched else " (sem sinais fortes → caminho seguro)")
+    )
+    return RouteDecision(task_type=task, complexity=complexity, profile=tier, reason=reason, matched=matched)
+
+
+def decide(message: str, profiles: "dict[str, ModelProfile] | None" = None) -> RouteDecision:
+    """classify_task + resolve provider/model do profile (se configurado)."""
+    d = classify_task(message)
+    if profiles and d.profile in profiles:
+        p = profiles[d.profile]
+        d.provider, d.model = p.provider, p.model
+    return d
+
+
+def _spec_field(spec, key: str) -> str:
+    if isinstance(spec, dict):
+        return str(spec.get(key, "") or "")
+    return str(getattr(spec, key, "") or "")
+
+
+def profiles_from_config(cfg) -> "dict[str, ModelProfile]":
+    """Lê `model.profiles` do config (best-effort). Vazio se ausente.
+
+    Formato esperado (config.yaml):
+        model:
+          profiles:
+            fast:     {provider: openrouter, model: deepseek/deepseek-v4-flash}
+            balanced: {provider: openrouter, model: deepseek/deepseek-v3.2}
+            coding:   {provider: openrouter, model: qwen/qwen3-coder-flash}
+            heavy:    {provider: openrouter, model: deepseek/deepseek-r1}
+    """
+    out: dict[str, ModelProfile] = {}
+    try:
+        # `model` (singular) é o campo real do schema; tolera `models` p/ callers de teste.
+        section = getattr(cfg, "model", None) or getattr(cfg, "models", None)
+        raw = getattr(section, "profiles", None) or {}
+        if isinstance(raw, dict):
+            for name, spec in raw.items():
+                out[name] = ModelProfile(name=name, provider=_spec_field(spec, "provider"),
+                                         model=_spec_field(spec, "model"))
+    except Exception as exc:  # noqa: BLE001 — profiles são opcionais; não quebra
+        from .logging_config import log_suppressed
+        log_suppressed("model_router.profiles_from_config", exc)
+    return out

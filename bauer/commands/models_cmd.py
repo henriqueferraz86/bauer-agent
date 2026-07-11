@@ -221,3 +221,54 @@ def models_set_fallbacks(
 
     console.print(f"\n[green]✓[/green] {len(free_list)} modelos salvos em [bold]{cfg_path}[/bold]")
     console.print("[dim]O switch automático usará essa lista quando o modelo primário falhar.[/dim]")
+
+
+@models_app.command("route")
+def models_route(
+    prompt: str = typer.Argument(..., help="Mensagem/tarefa a classificar."),
+    fmt: str = typer.Option("table", "--format", help="table | json"),
+    config_path: "Path | None" = typer.Option(None, "--config", help="config.yaml (para ler os profiles)."),
+):
+    """Mostra qual modelo o roteador escolheria para uma tarefa (não executa nada).
+
+    Classificador HEURÍSTICO (sem chamar LLM): decide task_type + complexity →
+    tier (fast|balanced|coding|heavy). Se `models.profiles` estiver no config,
+    resolve o provider/modelo concreto. Serve para inspecionar/ajustar o
+    roteamento ANTES de ligá-lo no caminho de execução.
+    """
+    from ..model_router import decide, profiles_from_config
+
+    profiles = {}
+    try:
+        from ..paths import config_path as _cfg_path_fn
+        cfg_path = config_path or _cfg_path_fn()
+        if cfg_path.exists():
+            cfg, _ = _load_or_die(cfg_path, Path("models.yaml"))
+            profiles = profiles_from_config(cfg)
+    except Exception:  # noqa: BLE001 — profiles são opcionais
+        profiles = {}
+
+    d = decide(prompt, profiles or None)
+
+    if fmt == "json":
+        import json as _json
+        from dataclasses import asdict
+        console.file.write(_json.dumps(asdict(d), ensure_ascii=False, indent=2) + "\n")
+        console.file.flush()
+        return
+
+    console.print(f"[bold]Roteamento[/bold] — [dim]{prompt[:70]}[/dim]\n")
+    t = Table(show_header=False, box=None)
+    t.add_row("Tipo de tarefa", d.task_type)
+    t.add_row("Complexidade", d.complexity)
+    t.add_row("Tier", f"[bold]{d.profile}[/bold]")
+    if d.model:
+        t.add_row("Modelo", f"{d.provider} · {d.model}")
+    console.print(t)
+    console.print(f"\n[dim]{d.reason}[/dim]")
+    if not d.model:
+        console.print(
+            "\n[yellow]Profiles não configurados[/yellow] — defina [bold]models.profiles[/bold] "
+            "(fast/balanced/coding/heavy) no config.yaml para resolver o modelo concreto."
+        )
+    console.print("[dim]Isto é só a decisão do roteador; não muda o modelo dos turnos ainda.[/dim]")

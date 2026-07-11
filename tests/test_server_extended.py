@@ -642,6 +642,23 @@ def _stream_text(raw: str) -> str:
     return "".join(d for ev, d in _sse_events(raw) if ev == "message")
 
 
+def _has_tool_event(events: list[tuple[str, str]], tool_name: str) -> bool:
+    """True se há um evento `tool` para `tool_name`. O payload virou JSON
+    {name,label,icon} (narração de fase, S37); tolera o formato antigo (nome cru)."""
+    import json as _json
+
+    for ev, data in events:
+        if ev != "tool":
+            continue
+        try:
+            if _json.loads(data).get("name") == tool_name:
+                return True
+        except (ValueError, TypeError):
+            if data == tool_name:
+                return True
+    return False
+
+
 def test_stream_preserves_newlines_in_markdown(tmp_path: Path):
     """Regressão: chunks com \\n eram emitidos como `data: {chunk}\\n\\n` cru,
     corrompendo o frame SSE — o client descartava as quebras e o markdown
@@ -699,7 +716,7 @@ def test_stream_does_not_leak_action_json_after_narration(tmp_path: Path):
     assert "Agora sim: meio-dia." in text
     assert '"action"' not in text          # JSON não vaza pro chat
     assert "```" not in text               # fence do bloco também não
-    assert ("tool", "datetime_now") in events
+    assert _has_tool_event(events, "datetime_now")
 
 
 def test_stream_emits_selected_skill_event(tmp_path: Path):
@@ -829,7 +846,7 @@ def test_stream_runs_on_shared_agent_engine(tmp_path: Path):
     text = _stream_text(resp.text)
     assert "Analisando o Docker…" in text
     assert "## Relatório\n- tudo ok" in text
-    assert ("tool", "run_command") in events
+    assert _has_tool_event(events, "run_command")
 
 
 def test_stream_delivers_final_response_without_deltas(tmp_path: Path):
@@ -858,7 +875,7 @@ def test_stream_delivers_final_response_without_deltas(tmp_path: Path):
     assert resp.status_code == 200
     events = _sse_events(resp.text)
     assert "Resposta final sem streaming." in _stream_text(resp.text)
-    assert ("tool", "calculate") in events
+    assert _has_tool_event(events, "calculate")
 
 
 def test_stream_records_cost_tokens_and_budget(tmp_path: Path):

@@ -1,0 +1,13 @@
+id: mini-api
+name: Criar mini API FastAPI
+prompt: |
+  Crie uma mini API FastAPI com endpoint /health, README e testes. Execute pytest ao final.
+expected:
+  files:
+    - app/main.py
+    - README.md
+  commands:
+    - pytest
+  events:
+    - run.completed
+min_score: 4

@@ -17,6 +17,7 @@ import Agents from "./screens/Agents";
 import Skills from "./screens/Skills";
 import Runtime from "./screens/Runtime";
 import Settings from "./screens/Settings";
+import Audit from "./screens/Audit";
 
 export default function App() {
   return (
@@ -38,6 +39,11 @@ export default function App() {
           <Route path="/approvals" element={<Approvals />} />
           <Route path="/runtime" element={<Runtime />} />
           <Route path="/observability" element={<Observability />} />
+          <Route path="/audit" element={<Audit />} />
+          <Route path="/audit/runs" element={<Audit />} />
+          <Route path="/audit/runs/:runId" element={<Audit />} />
+          <Route path="/audit/approvals" element={<Audit />} />
+          <Route path="/audit/skills" element={<Audit />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/config" element={<Config />} />
           <Route path="/settings" element={<Settings />} />

@@ -3,13 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { api, streamSSE } from "../api/client";
 import Markdown from "../components/Markdown";
 
-interface ToolCall { name: string; }
+interface ToolCall { name: string; label?: string; icon?: string; }
 interface SkillTag { name: string; score: number | null; }
+interface RouteTag { tier: string; model: string; }
 interface Message {
   role: "user" | "assistant";
   text: string;
   tools?: ToolCall[];
   skill?: SkillTag;
+  route?: RouteTag;
   streaming?: boolean;
 }
 
@@ -172,8 +174,18 @@ export default function Chat() {
               const s = JSON.parse(e.data) as { name: string; score: number | null };
               if (s.name) last.skill = { name: s.name, score: s.score ?? null };
             } catch { /* ignora payload malformado */ }
+          } else if (e.event === "route") {
+            try {
+              const r = JSON.parse(e.data) as { tier: string; model: string };
+              if (r.model) last.route = { tier: r.tier, model: r.model };
+            } catch { /* ignora payload malformado */ }
           } else if (e.event === "tool") {
-            last.tools = [...(last.tools || []), { name: e.data }];
+            let tc: ToolCall = { name: e.data };
+            try {
+              const parsed = JSON.parse(e.data);
+              if (parsed && parsed.name) tc = { name: parsed.name, label: parsed.label, icon: parsed.icon };
+            } catch { /* payload legado = nome cru */ }
+            last.tools = [...(last.tools || []), tc];
           } else if (e.event === "done") {
             setSessionId(e.data);
             last.streaming = false;
@@ -278,6 +290,14 @@ export default function Chat() {
                   <span className="who">{m.role === "user" ? "Henrique" : "Bauer"}</span>
                   {m.streaming && <span className="when blink" style={{ color: "var(--accent)" }}>gerando…</span>}
                 </div>
+                {m.route && (
+                  <div className="routecall" title={`Roteado por tarefa: tier ${m.route.tier}`}>
+                    <i className="ti ti-arrows-shuffle" style={{ color: "var(--accent)" }} />
+                    <span className="rname">
+                      <strong>{m.route.tier}</strong> · <span className="mono">{m.route.model}</span>
+                    </span>
+                  </div>
+                )}
                 {m.skill && (
                   <div className="skillcall">
                     <i className="ti ti-sparkles" style={{ color: "var(--accent)" }} />
@@ -289,8 +309,9 @@ export default function Chat() {
                 )}
                 {m.tools?.map((t, j) => (
                   <div className="toolcall" key={j}>
-                    <i className="ti ti-tool" style={{ color: "var(--green)" }} />
-                    <span className="tname">{t.name}</span>
+                    <i className={`ti ti-${t.icon || "tool"}`} style={{ color: "var(--green)" }} />
+                    <span className="tlabel">{t.label || t.name}</span>
+                    {t.label && <span className="tname">{t.name}</span>}
                   </div>
                 ))}
                 {m.role === "user" ? (

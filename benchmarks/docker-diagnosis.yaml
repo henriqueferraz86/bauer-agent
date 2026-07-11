@@ -1,0 +1,11 @@
+id: docker-diagnosis
+name: Diagnosticar ambiente Docker
+prompt: |
+  Diagnostique o ambiente Docker deste workspace. Verifique containers, logs, portas e healthchecks e produza um resumo tecnico.
+expected:
+  commands:
+    - docker
+  events:
+    - policy.evaluated
+    - run.completed
+min_score: 4

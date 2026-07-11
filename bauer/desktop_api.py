@@ -506,6 +506,67 @@ def build_desktop_router(
 
         return BudgetManager(root=_runtime_root).status()
 
+    # -- Auditoria e governanca (Fase 11) ---------------------------------
+    @router.get("/audit/report")
+    def phase11_audit_report(last: str = Query("24h", description="24h | 7d | 2w | 30d")):
+        from dataclasses import asdict
+        from datetime import datetime, timedelta
+        import re
+        from .core.audit import build_report
+
+        match = re.fullmatch(r"(\d+)([mhdw])", last.strip().lower())
+        if not match:
+            raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
+        amount, unit = int(match.group(1)), match.group(2)
+        delta = {
+            "m": timedelta(minutes=amount), "h": timedelta(hours=amount),
+            "d": timedelta(days=amount), "w": timedelta(weeks=amount),
+        }[unit]
+        return asdict(build_report(_runtime_root, since=datetime.now() - delta, window_label=last))
+
+    @router.get("/audit/runs/{run_id}")
+    def phase11_audit_run(run_id: str):
+        from dataclasses import asdict
+        from .core.audit import audit_run
+
+        audited = audit_run(_runtime_root, run_id, include_events=True, include_tools=True)
+        if audited is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(audited)
+
+    @router.get("/audit/runs/{run_id}/score")
+    def phase11_audit_score(run_id: str):
+        from dataclasses import asdict
+        from .core.audit import score_run_by_id
+
+        score = score_run_by_id(_runtime_root, run_id)
+        if score is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(score)
+
+    @router.get("/audit/skills")
+    @router.get("/audit/skills/insights")
+    def phase11_skill_insights(last: str = Query("7d", description="24h | 7d | 2w | 30d")):
+        from dataclasses import asdict
+        from datetime import datetime, timedelta
+        import re
+        from .core.audit import build_skill_insights
+
+        match = re.fullmatch(r"(\d+)([mhdw])", last.strip().lower())
+        if not match:
+            raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
+        amount, unit = int(match.group(1)), match.group(2)
+        delta = {
+            "m": timedelta(minutes=amount), "h": timedelta(hours=amount),
+            "d": timedelta(days=amount), "w": timedelta(weeks=amount),
+        }[unit]
+        return asdict(build_skill_insights(
+            _runtime_root,
+            since=datetime.now() - delta,
+            window_label=last,
+            suggest_new=True,
+        ))
+
     @router.post("/os/command")
     def os_command(body: dict = Body(...)):
         from dataclasses import asdict

@@ -9,6 +9,7 @@ const NAV = [
   { to: "/approvals", icon: "ti-shield-question", label: "Approvals" },
   { to: "/runtime", icon: "ti-server-2", label: "Runtime" },
   { to: "/observability", icon: "ti-chart-bar", label: "Observabilidade" },
+  { to: "/audit", icon: "ti-shield-check", label: "Auditoria" },
   { to: "/projects", icon: "ti-folders", label: "Projetos" },
   { to: "/kanban", icon: "ti-layout-kanban", label: "Kanban" },
   { to: "/models", icon: "ti-cpu", label: "Modelos" },

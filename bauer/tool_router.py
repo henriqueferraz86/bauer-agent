@@ -483,6 +483,13 @@ class ToolRouter(
         self.tool_context = _normalize_tool_context(tool_context)
         self._tool_policy = load_tool_policy(self.workspace, explicit_path=tool_policy_path)
         self._policy_enabled = policy_enabled
+        # Modo de enforcement quando policy_enabled: "enforce" (ask BLOQUEIA e
+        # cria approval pendente — semântica original) ou "audit" (ask PASSA com
+        # registro de auto-aprovação; deny continua bloqueando). O serve local
+        # usa "audit" por padrão para ter trilha sem travar o shell do operador;
+        # ver server.py. Default "enforce" preserva o comportamento de quem liga
+        # policy_enabled diretamente.
+        self._policy_mode = "enforce"
         self._policy_rules_path = policy_rules_path
         self._policy_root = Path(policy_root)
         self._runtime_session_id = session_id or None
@@ -1591,6 +1598,21 @@ class ToolRouter(
                     )
                 raise ToolError(f"policy denied: {decision.reason}")
             if decision.action == "ask":
+                # Modo audit: registra a trilha e deixa passar (operador presente;
+                # sem fluxo de aprovar-e-retomar no chat, bloquear todo shell
+                # quebraria o uso normal). deny já foi tratado acima e bloqueia.
+                if self._policy_mode == "audit":
+                    if self._event_bus is not None:
+                        self._event_bus.publish(
+                            "approval.accepted",
+                            run_id=self._runtime_run_id,
+                            session_id=self._runtime_session_id,
+                            tool_name=tool_name,
+                            status="auto",
+                            message=f"auto-approved (audit mode): {decision.reason}",
+                            data={"operation": operation, "risk_level": decision.risk_level},
+                        )
+                    return
                 record = approvals.request(
                     operation=operation,
                     tool_name=tool_name,
