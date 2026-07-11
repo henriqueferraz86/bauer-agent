@@ -5,11 +5,13 @@ import Markdown from "../components/Markdown";
 
 interface ToolCall { name: string; label?: string; icon?: string; }
 interface SkillTag { name: string; score: number | null; }
+interface RouteTag { tier: string; model: string; }
 interface Message {
   role: "user" | "assistant";
   text: string;
   tools?: ToolCall[];
   skill?: SkillTag;
+  route?: RouteTag;
   streaming?: boolean;
 }
 
@@ -172,6 +174,11 @@ export default function Chat() {
               const s = JSON.parse(e.data) as { name: string; score: number | null };
               if (s.name) last.skill = { name: s.name, score: s.score ?? null };
             } catch { /* ignora payload malformado */ }
+          } else if (e.event === "route") {
+            try {
+              const r = JSON.parse(e.data) as { tier: string; model: string };
+              if (r.model) last.route = { tier: r.tier, model: r.model };
+            } catch { /* ignora payload malformado */ }
           } else if (e.event === "tool") {
             let tc: ToolCall = { name: e.data };
             try {
@@ -283,6 +290,14 @@ export default function Chat() {
                   <span className="who">{m.role === "user" ? "Henrique" : "Bauer"}</span>
                   {m.streaming && <span className="when blink" style={{ color: "var(--accent)" }}>gerando…</span>}
                 </div>
+                {m.route && (
+                  <div className="routecall" title={`Roteado por tarefa: tier ${m.route.tier}`}>
+                    <i className="ti ti-arrows-shuffle" style={{ color: "var(--accent)" }} />
+                    <span className="rname">
+                      <strong>{m.route.tier}</strong> · <span className="mono">{m.route.model}</span>
+                    </span>
+                  </div>
+                )}
                 {m.skill && (
                   <div className="skillcall">
                     <i className="ti ti-sparkles" style={{ color: "var(--accent)" }} />

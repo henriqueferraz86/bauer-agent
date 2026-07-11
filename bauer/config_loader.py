@@ -543,6 +543,12 @@ class ModelSection(_StrictSection):
         default_factory=dict,
         description="Perfis de modelo por tier (fast/balanced/coding/heavy).",
     )
+    # Liga o roteamento por-turno (usa `profiles`). Opt-in: enquanto False, todo
+    # turno usa o modelo primário. Requer profiles configurados.
+    router_enabled: bool = Field(
+        default=False,
+        description="Ativa o roteamento por tipo/complexidade de tarefa (usa profiles).",
+    )
 
     @field_validator("minimum_context")
     @classmethod

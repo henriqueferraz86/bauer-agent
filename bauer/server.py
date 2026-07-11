@@ -757,6 +757,77 @@ def create_app(
         "provider": _detect_provider(client),
     }
 
+    # ── Roteamento por-turno (Fase 12 / Sprint 34c) — opt-in ──────────────────
+    # Quando model.router_enabled=True e há profiles, cada turno escolhe o modelo
+    # do tier (fast/balanced/coding/heavy) via classify_task heurístico. CONSERVADOR:
+    # tier sem profile, provider sem client, ou qualquer falha → cai no modelo
+    # primário (_state). Nunca degrada silenciosamente para um modelo fraco.
+    _router_enabled = False
+    _router_profiles: dict = {}
+    _router_cfg = None
+    try:
+        if config_path is not None:
+            from .config_loader import load_config as _load_cfg
+            from .model_router import profiles_from_config
+            _router_cfg = _load_cfg(config_path)
+            _router_enabled = bool(getattr(_router_cfg.model, "router_enabled", False))
+            _router_profiles = profiles_from_config(_router_cfg)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("router config load failed: %s", exc)
+    _profile_clients: dict = {}  # provider → client (cache)
+
+    def _client_for_profile(provider: str):
+        """Client para o provider do profile. Reusa o default se mesmo provider;
+        senão constrói e cacheia. None em falha (caller cai no default)."""
+        if not provider or provider == _state["provider"]:
+            return _state["client"]
+        if provider in _profile_clients:
+            return _profile_clients[provider]
+        try:
+            from .commands._runtime import _build_client as _bc
+            from .config_loader import BauerConfig
+            from .env_loader import apply_env_to_config
+            raw = _router_cfg.model_dump()
+            raw["model"]["provider"] = provider
+            vcfg = BauerConfig(**raw)
+            apply_env_to_config(vcfg)
+            c = _bc(vcfg)
+            _profile_clients[provider] = c
+            return c
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("build profile client failed (%s): %s", provider, exc)
+            return None
+
+    def _resolve_turn_model(message: str):
+        """(client, model, decision). Sem routing / na dúvida → (primário, None)."""
+        if not _router_enabled or not _router_profiles:
+            return _state["client"], _state["model"], None
+        try:
+            from .model_router import decide
+            d = decide(message, _router_profiles)
+        except Exception:  # noqa: BLE001
+            return _state["client"], _state["model"], None
+        if not d.model:
+            return _state["client"], _state["model"], None  # tier sem profile → default
+        c = _client_for_profile(d.provider)
+        if c is None:
+            return _state["client"], _state["model"], None  # sem client → default
+        return c, d.model, d
+
+    def _publish_route(run_id: str, sid: str, agent_id: str, decision) -> None:
+        if decision is None:
+            return
+        try:
+            event_bus.publish(
+                "model.route.selected",
+                run_id=run_id, session_id=sid, agent_id=agent_id,
+                status=decision.profile, message=decision.reason,
+                data={"task_type": decision.task_type, "complexity": decision.complexity,
+                      "tier": decision.profile, "provider": decision.provider, "model": decision.model},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     # Rate limiter (desativado se rate_limit_requests <= 0)
     _limiter = _RateLimiter(
         max_requests=rate_limit_requests,
@@ -1119,12 +1190,14 @@ def create_app(
 
         from .cost_meter import cost_sink
         from .tool_router import reset_runtime_ids, set_runtime_ids
+        _turn_client, _turn_model, _route = _resolve_turn_model(req.message)
+        _publish_route(run.id, session_id, request_agent_id, _route)
         _cost = _TurnCostRecorder(session_id)
         _cost_token = cost_sink.set(_cost)
         _ids_token = set_runtime_ids(session_id, run.id)
         try:
             response, tool_log = run_one_turn_with_fallback(
-                ctx, active_router, _state["client"], _state["model"], _fallback_clients,
+                ctx, active_router, _turn_client, _turn_model, _fallback_clients,
             )
         except Exception as exc:
             _log.exception("Erro interno em /chat: %s", exc)
@@ -1211,6 +1284,12 @@ def create_app(
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
         ctx.add_user(message)
 
+        # Roteamento por-turno resolvido AQUI (fora da thread): o par
+        # (client, model) é capturado pelo worker; a decisão vira evento SSE
+        # `route` no gerador + evento de runtime na Observabilidade.
+        _turn_client, _turn_model, _route = _resolve_turn_model(message)
+        _publish_route(run.id, sid, request_agent_id, _route)
+
         def _event_stream():
             # O turno roda no MESMO motor do CLI e do POST /chat —
             # run_one_turn_with_fallback: native function calling quando o
@@ -1257,7 +1336,7 @@ def create_app(
                 ids_token = set_runtime_ids(sid, run.id)
                 try:
                     resp, tool_log = run_one_turn_with_fallback(
-                        ctx, active_router, _state["client"], _state["model"], _fallback_clients,
+                        ctx, active_router, _turn_client, _turn_model, _fallback_clients,
                     )
                     result["response"] = resp
                     result["tool_log"] = tool_log
@@ -1313,6 +1392,14 @@ def create_app(
                         "score": getattr(_selected_skill, "score", None),
                     }, ensure_ascii=False),
                     event="skill",
+                )
+
+            # Modelo roteado deste turno (S34c) — indicador na UI.
+            if _route is not None:
+                yield _sse(
+                    _json.dumps({"tier": _route.profile, "model": _route.model,
+                                 "task_type": _route.task_type}, ensure_ascii=False),
+                    event="route",
                 )
 
             worker = _threading.Thread(
@@ -1526,7 +1613,7 @@ def create_app(
             elif msg.role == "assistant":
                 ctx.add_assistant(msg.content)
 
-        active_model = _state["model"]
+        _turn_client, active_model, _v1_route = _resolve_turn_model(last_user_message)
         completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
         run = run_manager.create_run(
             session_id=sid,
@@ -1543,6 +1630,7 @@ def create_app(
             status="running",
         )
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
+        _publish_route(run.id, sid, request_agent_id, _v1_route)
         resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
 
         # ── modo streaming ────────────────────────────────────────────────────
@@ -1570,7 +1658,7 @@ def create_app(
                             return
                         parts = []
                         try:
-                            for chunk in _state["client"].chat_stream(active_model, ctx.get_payload()):
+                            for chunk in _turn_client.chat_stream(active_model, ctx.get_payload()):
                                 current_run = run_manager.get_run(run.id)
                                 if current_run is not None and current_run.status == "cancelled":
                                     store.save(sid, ctx.messages)
@@ -1647,7 +1735,7 @@ def create_app(
         _cost_token = cost_sink.set(_cost)
         _ids_token = set_runtime_ids(sid, run.id)
         try:
-            response, tool_log = run_one_turn(ctx, router, _state["client"], active_model)
+            response, tool_log = run_one_turn(ctx, router, _turn_client, active_model)
         except Exception as exc:
             _log.exception("Erro interno em /v1/chat/completions: %s", exc)
             run_manager.fail_run(run.id, str(exc))
