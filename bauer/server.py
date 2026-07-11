@@ -1391,7 +1391,18 @@ def create_app(
                     frame = _emit_text(_flush_gate())
                     if frame:
                         yield frame
-                    yield _sse(payload, event="tool")
+                    # Narração de fase (S37): além do nome cru, manda o passo
+                    # humano ("Executando comando") + ícone para a UI mostrar.
+                    try:
+                        from .core.ux import tool_phase
+                        _ph = tool_phase(payload)
+                        _tool_data = _json.dumps(
+                            {"name": payload, "label": _ph.label, "icon": _ph.icon},
+                            ensure_ascii=False,
+                        )
+                    except Exception:  # noqa: BLE001 — fallback para o nome cru
+                        _tool_data = _json.dumps({"name": payload})
+                    yield _sse(_tool_data, event="tool")
                 else:  # "end"
                     ended = True
 
