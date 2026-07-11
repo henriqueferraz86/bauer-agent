@@ -668,6 +668,135 @@ def test_build_kernel_wires_evaluator_from_config(tmp_path):
     assert kernel_off.evaluator is None
 
 
+# ─── Sprint 6a: kernel.stream() (generator) ──────────────────────────────────
+
+
+def _consume_stream(gen):
+    """Recolhe (deltas concatenados, evento final KernelRun) de kernel.stream()."""
+    deltas = []
+    final = None
+    for evt in gen:
+        if evt["event"] == "message.delta":
+            deltas.append(evt["content"])
+        elif evt["event"] == "final":
+            final = evt["run"]
+    return "".join(deltas), final
+
+
+def _stream_ok_executor(payload):
+    yield {"event": "message.delta", "content": "olá"}
+    yield {"event": "message.delta", "content": ", mundo"}
+    yield {"event": "run.completed", "status": "completed", "tool_calls_count": 2}
+
+
+def test_stream_happy_path_forwards_deltas_and_final(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus)
+    text, final = _consume_stream(kernel.stream(KernelRequest(task="oi"),
+                                                executor=_stream_ok_executor))
+    assert text == "olá, mundo"
+    assert final.ok and final.output == "olá, mundo"
+    assert final.trajectory == ["created", "planning", "policy_check", "queued", "running", "completed"]
+    assert runs.get_run(final.run_id).status == "completed"
+    assert runs.get_run(final.run_id).tool_calls_count == 2
+
+
+def test_stream_forwards_deltas_before_failure(kit):
+    """Deltas já emitidos permanecem no stream mesmo se o run falhar depois —
+    o caller (SSE) já os mostrou; não há como 'desmostrar'."""
+    _, bus, runs = kit
+
+    def _flaky_stream(payload):
+        yield {"event": "message.delta", "content": "parcial"}
+        yield {"event": "run.failed", "error": "conexão caiu no meio"}
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    text, final = _consume_stream(kernel.stream(KernelRequest(task="x"),
+                                                executor=_flaky_stream))
+    assert text == "parcial"
+    assert final.status == "failed" and "conexão caiu" in (final.error or "")
+    assert final.output == "parcial"  # o que já foi mostrado
+
+
+def test_stream_executor_exception_fails_run(kit):
+    _, bus, runs = kit
+
+    def _boom(payload):
+        raise RuntimeError("provider indisponível")
+        yield  # torna a função um generator (nunca alcançado)
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    _, final = _consume_stream(kernel.stream(KernelRequest(task="x"), executor=_boom))
+    assert final.status == "failed" and "indisponível" in (final.error or "")
+
+
+def test_stream_policy_deny_never_touches_executor(kit):
+    _, bus, runs = kit
+    called = {"n": 0}
+
+    def _exec(payload):
+        called["n"] += 1
+        yield {"event": "message.delta", "content": "x"}
+
+    kernel = BauerKernel(runs=runs, bus=bus, policy=_StubPolicy("deny", "bloqueado"))
+    _, final = _consume_stream(kernel.stream(KernelRequest(task="x"), executor=_exec))
+    assert final.status == "failed" and final.policy_action == "deny"
+    assert called["n"] == 0
+
+
+def test_stream_policy_ask_parks_before_executor(kit):
+    _, bus, runs = kit
+    called = {"n": 0}
+
+    def _exec(payload):
+        called["n"] += 1
+        yield {"event": "message.delta", "content": "x"}
+
+    kernel = BauerKernel(runs=runs, bus=bus, policy=_StubPolicy("ask"))
+    _, final = _consume_stream(kernel.stream(KernelRequest(task="x"), executor=_exec))
+    assert final.status == "waiting_approval" and called["n"] == 0
+
+
+def test_stream_kill_switch_cancels_before_executor(kit):
+    _, bus, runs = kit
+    called = {"n": 0}
+
+    def _exec(payload):
+        called["n"] += 1
+        yield {"event": "message.delta", "content": "x"}
+
+    kernel = BauerKernel(runs=runs, bus=bus, control=_KillSwitch(True))
+    _, final = _consume_stream(kernel.stream(KernelRequest(task="x"), executor=_exec))
+    assert final.status == "cancelled" and called["n"] == 0
+
+
+def test_stream_evaluator_gate_blocks_completion(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus, evaluator=_StubEvaluator(False))
+    text, final = _consume_stream(kernel.stream(KernelRequest(task="x"),
+                                                executor=_stream_ok_executor))
+    assert text == "olá, mundo"  # já emitido
+    assert final.status == "failed" and "quality gate" in (final.error or "")
+    assert "evaluating" in final.trajectory
+
+
+def test_stream_via_real_adapter_contract(kit):
+    """Sem executor injetado, usa adapter.stream_agent() (contrato existente)."""
+    _, bus, runs = kit
+
+    class _StreamAdapter:
+        name = "stream-stub"
+
+        def stream_agent(self, request):
+            yield {"event": "message.delta", "content": f"eco:{request.get('task', '')}"}
+            yield {"event": "run.completed"}
+
+    kernel = BauerKernel(runs=runs, bus=bus,
+                         adapter_factory=lambda name, config=None: _StreamAdapter())
+    text, final = _consume_stream(kernel.stream(KernelRequest(task="oi")))
+    assert text == "eco:oi" and final.ok
+
+
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 

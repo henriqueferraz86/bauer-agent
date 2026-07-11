@@ -128,6 +128,128 @@ class BauerKernel:
                                        executor=executor, adapter=adapter,
                                        decision=decision, request=request)
 
+    def stream(self, request: KernelRequest, *, executor: Any | None = None):
+        """Generator: mesma máquina de estados de ``execute``, mas re-emite os
+        deltas do adapter/executor conforme chegam — para front-ends de
+        streaming (SSE do serve, chat interativo).
+
+        ``executor`` opcional: callable(payload) -> Iterator[dict] (contrato
+        de ``stream_agent``: eventos ``message.delta``/``run.completed``/
+        ``run.failed``). Sem ele, resolve o adapter e chama ``stream_agent``.
+
+        Cada item gerado é ``{"event": ...}``. O ÚLTIMO item sempre tem
+        ``event: "final"`` com o ``KernelRun`` completo (mesmo em falha).
+
+        ESCOPO REDUZIDO (v1, Sprint 6a): sem retry/fallback de executor no
+        laço de streaming — tokens já entregues ao caller não podem ser
+        "desmostrados"; reexecutar transparentemente duplicaria a saída
+        parcial já exibida. Retry/fallback continuam completos em
+        ``execute()``. O gate do Evaluator roda no final, sobre o texto
+        agregado (mesma semântica de ``execute``, sem replan em streaming —
+        replan reabriria running e re-emitiria do zero, confuso em UI).
+        """
+        session_id = request.session_id or f"session-{uuid4()}"
+        adapter = None
+        adapter_name = request.runtime_adapter
+        if executor is None:
+            adapter = self.adapter_factory(request.runtime_adapter or None, config=self.config)
+            adapter_name = getattr(adapter, "name", adapter_name or "bauer_native")
+
+        stored_input = _persistable(
+            {**request.input, "task": request.task} if request.task else dict(request.input)
+        )
+        run = self.runs.create_run(
+            session_id=session_id,
+            agent_id=request.agent_id,
+            runtime_adapter=adapter_name or "bauer_native",
+            input=stored_input,
+            status="created",
+        )
+        trajectory = ["created"]
+
+        if self.control is not None and self.control.kill_switch_enabled():
+            self.runs.update_run(run.id, status="cancelled", error="runtime kill switch ativo")
+            trajectory.append("cancelled")
+            yield {"event": "final", "run": self._result(run.id, session_id, trajectory)}
+            return
+
+        self._transition(run, "planning", trajectory)
+        self._transition(run, "policy_check", trajectory)
+        decision = self._evaluate_policy(request, run)
+        if decision is not None and decision.action == "deny":
+            self.runs.fail_run(run.id, f"policy deny: {decision.reason}")
+            trajectory.append("failed")
+            yield {"event": "final",
+                  "run": self._result(run.id, session_id, trajectory, decision=decision)}
+            return
+        if decision is not None and decision.action == "ask":
+            self._transition(run, "waiting_approval", trajectory)
+            approval_id = self._request_approval(request, run, decision)
+            yield {"event": "final",
+                  "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                      approval_id=approval_id)}
+            return
+
+        self._transition(run, "queued", trajectory)
+        self.runs.start_run(run.id)
+        trajectory.append("running")
+
+        payload = {**request.input, "run_id": run.id}
+        if request.task and "task" not in payload:
+            payload["task"] = request.task
+
+        chunks: list[str] = []
+        last_meta: dict[str, Any] = {}
+        error: str | None = None
+        try:
+            source = executor(payload) if executor is not None else adapter.stream_agent(payload)
+            for evt in source:
+                evt = evt or {}
+                kind = evt.get("event")
+                if kind == "message.delta":
+                    content = str(evt.get("content", ""))
+                    chunks.append(content)
+                    yield {"event": "message.delta", "content": content}
+                elif kind == "run.failed":
+                    error = str(evt.get("error") or "executor failed")
+                    break
+                else:
+                    last_meta = evt
+        except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+            error = str(exc)
+
+        if error is not None:
+            self.runs.fail_run(run.id, error)
+            trajectory.append("failed")
+            yield {"event": "final",
+                  "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                      output="".join(chunks))}
+            return
+
+        result = {"output": "".join(chunks), **{k: v for k, v in last_meta.items()
+                                                 if k not in {"event", "status", "run_id", "runtime_adapter"}}}
+
+        if self.evaluator is not None:
+            self._transition(run, "evaluating", trajectory)
+            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+            if not getattr(verdict, "passed", True):
+                self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
+                trajectory.append("failed")
+                yield {"event": "final",
+                      "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                          output=result.get("output"))}
+                return
+
+        cost = self._extract_cost(result)
+        self.runs.complete_run(run.id, output={"output": result.get("output")},
+                               cost_estimate=cost,
+                               tool_calls_count=int(result.get("tool_calls_count") or 0))
+        trajectory.append("completed")
+        self._record_cost(run, cost)
+        yield {"event": "final",
+              "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                  output=result.get("output"))}
+
     def continue_run(self, run_id: str, *, extra_input: dict[str, Any] | None = None,
                      executor: Any | None = None) -> KernelRun:
         """Continua um run em ``queued`` (após resume/aprovação) até o fim.
