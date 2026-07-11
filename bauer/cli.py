@@ -124,6 +124,8 @@ app.add_typer(events_app, name="events")
 app.add_typer(approvals_app, name="approvals")
 from bauer.commands.audit_cmd import audit_app  # noqa: E402
 app.add_typer(audit_app, name="audit")
+from bauer.commands.perf_cmd import perf_app  # noqa: E402
+app.add_typer(perf_app, name="perf")
 from bauer.commands.benchmark_cmd import benchmark_app  # noqa: E402
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(skills_app, name="skills")

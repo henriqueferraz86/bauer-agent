@@ -114,14 +114,18 @@ def build_report(
 
 
 def _after(ts: str, since: datetime) -> bool:
+    """`ts` (started_at, UTC-aware) >= `since`. Normaliza ambos para UTC-aware;
+    `since` naive é assumido UTC (comparar UTC contra now() local erra o corte
+    da janela pelo offset do fuso). Sem timestamp legível → fail-open."""
+    from datetime import timezone
+
     parsed = parse_iso(ts)
     if parsed is None:
-        return True  # sem timestamp legível → não filtra fora (fail-open)
-    # since pode ser naive; compara em UTC-agnóstico removendo tzinfo se necessário
-    if parsed.tzinfo is not None and since.tzinfo is None:
-        parsed = parsed.replace(tzinfo=None)
-    elif parsed.tzinfo is None and since.tzinfo is not None:
-        since = since.replace(tzinfo=None)
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
     return parsed >= since
 
 
