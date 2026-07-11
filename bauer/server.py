@@ -428,20 +428,23 @@ def create_app(
             _kcfg = _load_kernel_cfg(config_path)
             if bool(getattr(getattr(_kcfg, "kernel", None), "enabled", False)):
                 from .core.kernel import BauerKernel
+                from .core.kernel.kernel import evaluator_from_config
                 from .core.policy.engine import PolicyEngine
                 from .core.runtime.resilience import RuntimeControl
 
-                _ksec = _kcfg.kernel
-                _kernel_evaluator = None
-                if bool(getattr(_ksec, "evaluator_enabled", False)):
-                    from .core.kernel.evaluator import Evaluator
-                    _kernel_evaluator = Evaluator(max_replans=int(getattr(_ksec, "max_replans", 1) or 0))
                 _kernel = BauerKernel(
                     runs=run_manager, bus=event_bus,
                     policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
                     control=RuntimeControl(store=event_bus.store),
-                    approvals=approval_manager, budget=budget_manager,
-                    evaluator=_kernel_evaluator,
+                    approvals=approval_manager,
+                    # budget=None DE PROPÓSITO: o executor do /chat já grava o
+                    # custo via _record_turn_budget; se o Kernel também gravasse
+                    # (_record_cost), cada turno contaria DOBRADO no orçamento
+                    # (_used_since soma todas as linhas de run_costs, sem dedup).
+                    # O gate pré-run continua funcionando: a PolicyEngine tem seu
+                    # próprio BudgetManager lendo o mesmo runtime_root.
+                    budget=None,
+                    evaluator=evaluator_from_config(_kcfg),
                 )
     except Exception as exc:  # noqa: BLE001 — kernel é opt-in; falha de wiring nunca derruba o serve
         from .logging_config import log_suppressed
@@ -1205,11 +1208,24 @@ def create_app(
         from .core.kernel import KernelRequest
 
         captured: dict = {}
+        # Snapshot p/ replan: o executor MUTA o ctx (resposta + tool messages).
+        # Sem restaurar, a 2ª execução veria a própria resposta reprovada no
+        # histórico e o replan_feedback seria ignorado — replan viraria custo
+        # dobrado sem chance de correção.
+        _base_msgs = len(ctx.messages)
 
         def _executor(payload):
             run_id = payload["run_id"]
-            _publish_selected_skill(run_id, session_id, request_agent_id, resolved)
-            _publish_route(run_id, session_id, request_agent_id, route)
+            if payload.get("replan_attempt"):
+                del ctx.messages[_base_msgs:]  # descarta a tentativa reprovada
+                ctx.add_ephemeral_system(
+                    "Sua resposta anterior foi reprovada pelo quality gate: "
+                    f"{payload.get('replan_feedback', '')}. Responda novamente "
+                    "corrigindo esse problema."
+                )
+            else:  # eventos por-run: só na 1ª tentativa (replan repetiria)
+                _publish_selected_skill(run_id, session_id, request_agent_id, resolved)
+                _publish_route(run_id, session_id, request_agent_id, route)
             from .cost_meter import cost_sink
             from .tool_router import reset_runtime_ids, set_runtime_ids
             cost = _TurnCostRecorder(session_id)

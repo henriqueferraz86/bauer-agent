@@ -157,6 +157,83 @@ def test_chat_via_kernel_evaluator_rejects_empty_output(tmp_path: Path):
     assert resp.status_code == 500
 
 
+def test_chat_via_kernel_records_cost_exactly_once(tmp_path: Path):
+    """Regressão: executor grava custo via _record_turn_budget E o kernel
+    gravaria de novo via _record_cost se tivesse budget — _used_since soma
+    todas as linhas sem dedup, então o orçamento esgotaria na METADE. O serve
+    passa budget=None ao kernel de propósito."""
+    import json
+
+    cfg = _cfg(tmp_path, kernel_enabled=True)
+    client = MagicMock()
+
+    def _stream(model, messages, *a, **k):
+        from bauer.cost_meter import cost_sink
+        sink = cost_sink.get()
+        if sink is not None:
+            sink("openrouter", model, {"prompt_tokens": 10, "completion_tokens": 5}, 0.0123)
+        return iter(["resposta"])
+
+    client.chat_stream.side_effect = _stream
+    client._provider = "openrouter"
+    app = _app_and_store(tmp_path, cfg, client)
+    resp = TestClient(app).post("/chat", json={"message": "oi"})
+    assert resp.status_code == 200
+
+    runtime_root = tmp_path / "sessions" / ".." / "runtime"
+    lines = [json.loads(line) for line in
+             (runtime_root / "run_costs.jsonl").read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    assert len(lines) == 1, f"custo contado {len(lines)}x — esperado exatamente 1"
+    # rel=1e-3: o motor também reporta o uso do mock (~$0.000005 a mais)
+    assert lines[0]["cost_usd"] == pytest.approx(0.0123, rel=1e-3)
+
+    # e o cost_estimate do run continua preenchido (via kernel.complete_run)
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.core.runtime.state_store import JsonlStateStore
+    runs = RunManager(store=JsonlStateStore(runtime_root)).list_runs()
+    assert runs[0].cost_estimate == pytest.approx(0.0123, rel=1e-3)
+
+
+def test_chat_via_kernel_replan_restores_context_and_injects_feedback(tmp_path: Path):
+    """Regressão: replan re-executava com a resposta reprovada ainda no ctx e
+    sem o replan_feedback — custo dobrado sem chance de correção. Agora a
+    tentativa reprovada é descartada e o motivo do gate entra como system."""
+    cfg = _cfg(tmp_path, kernel_enabled=True, evaluator_enabled=True)
+    seen_messages: list[list[dict]] = []
+    responses = iter(["Traceback (most recent call last):", "corrigido"])
+
+    def _stream(model, messages, *a, **k):
+        seen_messages.append([dict(m) for m in messages])
+        return iter([next(responses)])
+
+    client = MagicMock()
+    client.chat_stream.side_effect = _stream
+    client._provider = "openrouter"
+    app = _app_and_store(tmp_path, cfg, client)
+
+    resp = TestClient(app).post("/chat", json={"message": "oi"})
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "corrigido"
+    assert client.chat_stream.call_count == 2
+
+    # 2ª execução: a RESPOSTA reprovada saiu do histórico (o feedback do gate
+    # cita o marcador, mas como system — não como fala do assistant)
+    second_call = seen_messages[1]
+    assistant_msgs = " ".join(m.get("content", "") for m in second_call
+                              if m.get("role") == "assistant")
+    assert "Traceback (most recent call last)" not in assistant_msgs
+    system_msgs = " ".join(m.get("content", "") for m in second_call
+                           if m.get("role") == "system")
+    assert "quality gate" in system_msgs
+
+    # sessão salva limpa: exatamente 1 resposta do assistant (a corrigida)
+    from bauer.session_store import SessionStore
+    saved = SessionStore(tmp_path / "sessions").load(resp.json()["session_id"])
+    assistants = [m["content"] for m in saved if m.get("role") == "assistant"]
+    assert assistants == ["corrigido"]
+
+
 def test_chat_kernel_disabled_ignores_kill_switch(tmp_path: Path):
     """Caminho legado NUNCA consulta o kill-switch — sem regressão de escopo."""
     from bauer.core.runtime.resilience import RuntimeControl

@@ -780,6 +780,28 @@ def test_stream_evaluator_gate_blocks_completion(kit):
     assert "evaluating" in final.trajectory
 
 
+def test_stream_client_disconnect_cancels_run(kit):
+    """Regressão: desconexão do caller no meio do stream (GeneratorExit)
+    deixava o run preso em `running` até o recover() — agora cancela na hora."""
+    _, bus, runs = kit
+
+    def _stream(payload):
+        yield {"event": "message.delta", "content": "a"}
+        yield {"event": "message.delta", "content": "b"}
+        yield {"event": "run.completed"}
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    gen = kernel.stream(KernelRequest(task="x"), executor=_stream)
+    first = next(gen)
+    assert first["event"] == "message.delta"
+
+    gen.close()  # simula o cliente SSE desconectando
+
+    run = runs.list_runs()[0]
+    assert run.status == "cancelled"
+    assert "interrompido" in (run.error or "")
+
+
 def test_stream_via_real_adapter_contract(kit):
     """Sem executor injetado, usa adapter.stream_agent() (contrato existente)."""
     _, bus, runs = kit
