@@ -268,6 +268,7 @@ def profiles_from_config(cfg) -> "dict[str, ModelProfile]":
             for name, spec in raw.items():
                 out[name] = ModelProfile(name=name, provider=_spec_field(spec, "provider"),
                                          model=_spec_field(spec, "model"))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 — profiles são opcionais; não quebra
+        from .logging_config import log_suppressed
+        log_suppressed("model_router.profiles_from_config", exc)
     return out

@@ -429,8 +429,9 @@ def create_app(
             # Modo controla o que "ask" faz — ver _SERVE_POLICY_MODE.
             r._policy_enabled = _SERVE_POLICY_MODE != "off"  # type: ignore[attr-defined]
             r._policy_mode = _SERVE_POLICY_MODE  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            from .logging_config import log_suppressed
+            log_suppressed("serve.wire_router", exc)
 
     _wire_router_to_serve(router)
 
@@ -825,8 +826,9 @@ def create_app(
                 data={"task_type": decision.task_type, "complexity": decision.complexity,
                       "tier": decision.profile, "provider": decision.provider, "model": decision.model},
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            from .logging_config import log_suppressed
+            log_suppressed("serve.publish_route", exc)
 
     # Rate limiter (desativado se rate_limit_requests <= 0)
     _limiter = _RateLimiter(
