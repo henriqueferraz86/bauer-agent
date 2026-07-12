@@ -15,10 +15,17 @@
 >   do Kernel, não troca para o adapter. Governança nova e real quando ligado:
 >   kill-switch (503) e budget-gate (403) que o `/chat` nunca teve antes (8
 >   testes de paridade em `test_kernel_serve_chat.py`).
-> - **6c pendente** — `/stream` (SSE) + `bauer agent` interativo via
->   `kernel.stream()`. Maior risco (é o caminho mais usado no dia a dia);
->   mesmo padrão de executor do 6b, mas precisa mapear os eventos do
->   generator para o formato SSE existente (`tool_phase`, `route`, etc.).
+> - **6c ✅** (branch `bauer-kernel-6c`) — em três fatias:
+>   **6c-1** `kernel.stream()` com passthrough de eventos intermediários
+>   (tool/fase/rota atravessam para o front-end). **6c-2** `/stream` (SSE)
+>   governado por **`kernel.admit()`** — admissão sem custódia: o preflight
+>   completo (estados, kill-switch, policy/budget) roda antes de qualquer
+>   LLM, e a execução fica com o motor de streaming comprovado (worker
+>   órfão com persistência própria — envolvê-lo em kernel.stream()
+>   disputaria a posse do run). **6c-3** `bauer agent` interativo via
+>   `kernel.execute()` com o corpo do turno como executor (streaming pro
+>   console acontece dentro dele) — o agent interativo passou a criar Runs
+>   auditáveis pela primeira vez.
 > - **6d pendente** — absorver o scheduler (`core/runtime/scheduler.py` hoje
 >   reimplementa retry/budget/eventos inline — deveria delegar ao Kernel em
 >   vez de duplicar).

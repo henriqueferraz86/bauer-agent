@@ -26,6 +26,10 @@ from .schemas import KernelRequest, KernelRun
 from .states import KERNEL_ONLY_STATES, ensure_transition
 
 
+#: sentinela p/ _open_run não resolver adapter (admissão sem custódia — admit())
+_NO_EXECUTION = object()
+
+
 def _persistable(data: dict[str, Any]) -> dict[str, Any]:
     """Cópia JSON-serializável do payload — objetos vivos (client, callables)
     viram marcador. O payload ORIGINAL segue intacto para o adapter; só o que
@@ -142,6 +146,27 @@ class BauerKernel:
                                        executor=executor, adapter=adapter,
                                        decision=decision, request=request)
 
+    def admit(self, request: KernelRequest) -> "tuple[Any, KernelRun | None]":
+        """Controle de admissão SEM custódia da execução (Sprint 6c).
+
+        Para front-ends cujo motor não pode ser envolvido pelo Kernel — ex.:
+        o /stream SSE, que roda o turno numa thread órfã com persistência
+        própria após timeout/desconexão. Roda o MESMO preflight de execute():
+        run criado (created → planning → policy_check → queued), kill-switch e
+        policy/budget. O CALLER assume dali em diante (start_run → complete/
+        fail, como já faz hoje) — evaluator/retry/replan NÃO se aplicam a runs
+        admitidos; quem quiser isso usa execute()/stream().
+
+        Retorna ``(run, early)``: ``early`` é o KernelRun terminal quando a
+        governança barrou (cancelled/deny/ask) — o caller NÃO deve executar.
+        Com ``early is None``, o run está em ``queued``, pronto p/ start_run.
+        """
+        run, session_id, trajectory, _adapter, _payload = self._open_run(
+            request, _NO_EXECUTION,  # sentinela: sem resolução de adapter
+        )
+        _decision, early = self._preflight(request, run, session_id, trajectory)
+        return run, early
+
     def stream(self, request: KernelRequest, *, executor: Any | None = None):
         """Generator: mesma máquina de estados de ``execute``, mas re-emite os
         deltas do adapter/executor conforme chegam — para front-ends de
@@ -186,8 +211,15 @@ class BauerKernel:
                 elif kind == "run.failed":
                     error = str(evt.get("error") or "executor failed")
                     break
+                elif kind in ("run.completed", "run.started"):
+                    last_meta = evt  # metadados (tool_calls_count, cost) — o
+                    # "final" do kernel já sinaliza início/fim; não re-emite
                 else:
+                    # passthrough (6c): eventos intermediários do executor —
+                    # tool/fase/rota — atravessam para o front-end (SSE) sem o
+                    # kernel opinar sobre o formato deles
                     last_meta = evt
+                    yield evt
         except GeneratorExit:
             # Caller abandonou o stream (desconexão SSE, .close()) — sem isto o
             # run ficaria preso em `running` até o recover() (15min). BaseException,

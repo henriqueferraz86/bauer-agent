@@ -1397,13 +1397,46 @@ def create_app(
             agent_id=request_agent_id,
             state=session_state,
         )
-        run = run_manager.create_run(
-            session_id=sid,
-            agent_id=request_agent_id,
-            runtime_adapter="bauer_native",
-            input=_run_input(message, "/stream", resolved),
-            status="running",
-        )
+
+        if _kernel is not None:
+            # ── Kernel 6c: ADMISSÃO pelo kernel, execução com o motor de sempre.
+            # O /stream mantém uma thread órfã com persistência própria após
+            # timeout/desconexão — envolvê-lo em kernel.stream() disputaria a
+            # posse do run com essa thread. kernel.admit() dá a governança
+            # (estados created→planning→policy_check→queued, kill-switch,
+            # policy/budget ANTES de qualquer LLM) e devolve a execução ao
+            # motor comprovado abaixo, que completa/falha o run como sempre.
+            from .core.kernel import KernelRequest as _KReq
+            run, _early = _kernel.admit(_KReq(
+                task=message, session_id=sid, agent_id=request_agent_id,
+                input=_run_input(message, "/stream", resolved),
+            ))
+            if _early is not None:
+                # governança barrou — SSE de erro sem tocar LLM/worker
+                if _early.status == "waiting_approval":
+                    _blocked_msg = (f"⏸ Aguardando aprovação ({_early.approval_id}): "
+                                    f"{_early.policy_reason}")
+                else:
+                    _blocked_msg = f"⛔ {_early.error or _early.policy_reason or 'bloqueado pela política'}"
+
+                def _blocked_stream(msg=_blocked_msg):
+                    yield _sse(msg)
+                    yield _sse(sid, event="done")
+
+                return StreamingResponse(
+                    _blocked_stream(), media_type="text/event-stream",
+                    headers={"X-Session-ID": sid, "X-Bauer-Run-ID": _early.run_id},
+                )
+            run_manager.start_run(run.id)  # queued → running; worker completa/falha
+        else:
+            # caminho legado (kernel.enabled=false — default, intocado)
+            run = run_manager.create_run(
+                session_id=sid,
+                agent_id=request_agent_id,
+                runtime_adapter="bauer_native",
+                input=_run_input(message, "/stream", resolved),
+                status="running",
+            )
 
         ctx = _new_context()
         ctx.messages = store.load(sid)
