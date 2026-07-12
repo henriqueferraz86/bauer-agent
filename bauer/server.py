@@ -1707,6 +1707,230 @@ def create_app(
             headers={"X-Session-ID": sid, "X-Bauer-Run-ID": run.id},
         )
 
+    # ── Modo autônomo (/loop da UI web) ───────────────────────────────────────
+    #
+    # O /loop da CLI disponível via HTTP: POST /loop dispara um laço de rodadas
+    # em background (mesma semântica de conclusão da CLI — ver bauer/serve_loop),
+    # governado: admissão pelo Kernel quando kernel.enabled, kill-switch e
+    # cancelamento checados ENTRE rodadas, orçamento de segurança do config
+    # (loop.max_minutes/max_tool_calls/max_cost_usd — request só REDUZ, nunca
+    # aumenta). A UI acompanha por GET /loop/{run_id} e para com POST .../stop.
+    from .core.runtime.resilience import RuntimeControl as _LoopControl
+    _loop_control = _LoopControl(store=event_bus.store)
+
+    class LoopStartRequest(PydanticModel):
+        message: str
+        session_id: Optional[str] = None
+        project_id: Optional[str] = None
+        max_minutes: Optional[int] = None
+        max_tool_calls: Optional[int] = None
+        max_cost_usd: Optional[float] = None
+
+    def _loop_limits(req: LoopStartRequest) -> dict:
+        """Limites efetivos: config é o TETO; o request só aperta."""
+        max_minutes, max_tool_calls, max_cost = 30, 120, 2.0
+        try:
+            if config_path is not None:
+                from .config_loader import load_config as _load_loop_cfg
+                _lsec = _load_loop_cfg(config_path).loop
+                max_minutes = int(_lsec.max_minutes)
+                max_tool_calls = int(_lsec.max_tool_calls)
+                max_cost = float(_lsec.max_cost_usd)
+        except Exception as exc:  # noqa: BLE001 — defaults acima seguram
+            _log.debug("loop config load failed: %s", exc)
+        if req.max_minutes:
+            max_minutes = max(1, min(req.max_minutes, max_minutes))
+        if req.max_tool_calls:
+            max_tool_calls = max(1, min(req.max_tool_calls, max_tool_calls))
+        if req.max_cost_usd:
+            max_cost = max(0.01, min(req.max_cost_usd, max_cost))
+        return {"max_minutes": max_minutes, "max_tool_calls": max_tool_calls,
+                "max_cost_usd": max_cost}
+
+    @app.post("/loop")
+    def loop_start(req: LoopStartRequest, _: None = Depends(_verify_key)):
+        import threading as _threading
+
+        from .autonomous_budget import AutonomousBudget
+        from .serve_loop import LoopState, loop_registry, run_loop_rounds
+
+        sid = req.session_id or store.new_id()
+        active_router, active_project_id = _resolve_project_router(sid, req.project_id)
+        resolved = _resolve_request_context(req.message, Path(active_router.workspace))
+        resolved["project_id"] = active_project_id
+        request_agent_id = "serve.loop"
+        session_state = {"transport": "http", "endpoint": "/loop"}
+        if active_project_id:
+            session_state["project_id"] = active_project_id
+        session_manager.get_or_create_session(sid, agent_id=request_agent_id,
+                                              state=session_state)
+
+        limits = _loop_limits(req)
+        run_input = {**_run_input(req.message, "/loop", resolved), "limits": limits}
+
+        if _kernel is not None:
+            from .core.kernel import KernelRequest as _KReq
+            run, _early = _kernel.admit(_KReq(
+                task=req.message, session_id=sid, agent_id=request_agent_id,
+                input=run_input,
+            ))
+            if _early is not None:
+                if _early.status == "waiting_approval":
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(status_code=202, content={
+                        "status": "waiting_approval", "run_id": _early.run_id,
+                        "approval_id": _early.approval_id, "reason": _early.policy_reason,
+                    })
+                if _early.policy_action == "deny":
+                    raise HTTPException(status_code=403, detail=_early.error or "Bloqueado pela politica.")
+                raise HTTPException(status_code=503, detail=_early.error or "Execução bloqueada.")
+            run_manager.start_run(run.id)
+        else:
+            run = run_manager.create_run(
+                session_id=sid, agent_id=request_agent_id,
+                runtime_adapter="bauer_native", input=run_input, status="running",
+            )
+
+        ctx = _new_context()
+        ctx.messages = store.load(sid)
+        _apply_request_context(ctx, resolved)
+        _turn_client, _turn_model, _route = _resolve_turn_model(req.message)
+        _publish_route(run.id, sid, request_agent_id, _route)
+
+        budget = AutonomousBudget(
+            max_cost_usd=limits["max_cost_usd"],
+            max_wall_seconds=limits["max_minutes"] * 60,
+            max_tool_calls=limits["max_tool_calls"],
+        )
+        state_obj = LoopState(run_id=run.id, session_id=sid,
+                              goal=req.message[:400], limits=limits)
+        loop_registry().put(state_obj)
+
+        def _loop_worker() -> None:
+            from datetime import UTC as _UTC, datetime as _dt
+
+            from .cost_meter import cost_sink
+            from .tool_router import reset_runtime_ids, set_runtime_ids
+            cost = _TurnCostRecorder(sid)
+            cost_token = cost_sink.set(cost)
+            ids_token = set_runtime_ids(sid, run.id)
+            last_cost = 0.0
+
+            def _turn():
+                return run_one_turn_with_fallback(
+                    ctx, active_router, _turn_client, _turn_model, _fallback_clients,
+                )
+
+            def _should_stop():
+                if _loop_control.kill_switch_enabled():
+                    return "kill_switch"
+                current = run_manager.get_run(run.id)
+                if current is not None and current.status == "cancelled":
+                    return "cancelled"
+                return None
+
+            def _on_round(n: int, text: str, tool_log: list) -> None:
+                nonlocal last_cost
+                delta = cost.total_usd - last_cost
+                last_cost = cost.total_usd
+                try:
+                    if delta > 0:
+                        budget.consume_cost(delta)
+                except Exception as exc:  # noqa: BLE001 — esgotou: o laço encerra
+                    _log.debug("loop budget consume: %s", exc)
+                state_obj.rounds = n
+                state_obj.tool_calls += len(tool_log)
+                state_obj.cost_usd = round(cost.total_usd, 6)
+                state_obj.last_text = (text or state_obj.last_text)[-2000:]
+                store.save(sid, ctx.messages)
+                try:
+                    event_bus.publish(
+                        "loop.round.completed", run_id=run.id, session_id=sid,
+                        agent_id=request_agent_id, status=str(n),
+                        message=(text or "")[:200],
+                        data={"round": n, "tool_calls": len(tool_log),
+                              "cost_usd": state_obj.cost_usd},
+                    )
+                except Exception as exc:  # noqa: BLE001 — telemetria não para o loop
+                    from .logging_config import log_suppressed
+                    log_suppressed("serve.loop_round_event", exc)
+
+            try:
+                stop_reason, _rounds, last_text, all_tools = run_loop_rounds(
+                    goal=req.message, ctx=ctx, turn_fn=_turn, budget=budget,
+                    should_stop=_should_stop, on_round=_on_round,
+                )
+            except BaseException as exc:  # noqa: BLE001 — thread nunca morre muda
+                stop_reason, last_text, all_tools = "error", str(exc), []
+            finally:
+                cost_sink.reset(cost_token)
+                reset_runtime_ids(ids_token)
+
+            try:
+                store.save(sid, ctx.messages)
+                session_manager.touch_session(sid, state={"last_run_id": run.id})
+                _record_turn_budget(cost, run.id, request_agent_id)
+                _metrics.tool_calls_total += len(all_tools)
+                state_obj.stop_reason = stop_reason
+                state_obj.cost_usd = round(cost.total_usd, 6)
+                state_obj.last_text = (last_text or state_obj.last_text)[-2000:]
+                state_obj.finished_at = _dt.now(_UTC).isoformat()
+                current = run_manager.get_run(run.id)
+                if current is not None and current.status == "cancelled":
+                    state_obj.state = "stopped"
+                elif stop_reason == "completed":
+                    state_obj.state = "completed"
+                    run_manager.complete_run(
+                        run.id,
+                        output={"response": _format_server_response(last_text)},
+                        tool_calls_count=state_obj.tool_calls,
+                        cost_estimate=round(cost.total_usd, 6),
+                    )
+                elif stop_reason == "kill_switch":
+                    state_obj.state = "stopped"
+                    run_manager.update_run(run.id, status="cancelled",
+                                           error="runtime kill switch ativo")
+                else:
+                    state_obj.state = "failed"
+                    run_manager.fail_run(run.id, f"loop parado: {stop_reason}")
+            except Exception:  # noqa: BLE001
+                _log.exception("Falha ao finalizar loop (run %s)", run.id)
+
+        _threading.Thread(target=_loop_worker, name=f"bauer-loop:{sid[:8]}",
+                          daemon=True).start()
+
+        return {"run_id": run.id, "session_id": sid, "status": "running",
+                "limits": limits}
+
+    @app.get("/loop/{run_id}")
+    def loop_status(run_id: str, _: None = Depends(_verify_key)):
+        from .serve_loop import loop_registry
+        state = loop_registry().get(run_id)
+        if state is not None:
+            return state.to_dict()
+        # pós-restart: o registro vivo se foi, mas o Run persistido responde
+        run = run_manager.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Loop '{run_id}' nao encontrado.")
+        return {"run_id": run.id, "session_id": run.session_id, "state": run.status,
+                "stop_reason": run.error, "rounds": None,
+                "tool_calls": run.tool_calls_count, "cost_usd": run.cost_estimate,
+                "last_text": (run.output or {}).get("response", "")}
+
+    @app.post("/loop/{run_id}/stop")
+    def loop_stop(run_id: str, _: None = Depends(_verify_key)):
+        run = run_manager.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Loop '{run_id}' nao encontrado.")
+        run_manager.cancel_run(run_id)
+        return {"run_id": run_id, "status": "cancelling",
+                "detail": "O loop para entre rodadas (a rodada corrente termina)."}
+
+    @app.get("/loops")
+    def loops_list(_: None = Depends(_verify_key)):
+        from .serve_loop import loop_registry
+        return {"loops": [s.to_dict() for s in loop_registry().list()]}
+
     # ── OpenAI-compatible endpoint (Claw3D / virtual office) ─────────────────
     #
     # Protocolo idêntico ao usado pelo hermes-gateway-adapter.js:

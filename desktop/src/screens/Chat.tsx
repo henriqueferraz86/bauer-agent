@@ -6,13 +6,32 @@ import Markdown from "../components/Markdown";
 interface ToolCall { name: string; label?: string; icon?: string; }
 interface SkillTag { name: string; score: number | null; }
 interface RouteTag { tier: string; model: string; }
+interface LoopTag {
+  runId: string;
+  state: string;              // running | completed | stopped | failed
+  rounds: number;
+  toolCalls: number;
+  costUsd: number;
+  stopReason?: string | null;
+}
 interface Message {
   role: "user" | "assistant";
   text: string;
   tools?: ToolCall[];
   skill?: SkillTag;
   route?: RouteTag;
+  loop?: LoopTag;
   streaming?: boolean;
+}
+
+interface LoopStatusResponse {
+  run_id: string;
+  state: string;
+  rounds: number | null;
+  tool_calls: number | null;
+  cost_usd: number | null;
+  stop_reason?: string | null;
+  last_text?: string;
 }
 
 interface SlashCommand {
@@ -74,6 +93,99 @@ export default function Chat() {
     localStorage.removeItem(CHAT_STATE_KEY);
   }
 
+  // ── Modo autônomo (/loop no serve) ────────────────────────────────────────
+  // POST /loop dispara o laço em background no servidor; aqui só acompanhamos
+  // por polling (GET /loop/{run_id}) e atualizamos o card da mensagem.
+  const loopPollers = useRef<Map<string, number>>(new Map());
+
+  function updateLoopMessage(runId: string, patch: (m: Message) => void) {
+    setMessages((msgs) => {
+      const copy = [...msgs];
+      for (let i = copy.length - 1; i >= 0; i--) {
+        if (copy[i].loop?.runId === runId) {
+          const clone = { ...copy[i], loop: { ...copy[i].loop! } };
+          patch(clone);
+          copy[i] = clone;
+          break;
+        }
+      }
+      return copy;
+    });
+  }
+
+  function stopPolling(runId: string) {
+    const t = loopPollers.current.get(runId);
+    if (t !== undefined) { window.clearInterval(t); loopPollers.current.delete(runId); }
+  }
+
+  function pollLoop(runId: string) {
+    if (loopPollers.current.has(runId)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const s = await api.get<LoopStatusResponse>(`/loop/${runId}`);
+        updateLoopMessage(runId, (m) => {
+          m.loop!.state = s.state;
+          m.loop!.rounds = s.rounds ?? m.loop!.rounds;
+          m.loop!.toolCalls = s.tool_calls ?? m.loop!.toolCalls;
+          m.loop!.costUsd = s.cost_usd ?? m.loop!.costUsd;
+          m.loop!.stopReason = s.stop_reason ?? null;
+          if (s.state !== "running") {
+            m.streaming = false;
+            if (s.last_text) m.text = s.last_text;
+          }
+        });
+        if (s.state !== "running") stopPolling(runId);
+      } catch {
+        /* serve fora do ar? tenta de novo no próximo tick */
+      }
+    }, 2000);
+    loopPollers.current.set(runId, timer);
+  }
+
+  async function startLoop(goal: string) {
+    if (!goal.trim()) {
+      appendInfo("Uso: /loop OBJETIVO — ex: /loop construa o site conforme o SPEC, não pare até concluir");
+      return;
+    }
+    setMessages((m) => [...m, { role: "user", text: `/loop ${goal}` }]);
+    try {
+      const r = await api.post<{ run_id: string; session_id: string; limits: Record<string, number> }>(
+        "/loop", { message: goal, ...(sessionId ? { session_id: sessionId } : {}) },
+      );
+      setSessionId(r.session_id);
+      setMessages((m) => [...m, {
+        role: "assistant", text: "", streaming: true,
+        loop: { runId: r.run_id, state: "running", rounds: 0, toolCalls: 0, costUsd: 0 },
+      }]);
+      scroll();
+      pollLoop(r.run_id);
+    } catch (e) {
+      appendInfo(`[Erro ao iniciar o loop: ${e}]`);
+    }
+  }
+
+  async function stopLoop(runId: string) {
+    try {
+      await api.post(`/loop/${runId}/stop`);
+      updateLoopMessage(runId, (m) => { m.loop!.state = "stopping"; });
+    } catch (e) {
+      appendInfo(`[Erro ao parar o loop: ${e}]`);
+    }
+  }
+
+  // Retoma o acompanhamento de loops que ficaram rodando (reload da página):
+  // o GET /loop/{id} responde mesmo pós-restart (cai no Run persistido).
+  useEffect(() => {
+    for (const m of initialState.current.messages) {
+      if (m.loop && (m.loop.state === "running" || m.loop.state === "stopping")) {
+        pollLoop(m.loop.runId);
+      }
+    }
+    const pollers = loopPollers.current;
+    return () => { pollers.forEach((t) => window.clearInterval(t)); pollers.clear(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Comandos de barra (paridade com o menu "/" do Telegram) ───────────────
   const COMMANDS: SlashCommand[] = [
     { cmd: "/start", desc: "Menu inicial", run: () => appendInfo(helpText()) },
@@ -131,6 +243,11 @@ export default function Chat() {
       },
     },
     { cmd: "/tasks", desc: "Tarefas do kanban do workspace", run: () => navigate("/kanban") },
+    {
+      cmd: "/loop",
+      desc: "Modo autônomo: trabalha sozinho até concluir (ex: /loop construa o site do SPEC)",
+      run: (arg) => startLoop(arg),
+    },
     { cmd: "/new", desc: "Conversa nova (apaga o histórico)", run: () => resetSession() },
     { cmd: "/clear", desc: "O mesmo que /new", run: () => resetSession() },
   ];
@@ -296,6 +413,31 @@ export default function Chat() {
                     <span className="rname">
                       <strong>{m.route.tier}</strong> · <span className="mono">{m.route.model}</span>
                     </span>
+                  </div>
+                )}
+                {m.loop && (
+                  <div className={"loopcall" + (m.loop.state === "running" ? " running" : "")}>
+                    <i className={"ti ti-refresh" + (m.loop.state === "running" || m.loop.state === "stopping" ? " spin" : "")}
+                       style={{ color: "var(--accent)" }} />
+                    <span className="lname">
+                      <strong>
+                        {m.loop.state === "running" ? "Modo autônomo"
+                          : m.loop.state === "stopping" ? "Parando…"
+                          : m.loop.state === "completed" ? "Concluído"
+                          : m.loop.state === "stopped" ? "Parado"
+                          : "Falhou"}
+                      </strong>
+                      {" · "}rodada {m.loop.rounds} · {m.loop.toolCalls} tools · ${m.loop.costUsd.toFixed(3)}
+                      {m.loop.stopReason && m.loop.state !== "completed" && (
+                        <span className="mono"> · {m.loop.stopReason}</span>
+                      )}
+                    </span>
+                    {(m.loop.state === "running") && (
+                      <button className="loop-stop" onClick={() => stopLoop(m.loop!.runId)}
+                              title="Parar o loop (a rodada corrente termina)">
+                        <i className="ti ti-player-stop" /> parar
+                      </button>
+                    )}
                   </div>
                 )}
                 {m.skill && (
