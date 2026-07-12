@@ -4236,6 +4236,7 @@ def run_agent_session(
     learning_hints: "str | None" = None,
     route_profiles: "dict | None" = None,
     route_client_fn: "Any | None" = None,
+    kernel: "Any | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -4258,6 +4259,10 @@ def run_agent_session(
             igual ao serve. Tem precedência sobre o ModelRouter legado (LLM).
         route_client_fn: Callable(provider) -> client|None p/ providers ≠ do
             principal (com cache). None/falha → o turno usa o modelo padrão.
+        kernel: BauerKernel (Sprint 6c) — quando presente, cada turno roda
+            via kernel.execute() com o corpo do turno como executor: run
+            auditável + kill-switch/policy/budget antes da chamada LLM.
+            None (default) = comportamento de sempre, sem kernel.
     """
     # MAX_TOOL_TURNS é lido por dezenas de call sites como global do módulo
     # (inclusive dentro de funções aninhadas em _run_tool_loop_body) — em vez
@@ -4930,20 +4935,69 @@ def run_agent_session(
             fb_idx=_fb_idx,
             mem_turn_idx=_mem_turn_idx,
         )
-        outcome = _run_tool_loop_body(
-            ctx=ctx,
-            router=router,
-            state=_state,
-            console=console,
-            fallback_clients=fallback_clients,
-            stats=stats,
-            tool_timeout_s=tool_timeout_s,
-            session_store=session_store,
-            session_id=session_id,
-            active_workspace=active_workspace,
-            turn_input_text=user_input,
-            memprov=_memprov,
-        )
+
+        def _invoke_turn():
+            return _run_tool_loop_body(
+                ctx=ctx,
+                router=router,
+                state=_state,
+                console=console,
+                fallback_clients=fallback_clients,
+                stats=stats,
+                tool_timeout_s=tool_timeout_s,
+                session_store=session_store,
+                session_id=session_id,
+                active_workspace=active_workspace,
+                turn_input_text=user_input,
+                memprov=_memprov,
+            )
+
+        if kernel is not None:
+            # ── Kernel 6c-3: turno governado (kernel.enabled=true) ────────────
+            # O corpo do turno vira EXECUTOR do kernel (o streaming pro console
+            # acontece dentro dele — execute() basta, não precisa de stream()).
+            # Ganhos: cada turno interativo vira um Run auditável com estados
+            # completos; kill-switch/policy/budget barram ANTES da chamada LLM.
+            from .core.kernel import KernelRequest as _KReq
+            _captured: dict = {}
+            _base_msgs = len(ctx.messages)  # snapshot p/ replan (ver /chat)
+
+            def _turn_executor(payload):
+                if payload.get("replan_attempt"):
+                    # descarta a tentativa reprovada e injeta o motivo do gate
+                    del ctx.messages[_base_msgs:]
+                    ctx.add_ephemeral_system(
+                        "Sua resposta anterior foi reprovada pelo quality gate: "
+                        f"{payload.get('replan_feedback', '')}. Responda novamente "
+                        "corrigindo esse problema."
+                    )
+                o = _invoke_turn()
+                _captured["outcome"] = o
+                if o.kind == "final":
+                    return {"status": "completed", "output": o.display,
+                            "tool_calls_count": len(o.tool_log)}
+                # kinds anormais (provider_error, interrupted, tool_limit…) já
+                # imprimiram o necessário no console — o run registra o motivo
+                return {"status": "failed", "error": f"turno terminou em {o.kind}"}
+
+            _kout = kernel.execute(_KReq(
+                task=user_input, session_id=session_id or "",
+                agent_id="cli.agent", input={"endpoint": "cli.agent"},
+            ), executor=_turn_executor)
+            outcome = _captured.get("outcome")
+            if outcome is None:
+                # governança barrou ANTES do turno (kill-switch/policy/budget) —
+                # remove o input pendurado do contexto e volta ao prompt
+                del ctx.messages[_base_msgs - 1:]
+                _blocked = _kout.error or _kout.policy_reason or _kout.status
+                console.print(f"[red]⛔ {_blocked}[/red]")
+                if _kout.status == "waiting_approval" and _kout.approval_id:
+                    console.print(
+                        f"[dim]aprove com: bauer kernel approve {_kout.approval_id}[/dim]"
+                    )
+                continue
+        else:
+            outcome = _invoke_turn()
         # Turno roteado (heurístico): o client do profile vale SÓ para este
         # turno — não adota na sessão, a menos que o fallback tenha trocado o
         # client no meio do turno (aí a troca é intencional e permanece).

@@ -134,6 +134,92 @@ def test_routed_client_not_sticky_across_turns(tmp_path: Path):
     assert seen["models"] == ["primary-model"]         # turno 2 de volta na sessão
 
 
+# ─── Kernel 6c-3: turno interativo governado (kernel=... em run_agent_session) ─
+
+
+def _make_kernel(tmp_path: Path, **kw):
+    from bauer.core.events.bus import EventBus
+    from bauer.core.kernel import BauerKernel
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.core.runtime.state_store import JsonlStateStore
+
+    store = JsonlStateStore(tmp_path / "runtime")
+    bus = EventBus(store=store)
+    runs = RunManager(store=store, event_bus=bus)
+    return BauerKernel(runs=runs, bus=bus, **kw), runs
+
+
+def test_kernel_turn_creates_auditable_run(tmp_path: Path):
+    """Com kernel, cada turno interativo vira um Run completed com estados."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    kernel, runs = _make_kernel(tmp_path)
+    seen: dict = {}
+    client = _capture_client(seen)
+
+    with patch("builtins.input", side_effect=["diga oi", EOFError]), \
+         patch("bauer.agent._try_parse_tool", return_value=None):
+        run_agent_session(client, "primary-model", 4096, Console(record=True, width=120),
+                          ToolRouter(workspace=ws), kernel=kernel)
+
+    assert seen["models"] == ["primary-model"]  # o turno rodou normalmente
+    all_runs = runs.list_runs()
+    assert len(all_runs) == 1 and all_runs[0].status == "completed"
+    assert all_runs[0].agent_id == "cli.agent"
+    statuses = [r["status"] for r in runs.store.list("runs")]
+    assert statuses[:4] == ["created", "planning", "policy_check", "queued"]
+
+
+def test_kernel_kill_switch_blocks_turn_before_llm(tmp_path: Path):
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    class _KS:
+        def kill_switch_enabled(self):
+            return True
+
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    kernel, runs = _make_kernel(tmp_path, control=_KS())
+    seen: dict = {}
+    client = _capture_client(seen)
+    console = Console(record=True, width=120)
+
+    with patch("builtins.input", side_effect=["diga oi", EOFError]), \
+         patch("bauer.agent._try_parse_tool", return_value=None):
+        run_agent_session(client, "primary-model", 4096, console,
+                          ToolRouter(workspace=ws), kernel=kernel)
+
+    assert "models" not in seen  # LLM nunca chamado
+    assert "kill switch" in console.export_text()
+    assert runs.list_runs()[0].status == "cancelled"
+
+
+def test_without_kernel_no_run_is_created(tmp_path: Path):
+    """kernel=None (default): comportamento de sempre — nenhum Run criado."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.core.runtime.state_store import JsonlStateStore
+
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    seen: dict = {}
+    client = _capture_client(seen)
+
+    with patch("builtins.input", side_effect=["diga oi", EOFError]), \
+         patch("bauer.agent._try_parse_tool", return_value=None):
+        run_agent_session(client, "primary-model", 4096, Console(record=True, width=120),
+                          ToolRouter(workspace=ws))
+
+    assert seen["models"] == ["primary-model"]
+    runs = RunManager(store=JsonlStateStore(tmp_path / "runtime")).list_runs()
+    assert runs == []
+
+
 # ─── heuristic_route_kit (helper do agent_cmd) ───────────────────────────────
 
 

@@ -515,6 +515,19 @@ def agent(
             f"{', '.join(sorted(_route_profiles))}[/dim]"
         )
 
+    # Bauer Kernel (Sprint 6c) — opt-in via kernel.enabled: cada turno vira um
+    # Run auditável com kill-switch/policy/budget avaliados antes do LLM.
+    _kernel_inst = None
+    try:
+        from ..core.kernel import build_kernel, kernel_enabled
+        if kernel_enabled(cfg):
+            _kernel_inst = build_kernel(cfg, workspace=str(getattr(router, "workspace", "workspace")))
+            console.print("[dim]Kernel ativo — turnos governados (estados + policy + budget)[/dim]")
+    except Exception as exc:  # noqa: BLE001 — kernel é opt-in; falha nunca bloqueia o chat
+        from ..logging_config import log_suppressed
+        log_suppressed("agent_cmd.kernel_wiring", exc)
+        _kernel_inst = None
+
     import time as _time
     _session_start = _time.time()
     _session_result = "ok"
@@ -529,6 +542,7 @@ def agent(
             learning_hints=_learning_hints,
             route_profiles=_route_profiles,
             route_client_fn=_route_client_fn,
+            kernel=_kernel_inst,
         )
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):
