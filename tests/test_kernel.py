@@ -845,6 +845,68 @@ def test_stream_via_real_adapter_contract(kit):
     assert text == "eco:oi" and final.ok
 
 
+# ─── Sprint 6c: admit() — admissão sem custódia ──────────────────────────────
+
+
+def _no_adapter_factory(name, config=None):
+    raise AssertionError("admit() não deve resolver adapter")
+
+
+def test_admit_allow_leaves_run_queued(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus, adapter_factory=_no_adapter_factory)
+    run, early = kernel.admit(KernelRequest(task="oi", agent_id="a1"))
+    assert early is None
+    persisted = runs.get_run(run.id)
+    assert persisted.status == "queued"
+    # trajetória completa persistida ANTES da execução (que fica com o caller)
+    statuses = [r["status"] for r in runs.store.list("runs") if r["id"] == run.id]
+    assert statuses == ["created", "planning", "policy_check", "queued"]
+
+
+def test_admit_kill_switch_returns_cancelled(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus, control=_KillSwitch(True),
+                         adapter_factory=_no_adapter_factory)
+    run, early = kernel.admit(KernelRequest(task="oi"))
+    assert early is not None and early.status == "cancelled"
+    assert runs.get_run(run.id).status == "cancelled"
+
+
+def test_admit_policy_deny_returns_failed(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus, policy=_StubPolicy("deny", "sem verba"),
+                         adapter_factory=_no_adapter_factory)
+    _, early = kernel.admit(KernelRequest(task="oi"))
+    assert early is not None and early.status == "failed"
+    assert early.policy_action == "deny" and "sem verba" in (early.error or "")
+
+
+def test_admit_policy_ask_returns_waiting_with_approval(kit, tmp_path):
+    from bauer.core.policy.approvals import ApprovalManager
+
+    _, bus, runs = kit
+    approvals = ApprovalManager(root=tmp_path / "runtime", event_bus=bus)
+    kernel = BauerKernel(runs=runs, bus=bus, policy=_StubPolicy("ask"),
+                         approvals=approvals, adapter_factory=_no_adapter_factory)
+    _, early = kernel.admit(KernelRequest(task="deploy"))
+    assert early is not None and early.status == "waiting_approval"
+    assert early.approval_id and approvals.get(early.approval_id).status == "pending"
+
+
+def test_admitted_run_completes_by_caller(kit):
+    """O caller assume após a admissão: start_run → complete_run, como o
+    /stream faz — a máquina de estados permite (queued→running→completed)."""
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus, adapter_factory=_no_adapter_factory)
+    run, early = kernel.admit(KernelRequest(task="oi"))
+    assert early is None
+    runs.start_run(run.id)
+    runs.complete_run(run.id, output={"response": "ok"}, tool_calls_count=2)
+    final = runs.get_run(run.id)
+    assert final.status == "completed" and final.tool_calls_count == 2
+
+
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 
