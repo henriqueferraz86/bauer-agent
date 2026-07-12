@@ -186,8 +186,15 @@ class BauerKernel:
                 elif kind == "run.failed":
                     error = str(evt.get("error") or "executor failed")
                     break
+                elif kind in ("run.completed", "run.started"):
+                    last_meta = evt  # metadados (tool_calls_count, cost) — o
+                    # "final" do kernel já sinaliza início/fim; não re-emite
                 else:
+                    # passthrough (6c): eventos intermediários do executor —
+                    # tool/fase/rota — atravessam para o front-end (SSE) sem o
+                    # kernel opinar sobre o formato deles
                     last_meta = evt
+                    yield evt
         except GeneratorExit:
             # Caller abandonou o stream (desconexão SSE, .close()) — sem isto o
             # run ficaria preso em `running` até o recover() (15min). BaseException,
