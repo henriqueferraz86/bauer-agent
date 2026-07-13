@@ -12,6 +12,7 @@ interface LoopTag {
   rounds: number;
   toolCalls: number;
   costUsd: number;
+  activity?: string;          // o que está fazendo agora (feedback ao vivo)
   stopReason?: string | null;
 }
 interface Message {
@@ -30,6 +31,7 @@ interface LoopStatusResponse {
   rounds: number | null;
   tool_calls: number | null;
   cost_usd: number | null;
+  activity?: string;
   stop_reason?: string | null;
   last_text?: string;
 }
@@ -128,11 +130,11 @@ export default function Chat() {
           m.loop!.rounds = s.rounds ?? m.loop!.rounds;
           m.loop!.toolCalls = s.tool_calls ?? m.loop!.toolCalls;
           m.loop!.costUsd = s.cost_usd ?? m.loop!.costUsd;
+          m.loop!.activity = s.activity ?? "";
           m.loop!.stopReason = s.stop_reason ?? null;
-          if (s.state !== "running") {
-            m.streaming = false;
-            if (s.last_text) m.text = s.last_text;
-          }
+          // texto parcial ao vivo (feedback durante a rodada) + final no fim
+          if (s.last_text) m.text = s.last_text;
+          if (s.state !== "running") m.streaming = false;
         });
         if (s.state !== "running") stopPolling(runId);
       } catch {
@@ -428,6 +430,9 @@ export default function Chat() {
                           : "Falhou"}
                       </strong>
                       {" · "}rodada {m.loop.rounds} · {m.loop.toolCalls} tools · ${m.loop.costUsd.toFixed(3)}
+                      {m.loop.state === "running" && m.loop.activity && (
+                        <span className="lactivity"> · {m.loop.activity}…</span>
+                      )}
                       {m.loop.stopReason && m.loop.state !== "completed" && (
                         <span className="mono"> · {m.loop.stopReason}</span>
                       )}
