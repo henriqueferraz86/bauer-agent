@@ -38,10 +38,17 @@ from .preflight import run_doctor
 # (bauer.cli.read_state) — nao remover mesmo sem uso direto neste modulo.
 from .runtime_state import read_state, write_state  # noqa: F401
 
-#: painel do --help que agrupa as portas principais no topo (Fatia B / plano
-#: 022). Os ~68 demais comandos caem no painel default "Commands" abaixo —
-#: nada é removido, só deixa de assustar na primeira tela.
+#: Painéis do --help (Fatia B / plano 022). Cada comando é atribuído a uma
+#: seção temática — nada é removido/renomeado, só agrupado para visibilidade.
+#: A ordem de exibição segue a ordem de REGISTRO dos comandos; por isso os
+#: registros abaixo são reordenados por painel (Começar aqui primeiro).
 PANEL_START = "Começar aqui"
+PANEL_PROJ = "Projeto & specs"
+PANEL_AUTO = "Autonomia & orquestração"
+PANEL_OBS = "Observabilidade & custo"
+PANEL_MEM = "Memória, skills & aprendizado"
+PANEL_CONN = "Conectividade"
+PANEL_SYS = "Config & sistema"
 
 app = typer.Typer(
     add_completion=False,
@@ -93,62 +100,75 @@ from bauer.commands.discord_cmd import discord_app  # noqa: E402
 from bauer.commands.gateway_cmd import gateway_app  # noqa: E402
 
 from bauer.commands.plugin_cmd import plugin_app  # noqa: E402
-app.add_typer(plugin_app, name="plugin")
-
 from bauer.commands.factory_cmd import factory_app  # noqa: E402
-
-app.add_typer(config_app, name="config")
-app.add_typer(models_app, name="models", rich_help_panel=PANEL_START)
-app.add_typer(memory_app, name="memory")
-app.add_typer(tools_app, name="tools")
-app.add_typer(project_app, name="project")
-app.add_typer(task_app, name="task")
-app.add_typer(dispatch_app, name="dispatch")
-app.add_typer(ops_app, name="ops")
-app.add_typer(runtime_app, name="runtime")
-app.add_typer(cron_app, name="cron")
-app.add_typer(research_app, name="research")
-app.add_typer(learning_app, name="learning")
-app.add_typer(auth_app, name="auth")
-app.add_typer(orchestrate_app, name="orchestrate")
 from bauer.commands.run_cmd import run as _run_command  # noqa: E402
-app.command("run", rich_help_panel=PANEL_START)(_run_command)
-app.add_typer(agent_app, name="agent", rich_help_panel=PANEL_START)
-app.add_typer(spec_app, name="spec")
-app.add_typer(company_app, name="company")
-app.add_typer(migrate_app, name="migrate")
-app.add_typer(boards_app, name="boards")
-app.add_typer(daemon_app, name="daemon")
-app.add_typer(serve_app, name="serve", rich_help_panel=PANEL_START)
-app.add_typer(telegram_app, name="telegram")
-app.add_typer(discord_app, name="discord")
-app.add_typer(gateway_app, name="gateway")
-app.add_typer(traces_app, name="traces")
-app.add_typer(cost_app, name="cost")
-app.add_typer(runs_app, name="runs")
-app.add_typer(sessions_app, name="sessions")
-app.add_typer(events_app, name="events")
-app.add_typer(approvals_app, name="approvals")
 from bauer.commands.audit_cmd import audit_app  # noqa: E402
-app.add_typer(audit_app, name="audit")
 from bauer.commands.perf_cmd import perf_app  # noqa: E402
-app.add_typer(perf_app, name="perf")
 from bauer.commands.kernel_cmd import kernel_app  # noqa: E402
-app.add_typer(kernel_app, name="kernel")
 from bauer.commands.benchmark_cmd import benchmark_app  # noqa: E402
-app.add_typer(benchmark_app, name="benchmark")
-app.add_typer(skills_app, name="skills")
-app.add_typer(schedule_app, name="schedule")
-app.add_typer(worker_app, name="worker")
-app.add_typer(budget_app, name="budget")
-app.add_typer(autonomy_app, name="autonomy")
-app.add_typer(factory_app, name="factory")
-
 from bauer.commands.home_cmd import home_app  # noqa: E402
 from bauer.commands.voice_cmd import voice_app  # noqa: E402
 
-app.add_typer(home_app, name="home")
-app.add_typer(voice_app, name="voice")
+# Registro agrupado por painel (Fatia B). A ordem AQUI é a ordem de exibição no
+# --help; por isso "Começar aqui" vem primeiro. Nada foi removido/renomeado.
+
+# ── Começar aqui ──────────────────────────────────────────────────────────────
+app.command("run", rich_help_panel=PANEL_START)(_run_command)
+app.add_typer(agent_app, name="agent", rich_help_panel=PANEL_START)
+app.add_typer(serve_app, name="serve", rich_help_panel=PANEL_START)
+app.add_typer(models_app, name="models", rich_help_panel=PANEL_START)
+
+# ── Projeto & specs ───────────────────────────────────────────────────────────
+app.add_typer(project_app, name="project", rich_help_panel=PANEL_PROJ)
+app.add_typer(task_app, name="task", rich_help_panel=PANEL_PROJ)
+app.add_typer(spec_app, name="spec", rich_help_panel=PANEL_PROJ)
+app.add_typer(boards_app, name="boards", rich_help_panel=PANEL_PROJ)
+app.add_typer(factory_app, name="factory", rich_help_panel=PANEL_PROJ)
+
+# ── Autonomia & orquestração ──────────────────────────────────────────────────
+app.add_typer(kernel_app, name="kernel", rich_help_panel=PANEL_AUTO)
+app.add_typer(orchestrate_app, name="orchestrate", rich_help_panel=PANEL_AUTO)
+app.add_typer(dispatch_app, name="dispatch", rich_help_panel=PANEL_AUTO)
+app.add_typer(daemon_app, name="daemon", rich_help_panel=PANEL_AUTO)
+app.add_typer(worker_app, name="worker", rich_help_panel=PANEL_AUTO)
+app.add_typer(runtime_app, name="runtime", rich_help_panel=PANEL_AUTO)
+app.add_typer(cron_app, name="cron", rich_help_panel=PANEL_AUTO)
+app.add_typer(schedule_app, name="schedule", rich_help_panel=PANEL_AUTO)
+
+# ── Observabilidade & custo ───────────────────────────────────────────────────
+app.add_typer(runs_app, name="runs", rich_help_panel=PANEL_OBS)
+app.add_typer(sessions_app, name="sessions", rich_help_panel=PANEL_OBS)
+app.add_typer(events_app, name="events", rich_help_panel=PANEL_OBS)
+app.add_typer(approvals_app, name="approvals", rich_help_panel=PANEL_OBS)
+app.add_typer(audit_app, name="audit", rich_help_panel=PANEL_OBS)
+app.add_typer(perf_app, name="perf", rich_help_panel=PANEL_OBS)
+app.add_typer(traces_app, name="traces", rich_help_panel=PANEL_OBS)
+app.add_typer(benchmark_app, name="benchmark", rich_help_panel=PANEL_OBS)
+app.add_typer(ops_app, name="ops", rich_help_panel=PANEL_OBS)
+app.add_typer(cost_app, name="cost", rich_help_panel=PANEL_OBS)
+app.add_typer(budget_app, name="budget", rich_help_panel=PANEL_OBS)
+app.add_typer(autonomy_app, name="autonomy", rich_help_panel=PANEL_OBS)
+
+# ── Memória, skills & aprendizado ─────────────────────────────────────────────
+app.add_typer(memory_app, name="memory", rich_help_panel=PANEL_MEM)
+app.add_typer(learning_app, name="learning", rich_help_panel=PANEL_MEM)
+app.add_typer(research_app, name="research", rich_help_panel=PANEL_MEM)
+app.add_typer(skills_app, name="skills", rich_help_panel=PANEL_MEM)
+
+# ── Conectividade ─────────────────────────────────────────────────────────────
+app.add_typer(gateway_app, name="gateway", rich_help_panel=PANEL_CONN)
+app.add_typer(telegram_app, name="telegram", rich_help_panel=PANEL_CONN)
+app.add_typer(discord_app, name="discord", rich_help_panel=PANEL_CONN)
+
+# ── Config & sistema ──────────────────────────────────────────────────────────
+app.add_typer(config_app, name="config", rich_help_panel=PANEL_SYS)
+app.add_typer(tools_app, name="tools", rich_help_panel=PANEL_SYS)
+app.add_typer(auth_app, name="auth", rich_help_panel=PANEL_SYS)
+app.add_typer(company_app, name="company", rich_help_panel=PANEL_SYS)
+app.add_typer(migrate_app, name="migrate", rich_help_panel=PANEL_SYS)
+app.add_typer(plugin_app, name="plugin", rich_help_panel=PANEL_SYS)
+app.add_typer(home_app, name="home", rich_help_panel=PANEL_SYS)
+app.add_typer(voice_app, name="voice", rich_help_panel=PANEL_SYS)
 
 # P4: console único movido para bauer/commands/_common.py (compartilhado com os
 # módulos de comando extraídos). Re-importado aqui — uso inalterado em cli.py.
@@ -174,7 +194,7 @@ def _root(ctx: typer.Context):
         console.print("[cyan]Bauer Agent[/cyan] — comece com [bold]bauer init[/bold].")
 
 
-@app.command("start")
+@app.command("start", rich_help_panel=PANEL_SYS)
 def start_cmd(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
 ):
@@ -183,7 +203,7 @@ def start_cmd(
     welcome_screen(console, config_path=config)
 
 
-@app.command("guide")
+@app.command("guide", rich_help_panel=PANEL_SYS)
 def guide_cmd():
     """Tour rápido pelos modos do Bauer (chat, agent, model, gateway)."""
     from .onboarding import guide_tour
@@ -396,7 +416,7 @@ def init_cmd(
             )
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_OBS)
 def status(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     state_file: Path = typer.Option(
@@ -518,7 +538,7 @@ def status(
     console.print("\n[dim]Para diagnostico completo: [bold]bauer doctor --providers[/bold][/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_START)
 def model(
     config: Path = typer.Option(None, "--config", help="Caminho do config.yaml (default: ~/.bauer/config.yaml)"),
 ):
@@ -1033,7 +1053,7 @@ def _desktop_serve_cmd(config: Path, host: str, port: int, api_key: str) -> list
     return cmd
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_SYS)
 def desktop(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     host: str = typer.Option("127.0.0.1", "--host", help="Host de escuta do serve sidecar"),
@@ -1123,7 +1143,7 @@ def desktop(
 # --- logs -------------------------------------------------------------------
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_OBS)
 def logs(
     config: Path = typer.Option(Path("config.yaml"), "--config"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Modo tail -f (tempo real)"),
@@ -1224,7 +1244,7 @@ def main():
 # ── bauer gateway command ─────────────────────────────────────────────────────
 
 
-@app.command("gateway-ws")
+@app.command("gateway-ws", rich_help_panel=PANEL_CONN)
 def gateway_cmd(
     bauer_url: str = typer.Option(
         "http://localhost:7770",
@@ -1270,7 +1290,7 @@ def gateway_cmd(
         console.print("\n[dim]Gateway encerrado.[/dim]")
 
 
-@app.command("shell")
+@app.command("shell", rich_help_panel=PANEL_SYS)
 def shell_cmd(
     port: int = typer.Option(7782, "--port", "-p", help="Porta do shell WebSocket"),
     host: str = typer.Option("127.0.0.1", "--host", help="Interface de escuta"),
@@ -1306,7 +1326,7 @@ def shell_cmd(
 # ── migrate ──────────────────────────────────────────────────────────────────
 
 
-@app.command("gateway-channel-add")
+@app.command("gateway-channel-add", rich_help_panel=PANEL_CONN)
 def gateway_channel_add_cmd(
     name: str = typer.Argument(..., help="Nome logico do canal"),
     platform: str = typer.Argument(..., help="file, webhook, telegram, discord, slack ou whatsapp"),
@@ -1340,7 +1360,7 @@ def gateway_channel_add_cmd(
     )
 
 
-@app.command("gateway-channels")
+@app.command("gateway-channels", rich_help_panel=PANEL_CONN)
 def gateway_channels_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
     include_disabled: bool = typer.Option(False, "--include-disabled"),
@@ -1369,7 +1389,7 @@ def gateway_channels_cmd(
     console.print(table)
 
 
-@app.command("gateway-channel-delete")
+@app.command("gateway-channel-delete", rich_help_panel=PANEL_CONN)
 def gateway_channel_delete_cmd(
     name: str = typer.Argument(..., help="Nome logico do canal"),
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
@@ -1387,7 +1407,7 @@ def gateway_channel_delete_cmd(
     console.print(f"[green]gateway channel removido[/green] {name}")
 
 
-@app.command("gateway-send")
+@app.command("gateway-send", rich_help_panel=PANEL_CONN)
 def gateway_send_cmd(
     channel: str = typer.Argument(..., help="Canal registrado ou plataforma direta"),
     message: str = typer.Argument(..., help="Texto a enviar"),
@@ -1482,7 +1502,7 @@ def gateway_send_cmd(
         raise typer.Exit(code=1)
 
 
-@app.command("gateway-outbox")
+@app.command("gateway-outbox", rich_help_panel=PANEL_CONN)
 def gateway_outbox_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
     limit: int = typer.Option(20, "--limit"),
@@ -1518,7 +1538,7 @@ def gateway_outbox_cmd(
     console.print(table)
 
 
-@app.command("gateway-deliver")
+@app.command("gateway-deliver", rich_help_panel=PANEL_CONN)
 def gateway_deliver_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
     limit: int = typer.Option(20, "--limit"),
@@ -1573,7 +1593,7 @@ def gateway_deliver_cmd(
 # ============================================================================
 
 
-@app.command("kanban-migrate")
+@app.command("kanban-migrate", rich_help_panel=PANEL_PROJ)
 def kanban_migrate_cmd(
     workspace: Path = typer.Option(
         _WORKSPACE_DIR, "--workspace",
@@ -1654,7 +1674,7 @@ def kanban_migrate_cmd(
 # ============================================================================
 
 
-@app.command("kanban-specify")
+@app.command("kanban-specify", rich_help_panel=PANEL_PROJ)
 def kanban_specify_cmd(
     task_id: str = typer.Argument(..., help="Task ID a especificar"),
     board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
@@ -1696,7 +1716,7 @@ def kanban_specify_cmd(
     raise typer.Exit(code=1)
 
 
-@app.command("kanban-decompose")
+@app.command("kanban-decompose", rich_help_panel=PANEL_PROJ)
 def kanban_decompose_cmd(
     task_id: str = typer.Argument(..., help="Task ID a decompor"),
     board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
@@ -1751,7 +1771,7 @@ def kanban_decompose_cmd(
             console.print(f"\n[dim]Rationale:[/dim] {outcome.rationale}")
 
 
-@app.command("kanban-swarm")
+@app.command("kanban-swarm", rich_help_panel=PANEL_PROJ)
 def kanban_swarm_cmd(
     goal: str = typer.Argument(..., help="Objetivo do swarm (titulo do root)"),
     workers: list[str] = typer.Option(
@@ -1808,7 +1828,7 @@ def kanban_swarm_cmd(
                    f"{result.root_id[:8]}[/bold].[/dim]")
 
 
-@app.command("kanban-swarm-status")
+@app.command("kanban-swarm-status", rich_help_panel=PANEL_PROJ)
 def kanban_swarm_status_cmd(
     root_id: str = typer.Argument(..., help="Root ID do swarm"),
     board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
@@ -1879,7 +1899,7 @@ def _render_diagnostics(diags, *, header: bool = True) -> None:
         )
 
 
-@app.command("kanban-show")
+@app.command("kanban-show", rich_help_panel=PANEL_PROJ)
 def kanban_show_cmd(
     task_id: str = typer.Argument(..., help="ID da task (prefixo aceito)"),
     board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
@@ -1932,7 +1952,7 @@ def kanban_show_cmd(
         _render_diagnostics(diags)
 
 
-@app.command("kanban-diagnostics")
+@app.command("kanban-diagnostics", rich_help_panel=PANEL_PROJ)
 def kanban_diagnostics_cmd(
     board: str = typer.Option("", "--board", "-b", help="Board (vazio = ativo)"),
     severity: str = typer.Option(
@@ -2000,7 +2020,7 @@ def kanban_diagnostics_cmd(
 # bauer skill — install / list / show / remove / render
 # ---------------------------------------------------------------------------
 
-@app.command("skill-install")
+@app.command("skill-install", rich_help_panel=PANEL_MEM)
 def skill_install_cmd(
     source: str = typer.Argument(..., help="Path to YAML file, directory, or URL"),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite if already installed"),
@@ -2037,7 +2057,7 @@ def skill_install_cmd(
         raise typer.Exit(1)
 
 
-@app.command("skill-list")
+@app.command("skill-list", rich_help_panel=PANEL_MEM)
 def skill_list_cmd(
     tags: str = typer.Option("", "--tags", help="Filter by comma-separated tags"),
     query: str = typer.Option("", "--query", "-q", help="Filter by name/description substring"),
@@ -2071,7 +2091,7 @@ def skill_list_cmd(
     console.print(f"\n{len(skills)} skill(s) installed.")
 
 
-@app.command("skill-show")
+@app.command("skill-show", rich_help_panel=PANEL_MEM)
 def skill_show_cmd(
     name: str = typer.Argument(..., help="Skill name"),
 ) -> None:
@@ -2108,7 +2128,7 @@ def skill_show_cmd(
     console.print(Syntax(skill.invoke, "markdown", theme="monokai", word_wrap=True))
 
 
-@app.command("skill-remove")
+@app.command("skill-remove", rich_help_panel=PANEL_MEM)
 def skill_remove_cmd(
     name: str = typer.Argument(..., help="Skill name to remove"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
@@ -2135,7 +2155,7 @@ def skill_remove_cmd(
         raise typer.Exit(1)
 
 
-@app.command("skill-render")
+@app.command("skill-render", rich_help_panel=PANEL_MEM)
 def skill_render_cmd(
     name: str = typer.Argument(..., help="Skill name"),
     params: list[str] = typer.Option(
@@ -2179,10 +2199,10 @@ def skill_render_cmd(
 # ---------------------------------------------------------------------------
 
 from bauer.commands.skills_hub_cmd import skills_hub_app  # noqa: E402
-app.add_typer(skills_hub_app, name="skills-hub")
+app.add_typer(skills_hub_app, name="skills-hub", rich_help_panel=PANEL_MEM)
 
 from bauer.commands.skills_bundle_cmd import skills_bundle_app  # noqa: E402
-app.add_typer(skills_bundle_app, name="skills-bundle")
+app.add_typer(skills_bundle_app, name="skills-bundle", rich_help_panel=PANEL_MEM)
 
 
 
@@ -2316,7 +2336,7 @@ app.add_typer(skills_bundle_app, name="skills-bundle")
 # ── G11: bauer credential ────────────────────────────────────────────────────
 
 from bauer.commands.credential_cmd import credential_app  # noqa: E402
-app.add_typer(credential_app, name="credential")
+app.add_typer(credential_app, name="credential", rich_help_panel=PANEL_SYS)
 
 
 
