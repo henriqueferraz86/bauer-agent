@@ -426,6 +426,7 @@ export default function Chat() {
                         {m.loop.state === "running" ? "Modo autônomo"
                           : m.loop.state === "stopping" ? "Parando…"
                           : m.loop.state === "completed" ? "Concluído"
+                          : m.loop.state === "limit" ? "Limite atingido"
                           : m.loop.state === "stopped" ? "Parado"
                           : "Falhou"}
                       </strong>
@@ -435,6 +436,14 @@ export default function Chat() {
                       )}
                       {m.loop.stopReason && m.loop.state !== "completed" && (
                         <span className="mono"> · {m.loop.stopReason}</span>
+                      )}
+                      {m.loop.state === "limit" && (
+                        <div className="lhint">
+                          Não é erro — o guardrail de segurança parou aqui. Para ir além,
+                          aumente <span className="mono">loop:</span> no config.yaml
+                          (ex.: <span className="mono">max_cost_usd: 10</span>,
+                          {" "}<span className="mono">max_tool_calls: 500</span>) e rode de novo.
+                        </div>
                       )}
                     </span>
                     {(m.loop.state === "running") && (

@@ -162,6 +162,11 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 .loopcall .lname strong { color: var(--accent); font-weight: 600; }
 .loopcall .lname .mono { font-family: var(--mono); color: var(--text-3); font-size: 10px; }
 .loopcall .lactivity { color: var(--green); font-style: italic; }
+.loopcall { flex-wrap: wrap; }
+.loopcall .lhint {
+  flex-basis: 100%; margin-top: 6px; color: var(--text-3); font-size: 10.5px; line-height: 1.5;
+}
+.loopcall .lhint .mono { font-family: var(--mono); color: var(--text-2); }
 .loop-stop {
   background: #401a1a; border: 1px solid #a33; color: #f55; border-radius: 6px;
   padding: 3px 8px; font-size: 10px; cursor: pointer; display: flex; align-items: center; gap: 4px;

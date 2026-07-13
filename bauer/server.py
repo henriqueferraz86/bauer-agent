@@ -1919,6 +1919,19 @@ def create_app(
                     state_obj.state = "stopped"
                     run_manager.update_run(run.id, status="cancelled",
                                            error="runtime kill switch ativo")
+                elif stop_reason in ("budget_exhausted", "max_rounds"):
+                    # Atingir um limite de segurança NÃO é falha — é o guardrail
+                    # funcionando. Estado próprio ("limit") + qual limite estourou,
+                    # para a UI dizer o que aumentar em vez de um "Falhou" alarmante.
+                    state_obj.state = "limit"
+                    dim = budget.exhausted_dimension() if stop_reason == "budget_exhausted" else "nº de rodadas"
+                    state_obj.stop_reason = f"limite de {dim} atingido" if dim else "limite atingido"
+                    run_manager.complete_run(
+                        run.id,
+                        output={"response": _format_server_response(last_text)},
+                        tool_calls_count=state_obj.tool_calls,
+                        cost_estimate=round(cost.total_usd, 6),
+                    )
                 else:
                     state_obj.state = "failed"
                     run_manager.fail_run(run.id, f"loop parado: {stop_reason}")

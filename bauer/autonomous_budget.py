@@ -214,6 +214,21 @@ class AutonomousBudget:
         """True if any soft threshold has been crossed but no hard limit yet."""
         return self._compute_status() == BudgetStatus.WARNING
 
+    def exhausted_dimension(self) -> "str | None":
+        """Frase PT dizendo QUAL limite estourou (ou None se nenhum) — para a UI
+        dizer exatamente o que aumentar. Segue a mesma ordem de _compute_status."""
+        if self._cost_usd >= self.max_cost_usd:
+            return f"custo estimado (US$ {self.max_cost_usd:.2f})"
+        if self.elapsed_seconds >= self.max_wall_seconds:
+            return f"tempo ({int(self.max_wall_seconds // 60)} min)"
+        if self._llm_calls >= self.max_llm_calls:
+            return f"chamadas ao modelo ({self.max_llm_calls})"
+        if self._tool_calls >= self.max_tool_calls:
+            return f"ferramentas ({self.max_tool_calls})"
+        if self._output_tokens >= self.max_output_tokens:
+            return f"tokens de saída ({self.max_output_tokens})"
+        return None
+
     def remaining_cost_usd(self) -> float:
         return max(0.0, self.max_cost_usd - self._cost_usd)
 

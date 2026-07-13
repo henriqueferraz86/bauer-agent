@@ -345,6 +345,41 @@ def test_loop_works_without_kernel(tmp_path: Path):
     assert final["state"] == "completed"
 
 
+def test_budget_exhausted_shows_limit_state_not_failed(tmp_path: Path):
+    """Atingir o orçamento é 'limite atingido', NÃO 'falhou' — e diz qual limite."""
+    cfg = _cfg(tmp_path)
+    client = MagicMock()
+    client.chat_stream.side_effect = lambda m, msgs, *a, **k: iter(["trabalhando"])
+    client._provider = "openrouter"
+
+    # o turno sempre devolve muitas tools → estoura o teto de ferramentas.
+    # patch em bauer.agent (import local no create_app) ANTES de montar o app.
+    with patch("bauer.agent.run_one_turn_with_fallback",
+               return_value=("trabalhando", [{"tool": "t"}] * 60)):
+        app = _app(tmp_path, cfg, client)
+        tc = TestClient(app)
+        run_id = tc.post("/loop", json={"message": "x", "max_tool_calls": 50}).json()["run_id"]
+        final = _wait_done(tc, run_id)
+
+    assert final["state"] == "limit"          # NÃO "failed"
+    assert "limite de ferramentas" in (final["stop_reason"] or "")
+
+    # o Run persiste como completed (limite não é falha de execução)
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.core.runtime.state_store import JsonlStateStore
+    run = RunManager(store=JsonlStateStore(tmp_path / "sessions" / ".." / "runtime")).get_run(run_id)
+    assert run.status == "completed"
+
+
+def test_budget_exhausted_dimension_names_the_limit():
+    from bauer.autonomous_budget import AutonomousBudget
+    b = AutonomousBudget(max_cost_usd=1.0, max_wall_seconds=300, max_tool_calls=5)
+    assert b.exhausted_dimension() is None
+    for _ in range(5):
+        b.consume_tool_call()
+    assert "ferramentas" in (b.exhausted_dimension() or "")
+
+
 def test_loop_status_exposes_activity_field(tmp_path: Path):
     """O status do loop inclui 'activity' (feedback ao vivo durante a rodada)."""
     cfg = _cfg(tmp_path)
