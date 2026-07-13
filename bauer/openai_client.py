@@ -74,6 +74,16 @@ class OpenAIClient:
         # Use bauer.account_usage.normalize_usage() to canonicalise.
         self.last_usage: dict = {}
 
+    def _is_openrouter(self) -> bool:
+        """OpenRouter devolve o CUSTO REAL em usage.cost quando pedimos
+        `usage: {include: true}` — muito mais preciso que estimar por tabela
+        (os modelos chineses nem estão na tabela → fallback superestima ~14×)."""
+        return "openrouter.ai" in self.host.lower()
+
+    def _cost_request_extras(self) -> dict[str, Any]:
+        """Campos extras de request para obter o custo real (só OpenRouter)."""
+        return {"usage": {"include": True}} if self._is_openrouter() else {}
+
     def _chat_url(self) -> str:
         """URL de chat/completions.
 
@@ -165,6 +175,7 @@ class OpenAIClient:
             "tools": tools,
             "tool_choice": tool_choice,
             "stream": False,
+            **self._cost_request_extras(),  # OpenRouter: usage.cost real
         }
         # Retry com backoff em 429 (rate-limit, comum no free tier) e 5xx
         # (transiente). Backoff exponencial: 2s, 4s, 8s. Honra Retry-After
@@ -267,6 +278,7 @@ class OpenAIClient:
                     # final SSE event (one chunk before [DONE], with empty choices).
                     # Backends that don't recognise this key ignore it silently.
                     "stream_options": {"include_usage": True},
+                    **self._cost_request_extras(),  # OpenRouter: usage.cost real
                 },
                 headers=self._headers,
                 timeout=httpx.Timeout(

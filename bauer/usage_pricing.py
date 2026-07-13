@@ -123,7 +123,19 @@ def estimate_cost_usd(
           billed at full input rate.
 
     For non-Anthropic providers, cache keys are silently ignored.
+
+    CUSTO REAL do provider: se ``usage`` traz ``cost`` (> 0) — o OpenRouter o
+    devolve quando pedimos ``usage: {include: true}`` — usamos esse número
+    DIRETO. Não é estimativa, é o valor cobrado. Isso corrige a superestimativa
+    de ~14× que os modelos fora da tabela sofriam (caíam no fallback $1/$4 por
+    1M). A estimativa por tabela vira só o plano B quando não há custo reportado.
     """
+    reported = usage.get("cost")
+    # Só confia num NÚMERO real (não bool, não Mock): isinstance exclui
+    # MagicMock de teste, cujo float() é 1.0 por padrão e criava custo fantasma.
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported > 0:
+        return float(reported)
+
     input_per_1m, output_per_1m = get_price(provider, model)
 
     prompt = max(0, int(usage.get("prompt_tokens", 0) or 0))
