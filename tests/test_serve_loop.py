@@ -345,6 +345,23 @@ def test_loop_works_without_kernel(tmp_path: Path):
     assert final["state"] == "completed"
 
 
+def test_loop_status_exposes_activity_field(tmp_path: Path):
+    """O status do loop inclui 'activity' (feedback ao vivo durante a rodada)."""
+    cfg = _cfg(tmp_path)
+    client = MagicMock()
+    responses = iter(["fim", "confirmo"])
+    client.chat_stream.side_effect = lambda m, msgs, *a, **k: iter([next(responses)])
+    client._provider = "openrouter"
+    app = _app(tmp_path, cfg, client)
+    tc = TestClient(app)
+
+    run_id = tc.post("/loop", json={"message": "x"}).json()["run_id"]
+    # o campo existe no payload do status desde o início
+    assert "activity" in tc.get(f"/loop/{run_id}").json()
+    final = _wait_done(tc, run_id)
+    assert final["activity"] == ""  # zerado ao concluir
+
+
 def test_loops_list_endpoint(tmp_path: Path):
     cfg = _cfg(tmp_path)
     client = MagicMock()

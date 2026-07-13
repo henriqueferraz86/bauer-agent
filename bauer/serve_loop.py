@@ -118,6 +118,7 @@ class LoopState:
     cost_usd: float = 0.0
     stop_reason: str | None = None
     last_text: str = ""
+    activity: str = ""                # o que está fazendo AGORA (feedback ao vivo)
     limits: dict[str, Any] = field(default_factory=dict)
     started_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     finished_at: str | None = None

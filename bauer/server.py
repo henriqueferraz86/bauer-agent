@@ -1814,6 +1814,34 @@ def create_app(
             ids_token = set_runtime_ids(sid, run.id)
             last_cost = 0.0
 
+            # ── Feedback AO VIVO durante a rodada ─────────────────────────────
+            # Sem isto o card fica "mudo" em 'rodada 0' até a 1ª rodada terminar
+            # (o /loop só atualizava ENTRE rodadas). Este sink — o mesmo do
+            # /stream — empurra o texto parcial e a ferramenta corrente para o
+            # state_obj, que o GET /loop/{id} devolve a cada poll. NÃO conta
+            # tools aqui (o _on_round é a autoridade exata) — só mostra atividade.
+            from .delta_stream import reset_sink, set_sink
+            _live = {"text": ""}
+
+            class _LoopLiveSink:
+                def on_delta(self, chunk: str, **_meta) -> None:
+                    _live["text"] += chunk
+                    state_obj.last_text = _live["text"][-2000:]
+                    state_obj.activity = "escrevendo resposta"
+
+                def on_round(self) -> None:
+                    _live["text"] = ""
+                    state_obj.activity = "pensando"
+
+                def on_tool(self, name: str) -> None:
+                    try:
+                        from .core.ux import tool_phase
+                        state_obj.activity = tool_phase(name).label
+                    except Exception:  # noqa: BLE001 — fallback p/ o nome cru
+                        state_obj.activity = name
+
+            sink_token = set_sink(_LoopLiveSink())
+
             def _turn():
                 return run_one_turn_with_fallback(
                     ctx, active_router, _turn_client, _turn_model, _fallback_clients,
@@ -1840,6 +1868,7 @@ def create_app(
                 state_obj.tool_calls += len(tool_log)
                 state_obj.cost_usd = round(cost.total_usd, 6)
                 state_obj.last_text = (text or state_obj.last_text)[-2000:]
+                state_obj.activity = ""  # rodada terminou; próxima começa em "pensando"
                 store.save(sid, ctx.messages)
                 try:
                     event_bus.publish(
@@ -1861,8 +1890,10 @@ def create_app(
             except BaseException as exc:  # noqa: BLE001 — thread nunca morre muda
                 stop_reason, last_text, all_tools = "error", str(exc), []
             finally:
+                reset_sink(sink_token)
                 cost_sink.reset(cost_token)
                 reset_runtime_ids(ids_token)
+                state_obj.activity = ""
 
             try:
                 store.save(sid, ctx.messages)
