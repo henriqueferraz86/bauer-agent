@@ -93,6 +93,17 @@ def test_no_command_removed_still_discoverable():
         assert cmd in result.output, f"comando {cmd} sumiu do help"
 
 
+def test_all_commands_grouped_into_named_panels():
+    """Todo comando está num painel temático — nada no 'Commands' genérico."""
+    result = runner.invoke(app, ["--help"])
+    for panel in ("Começar aqui", "Projeto & specs", "Autonomia & orquestração",
+                  "Observabilidade & custo", "Memória, skills & aprendizado",
+                  "Conectividade", "Config & sistema"):
+        assert panel in result.output, f"painel '{panel}' faltando"
+    # o painel genérico 'Commands' não deve mais existir (tudo foi categorizado)
+    assert "─ Commands ─" not in result.output
+
+
 def test_empty_task_is_error_no_prompt():
     result = runner.invoke(app, ["run", ""])
     assert result.exit_code == 1
