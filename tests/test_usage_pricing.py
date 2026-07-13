@@ -159,3 +159,36 @@ def test_format_cost_zero():
 def test_format_cost_negative():
     """Defensive: negatives normalised to $0."""
     assert format_cost(-1.0) == "$0"
+
+
+# ─── custo REAL reportado pelo provider (OpenRouter usage.cost) ───────────────
+
+
+def test_reported_cost_overrides_table_estimate():
+    """Se usage traz 'cost' (OpenRouter), usa o valor REAL — não a tabela.
+
+    Regressão do bug de superestimativa ~14×: deepseek/deepseek-v4-flash não
+    está na tabela → fallback $1/$4 daria ~$0.0006 p/ estes tokens; o custo
+    real reportado é $0.000044."""
+    usage = {"prompt_tokens": 20, "completion_tokens": 146, "cost": 4.368e-05}
+    got = estimate_cost_usd("openrouter", "deepseek/deepseek-v4-flash", usage)
+    assert got == pytest.approx(4.368e-05)
+    # sem o custo reportado, cairia no fallback (muito maior)
+    fallback = estimate_cost_usd("openrouter", "deepseek/deepseek-v4-flash",
+                                 {"prompt_tokens": 20, "completion_tokens": 146})
+    assert fallback > got * 10  # ~14x
+
+
+def test_reported_cost_zero_falls_back_to_estimate():
+    """cost=0 ou ausente → mantém a estimativa por tabela (plano B)."""
+    usage = {"prompt_tokens": 1000, "completion_tokens": 1000, "cost": 0}
+    got = estimate_cost_usd("openai", "gpt-4o-mini", usage)
+    # 1000*0.15/1M + 1000*0.60/1M = 0.00075
+    assert got == pytest.approx(0.00075)
+
+
+def test_reported_cost_ignores_garbage():
+    """cost inválido não quebra — cai na estimativa."""
+    usage = {"prompt_tokens": 1000, "completion_tokens": 0, "cost": "abc"}
+    got = estimate_cost_usd("openai", "gpt-4o-mini", usage)
+    assert got == pytest.approx(0.00015)
