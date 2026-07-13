@@ -105,12 +105,47 @@ bauer init
 bauer doctor
 
 # 3. Iniciar — escolha o modo:
-bauer chat              # chat direto com o modelo
-bauer agent run <nome>  # agent especializado (com tools, system prompt próprio)
-bauer agent list        # ver agents disponíveis
+bauer run "faça a tarefa X"  # ★ autônomo: do início ao fim, na pasta atual
+bauer agent                  # conversar (tools + memória, uso diário)
+bauer serve                  # UI web (chat + modo autônomo no browser)
+bauer chat                   # chat mínimo com o modelo
 ```
 
 > **Dica**: use `bauer model` a qualquer momento para trocar de provider/modelo. O menu exibe claramente quais são **GRÁTIS** e quais são **PAGOS**.
+
+### ⚡ Qual comando eu uso?
+
+| Você quer… | Comando |
+|---|---|
+| **Fazer uma tarefa de ponta a ponta, sem confirmar cada passo** | `bauer run "descreva a tarefa"` (na pasta do projeto) |
+| Conversar/iterar com o agente (você no controle) | `bauer agent` |
+| Usar pelo navegador (chat + botão autônomo) | `bauer serve` → abre a UI |
+| Só conversar, sem ferramentas | `bauer chat` |
+
+`bauer run` usa a **pasta atual** como workspace e o config **canônico**
+(`~/.bauer/config.yaml`) — ele ignora qualquer `config.yaml` que exista na
+pasta do projeto. Na UI web, o equivalente é digitar `/loop tarefa` no chat.
+
+#### Limites de uma execução autônoma (`bauer run` / `/loop`)
+
+Três guardrails, o que vier primeiro encerra: **tempo** (`loop.max_minutes`,
+30 min), **nº de ferramentas** (`loop.max_tool_calls`, 120) e **custo
+ESTIMADO** (`loop.max_cost_usd`, US$2). Sobrescreva por execução com
+`--max-minutes` / `--max-tool-calls` / `--max-cost`.
+
+> ⚠️ O **custo é uma estimativa** (depende dos dados de uso do provider e da
+> tabela de preços; modelos desconhecidos usam preço genérico). **Tempo e nº de
+> ferramentas são os guardrails confiáveis** — não trate o custo como teto de
+> fatura.
+
+Não confunda com os outros limites do config, que têm escopos diferentes:
+
+| Campo | Escopo |
+|---|---|
+| `loop.max_tool_calls` | uma execução autônoma inteira (`bauer run` / `/loop`) |
+| `tools.max_tool_calls` | a sessão inteira do ToolRouter (qualquer modo) |
+| `tools.max_tool_turns` | um único turno / rodada |
+| `bauer budget` / `bauer autonomy` | teto de runtime/Kernel (ledger diário) — camada separada |
 
 ### 🧭 Perdido? Comece por aqui
 

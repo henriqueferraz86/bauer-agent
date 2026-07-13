@@ -126,6 +126,67 @@ def test_on_round_receives_each_round():
     assert seen == [1, 2, 3]
 
 
+# ─── resolve_loop_limits (helper unificado) ──────────────────────────────────
+
+
+class _LoopSec:
+    def __init__(self, minutes=30, tools=120, cost=2.0, approval="threshold"):
+        self.max_minutes = minutes
+        self.max_tool_calls = tools
+        self.max_cost_usd = cost
+        self.approval_mode = approval
+
+
+def test_limits_no_overrides_uses_config():
+    from bauer.serve_loop import resolve_loop_limits
+    r = resolve_loop_limits(_LoopSec(), {}, clamp_to_config=False)
+    assert (r.max_minutes, r.max_tool_calls, r.max_cost_usd) == (30, 120, 2.0)
+    assert r.approval_mode == "threshold"
+
+
+def test_limits_cli_override_replaces():
+    """CLI (clamp=False): override maior que o config VENCE."""
+    from bauer.serve_loop import resolve_loop_limits
+    r = resolve_loop_limits(_LoopSec(tools=120), {"max_tool_calls": 500},
+                            clamp_to_config=False)
+    assert r.max_tool_calls == 500
+
+
+def test_limits_http_override_only_tightens():
+    """HTTP (clamp=True): override maior que o config é CORTADO no teto."""
+    from bauer.serve_loop import resolve_loop_limits
+    r = resolve_loop_limits(_LoopSec(tools=120, minutes=30, cost=2.0),
+                            {"max_tool_calls": 500, "max_minutes": 5, "max_cost_usd": 99.0},
+                            clamp_to_config=True)
+    assert r.max_tool_calls == 120  # 500 > teto → teto
+    assert r.max_minutes == 5       # 5 < teto → aceita
+    assert r.max_cost_usd == 2.0    # 99 > teto → teto
+
+
+def test_limits_none_overrides_inherit():
+    from bauer.serve_loop import resolve_loop_limits
+    r = resolve_loop_limits(_LoopSec(minutes=45),
+                            {"max_minutes": None, "max_tool_calls": None},
+                            clamp_to_config=True)
+    assert r.max_minutes == 45
+
+
+def test_limits_reject_invalid():
+    from bauer.serve_loop import resolve_loop_limits
+    with pytest.raises(ValueError):
+        resolve_loop_limits(_LoopSec(), {"max_minutes": 0}, clamp_to_config=False)
+    with pytest.raises(ValueError):
+        resolve_loop_limits(_LoopSec(), {"max_cost_usd": -1.0}, clamp_to_config=False)
+    with pytest.raises(ValueError):
+        resolve_loop_limits(_LoopSec(), {"approval_mode": "banana"}, clamp_to_config=False)
+
+
+def test_limits_banner_is_portuguese_and_says_estimated():
+    from bauer.serve_loop import resolve_loop_limits
+    b = resolve_loop_limits(_LoopSec(), {}, clamp_to_config=False).banner_pt()
+    assert "min" in b and "ferramenta" in b and "ESTIMADO" in b
+
+
 # ─── endpoints (integração) ──────────────────────────────────────────────────
 
 fastapi = pytest.importorskip("fastapi")
