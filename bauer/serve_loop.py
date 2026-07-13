@@ -35,6 +35,76 @@ LOOP_CONFIRM_NUDGE = (
 MAX_ROUNDS_HARD_CAP = 100
 
 
+@dataclass(frozen=True)
+class ResolvedLoopLimits:
+    """Limites efetivos de uma execução autônoma, já reconciliados entre o
+    config (``loop:``) e os overrides do caller. Imutável de propósito — é o
+    contrato que o motor e o banner consomem, um lugar só para a verdade."""
+
+    max_minutes: int
+    max_tool_calls: int
+    max_cost_usd: float
+    approval_mode: str = "threshold"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"max_minutes": self.max_minutes, "max_tool_calls": self.max_tool_calls,
+                "max_cost_usd": self.max_cost_usd, "approval_mode": self.approval_mode}
+
+    def banner_pt(self) -> str:
+        """Frase única em PT com os guardrails — usada pela CLI e pela UI. O
+        custo é ESTIMADO (depende de usage + tabela de preços); tempo e nº de
+        tools são os guardrails primários."""
+        return (
+            f"trabalho até {self.max_minutes} min OU {self.max_tool_calls} "
+            f"chamadas de ferramenta OU ~US$ {self.max_cost_usd:.2f} de custo "
+            f"ESTIMADO — o que vier primeiro"
+        )
+
+
+def resolve_loop_limits(loop_section: Any, overrides: "dict[str, Any] | None" = None,
+                        *, clamp_to_config: bool) -> ResolvedLoopLimits:
+    """Reconcilia os limites do ``loop:`` do config com os ``overrides``.
+
+    ``clamp_to_config``:
+      * ``False`` (CLI / ``bauer run``): o override SUBSTITUI o config —
+        você é o dono da máquina, pode pedir mais.
+      * ``True`` (HTTP / UI web): o override só REDUZ o teto — um cliente
+        remoto nunca amplia o blast radius definido no servidor.
+
+    ``overrides`` aceita as chaves max_minutes / max_tool_calls / max_cost_usd /
+    approval_mode; valores None/ausentes herdam o config. Valida positividade.
+    """
+    base_minutes = int(getattr(loop_section, "max_minutes", 30) or 30)
+    base_tools = int(getattr(loop_section, "max_tool_calls", 120) or 120)
+    base_cost = float(getattr(loop_section, "max_cost_usd", 2.0) or 2.0)
+    approval = str(getattr(loop_section, "approval_mode", "threshold") or "threshold")
+
+    ov = overrides or {}
+
+    def _pick(key: str, base, floor):
+        raw = ov.get(key)
+        if raw is None:
+            return base
+        val = type(base)(raw)
+        if val <= floor and not (floor == 0.0 and key == "max_cost_usd"):
+            raise ValueError(f"{key} deve ser > {floor}")
+        if key == "max_cost_usd" and val < 0:
+            raise ValueError("max_cost_usd não pode ser negativo")
+        return min(val, base) if clamp_to_config else val
+
+    minutes = _pick("max_minutes", base_minutes, 0)
+    tools = _pick("max_tool_calls", base_tools, 0)
+    cost = _pick("max_cost_usd", base_cost, -0.0000001)
+    ov_approval = ov.get("approval_mode")
+    if ov_approval is not None:
+        if ov_approval not in ("threshold", "deny_all", "yolo"):
+            raise ValueError(f"approval inválido: {ov_approval!r} (use threshold|deny_all|yolo)")
+        approval = ov_approval
+
+    return ResolvedLoopLimits(max_minutes=minutes, max_tool_calls=tools,
+                              max_cost_usd=cost, approval_mode=approval)
+
+
 @dataclass
 class LoopState:
     """Estado observável de um loop (o que a UI mostra no card)."""

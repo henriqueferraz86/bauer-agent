@@ -106,6 +106,8 @@ app.add_typer(research_app, name="research")
 app.add_typer(learning_app, name="learning")
 app.add_typer(auth_app, name="auth")
 app.add_typer(orchestrate_app, name="orchestrate")
+from bauer.commands.run_cmd import run as _run_command  # noqa: E402
+app.command("run")(_run_command)
 app.add_typer(agent_app, name="agent")
 app.add_typer(spec_app, name="spec")
 app.add_typer(company_app, name="company")

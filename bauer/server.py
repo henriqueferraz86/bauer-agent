@@ -1727,25 +1727,23 @@ def create_app(
         max_cost_usd: Optional[float] = None
 
     def _loop_limits(req: LoopStartRequest) -> dict:
-        """Limites efetivos: config é o TETO; o request só aperta."""
-        max_minutes, max_tool_calls, max_cost = 30, 120, 2.0
+        """Limites efetivos via helper único (serve_loop.resolve_loop_limits):
+        config é o TETO, o request só aperta (clamp_to_config=True)."""
+        from .config_loader import LoopSection
+        from .serve_loop import resolve_loop_limits
+        loop_section = LoopSection()
         try:
             if config_path is not None:
                 from .config_loader import load_config as _load_loop_cfg
-                _lsec = _load_loop_cfg(config_path).loop
-                max_minutes = int(_lsec.max_minutes)
-                max_tool_calls = int(_lsec.max_tool_calls)
-                max_cost = float(_lsec.max_cost_usd)
-        except Exception as exc:  # noqa: BLE001 — defaults acima seguram
+                loop_section = _load_loop_cfg(config_path).loop
+        except Exception as exc:  # noqa: BLE001 — defaults do LoopSection seguram
             _log.debug("loop config load failed: %s", exc)
-        if req.max_minutes:
-            max_minutes = max(1, min(req.max_minutes, max_minutes))
-        if req.max_tool_calls:
-            max_tool_calls = max(1, min(req.max_tool_calls, max_tool_calls))
-        if req.max_cost_usd:
-            max_cost = max(0.01, min(req.max_cost_usd, max_cost))
-        return {"max_minutes": max_minutes, "max_tool_calls": max_tool_calls,
-                "max_cost_usd": max_cost}
+        overrides = {"max_minutes": req.max_minutes, "max_tool_calls": req.max_tool_calls,
+                     "max_cost_usd": req.max_cost_usd}
+        limits = resolve_loop_limits(loop_section, overrides, clamp_to_config=True)
+        # JSON histórico do endpoint: só as 3 chaves numéricas (sem approval).
+        return {"max_minutes": limits.max_minutes, "max_tool_calls": limits.max_tool_calls,
+                "max_cost_usd": limits.max_cost_usd}
 
     @app.post("/loop")
     def loop_start(req: LoopStartRequest, _: None = Depends(_verify_key)):
