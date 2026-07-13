@@ -274,6 +274,20 @@ export default function Chat() {
   async function send(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || busy) return;
+    // Um comando com barra SEMPRE roteia pro seu handler — mesmo quando a
+    // paleta não está visível ou o envio veio do botão (avião). Sem isto,
+    // `/loop …` escorregava pro /stream e estourava o timeout de 300s em vez
+    // de disparar o loop assíncrono. A paleta é só um atalho, não a única via.
+    if (text.startsWith("/")) {
+      const name = text.slice(1).split(" ")[0].toLowerCase();
+      const cmd = COMMANDS.find((c) => c.cmd.slice(1).toLowerCase() === name);
+      if (cmd) {
+        setInput("");
+        setPalIdx(0);
+        void cmd.run(text.slice(cmd.cmd.length).trim());
+        return;
+      }
+    }
     setInput("");
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text }]);
