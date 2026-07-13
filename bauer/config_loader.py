@@ -671,9 +671,14 @@ class LoopSection(_StrictSection):
     O `/loop` roda o agente sozinho, turno após turno, sem confirmação
     humana a cada passo — estes limites existem para conter o "blast
     radius" de uma tarefa que entra em loop ou sai do previsto.
+
+    NB: max_tool_calls é o orçamento do LOOP INTEIRO e precisa ser
+    confortavelmente MAIOR que tools.max_tool_turns (teto por rodada, default
+    150) — senão UMA rodada esgota o loop antes da rodada 2. Por isso o default
+    aqui é 500 (≈3 rodadas cheias), alinhado a tools.max_tool_calls.
     """
     max_minutes: int = Field(ge=1, default=30)
-    max_tool_calls: int = Field(ge=1, default=120)
+    max_tool_calls: int = Field(ge=1, default=500)
     max_cost_usd: float = Field(ge=0.0, default=2.0)
     approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
     approval_risk_threshold: float = Field(ge=0.0, le=1.0, default=0.4)
