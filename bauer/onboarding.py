@@ -156,6 +156,7 @@ def welcome_screen(console: Console | None = None, config_path: str | Path = "co
         con.print(_steps_panel(
             "O que fazer agora",
             [
+                ('bauer run "tarefa"', "fazer uma tarefa de ponta a ponta na pasta atual"),
                 ("bauer agent", "conversar com o agente — tools + memória (uso diário)"),
                 ("bauer model", "trocar de provider/modelo"),
                 ("bauer guide", "tour rápido dos modos"),

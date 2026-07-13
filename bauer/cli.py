@@ -38,13 +38,18 @@ from .preflight import run_doctor
 # (bauer.cli.read_state) — nao remover mesmo sem uso direto neste modulo.
 from .runtime_state import read_state, write_state  # noqa: F401
 
+#: painel do --help que agrupa as portas principais no topo (Fatia B / plano
+#: 022). Os ~68 demais comandos caem no painel default "Commands" abaixo —
+#: nada é removido, só deixa de assustar na primeira tela.
+PANEL_START = "Começar aqui"
+
 app = typer.Typer(
     add_completion=False,
     help="Bauer Agent — runtime adaptativo para LLMs locais e cloud.",
     epilog=(
-        "COMECE AQUI:  bauer start (boas-vindas)  ·  bauer init (configurar)  ·  "
-        "bauer agent (usar)  ·  bauer model (trocar modelo)  ·  bauer doctor (checar)  ·  "
-        "bauer guide (tour).  Os demais comandos sao avancados."
+        "COMECE AQUI:  bauer run \"tarefa\" (faz de ponta a ponta na pasta atual)  ·  "
+        "bauer agent (conversar)  ·  bauer serve (UI web)  ·  bauer init (configurar)  ·  "
+        "bauer doctor (checar).  Rode 'bauer guide' para o tour; os demais comandos sao avancados."
     ),
 )
 
@@ -93,7 +98,7 @@ app.add_typer(plugin_app, name="plugin")
 from bauer.commands.factory_cmd import factory_app  # noqa: E402
 
 app.add_typer(config_app, name="config")
-app.add_typer(models_app, name="models")
+app.add_typer(models_app, name="models", rich_help_panel=PANEL_START)
 app.add_typer(memory_app, name="memory")
 app.add_typer(tools_app, name="tools")
 app.add_typer(project_app, name="project")
@@ -107,14 +112,14 @@ app.add_typer(learning_app, name="learning")
 app.add_typer(auth_app, name="auth")
 app.add_typer(orchestrate_app, name="orchestrate")
 from bauer.commands.run_cmd import run as _run_command  # noqa: E402
-app.command("run")(_run_command)
-app.add_typer(agent_app, name="agent")
+app.command("run", rich_help_panel=PANEL_START)(_run_command)
+app.add_typer(agent_app, name="agent", rich_help_panel=PANEL_START)
 app.add_typer(spec_app, name="spec")
 app.add_typer(company_app, name="company")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(boards_app, name="boards")
 app.add_typer(daemon_app, name="daemon")
-app.add_typer(serve_app, name="serve")
+app.add_typer(serve_app, name="serve", rich_help_panel=PANEL_START)
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(discord_app, name="discord")
 app.add_typer(gateway_app, name="gateway")
@@ -207,7 +212,7 @@ from bauer.commands._runtime import (  # noqa: E402,F401
 # --- comandos ---------------------------------------------------------------
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_START)
 def doctor(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
@@ -343,7 +348,7 @@ def _doctor_check_providers() -> None:
     console.print(prov_table)
 
 
-@app.command("init")
+@app.command("init", rich_help_panel=PANEL_START)
 def init_cmd(
     config: Path = typer.Option(None, "--config", "-c", help="Caminho do config.yaml (default: ~/.bauer/config.yaml)"),
     env: Path = typer.Option(None, "--env", help="Caminho do .env (default: ~/.bauer/.env)"),
@@ -527,7 +532,7 @@ def model(
     run_model_switcher(config or _cfg_path())
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_START)
 def chat(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
@@ -753,7 +758,7 @@ from bauer.commands._common import _PROJECT_WORKSPACE  # noqa: E402
 # --- kanban (browser ao vivo) -----------------------------------------------
 
 
-@app.command("kanban")
+@app.command("kanban", rich_help_panel=PANEL_START)
 def kanban_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
     company: str = typer.Option("", "--company", "-c", help="Slug da empresa (ex: acme-corp)"),

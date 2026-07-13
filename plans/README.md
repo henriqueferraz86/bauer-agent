@@ -33,7 +33,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [019](019-spike-self-improving-skills-mcp-server.md) | SPIKE: Skills que se refinam por telemetria + Bauer como servidor MCP | P6 | P3 | M | — | TODO |
 | [020](020-spike-proactive-agent-unified-identity.md) | SPIKE: Agente proativo (briefing/alertas) + identidade unificada | P7 | P2 | M | 014 (recomendado) | TODO |
 | [021](021-bauer-run-autonomous-entrypoint.md) | Criar `bauer run` como entrada autônoma única para tarefas de ponta a ponta | DX | P1 | L | — (isolado do 013) | SUPERSEDED (022) |
-| [022](022-bauer-run-e-simplificacao-cli.md) | `bauer run` governado pelo Kernel + simplificar superfície de comandos + desembaraçar limites | DX | P1 | L | — | TODO |
+| [022](022-bauer-run-e-simplificacao-cli.md) | `bauer run` governado pelo Kernel + simplificar superfície de comandos + desembaraçar limites | DX | P1 | L | — | DONE (branch bauer-run-cli) |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 

@@ -77,6 +77,22 @@ def test_run_appears_in_root_help():
     assert "run" in result.output
 
 
+def test_run_is_in_comecar_aqui_panel():
+    """Fatia B: as portas principais ganham um painel próprio no --help, e o
+    epílogo lidera com `bauer run` (é onde o olho cai primeiro)."""
+    result = runner.invoke(app, ["--help"])
+    assert "Começar aqui" in result.output
+    # o epílogo (rodapé) aponta o bauer run como a porta principal
+    assert 'bauer run' in result.output
+
+
+def test_no_command_removed_still_discoverable():
+    """Nenhum comando 'avançado' sumiu — só mudou de painel de exibição."""
+    result = runner.invoke(app, ["--help"])
+    for cmd in ("kernel", "orchestrate", "dispatch", "daemon", "runtime", "budget"):
+        assert cmd in result.output, f"comando {cmd} sumiu do help"
+
+
 def test_empty_task_is_error_no_prompt():
     result = runner.invoke(app, ["run", ""])
     assert result.exit_code == 1
