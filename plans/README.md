@@ -32,8 +32,15 @@ de STOP, e atualize sua linha de status ao concluir.
 | [018](018-spike-taint-tracking-accountability.md) | SPIKE: Taint tracking de conteúdo externo + digest de prestação de contas | P5 | P1 | M | — | REVISE (spec escrito e de boa qualidade em worktree agent-af2e8284; falta: quotar ~6 linhas de schema-notation p/ YAML parsear + commit; cortado pelo rate limit) |
 | [019](019-spike-self-improving-skills-mcp-server.md) | SPIKE: Skills que se refinam por telemetria + Bauer como servidor MCP | P6 | P3 | M | — | TODO |
 | [020](020-spike-proactive-agent-unified-identity.md) | SPIKE: Agente proativo (briefing/alertas) + identidade unificada | P7 | P2 | M | 014 (recomendado) | TODO |
+| [021](021-bauer-run-autonomous-entrypoint.md) | Criar `bauer run` como entrada autônoma única para tarefas de ponta a ponta | DX | P1 | L | — (isolado do 013) | SUPERSEDED (022) |
+| [022](022-bauer-run-e-simplificacao-cli.md) | `bauer run` governado pelo Kernel + simplificar superfície de comandos + desembaraçar limites | DX | P1 | L | — | TODO |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
+
+**Rodada 4 (2026-07-12, commit `ffd3a3d`) — entrada autônoma simplificada**:
+o plano 021 cria `bauer run "tarefa"` como fachada síncrona do motor de `/loop`,
+com workspace=CWD, config canônico, limites explícitos e paridade com a Web.
+Execute isoladamente do plano 013 porque ambos alteram `bauer/agent.py`.
 
 **Rodada 3 (2026-07-07, commit `2c9d86f`) — spikes de direção "20/10"**: os
 planos 014–020 são planos de DESIGN/SPIKE, um por pilar: o entregável é um spec
