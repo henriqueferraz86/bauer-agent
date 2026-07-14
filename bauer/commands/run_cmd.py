@@ -183,8 +183,9 @@ def run(
         if delta > 0:
             try:
                 budget.consume_cost(delta)
-            except Exception:  # noqa: BLE001 — esgotou: run_loop_rounds encerra no topo
-                pass
+            except Exception as exc:  # esgotou: run_loop_rounds encerra no topo
+                from ..logging_config import log_suppressed
+                log_suppressed("run_cmd.consume_cost", exc)
         _print_round(n, budget, tl)
 
     router._approval_callback = engine.make_approval_callback()
