@@ -43,7 +43,7 @@ MagicMock/
 psutil/
 psutil-7.2.2.dist-info/
 pytest-cache-files-*/
-uv.lock
+# uv.lock É versionado (install reproduzível) — ver plano 023 #13.
 
 # Claude Code
 .claude/
