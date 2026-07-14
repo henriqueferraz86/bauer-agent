@@ -30,7 +30,7 @@ re-planejar no master. Rastreado como item M0.
 
 | # | Branch | Achado | Cat | Esf | Arquivos | Status |
 |---|--------|--------|-----|-----|----------|--------|
-| M0 | (merge) | Merge do branch de voz (zera achados de voz do master) | — | S | — | TODO (aguarda OK do user) |
+| M0 | ~~(merge)~~ | ~~Merge do branch de voz~~ | — | S | — | **DESCARTADO** — master já tem voz PRÓPRIA e mais nova (08/jul, silêncio+CI-stable) que o branch (04/jul, ENTER). Merge regrediria o master. Achado de voz "resolvido no branch" estava ERRADO: master resolveu sozinho. Único aditivo é /talk (tts_local.py) = feature, adiada. |
 | 01 | fix/01-recovery-waiting-approval | Recovery mata runs em `waiting_approval`/`paused` | Bug | S | core/runtime/resilience.py | **DONE** (pushado) |
 | 02 | chore/02-untrack-tmp | `tmp/` (35) + `test_request.json` versionados | Debt | S | .gitignore | **DONE** (pushado) |
 | 03 | ~~chore/03-remove-escalation-dead~~ | ~~`escalation.py` é dead code~~ | Debt | S | — | **REJEITADO** — não é dead code: motor de escalação completo e testado, feature não-conectada (unfinished intent), não lixo. Ver nota. |
