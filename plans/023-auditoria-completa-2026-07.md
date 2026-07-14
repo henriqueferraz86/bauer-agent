@@ -30,13 +30,13 @@ re-planejar no master. Rastreado como item M0.
 
 | # | Branch | Achado | Cat | Esf | Arquivos | Status |
 |---|--------|--------|-----|-----|----------|--------|
-| M0 | (merge) | Merge do branch de voz (zera achados de voz do master) | — | S | — | TODO |
-| 01 | fix/01-recovery-waiting-approval | Recovery mata runs em `waiting_approval`/`paused` | Bug | S | core/runtime/resilience.py | TODO |
-| 02 | chore/02-untrack-tmp | `tmp/` (35) + `test_request.json` versionados | Debt | S | .gitignore | TODO |
-| 03 | chore/03-remove-escalation-dead | `escalation.py` (388L) é dead code | Debt | S | bauer/escalation.py, tests/ | TODO |
-| 06 | fix/06-scheduled-task-reschedule | Tarefas bloqueadas re-disparam a cada tick | Bug | S | core/runtime/scheduler.py | TODO |
-| 07 | fix/07-run-cost-guardrail | `bauer run --max-cost` inerte (guardrail morto) | Bug | S | commands/run_cmd.py | TODO |
-| 12 | fix/12-loop-limits-4xx | `/loop` retorna 500 (não 4xx) com limites inválidos | Bug | S | server.py | TODO |
+| M0 | (merge) | Merge do branch de voz (zera achados de voz do master) | — | S | — | TODO (aguarda OK do user) |
+| 01 | fix/01-recovery-waiting-approval | Recovery mata runs em `waiting_approval`/`paused` | Bug | S | core/runtime/resilience.py | **DONE** (pushado) |
+| 02 | chore/02-untrack-tmp | `tmp/` (35) + `test_request.json` versionados | Debt | S | .gitignore | **DONE** (pushado) |
+| 03 | ~~chore/03-remove-escalation-dead~~ | ~~`escalation.py` é dead code~~ | Debt | S | — | **REJEITADO** — não é dead code: motor de escalação completo e testado, feature não-conectada (unfinished intent), não lixo. Ver nota. |
+| 06 | fix/06-scheduled-task-reschedule | Tarefas bloqueadas re-disparam a cada tick | Bug | S | core/runtime/scheduler.py | **DONE** (pushado) |
+| 07 | fix/07-run-cost-guardrail | `bauer run --max-cost` inerte (guardrail morto) | Bug | S | commands/run_cmd.py | **DONE** (pushado) |
+| 12 | fix/12-loop-limits-4xx | `/loop` retorna 500 (não 4xx) com limites inválidos | Bug | S | server.py | **DONE** (pushado) |
 | 13 | chore/13-commit-uv-lock | `uv.lock` gitignorado + pins só `>=` | DX | S | .gitignore, ci.yml, pyproject.toml | TODO |
 | 19 | docs/19-agents-md | `AGENTS.md` stub; sem contrato p/ agentes | DX | S | AGENTS.md, CLAUDE.md | TODO |
 | DOCS | docs/docs-nova-pasta | `docs/Nova pasta/` + deleções + links quebrados | Docs | S | docs/, README.md, CHANGELOG.md | TODO |
@@ -100,12 +100,17 @@ velho É.
 `test_request.json` na raiz também. **Fix:** adicionar `tmp/` e
 `test_request.json` ao `.gitignore`, `git rm --cached` os 36, manter no disco.
 
-### 03 — Remover escalation.py (dead code)
-`bauer/escalation.py` (388L). Único `import escalation` real está na própria
-docstring do módulo (linha 19); os demais hits são a palavra "escalation" em
-comentários/params. Só `tests/test_decision_memory.py` importa. **Fix:**
-confirmar que `decision_memory.py` o substituiu, remover módulo + o bloco de
-teste que o importa.
+### 03 — REJEITADO: escalation.py NÃO é dead code
+Na vetagem: `bauer/escalation.py` (388L) é um **motor de escalação completo
+e testado** (EscalationEngine, EscalationRule, cooldown, dedup, canais
+log/callback/webhook) para rotear alertas do agente a humanos (ex.: budget
+esgotado → escalar). Tem uma suíte comportamental de ~200 linhas em
+`tests/test_decision_memory.py` (co-localizada, não "import solto"). O
+`decision_memory.py` **não** tem nada de escalation — a hipótese do auditor
+("foi absorvido") está errada. É uma **feature pronta mas não-conectada**
+(unfinished intent), não lixo. Conectá-la (budget/failure → escalation)
+seria feature nova (fora do escopo desta semana). **Não deletar.** Vira
+achado de direção: "wire the escalation engine into the autonomous flow".
 
 ### 06 — Tarefas agendadas bloqueadas re-disparam
 `bauer/core/runtime/scheduler.py:132` (kill_switch) e `:159` (budget) fazem
