@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .run_manager import TERMINAL_RUN_STATUSES, RunManager
+from .run_manager import RECOVERABLE_RUN_STATUSES, RunManager
 from .state_store import JsonlStateStore
 
 
@@ -83,7 +83,10 @@ class RuntimeRecovery:
         cutoff = datetime.now(UTC) - timedelta(seconds=max_age_s)
         recovered: list[dict[str, Any]] = []
         for run in self.run_manager.list_runs():
-            if run.status in TERMINAL_RUN_STATUSES:
+            # Só recupera estados genuinamente "travados" — pula terminais E
+            # estados de espera intencional (waiting_approval/paused), que não
+            # devem virar failed por idade.
+            if run.status not in RECOVERABLE_RUN_STATUSES:
                 continue
             marker = run.updated_at or run.started_at
             if _parse_datetime(marker) > cutoff:

@@ -37,7 +37,7 @@ re-planejar no master. Rastreado como item M0.
 | 06 | fix/06-scheduled-task-reschedule | Tarefas bloqueadas re-disparam a cada tick | Bug | S | core/runtime/scheduler.py | **DONE** (pushado) |
 | 07 | fix/07-run-cost-guardrail | `bauer run --max-cost` inerte (guardrail morto) | Bug | S | commands/run_cmd.py | **DONE** (pushado) |
 | 12 | fix/12-loop-limits-4xx | `/loop` retorna 500 (não 4xx) com limites inválidos | Bug | S | server.py | **DONE** (pushado) |
-| 13 | chore/13-commit-uv-lock | `uv.lock` gitignorado + pins só `>=` | DX | S | .gitignore, ci.yml, pyproject.toml | TODO |
+| 13 | chore/13-commit-uv-lock | `uv.lock` gitignorado + pins só `>=` | DX | S | .gitignore, ci.yml, pyproject.toml | **DONE** (pushado; +resolve DEPS-02 agno) |
 | 19 | docs/19-agents-md | `AGENTS.md` stub; sem contrato p/ agentes | DX | S | AGENTS.md, CLAUDE.md | TODO |
 | DOCS | docs/docs-nova-pasta | `docs/Nova pasta/` + deleções + links quebrados | Docs | S | docs/, README.md, CHANGELOG.md | TODO |
 | 04 | fix/04-path-coercion-guard | `Path(MagicMock())` polui a raiz (bug de coerção) | Test/Bug | M | memory_context.py, logging_config.py, conftest.py | TODO |

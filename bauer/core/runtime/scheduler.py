@@ -129,6 +129,9 @@ class Scheduler:
                 message="runtime kill switch is active",
                 data={"task_id": task.id, "manual": manual},
             )
+            if not manual:
+                # Adia p/ não re-disparar a cada tick enquanto o kill-switch durar.
+                self._reschedule_skipped(task)
             return {"task_id": task.id, "status": "blocked", "reason": "kill_switch"}
         if task.status != "active" and not manual:
             self.event_bus.publish(
@@ -156,6 +159,9 @@ class Scheduler:
                 message=str(exc),
                 data={"task_id": task.id, "reason": "budget"},
             )
+            if not manual:
+                # Adia p/ não re-disparar a cada tick enquanto o budget estiver estourado.
+                self._reschedule_skipped(task)
             return {"task_id": task.id, "status": "blocked", "reason": "budget", "error": str(exc)}
 
         session = self.session_manager.get_or_create_session(
@@ -277,6 +283,23 @@ class Scheduler:
             if once or (stop_after_ticks is not None and ticks >= stop_after_ticks):
                 return
             time.sleep(max(0.1, interval_s))
+
+    #: Quanto adiar uma tarefa `once` bloqueada por budget/kill-switch antes de
+    #: re-tentar (recorrentes avançam para o próximo slot do cron). Sem isso, uma
+    #: tarefa bloqueada ficaria "due" e re-dispararia a CADA tick, gerando spam de
+    #: eventos schedule.skipped e churn indefinido.
+    _skip_backoff_s: int = 300
+
+    def _reschedule_skipped(self, task: TaskDefinition, *, now: datetime | None = None) -> None:
+        """Empurra `next_run_at` para frente após um skip (budget/kill-switch),
+        para a tarefa não re-disparar a cada tick. NÃO conta como execução
+        (run_count/last_run_id intocados) — só adia a próxima tentativa."""
+        now = now or datetime.now(UTC)
+        if task.schedule.get("type") == "once":
+            next_run = (now + timedelta(seconds=self._skip_backoff_s)).isoformat()
+        else:
+            next_run = next_run_after(task.schedule, after=now)
+        self._update_task(task.id, next_run_at=next_run)
 
     def _after_run(self, task: TaskDefinition, run_id: str, *, error: str | None = None) -> TaskDefinition:
         is_once = task.schedule.get("type") == "once"
