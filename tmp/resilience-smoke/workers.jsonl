@@ -1,2 +1,0 @@
-{"id": "smoke-worker", "last_seen_at": "2026-07-08T05:43:06.414362+00:00", "metadata": {"interval_s": 30.0, "max_tasks_per_tick": 10}, "pid": 24036, "started_at": "2026-07-08T05:43:06.414362+00:00", "status": "online"}
-{"id": "smoke-worker", "last_seen_at": "2026-07-08T05:48:36.105828+00:00", "metadata": {"interval_s": 30.0, "max_tasks_per_tick": 10}, "pid": 21064, "started_at": "2026-07-08T05:43:06.414362+00:00", "status": "online"}

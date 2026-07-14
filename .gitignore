@@ -44,6 +44,8 @@ psutil/
 psutil-7.2.2.dist-info/
 pytest-cache-files-*/
 uv.lock
+tmp/
+test_request.json
 
 # Claude Code
 .claude/
