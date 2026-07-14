@@ -200,3 +200,50 @@ def test_invalid_approval_is_error(tmp_path: Path):
     result, _ = _run(["faca X", "--approval", "banana"], _cfg(), [("fim", [])], proj)
     assert result.exit_code == 1
     assert "inválido" in result.output or "Limite inválido" in result.output
+
+
+def test_max_cost_guardrail_stops_the_run(tmp_path: Path):
+    """Regressão: o guardrail --max-cost estava MORTO (budget.consume_cost
+    nunca era chamado). Agora, um turno que reporta custo via o cost_sink
+    instalado alimenta o budget: com --max-cost baixo, o run para por
+    orçamento (exit 2) e o custo aparece no resumo (não mais ~US$ 0.000)."""
+    import contextlib
+
+    from bauer.cli import app as _app
+
+    proj = tmp_path / "p"; proj.mkdir()
+    cfg = _cfg()
+
+    def _turn_reports_cost(ctx, router, client, model, fallbacks):
+        # Simula uma LLM call de US$0.05 reportada ao sink instalado pelo run_cmd.
+        from bauer.cost_meter import cost_sink
+        sink = cost_sink.get()
+        if sink is not None:
+            sink("openrouter", "m", {"total_tokens": 100}, 0.05)
+        return ("trabalhando", [])
+
+    patches = [
+        patch("bauer.commands._runtime._load_or_die", return_value=(cfg, MagicMock())),
+        patch("bauer.commands._runtime._build_client", return_value=MagicMock()),
+        patch("bauer.commands._runtime._build_router", side_effect=lambda c, ws, **k: _mk_router_stub(ws)),
+        patch("bauer.commands.agent_cmd._build_fallback_clients", return_value=[]),
+        patch("bauer.agent._build_system_prompt", return_value="sys"),
+        patch("bauer.agent.run_one_turn_with_fallback", side_effect=_turn_reports_cost),
+    ]
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        with patch("bauer.commands.run_cmd.Path.cwd", return_value=proj):
+            result = runner.invoke(_app, ["run", "faca X", "--max-cost", "0.01"])
+
+    assert result.exit_code == 2  # parou por budget (custo estourou o teto)
+    # o resumo mostra custo REAL acumulado, não mais 0.000
+    assert "0.000" not in result.output.split("estimado")[0][-40:]
+
+
+def _mk_router_stub(ws):
+    r = MagicMock()
+    r.available_tools.return_value = []
+    r._approval_callback = None
+    r.workspace = ws
+    return r
