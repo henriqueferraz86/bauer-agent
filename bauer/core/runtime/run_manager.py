@@ -36,6 +36,14 @@ RUN_STATUSES: tuple[str, ...] = (
     "cancelled",
 )
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+# Estados de espera INTENCIONAL — um run parado nesses estados não está
+# "travado", está aguardando um humano (aprovação) ou foi pausado de propósito.
+# O runtime recovery NÃO deve matá-los por idade (senão descarta aprovações
+# pendentes e quebra o approve()/resume() posterior).
+WAITING_RUN_STATUSES = {"waiting_approval", "paused"}
+# Estados que o recovery PODE marcar como failed quando ficam velhos demais:
+# tudo que não é terminal nem espera intencional.
+RECOVERABLE_RUN_STATUSES = set(RUN_STATUSES) - TERMINAL_RUN_STATUSES - WAITING_RUN_STATUSES
 
 
 @dataclass

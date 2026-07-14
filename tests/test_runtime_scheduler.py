@@ -241,6 +241,28 @@ def test_recovery_marks_stuck_run_failed(tmp_path: Path):
     assert manager.get_run(run.id).status == "failed"  # type: ignore[union-attr]
 
 
+def test_recovery_preserves_waiting_approval_and_paused(tmp_path: Path):
+    """Regressão: um run velho em waiting_approval/paused está esperando um
+    humano de propósito — o recovery NÃO deve matá-lo por idade (senão
+    descarta a aprovação pendente e quebra o approve()/resume() posterior)."""
+    root = tmp_path / "runtime"
+    store = JsonlStateStore(root)
+    manager = RunManager(store=store)
+
+    for waiting_status in ("waiting_approval", "paused"):
+        run = manager.create_run(session_id="s1", agent_id="a1", status=waiting_status)
+        old = asdict(run)
+        old["updated_at"] = "2000-01-01T00:00:00+00:00"
+        old["started_at"] = "2000-01-01T00:00:00+00:00"
+        store.upsert("runs", old)
+
+    recovered = RuntimeRecovery(store=store).recover_stuck_runs(max_age_s=1)
+
+    assert recovered == []  # nenhum run de espera intencional foi tocado
+    for run_id in [r.id for r in manager.list_runs()]:
+        assert manager.get_run(run_id).status in ("waiting_approval", "paused")  # type: ignore[union-attr]
+
+
 def test_scheduler_pause_resume_delete(tmp_path: Path):
     scheduler = Scheduler(root=tmp_path / "runtime", adapter_factory=lambda _name: FakeAdapter())
     scheduler.add_task(_task())
