@@ -1740,7 +1740,12 @@ def create_app(
             _log.debug("loop config load failed: %s", exc)
         overrides = {"max_minutes": req.max_minutes, "max_tool_calls": req.max_tool_calls,
                      "max_cost_usd": req.max_cost_usd}
-        limits = resolve_loop_limits(loop_section, overrides, clamp_to_config=True)
+        try:
+            limits = resolve_loop_limits(loop_section, overrides, clamp_to_config=True)
+        except ValueError as exc:
+            # Limites inválidos vindos do request (max_minutes<=0, custo negativo…)
+            # são erro do cliente — 422, não 500 com stacktrace.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         # JSON histórico do endpoint: só as 3 chaves numéricas (sem approval).
         return {"max_minutes": limits.max_minutes, "max_tool_calls": limits.max_tool_calls,
                 "max_cost_usd": limits.max_cost_usd}

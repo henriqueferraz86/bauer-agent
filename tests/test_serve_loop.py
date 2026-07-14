@@ -331,6 +331,20 @@ def test_loop_request_can_only_tighten_limits(tmp_path: Path):
     assert body["limits"] == {"max_minutes": 5, "max_tool_calls": 5, "max_cost_usd": 1.0}
 
 
+def test_loop_invalid_limits_returns_422_not_500(tmp_path: Path):
+    """Regressão: limite inválido no request (max_minutes<=0) é erro do
+    cliente — resolve_loop_limits levanta ValueError, que deve virar 422,
+    não escapar como 500 com stacktrace."""
+    cfg = _cfg(tmp_path)
+    client = MagicMock()
+    client._provider = "openrouter"
+    app = _app(tmp_path, cfg, client)
+
+    resp = TestClient(app).post("/loop", json={"message": "x", "max_minutes": 0})
+    assert resp.status_code == 422
+    client.chat_stream.assert_not_called()
+
+
 def test_loop_works_without_kernel(tmp_path: Path):
     cfg = _cfg(tmp_path, kernel_enabled=False)
     client = MagicMock()
