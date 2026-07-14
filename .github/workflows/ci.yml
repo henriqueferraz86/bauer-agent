@@ -110,7 +110,7 @@ jobs:
         run: pip install uv
 
       - name: Instalar dependencias (simula onboarding limpo)
-        run: uv sync --all-extras
+        run: uv sync --all-extras --frozen
 
       - name: Verificar imports criticos
         run: |
