@@ -31,6 +31,18 @@ EXIT_INCOMPLETE = 2   # parou sem concluir (budget/kill-switch/erro)
 EXIT_INTERRUPTED = 130  # Ctrl+C
 
 
+class _CostRecorder:
+    """Sink do cost_meter para o `bauer run`: acumula o custo REAL de cada LLM
+    call para alimentar o guardrail --max-cost e o display de custo. Mesmo
+    contrato do sink do serve (provider, model, usage, cost_usd)."""
+
+    def __init__(self) -> None:
+        self.total_usd = 0.0
+
+    def __call__(self, provider: str, model: str, usage: dict, cost_usd: float) -> None:
+        self.total_usd += float(cost_usd or 0.0)
+
+
 def run(
     task: str = typer.Argument("", help="A tarefa a executar de ponta a ponta"),
     workspace: Path = typer.Option(None, "--workspace", help="Pasta de trabalho (padrão: pasta atual)"),
@@ -154,6 +166,28 @@ def run(
             return "kill_switch"
         return None
 
+    # Custo REAL por rodada → budget. Sem este sink, budget.consume_cost() nunca
+    # era chamado: o guardrail --max-cost não disparava e o display mostrava
+    # sempre ~US$ 0.000 (o banner promete "OU ~US$ X ESTIMADO"). Mesmo padrão do
+    # /loop da web (server._loop_worker): cost_sink acumula, on_round consome o
+    # delta no budget.
+    from ..cost_meter import cost_sink
+    _cost = _CostRecorder()
+    _cost_token = cost_sink.set(_cost)
+    _last_cost = 0.0
+
+    def _on_round(n: int, text: str, tl: list) -> None:
+        nonlocal _last_cost
+        delta = _cost.total_usd - _last_cost
+        _last_cost = _cost.total_usd
+        if delta > 0:
+            try:
+                budget.consume_cost(delta)
+            except Exception as exc:  # esgotou: run_loop_rounds encerra no topo
+                from ..logging_config import log_suppressed
+                log_suppressed("run_cmd.consume_cost", exc)
+        _print_round(n, budget, tl)
+
     router._approval_callback = engine.make_approval_callback()
     stop_reason = "completed"
     rounds = 0
@@ -163,11 +197,12 @@ def run(
         stop_reason, rounds, last_text, tool_log = run_loop_rounds(
             goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
             should_stop=_should_stop,
-            on_round=lambda n, text, tl: _print_round(n, budget, tl),
+            on_round=_on_round,
         )
     except KeyboardInterrupt:
         stop_reason = "interrupted"
     finally:
+        cost_sink.reset(_cost_token)
         router._approval_callback = None
         if admitted_run is not None:
             _finalize_run(kernel, admitted_run.id, stop_reason, last_text, tool_log, budget)
