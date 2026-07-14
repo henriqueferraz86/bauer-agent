@@ -16,17 +16,22 @@ from typing import Any
 
 
 def sanitize_surrogates(obj: Any) -> Any:
-    """Remove lone surrogates de strings, dicts e lists recursivamente.
+    r"""Remove lone surrogates de strings, dicts e lists recursivamente.
 
-    Usa encode/decode com errors='replace': surrogates viram U+FFFD (safe).
-    Tipos não-string são retornados sem modificação.
+    Usa encode/decode com errors='replace': no ENCODE, cada surrogate vira
+    '?' (o replacement de encode é ASCII '?', não U+FFFD). Tipos não-string
+    são retornados sem modificação.
+
+    Docstring é raw: com escape processado, "\udcff" viraria um surrogate
+    REAL dentro do __doc__ compilado — o Python 3.14 rejeita isso na
+    importação do módulo (UnicodeEncodeError: surrogates not allowed).
 
     Exemplo::
 
         >>> sanitize_surrogates("abc\udcffdef")
-        'abc�def'
-        >>> sanitize_surrogates({"path": "C:\\\\bad\udcffname"})
-        {'path': 'C:\\\\bad�name'}
+        'abc?def'
+        >>> sanitize_surrogates({"path": "C:\\bad\udcffname"})
+        {'path': 'C:\\bad?name'}
     """
     if isinstance(obj, str):
         # round-trip: encode remove surrogates, decode restitui string limpa

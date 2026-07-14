@@ -65,6 +65,18 @@ done
 [ -n "$PYTHON" ] || die "Python 3.11+ não encontrado. Instale Python 3.11 ou superior."
 info "Usando $PYTHON $PYVER"
 
+write_launcher() {
+    mkdir -p "$BIN_DIR"
+    cat > "$BAUER_BIN" << 'LAUNCHER'
+#!/usr/bin/env bash
+# -P (safe path): sem ele, `python -m` põe o CWD no sys.path — rodar `bauer`
+# dentro de um clone antigo do repo executaria o código do clone, não o
+# instalado (shadowing).
+exec "$HOME/.local/share/bauer-agent/.venv/bin/python" -P -m bauer.cli "$@"
+LAUNCHER
+    chmod +x "$BAUER_BIN"
+}
+
 # ─── Update ──────────────────────────────────────────────────────────────────
 if [ "$DO_UPDATE" = 1 ]; then
     [ -d "$INSTALL_DIR/.git" ] || die "Instalação não encontrada em $INSTALL_DIR. Execute sem --update para instalar."
@@ -77,6 +89,7 @@ if [ "$DO_UPDATE" = 1 ]; then
     else
         "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade -e "$INSTALL_DIR/"
     fi
+    write_launcher
     ok "Bauer Agent atualizado!"
     "$BAUER_BIN" --version 2>/dev/null || true
     exit 0
@@ -165,12 +178,7 @@ else
 fi
 
 # ─── Launcher ────────────────────────────────────────────────────────────────
-mkdir -p "$BIN_DIR"
-cat > "$BAUER_BIN" << 'LAUNCHER'
-#!/usr/bin/env bash
-exec "$HOME/.local/share/bauer-agent/.venv/bin/python" -m bauer.cli "$@"
-LAUNCHER
-chmod +x "$BAUER_BIN"
+write_launcher
 
 # ─── PATH ────────────────────────────────────────────────────────────────────
 PATH_ADDED=0
