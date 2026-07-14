@@ -163,6 +163,30 @@ def test_budget_blocks_execution_when_daily_limit_exceeded(tmp_path: Path):
     assert "budget.exceeded" in {event.event_type for event in events}
 
 
+def test_budget_blocked_task_does_not_refire_next_tick(tmp_path: Path):
+    """Regressão: uma tarefa bloqueada por budget num tick (manual=False)
+    avança next_run_at para o futuro, então NÃO reaparece em due_tasks no
+    tick imediatamente seguinte (antes re-disparava a cada tick → spam de
+    schedule.skipped e churn infinito)."""
+    root = tmp_path / "runtime"
+    budget = BudgetManager(root=root)
+    budget.set_profile(daily_budget_usd=0.10)
+    budget.record_run_cost(run_id="old-run", agent_id="productivity", cost_usd=0.10)
+    now = datetime(2026, 7, 8, 9, 0, tzinfo=UTC)
+    scheduler = Scheduler(root=root, adapter_factory=lambda _name: FakeAdapter())
+    scheduler.add_task(
+        {**_task(next_run_at=(now - timedelta(minutes=1)).isoformat()),
+         "policy": {"estimated_cost_usd": 0.01}}
+    )
+
+    # 1º tick: bloqueada por budget
+    first = scheduler.tick(now=now)
+    assert first[0]["reason"] == "budget"
+
+    # tick imediatamente seguinte (mesmo instante): não deve mais estar "due"
+    assert scheduler.due_tasks(now=now) == []
+
+
 def test_autonomy_locked_blocks_execution(tmp_path: Path):
     root = tmp_path / "runtime"
     BudgetManager(root=root).set_profile(mode="locked")
