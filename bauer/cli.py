@@ -108,11 +108,13 @@ from bauer.commands.kernel_cmd import kernel_app  # noqa: E402
 from bauer.commands.benchmark_cmd import benchmark_app  # noqa: E402
 from bauer.commands.home_cmd import home_app  # noqa: E402
 from bauer.commands.voice_cmd import voice_app  # noqa: E402
+from bauer.commands.setup_cmd import setup as _setup_command  # noqa: E402
 
 # Registro agrupado por painel (Fatia B). A ordem AQUI é a ordem de exibição no
 # --help; por isso "Começar aqui" vem primeiro. Nada foi removido/renomeado.
 
 # ── Começar aqui ──────────────────────────────────────────────────────────────
+app.command("setup", rich_help_panel=PANEL_START)(_setup_command)
 app.command("run", rich_help_panel=PANEL_START)(_run_command)
 app.add_typer(agent_app, name="agent", rich_help_panel=PANEL_START)
 app.add_typer(serve_app, name="serve", rich_help_panel=PANEL_START)
