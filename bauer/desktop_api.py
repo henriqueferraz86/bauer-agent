@@ -36,14 +36,27 @@ _SAFE_LOG_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 logger = logging.getLogger(__name__)
 
 
+# Padrões de nome de modelos de EMBEDDING — geram vetores, não conversam. O
+# Ollama recusa /api/chat neles (HTTP 400), então não fazem sentido no seletor
+# de modelo de chat e são filtrados do catálogo.
+_EMBEDDING_HINTS = ("embed", "bge", "minilm", "gte-", "e5-", "nomic-embed")
+
+
+def _looks_like_embedding(name: str) -> bool:
+    low = name.lower()
+    return any(hint in low for hint in _EMBEDDING_HINTS)
+
+
 def _ollama_installed(get_config_path: Callable[[], Path]) -> List[Dict[str, Any]]:
-    """Modelos Ollama LOCAIS instalados, formatados como itens de catálogo.
+    """Modelos Ollama LOCAIS de CHAT instalados, formatados como itens de catálogo.
 
     O catálogo do Desktop vem do models.dev (só cloud), então os modelos que o
     usuário baixou no Ollama nunca apareciam como provider selecionável. Esta
     helper os expõe com o mesmo shape do catálogo (id/provider/is_free), para
-    unificar as duas fontes. Retorna [] se o Ollama estiver offline ou o config
-    não puder ser lido — nunca levanta (o catálogo cloud segue funcionando).
+    unificar as duas fontes. Modelos de EMBEDDING são omitidos — não conversam,
+    e selecioná-los para chat dava HTTP 400. Retorna [] se o Ollama estiver
+    offline ou o config não puder ser lido — nunca levanta (o catálogo cloud
+    segue funcionando).
     """
     try:
         from .config_loader import load_config
@@ -65,6 +78,7 @@ def _ollama_installed(get_config_path: Callable[[], Path]) -> List[Dict[str, Any
                 "size_bytes": m.get("size_bytes", 0),
             }
             for m in oc.list_models_with_sizes()
+            if not _looks_like_embedding(m["name"])
         ]
     except Exception:
         return []

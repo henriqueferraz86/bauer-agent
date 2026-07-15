@@ -418,6 +418,37 @@ class TestOllamaLocalInCatalog:
         assert data["models"][0]["id"] == "deepseek-r1:32b"
 
 
+class TestEmbeddingFilter:
+    """Modelos de embedding (bge, *-embed) não conversam — são omitidos do
+    catálogo de chat para não darem HTTP 400 ao serem selecionados."""
+
+    def test_looks_like_embedding(self):
+        assert da._looks_like_embedding("bge-m3:latest")
+        assert da._looks_like_embedding("nomic-embed-text")
+        assert da._looks_like_embedding("all-minilm")
+        assert not da._looks_like_embedding("qwen2.5:7b")
+        assert not da._looks_like_embedding("deepseek-r1:32b")
+
+    def test_ollama_installed_omits_embeddings(self, tmp_path):
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("model:\n  provider: ollama\n  name: qwen2.5:7b\n", encoding="utf-8")
+
+        class _FakeOllama:
+            def __init__(self, *a, **k):
+                pass
+
+            def list_models_with_sizes(self):
+                return [
+                    {"name": "qwen2.5:7b", "size_bytes": 1},
+                    {"name": "bge-m3:latest", "size_bytes": 2},   # embedding → filtrado
+                    {"name": "deepseek-r1:32b", "size_bytes": 3},
+                ]
+
+        with patch("bauer.ollama_client.OllamaClient", _FakeOllama):
+            out = da._ollama_installed(lambda: cfg_path)
+        assert {m["id"] for m in out} == {"qwen2.5:7b", "deepseek-r1:32b"}
+
+
 class TestGatewayEndpoints:
     def test_status_reads_config(self, env):
         with patch("bauer.gateway_service.read_process_status", return_value=(None, None, None)):
