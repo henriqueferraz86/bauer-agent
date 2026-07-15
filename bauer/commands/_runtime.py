@@ -617,6 +617,47 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     )
 
 
+# Toolset enxuto aplicado automaticamente a modelos locais com contexto pequeno
+# (as ~79 tools = ~14k tokens estouram e o Ollama trunca o prompt em silêncio).
+# Cobre arquivos, shell, web, busca em código e utilitários — os fluxos mais
+# comuns. O usuário sobrescreve com tools.tool_allowlist explícito.
+_LOCAL_DEFAULT_ALLOWLIST = [
+    "read_file", "write_file", "list_dir", "run_command",
+    "web_search", "web_fetch", "search_text", "glob_files",
+    "datetime_now", "calculate", "memory", "todo",
+]
+# Abaixo deste contexto, expor todas as tools é arriscado em modelo local.
+_AUTO_SLIM_CONTEXT_THRESHOLD = 16384
+
+
+def _effective_tool_allowlist(cfg) -> "list[str] | None":
+    """Decide o tool_allowlist efetivo do router.
+
+    Precedência:
+      1. tools.tool_allowlist explícito no config → respeitado como está.
+      2. modelo LOCAL (ollama) + contexto pequeno + auto_tool_allowlist ligado
+         → aplica _LOCAL_DEFAULT_ALLOWLIST (evita o truncamento silencioso).
+      3. caso contrário → None (todas as tools).
+    """
+    if cfg is None:
+        return None
+    explicit = list(cfg.tools.tool_allowlist or ())
+    if explicit:
+        return explicit
+    if not getattr(cfg.tools, "auto_tool_allowlist", True):
+        return None
+    provider = (getattr(cfg.model, "provider", "") or "").lower()
+    ctx = int(getattr(cfg.model, "requested_context", 0) or 0)
+    if provider == "ollama" and 0 < ctx < _AUTO_SLIM_CONTEXT_THRESHOLD:
+        console.print(
+            f"[dim]Modelo local + contexto {ctx}: limitando a {len(_LOCAL_DEFAULT_ALLOWLIST)} "
+            "tools essenciais para o prompt não truncar. Defina tools.tool_allowlist "
+            "ou tools.auto_tool_allowlist=false para mudar.[/dim]"
+        )
+        return list(_LOCAL_DEFAULT_ALLOWLIST)
+    return None
+
+
 def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -> ToolRouter:
     """Cria ToolRouter com shell_runner, web e llm_client a partir da config.
 
@@ -667,7 +708,7 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
         model_name=cfg.model.name if cfg is not None else "",
         max_tool_calls=cfg.tools.max_tool_calls if cfg is not None else 500,
         session_id=session_id,
-        tool_allowlist=(list(cfg.tools.tool_allowlist) if cfg is not None else None),
+        tool_allowlist=_effective_tool_allowlist(cfg),
         postiz_api_key=postiz_api_key,
         postiz_api_url=postiz_api_url,
     )
