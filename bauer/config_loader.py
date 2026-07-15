@@ -645,6 +645,12 @@ class ToolsSection(_StrictSection):
     # em CPU. Vazio = todas as tools. Ex.: [web_search, web_fetch, read_file,
     # list_dir, run_command, datetime_now, calculate].
     tool_allowlist: list[str] = Field(default_factory=list)
+    # Quando tool_allowlist está VAZIO e o modelo é local (provider ollama) com
+    # contexto pequeno, aplica automaticamente um toolset enxuto embutido — as
+    # ~79 tools (~14k tokens) estouram contextos pequenos e o Ollama TRUNCA o
+    # prompt silenciosamente. True = protege por padrão; False = expõe todas.
+    # Um tool_allowlist explícito sempre tem precedência sobre este automático.
+    auto_tool_allowlist: bool = True
     # Comandos de SHELL extras liberados para run_command, além da allowlist
     # fixa embutida (git, python, npm, pytest...) em bauer/shell_runner.py.
     # Vazio = só a allowlist padrão. Ex.: [docker, docker-compose, kubectl].
