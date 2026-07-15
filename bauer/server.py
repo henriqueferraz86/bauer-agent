@@ -344,8 +344,10 @@ def _warmup_ollama_model(host: str, model: str) -> None:
                 },
                 timeout=120.0,
             )
-        except Exception:
-            pass  # warmup é best-effort; o load real acontece no 1º chat de qualquer forma
+        except Exception as exc:
+            # warmup é best-effort; o load real acontece no 1º chat de qualquer forma
+            from .logging_config import log_suppressed
+            log_suppressed("server.warmup_ollama", exc)
 
     threading.Thread(target=_load, daemon=True, name=f"warmup-{model}").start()
 
