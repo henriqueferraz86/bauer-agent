@@ -316,6 +316,42 @@ def _require_fastapi():
         )
 
 
+def _warmup_ollama_model(host: str, model: str) -> None:
+    """Pré-carrega um modelo Ollama na memória (GPU) em background.
+
+    Após um /models/switch para um modelo local, a PRIMEIRA mensagem pagaria o
+    custo de subir o modelo (vários GB) na GPU. Este warmup dispara o
+    carregamento na hora, em thread daemon (fire-and-forget): não bloqueia a
+    resposta do switch e ignora qualquer erro (é otimização, não correção).
+
+    Usa /api/generate com prompt vazio e num_predict=0 — o Ollama carrega o
+    modelo e retorna sem gerar texto. keep_alive segura ele na memória.
+    """
+    import threading
+
+    def _load() -> None:
+        try:
+            import httpx
+
+            httpx.post(
+                f"{host.rstrip('/')}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": "",
+                    "stream": False,
+                    "keep_alive": "30m",
+                    "options": {"num_predict": 0},
+                },
+                timeout=120.0,
+            )
+        except Exception as exc:
+            # warmup é best-effort; o load real acontece no 1º chat de qualquer forma
+            from .logging_config import log_suppressed
+            log_suppressed("server.warmup_ollama", exc)
+
+    threading.Thread(target=_load, daemon=True, name=f"warmup-{model}").start()
+
+
 def create_app(
     model_name: str,
     applied_context: int,
@@ -1059,6 +1095,12 @@ def create_app(
             _state["provider"] = new_provider
             if new_client is not None:
                 _state["client"] = new_client
+
+        # Warmup: sobe o modelo local na GPU já no switch (background), pra a
+        # primeira mensagem não travar carregando vários GB. Só para Ollama.
+        if _state["provider"] in ("ollama", ""):
+            _oll_host = getattr(_state.get("client"), "host", None) or "http://localhost:11434"
+            _warmup_ollama_model(_oll_host, _state["model"])
 
         return {"active": _state["model"], "provider": _state["provider"]}
 
