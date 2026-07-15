@@ -24,6 +24,10 @@ htmlcov/
 .mypy_cache/
 
 # Bauer Agent — runtime e dados locais
+# config.yaml é do USUÁRIO (gerado por `bauer setup`). Versioná-lo fazia o
+# git reset --hard do --update apagar a config de quem instalou. Template
+# fica em config.yaml.example.
+config.yaml
 .runtime_state.json
 .orchestrate_progress/
 .bauer_active_company

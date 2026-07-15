@@ -81,8 +81,21 @@ LAUNCHER
 if [ "$DO_UPDATE" = 1 ]; then
     [ -d "$INSTALL_DIR/.git" ] || die "Instalação não encontrada em $INSTALL_DIR. Execute sem --update para instalar."
     info "Atualizando $INSTALL_DIR ..."
+    # Preserva o config.yaml do usuário — o reset --hard abaixo o descartaria.
+    # (O config.yaml deixou de ser versionado, mas quem instalou antes ainda
+    # o tem trackeado; sem este backup o primeiro update apagaria a config.)
+    _cfg_backup=""
+    if [ -f "$INSTALL_DIR/config.yaml" ]; then
+        _cfg_backup="$(mktemp)"
+        cp "$INSTALL_DIR/config.yaml" "$_cfg_backup"
+    fi
     git -C "$INSTALL_DIR" fetch --depth=1 origin master
     git -C "$INSTALL_DIR" reset --hard origin/master
+    if [ -n "$_cfg_backup" ]; then
+        cp "$_cfg_backup" "$INSTALL_DIR/config.yaml"
+        rm -f "$_cfg_backup"
+        info "config.yaml do usuário preservado."
+    fi
     info "Atualizando dependências..."
     if [ -n "$EXTRA" ]; then
         "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade -e "$INSTALL_DIR/[$EXTRA]"
