@@ -7,7 +7,7 @@
 # Opções:
 #   --update          Atualiza instalação existente
 #   --uninstall       Remove completamente
-#   --extra=<extras>  Extras pip (padrão: gateway). Ex: --extra=all
+#   --extra=<extras>  Extras pip (padrão: gateway,web). Ex: --extra=all
 #   --no-extra        Instala só dependências core
 
 set -euo pipefail
@@ -23,7 +23,7 @@ ok()    { echo -e "${GREEN}[bauer]${NC} ✓ $*"; }
 warn()  { echo -e "${YELLOW}[bauer]${NC} ! $*"; }
 die()   { echo -e "${RED}[bauer]${NC} ✗ $*" >&2; exit 1; }
 
-DO_UNINSTALL=0; DO_UPDATE=0; EXTRA="gateway"; NO_EXTRA=0
+DO_UNINSTALL=0; DO_UPDATE=0; EXTRA="gateway,web"; NO_EXTRA=0
 for arg in "$@"; do
     case $arg in
         --uninstall)    DO_UNINSTALL=1 ;;

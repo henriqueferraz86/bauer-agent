@@ -514,7 +514,7 @@ class WebDispatcher:
                     "srprop": "snippet",
                 },
                 timeout=self.timeout,
-                headers={"User-Agent": "BauerAgent/1.0 (open-source agent)"},
+                headers={"User-Agent": "BauerAgent/1.0 (https://github.com/henriqueferraz86/bauer-agent)"},
             )
             resp.raise_for_status()
             data = resp.json()

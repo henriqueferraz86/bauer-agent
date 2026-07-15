@@ -127,6 +127,7 @@ def serve(
     console.print(f"  HTTP:       {base_url}")
     console.print(f"  Docs:       {base_url}/docs")
     console.print(f"  Auth:       {auth_status}")
+    console.print(f"[dim]  Config:     {config.resolve()}[/dim]")
     console.print(f"  Tools:      {', '.join(router.available_tools())}")
     console.print(f"[dim]  OpenAI-compat:  POST {base_url}/v1/chat/completions[/dim]")
 
