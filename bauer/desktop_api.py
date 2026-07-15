@@ -36,6 +36,40 @@ _SAFE_LOG_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 logger = logging.getLogger(__name__)
 
 
+def _ollama_installed(get_config_path: Callable[[], Path]) -> List[Dict[str, Any]]:
+    """Modelos Ollama LOCAIS instalados, formatados como itens de catálogo.
+
+    O catálogo do Desktop vem do models.dev (só cloud), então os modelos que o
+    usuário baixou no Ollama nunca apareciam como provider selecionável. Esta
+    helper os expõe com o mesmo shape do catálogo (id/provider/is_free), para
+    unificar as duas fontes. Retorna [] se o Ollama estiver offline ou o config
+    não puder ser lido — nunca levanta (o catálogo cloud segue funcionando).
+    """
+    try:
+        from .config_loader import load_config
+        from .ollama_client import OllamaClient
+
+        cfg = load_config(get_config_path())
+        oc = OllamaClient(
+            host=cfg.ollama.host,
+            timeout_seconds=min(int(getattr(cfg.ollama, "timeout_seconds", 30)), 3),
+            api_key=getattr(cfg.ollama, "api_key", ""),
+        )
+        return [
+            {
+                "id": m["name"],
+                "provider": "ollama",
+                "is_free": True,          # modelo local: sem custo por token
+                "cost": {},
+                "local": True,
+                "size_bytes": m.get("size_bytes", 0),
+            }
+            for m in oc.list_models_with_sizes()
+        ]
+    except Exception:
+        return []
+
+
 def _mask_secrets(node: Any) -> Any:
     """Mascara recursivamente valores de chaves sensíveis num dict de config."""
     if isinstance(node, dict):
@@ -345,10 +379,18 @@ def build_desktop_router(
             p = m.get("provider", "")
             if p:
                 seen[p] = seen.get(p, 0) + 1
-        # Ordena: primários primeiro (na ordem acima), depois demais por contagem desc
+        # Modelos Ollama LOCAIS: fonte separada do catálogo cloud. Injeta como
+        # provider "ollama" para que os modelos baixados apareçam no seletor.
+        local_count = len(_ollama_installed(get_config_path))
+        if local_count:
+            seen["ollama"] = local_count
+        # Ordena: primários primeiro (na ordem acima), depois demais por contagem desc.
+        # ollama local vai na frente de tudo — é o provider default do Bauer.
         primary = [p for p in _PRIMARY_PROVIDERS if p in seen]
+        if local_count:
+            primary = ["ollama", *primary]
         others = sorted(
-            [p for p in seen if p not in _PRIMARY_PROVIDERS],
+            [p for p in seen if p not in _PRIMARY_PROVIDERS and p != "ollama"],
             key=lambda p: -seen[p],
         )
         providers = primary + others[:20]
@@ -362,12 +404,16 @@ def build_desktop_router(
         limit: int = Query(200, ge=1, le=2000),
         offset: int = Query(0, ge=0),
     ):
-        try:
-            from .models_dev import catalog_models
+        if (provider or "").lower() == "ollama":
+            # Provider local: fonte é o Ollama instalado, não o models.dev.
+            models = _ollama_installed(get_config_path)
+        else:
+            try:
+                from .models_dev import catalog_models
 
-            models = catalog_models(provider=provider or None)
-        except Exception:  # noqa: BLE001
-            models = []
+                models = catalog_models(provider=provider or None)
+            except Exception:  # noqa: BLE001
+                models = []
         if q:
             ql = q.lower()
             models = [m for m in models if ql in str(m.get("id", "")).lower()]

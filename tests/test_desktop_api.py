@@ -376,6 +376,48 @@ class TestModelsCatalog:
         assert len(data["models"]) == 1
 
 
+class TestOllamaLocalInCatalog:
+    """Modelos Ollama LOCAIS aparecem no catálogo do Desktop como provider
+    próprio — antes só o catálogo cloud (models.dev) era exposto, então os
+    modelos baixados nunca apareciam no seletor."""
+
+    _LOCAL = [
+        {"id": "qwen2.5:7b", "provider": "ollama", "is_free": True, "cost": {}, "local": True, "size_bytes": 4683087332},
+        {"id": "deepseek-r1:32b", "provider": "ollama", "is_free": True, "cost": {}, "local": True, "size_bytes": 19851337809},
+    ]
+
+    def test_providers_list_ollama_first(self, env):
+        cloud = [{"id": "claude", "provider": "anthropic", "is_free": False}]
+        with patch("bauer.models_dev.catalog_models", return_value=cloud), \
+             patch("bauer.desktop_api._ollama_installed", return_value=self._LOCAL):
+            r = env["client"].get("/api/models/providers")
+        data = r.json()
+        assert data["providers"][0] == "ollama"     # local vem na frente do cloud
+        assert data["counts"]["ollama"] == 2
+
+    def test_providers_omit_ollama_when_none_installed(self, env):
+        cloud = [{"id": "claude", "provider": "anthropic", "is_free": False}]
+        with patch("bauer.models_dev.catalog_models", return_value=cloud), \
+             patch("bauer.desktop_api._ollama_installed", return_value=[]):
+            r = env["client"].get("/api/models/providers")
+        assert "ollama" not in r.json()["providers"]
+
+    def test_catalog_provider_ollama_returns_installed(self, env):
+        with patch("bauer.desktop_api._ollama_installed", return_value=self._LOCAL):
+            r = env["client"].get("/api/models/catalog?provider=ollama")
+        data = r.json()
+        assert data["total"] == 2
+        assert {m["id"] for m in data["models"]} == {"qwen2.5:7b", "deepseek-r1:32b"}
+        assert all(m["provider"] == "ollama" and m["is_free"] for m in data["models"])
+
+    def test_catalog_provider_ollama_respects_q(self, env):
+        with patch("bauer.desktop_api._ollama_installed", return_value=self._LOCAL):
+            r = env["client"].get("/api/models/catalog?provider=ollama&q=deepseek")
+        data = r.json()
+        assert data["total"] == 1
+        assert data["models"][0]["id"] == "deepseek-r1:32b"
+
+
 class TestGatewayEndpoints:
     def test_status_reads_config(self, env):
         with patch("bauer.gateway_service.read_process_status", return_value=(None, None, None)):
