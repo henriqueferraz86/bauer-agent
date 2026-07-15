@@ -222,6 +222,17 @@ def serve_service_stop():
         raise typer.Exit(code=1)
 
 
+@serve_service_app.command("restart", help="Reinicia o servidor HTTP (stop + start) — ex.: após editar o config")
+def serve_service_restart():
+    try:
+        mgr = _serve_svc_manager()
+        console.print(f"[green]✓[/green] {mgr.stop()}")
+        console.print(f"[green]✓[/green] {mgr.start()}")
+    except Exception as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+
 @serve_service_app.command("status", help="Estado do serviço: instalado, ativo, PID, uptime")
 def serve_service_status():
     from bauer.process_service import format_uptime
