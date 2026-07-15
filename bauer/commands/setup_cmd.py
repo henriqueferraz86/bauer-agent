@@ -129,7 +129,16 @@ def setup(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
 
+    # Cria a pasta workspace (get_bauer_home()/workspace) — a MESMA que serve e
+    # agent usam por padrão (_WORKSPACE_DIR). Sem isso, ela só surgia no primeiro
+    # uso, e quem procurava logo após instalar não a encontrava.
+    from ..paths import get_bauer_home
+
+    workspace = get_bauer_home() / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
     console.print(f"\n[green]✓[/green] Config gravado em {cfg_path}")
+    console.print(f"[green]✓[/green] Workspace pronto em {workspace}")
     console.print(
         f"  API key do serve: [dim]{api_key}[/dim]\n"
         "  [yellow]Guarde essa chave[/yellow] — ela protege o [bold]bauer serve[/bold] (header X-API-Key)."

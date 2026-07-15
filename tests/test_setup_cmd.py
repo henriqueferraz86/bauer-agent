@@ -52,3 +52,22 @@ class TestRenderConfig:
         assert cfg.model.provider == "ollama"
         assert cfg.model.name == _SUGGESTED_MODEL
         assert cfg.serve.api_key == "k" * 64
+
+
+class TestSetupCommand:
+    """`bauer setup` end-to-end (Ollama offline → degrada) num BAUER_HOME isolado."""
+
+    def test_creates_config_and_workspace(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from bauer.cli import app
+
+        monkeypatch.setenv("BAUER_HOME", str(tmp_path))
+        with patch("bauer.ollama_client.OllamaClient.is_alive", return_value=(False, "offline")):
+            result = CliRunner().invoke(app, ["setup", "--force", "--model", "qwen2.5:7b"])
+
+        assert result.exit_code == 0
+        assert (tmp_path / "config.yaml").exists()
+        assert (tmp_path / "workspace").is_dir()   # criado no setup, não só no 1º uso
