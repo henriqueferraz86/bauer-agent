@@ -258,13 +258,35 @@ def doctor(
         "blocked": "red",
     }.get(report.state.status, "white")
 
+    # Aceleração GPU — consulta /api/ps do Ollama: um modelo carregado revela
+    # se está na GPU (size_vram) ou caiu pra CPU. Foi o diagnóstico que mais
+    # custou tempo em deploy Linux (iGPU Intel sem driver Vulkan → 100% CPU).
+    gpu_line = "[dim]nenhum modelo carregado (rode uma query para checar)[/dim]"
+    try:
+        import httpx
+        _ps = httpx.get(f"{report.state.ollama_host}/api/ps", timeout=3.0).json().get("models", [])
+        if _ps:
+            _m = _ps[0]
+            _vram, _size = _m.get("size_vram", 0), _m.get("size", 0) or 1
+            _name = _m.get("name", "?")
+            if _vram >= _size:
+                gpu_line = f"[green]GPU 100%[/green] ({_name})"
+            elif _vram > 0:
+                gpu_line = f"[yellow]GPU {round(100 * _vram / _size)}% + CPU (parcial)[/yellow] ({_name})"
+            else:
+                gpu_line = f"[yellow]100% CPU — sem aceleração de GPU[/yellow] ({_name})"
+    except Exception:
+        gpu_line = "[dim]indisponível[/dim]"
+
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_row("Status:", f"[{color}]{report.state.status}[/{color}]")
     table.add_row("Maquina:", report.state.machine_id)
+    table.add_row("Config:", str(config.resolve()))
     table.add_row(
         "Ollama:",
         f"{'ativo' if report.state.ollama_alive else 'offline'} ({report.state.ollama_host})",
     )
+    table.add_row("Aceleração:", gpu_line)
     table.add_row(
         "Modelo:",
         f"{report.state.configured_model} ({'encontrado' if report.state.model_available else 'ausente'})",
@@ -294,14 +316,25 @@ def doctor(
         if _wb["search"] == "wikipedia":
             console.print(
                 "  [dim]Só Wikipedia (fatos, open-source). Para busca web geral: "
-                "pip install 'bauer-agent[web]' (ddgs) ou suba um SearXNG.[/dim]"
+                "pip install 'bauer-agent\\[web]' (ddgs) ou suba um SearXNG.[/dim]"
             )
     except Exception as _web_exc:
         console.print(f"[dim]Web search: não foi possível detectar ({_web_exc})[/dim]")
 
-    if report.findings:
+    # Tools vs contexto — armadilha em modelos locais: expor todas as ~79 tools
+    # gera um prompt de ~14k tokens que estoura contextos pequenos, e o Ollama
+    # TRUNCA o prompt silenciosamente (pode cortar a pergunta ou as tools).
+    notes = list(report.findings)
+    if not getattr(cfg.tools, "tool_allowlist", None) and report.state.context.applied < 8192:
+        notes.append(
+            f"Todas as tools expostas + contexto pequeno (applied={report.state.context.applied}): "
+            "o prompt pode truncar em modelos locais. Configure tools.tool_allowlist enxuto "
+            "(só as essenciais: web_search, web_fetch, read_file, run_command, datetime_now)."
+        )
+
+    if notes:
         console.print("\n[bold]Notas:[/bold]")
-        for line in report.findings:
+        for line in notes:
             console.print(f"  * {line}")
 
     console.print(f"\n[dim]Runtime state salvo em {path}[/dim]")
