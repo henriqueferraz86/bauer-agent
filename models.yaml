@@ -1,6 +1,12 @@
 # Registry de modelos conhecidos.
 # Campos ram_base_mb e ram_per_1k_ctx_mb conforme Decisão 3 (fórmula de RAM segura).
 # Valores iniciais são estimativas; o learning_engine (Fase 7) refina por máquina.
+#
+# supports_tools: true habilita FUNCTION CALLING NATIVO (estruturado, confiável);
+# false/partial cai no tool bridge (por prompt), que modelos menores seguem mal
+# em tarefas multi-passo. Os modelos qwen2.5/qwen3 suportam tools nativas no
+# Ollama — marcá-los false forçava o bridge e eles "descreviam" comandos em vez
+# de executá-los.
 
 models:
   "qwen2.5-coder:3b":
@@ -8,7 +14,7 @@ models:
     ram_base_mb: 2400
     ram_per_1k_ctx_mb: 35
     max_context_safe: 32768
-    supports_tools: false
+    supports_tools: true
     ram_profile: low
     recommended_for:
       - code_simple
@@ -20,7 +26,7 @@ models:
     ram_base_mb: 5200
     ram_per_1k_ctx_mb: 70
     max_context_safe: 32768
-    supports_tools: false
+    supports_tools: true
     ram_profile: medium
     recommended_for:
       - coding
@@ -39,7 +45,7 @@ models:
     ram_base_mb: 5000
     ram_per_1k_ctx_mb: 65
     max_context_safe: 32768
-    supports_tools: false
+    supports_tools: true
     ram_profile: medium
     recommended_for:
       - general
@@ -50,7 +56,7 @@ models:
     ram_base_mb: 9000
     ram_per_1k_ctx_mb: 120
     max_context_safe: 32768
-    supports_tools: false
+    supports_tools: true
     ram_profile: high
     recommended_for:
       - orchestration
@@ -62,11 +68,59 @@ models:
     ram_base_mb: 20000
     ram_per_1k_ctx_mb: 250
     max_context_safe: 32768
-    supports_tools: false
+    supports_tools: true
     ram_profile: high
     recommended_for:
       - orchestration
       - reasoning
+
+  "qwen3-coder:30b":
+    provider: ollama
+    ram_base_mb: 19000
+    ram_per_1k_ctx_mb: 200
+    max_context_safe: 32768
+    supports_tools: true
+    ram_profile: high
+    recommended_for:
+      - coding
+      - refactor
+      - automation
+
+  "qwen3.6:27b":
+    provider: ollama
+    ram_base_mb: 17000
+    ram_per_1k_ctx_mb: 180
+    max_context_safe: 32768
+    supports_tools: true
+    ram_profile: high
+    recommended_for:
+      - general
+      - reasoning
+      - orchestration
+
+  "deepseek-r1:32b":
+    provider: ollama
+    ram_base_mb: 20000
+    ram_per_1k_ctx_mb: 250
+    max_context_safe: 32768
+    # r1 tem thinking (raciocínio longo); function calling nativo é instável —
+    # fica no bridge de propósito. Usar para reasoning/análise, não para tools.
+    supports_tools: false
+    ram_profile: high
+    recommended_for:
+      - reasoning
+      - analysis
+
+  "bge-m3:latest":
+    provider: ollama
+    ram_base_mb: 1500
+    ram_per_1k_ctx_mb: 20
+    max_context_safe: 8192
+    # modelo de EMBEDDING — não conversa nem usa tools.
+    supports_tools: false
+    ram_profile: low
+    recommended_for:
+      - embedding
 
   "phi3:mini":
     provider: ollama
