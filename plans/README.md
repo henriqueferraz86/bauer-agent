@@ -35,7 +35,27 @@ de STOP, e atualize sua linha de status ao concluir.
 | [021](021-bauer-run-autonomous-entrypoint.md) | Criar `bauer run` como entrada autônoma única para tarefas de ponta a ponta | DX | P1 | L | — (isolado do 013) | SUPERSEDED (022) |
 | [022](022-bauer-run-e-simplificacao-cli.md) | `bauer run` governado pelo Kernel + simplificar superfície de comandos + desembaraçar limites | DX | P1 | L | — | DONE (branch bauer-run-cli) |
 
+| [023](023-system-prompt-mode-aware-tools.md) | System prompt não ensina tool-call-como-JSON em modo `native` (raiz da inconsistência de tools) | P3 | P1 | M | — | TODO |
+| [024](024-app-factory-integration-serve.md) | App Factory funciona pelo serve/Desktop (tools expostas + contexto no prompt) | P4 | P1 | M | 023 (rec.) | TODO |
+| [025](025-system-prompt-os-aware.md) | System prompt reflete o SO real (não "Windows" fixo) em servidores Linux | P3 | P2 | S | — | TODO |
+| [026](026-tool-capability-detection.md) | Aviso claro quando modelo cai no bridge por não estar no registry (+ detecção via Ollama) | P1 | P2 | M | — | TODO |
+| [027](027-doctor-agentic-stack-checks.md) | `bauer doctor` valida a stack agêntica (factory tools, tool mode, gate) | DX | P2 | S-M | — | TODO |
+
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
+
+**Rodada 5 (2026-07-18, commit `ced7dc2`) — tarefas agênticas + App Factory pelo `bauer serve`/Desktop com modelos locais**:
+planos 023–027, motivados por um deploy real (Ubuntu + Ollama, usuário no Desktop).
+Achado-raiz: o `_build_system_prompt` (compartilhado CLI/serve) **ensina o modelo a
+emitir tool calls como JSON de texto** mesmo em modo `native` — modelos fracos obedecem
+e não executam nada ("0 tools"); é a raiz de toda a inconsistência de tools (plano 023).
+Objetivo do usuário: usar o App Factory como hábito **pelo Desktop**, mas o serve não
+expõe as tools do factory nem injeta o estado dele no prompt (plano 024). Planos menores:
+prompt cravado em "Windows" num servidor Linux (025), degradação silenciosa pro bridge
+quando o modelo não está no `models.yaml` (026), e checagens da stack agêntica no doctor
+(027). Ordem: **023 → 024** (o factory depende das tools executarem); 025/026/027 independentes.
+Contexto operacional descoberto na sessão: tools escrevem no workspace do **projeto ativo**
+(`/api/projects` active), não em `~/.bauer/workspace`; `qwen3-coder:30b` faz tool calling
+nativo confiável, `qwen2.5:7b` não; modelo importado sem `RENDERER` no Modelfile degenera.
 
 **Rodada 4 (2026-07-12, commit `ffd3a3d`) — entrada autônoma simplificada**:
 o plano 021 cria `bauer run "tarefa"` como fachada síncrona do motor de `/loop`,
