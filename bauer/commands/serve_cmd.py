@@ -91,7 +91,8 @@ def serve(
     router = _build_router(cfg, workspace)
 
     from ..agent import _build_system_prompt
-    system_prompt = _build_system_prompt(router)
+    _tmode = state.get("tool_mode", "bridge") if isinstance(state, dict) else getattr(state, "tool_mode", "bridge")
+    system_prompt = _build_system_prompt(router, tool_mode=_tmode)
 
     # Fallback de provider (429/5xx) — paridade com o CLI `bauer agent`.
     try:
@@ -119,6 +120,7 @@ def serve(
         enable_access_log=cfg.serve.enable_access_log,
         config_path=config,
         fallback_clients=_fallback_clients,
+        tool_mode=_tmode,
     )
 
     auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"

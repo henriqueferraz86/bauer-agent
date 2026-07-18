@@ -368,6 +368,7 @@ def create_app(
     enable_access_log: bool = False,
     config_path: Optional[Path] = None,
     fallback_clients: list | None = None,
+    tool_mode: str = "bridge",
 ):
     """Cria e retorna o app FastAPI configurado."""
     _require_fastapi()
@@ -564,7 +565,7 @@ def create_app(
         try:
             from .agent import _build_system_prompt
 
-            return _build_system_prompt(router)
+            return _build_system_prompt(router, tool_mode=tool_mode)
         except Exception:
             return system_prompt
 
