@@ -794,6 +794,32 @@ class TestHttpRequest:
         assert "200" in result
         assert "status" in result
 
+    def test_blocks_ssrf_via_redirect(self, router_web):
+        """Regressão: a URL inicial é segura, mas o servidor responde 3xx para
+        um IP interno (metadata/RFC-1918). Com follow_redirects manual, cada
+        Location é revalidado ANTES de ser seguido — o redirect malicioso é
+        bloqueado e a 2ª request NUNCA acontece."""
+        import httpx
+
+        from bauer.tool_router import ToolError
+
+        redirect_resp = MagicMock()
+        redirect_resp.is_redirect = True
+        redirect_resp.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+        redirect_resp.url = httpx.URL("https://api.example.com/redir")
+        calls = {"n": 0}
+
+        def _fake_request(*a, **k):
+            calls["n"] += 1
+            return redirect_resp  # sempre um redirect p/ o IP interno
+
+        with patch("httpx.request", side_effect=_fake_request):
+            with pytest.raises(ToolError, match=r"(?i)(SSRF|redirect|BLOCKED|interno|private)"):
+                router_web.execute('{"action":"http_request","args":{"url":"https://api.example.com/redir"}}')
+
+        # Só a 1ª request (que retornou o redirect) — a 2ª foi barrada antes.
+        assert calls["n"] == 1
+
     def test_not_available_without_web_enabled(self, router):
         from bauer.tool_router import ToolError
         with pytest.raises(ToolError, match="desconhecida"):
