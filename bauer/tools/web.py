@@ -146,16 +146,34 @@ class WebToolsMixin:
 
         try:
             from ..http_shared import shared_ssl_context
+            _ssl = shared_ssl_context()
+            # SSRF via redirect: com follow_redirects=True o httpx seguiria um
+            # 3xx para http://169.254.169.254/ (metadata) ou um IP RFC-1918 SEM
+            # revalidar — burlando o _is_safe_url que só olhou a URL inicial.
+            # Seguimos manualmente, revalidando cada Location ANTES de ir nele.
+            _MAX_REDIRECTS = 5
             resp = httpx.request(
-                method,
-                url,
-                headers=headers,
-                json=json_body,
-                content=content_body,
-                timeout=15.0,
-                follow_redirects=True,
-                verify=shared_ssl_context(),
+                method, url, headers=headers, json=json_body, content=content_body,
+                timeout=15.0, follow_redirects=False, verify=_ssl,
             )
+            _hops = 0
+            while resp.is_redirect and _hops < _MAX_REDIRECTS:
+                location = resp.headers.get("location")
+                if not location:
+                    break
+                next_url = str(resp.url.join(location))  # resolve relativo
+                if _URL_SAFETY_AVAILABLE:
+                    try:
+                        _is_safe_url(next_url)
+                    except UrlSafetyError as exc:
+                        raise ToolError(f"[BLOCKED] SSRF em redirect: {exc}") from exc
+                resp = httpx.request(
+                    method, next_url, headers=headers, json=json_body,
+                    content=content_body, timeout=15.0, follow_redirects=False, verify=_ssl,
+                )
+                _hops += 1
+        except ToolError:
+            raise
         except httpx.TimeoutException:
             raise ToolError(f"Timeout ao acessar {url}")
         except Exception as exc:
