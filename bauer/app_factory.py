@@ -323,6 +323,47 @@ def missing_planning_docs(project_dir: Path | str) -> List[str]:
     return [d for d in PLANNING_DOCS if not doc_is_filled(project_dir, d)]
 
 
+def system_prompt_section(workspace: Path | str) -> str:
+    """Trecho de system prompt com o estado da App Factory do projeto ativo.
+
+    Vazio de conteúdo útil quando não há projeto governado — nesse caso orienta
+    o modelo a INICIAR o factory se o usuário descrever uma app nova. Quando há
+    projeto governado, informa o gate e os docs pendentes para o modelo conduzir
+    o Spec-Driven Development pelo chat (Desktop/serve). Best-effort: nunca
+    levanta — o serve não pode quebrar por causa disto. Ver plans/024.
+    """
+    try:
+        proj = get_active_project(workspace)
+        if proj is None or not is_governed(proj):
+            return (
+                "\n# APP FACTORY\n"
+                "Nenhum projeto sob governança da App Factory está ativo. Se o usuário\n"
+                "descrever uma ideia de aplicação NOVA, use a tool app_factory_init para\n"
+                "iniciar o Spec-Driven Development (cria os docs e ativa os gates) — nao\n"
+                "invente arquivos de planejamento (docs/plan.md etc.) na mao.\n"
+            )
+        gate = current_gate(proj)
+        gate_slug = gate.slug if gate is not None else "desconhecido"
+        missing = missing_planning_docs(proj)
+        lines = [
+            "\n# APP FACTORY (projeto governado ativo)\n",
+            f"Projeto: {proj.name} | Gate atual: {gate_slug}\n",
+            "Este projeto segue Spec-Driven Development com GATES. A escrita de codigo\n",
+            "fica BLOQUEADA ate o planejamento (docs) estar completo.\n",
+        ]
+        if missing:
+            lines.append(f"Docs de planejamento pendentes: {', '.join(missing)}\n")
+            lines.append(
+                "Ajude o usuario a preencher esses docs (write_file no diretorio docs/),\n"
+                "um de cada vez, ANTES de escrever codigo. Use app_factory_status para o progresso.\n"
+            )
+        else:
+            lines.append("Planejamento completo — a implementacao esta liberada.\n")
+        return "".join(lines)
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Gates
 # ---------------------------------------------------------------------------

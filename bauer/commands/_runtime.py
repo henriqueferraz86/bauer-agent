@@ -625,6 +625,7 @@ _LOCAL_DEFAULT_ALLOWLIST = [
     "read_file", "write_file", "list_dir", "run_command",
     "web_search", "web_fetch", "search_text", "glob_files",
     "datetime_now", "calculate", "memory", "todo",
+    "app_factory_init", "app_factory_status",
 ]
 # Abaixo deste contexto, expor todas as tools é arriscado em modelo local.
 _AUTO_SLIM_CONTEXT_THRESHOLD = 16384
