@@ -537,8 +537,13 @@ KANBAN_WORKER_GUIDANCE = (
 )
 
 
-def _build_system_prompt(router: ToolRouter) -> str:
-    """Monta o system prompt com a lista de tools disponíveis."""
+def _build_system_prompt(router: ToolRouter, tool_mode: str = "bridge") -> str:
+    """Monta o system prompt com a lista de tools disponíveis.
+
+    tool_mode="native" omite as instruções de emitir tool call como JSON de
+    texto (function calling nativo executa as tools pela API). tool_mode="bridge"
+    (default) mantém o protocolo JSON histórico. Ver plans/023.
+    """
     from datetime import datetime, timezone
     now = datetime.now()
     now_utc = datetime.now(timezone.utc)
@@ -556,6 +561,64 @@ def _build_system_prompt(router: ToolRouter) -> str:
     tools_section = "\n".join(tool_infos)
 
     tool_names = ", ".join(router.available_tools())
+
+    if tool_mode == "native":
+        # Function calling nativo: as tools são invocadas pela API. NÃO ensinar
+        # o formato JSON-de-texto (isso fazia modelos fracos emitir a tool call
+        # como texto, que o caminho nativo não executa — "0 tools"). Ver plans/023.
+        tool_protocol_block = (
+            "# FERRAMENTAS DISPONIVEIS\n"
+            f"Voce tem estas ferramentas via function calling nativo: {tool_names}\n"
+            f"{tools_section}\n\n"
+            "# COMO USAR FERRAMENTAS\n"
+            "Quando a tarefa exigir ler/escrever arquivos, rodar comandos ou buscar na web,\n"
+            "CHAME a ferramenta apropriada de verdade (tool call nativo). NAO escreva o comando\n"
+            "em texto nem em JSON no corpo da resposta — invoque a tool.\n"
+            "Para saudacoes, perguntas, explicacoes, codigo em bloco e conversas, responda em TEXTO PURO.\n\n"
+            "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
+            "Se o usuario pedir um comando shell (ex: 'pytest tests/', 'git status', 'python script.py'),\n"
+            "VOCE PODE E DEVE executar via a tool run_command (arg `command`). NUNCA responda\n"
+            "'nao tenho acesso ao terminal' — voce TEM. Se o comando exigir argumentos, rode com\n"
+            "--help primeiro para descobrir, depois com os argumentos certos.\n"
+            "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
+            "NUNCA responda 'O que prefere?' / 'Deseja que eu...' / 'sou apenas seu assistente' — AGE.\n"
+            "Responda sempre em portugues.\n\n"
+        )
+    else:
+        tool_protocol_block = (
+            "# FERRAMENTAS DISPONIVEIS\n"
+            f"Voce pode usar estas ferramentas: {tool_names}\n"
+            f"{tools_section}\n\n"
+            "# QUANDO USAR FERRAMENTA\n"
+            "Use UMA ferramenta SOMENTE se a pergunta exigir ler/escrever arquivos ou listar diretorios.\n"
+            "Nesse caso, responda SOMENTE com o JSON abaixo (sem texto antes ou depois):\n"
+            '{"action": "NOME_DA_TOOL", "args": {"parametro": "valor"}}\n\n'
+            "# QUANDO NAO USAR FERRAMENTA (maioria dos casos)\n"
+            "Para saudacoes, perguntas, explicacoes, codigo, matematica, conversas — responda em TEXTO PURO.\n\n"
+            "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
+            "Se o usuario digitar uma linha de comando shell (ex: 'bauer orchestrate run',\n"
+            "'pytest tests/', 'git status', 'python script.py'), VOCE PODE E DEVE executar\n"
+            "via a tool `run_command`. NUNCA responda 'nao tenho acesso ao terminal' — voce TEM.\n"
+            "Use run_command com o comando EXATO que o usuario pediu (passe arg `command`).\n"
+            "Exemplo: usuario diz 'bauer orchestrate run' -> {\"action\":\"run_command\",\"args\":{\"command\":\"bauer orchestrate run\"}}\n"
+            "Se o comando exigir argumentos extras, execute primeiro com --help para descobrir,\n"
+            "depois rode com os argumentos certos.\n\n"
+            "EXEMPLOS CORRETOS:\n"
+            "  Pergunta: 'oi'                  -> resposta: 'Ola! Como posso ajudar?'\n"
+            "  Pergunta: 'que horas sao?'       -> resposta: 'Sao X horas.'\n"
+            "  Pergunta: 'explique docker'      -> resposta em texto explicando docker\n"
+            "  Pergunta: 'liste os arquivos'    -> {\"action\": \"list_dir\", \"args\": {\"path\": \".\"}}\n"
+            "  Pergunta: 'leia o config.yaml'   -> {\"action\": \"read_file\", \"args\": {\"path\": \"config.yaml\"}}\n"
+            "  Pergunta: 'rode os testes'       -> {\"action\": \"run_command\", \"args\": {\"command\": \"pytest tests/ -v\"}}\n"
+            "  Pergunta: 'git status'           -> {\"action\": \"run_command\", \"args\": {\"command\": \"git status\"}}\n"
+            "  Pergunta: 'bauer doctor'         -> {\"action\": \"run_command\", \"args\": {\"command\": \"bauer doctor\"}}\n\n"
+            "ERRADO (nunca faca isso):\n"
+            "  Pergunta: 'oi' -> {\"action\": \"resposta\", ...}  <- ERRADO, use texto puro\n"
+            "  Qualquer resposta: 'O que prefere?' / 'Se quiser posso...' / 'Deseja que eu...' <- ERRADO\n"
+            "  Qualquer resposta: 'nao tenho acesso ao terminal' / 'sou apenas seu assistente' <- ERRADO, voce TEM run_command\n\n"
+            "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
+            "Responda sempre em portugues.\n\n"
+        )
 
     return (
         "Voce e o Bauer Agent, assistente de desenvolvimento local e agente autonomo.\n\n"
@@ -584,38 +647,7 @@ def _build_system_prompt(router: ToolRouter) -> str:
         "- `pip install`, `npm install`, `git push`, `rm` precisam `confirm: true` no args.\n"
         "- Antes de `python script.py`, LEIA o script para descobrir se exige argumentos.\n"
         "  Muitos scripts saem com 'Uso: python X.py <arg>' — read_file primeiro evita isso.\n\n"
-        "# FERRAMENTAS DISPONIVEIS\n"
-        f"Voce pode usar estas ferramentas: {tool_names}\n"
-        f"{tools_section}\n\n"
-        "# QUANDO USAR FERRAMENTA\n"
-        "Use UMA ferramenta SOMENTE se a pergunta exigir ler/escrever arquivos ou listar diretorios.\n"
-        "Nesse caso, responda SOMENTE com o JSON abaixo (sem texto antes ou depois):\n"
-        '{"action": "NOME_DA_TOOL", "args": {"parametro": "valor"}}\n\n'
-        "# QUANDO NAO USAR FERRAMENTA (maioria dos casos)\n"
-        "Para saudacoes, perguntas, explicacoes, codigo, matematica, conversas — responda em TEXTO PURO.\n\n"
-        "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
-        "Se o usuario digitar uma linha de comando shell (ex: 'bauer orchestrate run',\n"
-        "'pytest tests/', 'git status', 'python script.py'), VOCE PODE E DEVE executar\n"
-        "via a tool `run_command`. NUNCA responda 'nao tenho acesso ao terminal' — voce TEM.\n"
-        "Use run_command com o comando EXATO que o usuario pediu (passe arg `command`).\n"
-        "Exemplo: usuario diz 'bauer orchestrate run' -> {\"action\":\"run_command\",\"args\":{\"command\":\"bauer orchestrate run\"}}\n"
-        "Se o comando exigir argumentos extras, execute primeiro com --help para descobrir,\n"
-        "depois rode com os argumentos certos.\n\n"
-        "EXEMPLOS CORRETOS:\n"
-        "  Pergunta: 'oi'                  -> resposta: 'Ola! Como posso ajudar?'\n"
-        "  Pergunta: 'que horas sao?'       -> resposta: 'Sao X horas.'\n"
-        "  Pergunta: 'explique docker'      -> resposta em texto explicando docker\n"
-        "  Pergunta: 'liste os arquivos'    -> {\"action\": \"list_dir\", \"args\": {\"path\": \".\"}}\n"
-        "  Pergunta: 'leia o config.yaml'   -> {\"action\": \"read_file\", \"args\": {\"path\": \"config.yaml\"}}\n"
-        "  Pergunta: 'rode os testes'       -> {\"action\": \"run_command\", \"args\": {\"command\": \"pytest tests/ -v\"}}\n"
-        "  Pergunta: 'git status'           -> {\"action\": \"run_command\", \"args\": {\"command\": \"git status\"}}\n"
-        "  Pergunta: 'bauer doctor'         -> {\"action\": \"run_command\", \"args\": {\"command\": \"bauer doctor\"}}\n\n"
-        "ERRADO (nunca faca isso):\n"
-        "  Pergunta: 'oi' -> {\"action\": \"resposta\", ...}  <- ERRADO, use texto puro\n"
-        "  Qualquer resposta: 'O que prefere?' / 'Se quiser posso...' / 'Deseja que eu...' <- ERRADO\n"
-        "  Qualquer resposta: 'nao tenho acesso ao terminal' / 'sou apenas seu assistente' <- ERRADO, voce TEM run_command\n\n"
-        "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
-        "Responda sempre em portugues.\n\n"
+        f"{tool_protocol_block}"
         + TOOL_USE_ENFORCEMENT
         + (("\n" + MINIMAL_CODE_LADDER) if _minimal_code_mode_enabled() else "")
         + (("\n" + KANBAN_WORKER_GUIDANCE) if os.environ.get("BAUER_KANBAN_TASK") else "")
