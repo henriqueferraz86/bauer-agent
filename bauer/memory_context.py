@@ -59,6 +59,60 @@ def _safe_workspace(workspace: object) -> "str | bytes | Path | None":
 
 
 # ---------------------------------------------------------------------------
+# Cache de instância dos stores (evita reconstruí-los A CADA turno)
+# ---------------------------------------------------------------------------
+# Sem isto, prefetch/sync reconstruíam DecisionMemory + SqliteSessionStore a
+# cada turno de chat — cada __init__ roda DDL idempotente, um probe de FTS5
+# (CREATE+DROP de tabela virtual) e uma varredura de migração JSONL que já
+# terminou há muito. Cacheamos por caminho de banco (só FILE-based).
+#
+# Segurança de thread (prefetch/sync rodam em threads daemon):
+#   - SqliteSessionStore usa check_same_thread=False e abre conexão nova por op.
+#   - DecisionMemory FILE-based abre conexão nova por op (thread-local).
+#   - DecisionMemory ":memory:" segura uma conexão thread-affine → NUNCA
+#     cacheado (cai no caminho "constrói fresco" abaixo).
+_STORE_CACHE_LOCK = threading.Lock()
+_DM_CACHE: dict = {}
+_SS_CACHE: dict = {}
+
+
+def _decision_memory_for(db_path) -> object:
+    """DecisionMemory p/ o db_path. Cacheado só p/ arquivos reais; ":memory:"
+    sempre constrói fresco (conexão in-memory é thread-affine e o db vazio não
+    deve vazar estado entre turnos)."""
+    from .decision_memory import DecisionMemory
+    key = str(db_path)
+    if key == ":memory:":
+        return DecisionMemory(db_path=db_path)
+    with _STORE_CACHE_LOCK:
+        dm = _DM_CACHE.get(key)
+        if dm is None:
+            dm = DecisionMemory(db_path=db_path)
+            _DM_CACHE[key] = dm
+        return dm
+
+
+def _session_store_for(sessions_dir) -> object:
+    """SqliteSessionStore p/ o diretório. Cacheado por caminho — evita re-rodar
+    _init_db (probe FTS5) + _migrate_jsonl a cada turno."""
+    from .sqlite_session_store import SqliteSessionStore
+    key = str(sessions_dir)
+    with _STORE_CACHE_LOCK:
+        store = _SS_CACHE.get(key)
+        if store is None:
+            store = SqliteSessionStore(sessions_dir=sessions_dir)
+            _SS_CACHE[key] = store
+        return store
+
+
+def _reset_store_cache() -> None:
+    """Limpa o cache (uso em testes, p/ isolar entre tmp_path distintos)."""
+    with _STORE_CACHE_LOCK:
+        _DM_CACHE.clear()
+        _SS_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
 # Prefetch
 # ---------------------------------------------------------------------------
 
@@ -89,9 +143,8 @@ def prefetch_memory_context(
     # serial latency on the first turn after a cold start.
     def _query_decisions() -> None:
         try:
-            from .decision_memory import DecisionMemory
             db_path = Path(workspace) / "decisions.db" if workspace else ":memory:"
-            dm = DecisionMemory(db_path=db_path)
+            dm = _decision_memory_for(db_path)
             decisions.extend(
                 dm.search(user_input, top_k=top_k_decisions, min_score=_MIN_DECISION_SCORE)
             )
@@ -100,9 +153,8 @@ def prefetch_memory_context(
 
     def _query_sessions() -> None:
         try:
-            from .sqlite_session_store import SqliteSessionStore
             sessions_dir = Path(workspace) / "sessions" if workspace else "memory/sessions"
-            store = SqliteSessionStore(sessions_dir=sessions_dir)
+            store = _session_store_for(sessions_dir)
             sessions.extend(
                 store.search_sessions(user_input, top_k=top_k_sessions)
             )
@@ -200,9 +252,8 @@ def sync_memory_after_turn(
 
     def _sync() -> None:
         try:
-            from .decision_memory import DecisionMemory
             db_path = Path(workspace) / "decisions.db" if workspace else ":memory:"
-            dm = DecisionMemory(db_path=db_path)
+            dm = _decision_memory_for(db_path)
             # Build tags from tool log
             tags: list[str] = []
             if tool_log:
