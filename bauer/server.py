@@ -1417,6 +1417,8 @@ def create_app(
         STT_PROVIDER) — ver bauer/transcription.py."""
         import tempfile
 
+        import anyio
+
         from .transcription import AUDIO_EXTENSIONS, MAX_AUDIO_BYTES, transcribe_audio
 
         # (1) Rejeita cedo por Content-Length quando presente — evita começar a
@@ -1455,7 +1457,10 @@ def create_app(
                         ))
                     tmp.write(chunk)
 
-            result = transcribe_audio(tmp_path)
+            # transcribe_audio é síncrono e pode levar segundos (Whisper local
+            # ou HTTP p/ Groq/OpenAI). Numa rota async, rodá-lo inline travaria
+            # o event loop — joga p/ o threadpool. (Plano 023 #20.)
+            result = await anyio.to_thread.run_sync(transcribe_audio, tmp_path)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
@@ -2089,12 +2094,20 @@ def create_app(
         temperature: Optional[float] = None
 
     @app.post("/v1/chat/completions")
-    async def oai_chat_completions(
+    def oai_chat_completions(
         req: OAICompletionRequest,
         request: Request,
         _: None = Depends(_verify_key),
     ):
-        """Endpoint OpenAI-compatible para integração com Claw3D e outros clientes."""
+        """Endpoint OpenAI-compatible para integração com Claw3D e outros clientes.
+
+        Definido como `def` (não `async def`) de propósito: todo o trabalho aqui
+        é I/O SÍNCRONO bloqueante (resolução de contexto de memória em SQLite,
+        coleta da resposta do LLM). Numa rota `async def` isso travaria o event
+        loop, serializando requisições concorrentes e health checks. Como `def`,
+        o Starlette roda o handler no threadpool — mesmo padrão de /chat e
+        /stream. (Ver plano 023 #20.)
+        """
         import json as _json
         import uuid as _uuid
         import time as _time
