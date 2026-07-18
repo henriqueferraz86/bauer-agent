@@ -121,6 +121,7 @@ def serve(
         config_path=config,
         fallback_clients=_fallback_clients,
         tool_mode=_tmode,
+        workspace=workspace,
     )
 
     auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"

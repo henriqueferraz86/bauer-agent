@@ -369,6 +369,7 @@ def create_app(
     config_path: Optional[Path] = None,
     fallback_clients: list | None = None,
     tool_mode: str = "bridge",
+    workspace: Optional[Path] = None,
 ):
     """Cria e retorna o app FastAPI configurado."""
     _require_fastapi()
@@ -561,11 +562,20 @@ def create_app(
         return resolved_router, active_project_id
 
     def _current_system_prompt() -> str:
-        """Refresh request-scoped prompt data such as current date/time."""
+        """Refresh request-scoped prompt data such as current date/time.
+
+        Anexa o estado da App Factory (projeto governado ativo, gate, docs
+        pendentes) por-request, para o modelo conduzir o Spec-Driven Development
+        pelo Desktop. Best-effort — ver plans/024.
+        """
         try:
             from .agent import _build_system_prompt
 
-            return _build_system_prompt(router, tool_mode=tool_mode)
+            prompt = _build_system_prompt(router, tool_mode=tool_mode)
+            if workspace is not None:
+                from . import app_factory as _af
+                prompt += _af.system_prompt_section(workspace)
+            return prompt
         except Exception:
             return system_prompt
 
