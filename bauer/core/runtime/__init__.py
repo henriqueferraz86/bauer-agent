@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 __all__ = [
-    "AgentRegistry",
-    "AgentRegistryError",
+    "RuntimeAgentRegistry",
+    "RuntimeAgentRegistryError",
     "AgentSpec",
     "DelegationManager",
     "DelegationRecord",
@@ -21,10 +21,10 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"AgentRegistry", "AgentRegistryError"}:
-        from .agent_registry import AgentRegistry, AgentRegistryError
+    if name in {"RuntimeAgentRegistry", "RuntimeAgentRegistryError"}:
+        from .agent_registry import RuntimeAgentRegistry, RuntimeAgentRegistryError
 
-        return {"AgentRegistry": AgentRegistry, "AgentRegistryError": AgentRegistryError}[name]
+        return {"RuntimeAgentRegistry": RuntimeAgentRegistry, "RuntimeAgentRegistryError": RuntimeAgentRegistryError}[name]
     if name == "AgentSpec":
         from .agent_spec import AgentSpec
 

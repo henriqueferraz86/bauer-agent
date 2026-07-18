@@ -25,7 +25,7 @@ runtime_app.add_typer(runtime_service_app, name="service")
 @runtime_agents_app.command("list")
 def runtime_agents_list_cmd():
     """Lista agents formais versionados do runtime."""
-    from ..core.runtime import AgentRegistry
+    from ..core.runtime import RuntimeAgentRegistry
 
     table = Table(title="Bauer Runtime Agents", show_lines=False)
     table.add_column("ID", style="cyan")
@@ -33,7 +33,7 @@ def runtime_agents_list_cmd():
     table.add_column("Runtime")
     table.add_column("Model")
     table.add_column("Permissions")
-    for spec in AgentRegistry().list():
+    for spec in RuntimeAgentRegistry().list():
         table.add_row(
             spec.id,
             spec.version,
@@ -52,9 +52,9 @@ def runtime_agents_show_cmd(
     """Mostra a AgentSpec formal."""
     import json
 
-    from ..core.runtime import AgentRegistry
+    from ..core.runtime import RuntimeAgentRegistry
 
-    spec = AgentRegistry().get(agent_id, version=version or None)
+    spec = RuntimeAgentRegistry().get(agent_id, version=version or None)
     if spec is None:
         console.print(f"[red]Agent nao encontrado:[/red] {agent_id}")
         raise typer.Exit(code=1)

@@ -12,7 +12,7 @@ import yaml
 
 from ..events import EventBus
 from ..policy import PolicyEngine
-from .agent_registry import AgentRegistry
+from .agent_registry import RuntimeAgentRegistry
 from .run_manager import Run, RunManager
 from .state_store import JsonlStateStore
 
@@ -59,10 +59,10 @@ class DelegationRecord:
 
 
 class TeamRegistry:
-    def __init__(self, roots: list[str | Path] | None = None, agent_registry: AgentRegistry | None = None):
+    def __init__(self, roots: list[str | Path] | None = None, agent_registry: RuntimeAgentRegistry | None = None):
         formal_root = Path(__file__).resolve().parents[2] / "data" / "team_specs"
         self.roots = [Path(root) for root in (roots or [formal_root])]
-        self.agent_registry = agent_registry or AgentRegistry()
+        self.agent_registry = agent_registry or RuntimeAgentRegistry()
 
     def list(self) -> list[TeamSpec]:
         teams: dict[str, TeamSpec] = {}
@@ -118,14 +118,14 @@ class DelegationManager:
         *,
         root: str | Path = "memory/runtime",
         team_registry: TeamRegistry | None = None,
-        agent_registry: AgentRegistry | None = None,
+        agent_registry: RuntimeAgentRegistry | None = None,
         run_manager: RunManager | None = None,
         policy_engine: PolicyEngine | None = None,
         event_bus: EventBus | None = None,
     ):
         self.store = JsonlStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
-        self.agent_registry = agent_registry or AgentRegistry()
+        self.agent_registry = agent_registry or RuntimeAgentRegistry()
         self.team_registry = team_registry or TeamRegistry(agent_registry=self.agent_registry)
         self.run_manager = run_manager or RunManager(store=self.store, event_bus=self.event_bus, agent_registry=self.agent_registry)
         self.policy_engine = policy_engine or PolicyEngine(runtime_root=root)

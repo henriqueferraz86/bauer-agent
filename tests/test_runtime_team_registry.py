@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 from bauer.cli import app
 from bauer.core.events import EventBus
 from bauer.core.policy import PolicyEngine
-from bauer.core.runtime import AgentRegistry, DelegationManager, RunManager, TeamRegistry
+from bauer.core.runtime import RuntimeAgentRegistry, DelegationManager, RunManager, TeamRegistry
 
 
 def _write_agent(path: Path, agent_id: str) -> None:
@@ -62,7 +62,7 @@ def _manager(tmp_path: Path, *, budget: float = 3.0, policy: PolicyEngine | None
     for agent_id in ("agent.product", "agent.dev", "agent.qa"):
         _write_agent(agents_root / agent_id / "agent.yaml", agent_id)
     _write_team(teams_root / "team.dev" / "team.yaml", budget=budget)
-    agent_registry = AgentRegistry([agents_root])
+    agent_registry = RuntimeAgentRegistry([agents_root])
     team_registry = TeamRegistry([teams_root], agent_registry=agent_registry)
     bus = EventBus(root=tmp_path / "runtime")
     run_manager = RunManager(root=tmp_path / "runtime", event_bus=bus, agent_registry=agent_registry)

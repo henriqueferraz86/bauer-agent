@@ -5,7 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from bauer.cli import app
-from bauer.core.runtime import AgentRegistry, RunManager
+from bauer.core.runtime import RuntimeAgentRegistry, RunManager
 
 
 def _write_agent(path: Path, *, version: str, permissions: list[str] | None = None) -> None:
@@ -39,7 +39,7 @@ def test_formal_agent_registry_loads_versioned_specs(tmp_path):
     _write_agent(root / "bauer.dev" / "0.1.0.yaml", version="0.1.0", permissions=["filesystem.read"])
     _write_agent(root / "bauer.dev" / "0.2.0.yaml", version="0.2.0", permissions=["filesystem.read", "shell.execute"])
 
-    registry = AgentRegistry([root])
+    registry = RuntimeAgentRegistry([root])
 
     latest = registry.get("bauer.dev")
     assert latest is not None
@@ -57,7 +57,7 @@ def test_agent_registry_tracks_permissions(tmp_path):
     root = tmp_path / "agents"
     _write_agent(root / "bauer.dev" / "agent.yaml", version="0.1.0", permissions=["filesystem.read", "shell.execute"])
 
-    matches = AgentRegistry([root]).by_permission("shell.execute")
+    matches = RuntimeAgentRegistry([root]).by_permission("shell.execute")
 
     assert [match.id for match in matches] == ["bauer.dev"]
 
@@ -75,7 +75,7 @@ agents:
         encoding="utf-8",
     )
 
-    spec = AgentRegistry([agents_yaml]).get("legacy-code")
+    spec = RuntimeAgentRegistry([agents_yaml]).get("legacy-code")
 
     assert spec is not None
     assert spec.version == "0.1.0"
@@ -88,7 +88,7 @@ def test_run_manager_creates_run_from_agent_registry(tmp_path):
     root = tmp_path / "agents"
     _write_agent(root / "bauer.dev" / "agent.yaml", version="0.1.0", permissions=["filesystem.read", "shell.execute"])
 
-    run = RunManager(root=tmp_path / "runtime", agent_registry=AgentRegistry([root])).create_run_for_agent(
+    run = RunManager(root=tmp_path / "runtime", agent_registry=RuntimeAgentRegistry([root])).create_run_for_agent(
         agent_id="bauer.dev",
         session_id="session-1",
         input={"message": "teste"},
@@ -102,7 +102,7 @@ def test_run_manager_creates_run_from_agent_registry(tmp_path):
 
 
 def test_builtin_bauer_dev_agent_is_registered():
-    spec = AgentRegistry().get("bauer.dev")
+    spec = RuntimeAgentRegistry().get("bauer.dev")
 
     assert spec is not None
     assert spec.version == "0.1.0"
