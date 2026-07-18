@@ -1407,22 +1407,58 @@ def create_app(
         )
 
     @app.post("/transcribe")
-    async def transcribe(file: UploadFile = File(...), _: None = Depends(_verify_key)):
+    async def transcribe(
+        request: Request,
+        file: UploadFile = File(...),
+        _: None = Depends(_verify_key),
+    ):
         """Transcreve áudio (gravado no microfone da UI) usando o mesmo pipeline
         STT do gateway (Groq/OpenAI Whisper ou faster-whisper local, conforme
         STT_PROVIDER) — ver bauer/transcription.py."""
         import tempfile
 
-        from .transcription import transcribe_audio
+        from .transcription import AUDIO_EXTENSIONS, MAX_AUDIO_BYTES, transcribe_audio
 
-        suffix = Path(file.filename or "audio.webm").suffix or ".webm"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(await file.read())
-            tmp_path = Path(tmp.name)
+        # (1) Rejeita cedo por Content-Length quando presente — evita começar a
+        # materializar um upload gigante. NÃO é a única defesa (o header pode
+        # mentir ou faltar); o corte por streaming abaixo é o que garante.
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=413, detail=(
+                f"Áudio excede o limite de {MAX_AUDIO_BYTES // (1024 * 1024)}MB."
+            ))
+
+        # (2) Valida a extensão ANTES de escrever qualquer byte em disco.
+        suffix = Path(file.filename or "audio.webm").suffix.lower() or ".webm"
+        if suffix not in AUDIO_EXTENSIONS:
+            raise HTTPException(status_code=415, detail=(
+                f"Extensão {suffix!r} não suportada. Aceitas: "
+                f"{', '.join(sorted(AUDIO_EXTENSIONS))}."
+            ))
+
+        # (3) Lê em streaming com corte rígido no limite — a defesa real contra
+        # Content-Length ausente/mentiroso. Aborta e apaga assim que ultrapassa,
+        # em vez de carregar o corpo inteiro em memória com `await file.read()`.
+        tmp_path: Path | None = None
         try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+                written = 0
+                while True:
+                    chunk = await file.read(1024 * 1024)  # 1MB por vez
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > MAX_AUDIO_BYTES:
+                        raise HTTPException(status_code=413, detail=(
+                            f"Áudio excede o limite de {MAX_AUDIO_BYTES // (1024 * 1024)}MB."
+                        ))
+                    tmp.write(chunk)
+
             result = transcribe_audio(tmp_path)
         finally:
-            tmp_path.unlink(missing_ok=True)
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
         if not result["success"]:
             raise HTTPException(status_code=422, detail=result["error"])
