@@ -38,10 +38,11 @@ class FactoryToolsMixin:
         # projetos) e herdava/misturava estado de projetos anteriores.
         _path_err = (
             "app_factory_init: 'path' é obrigatório — informe a pasta do NOVO "
-            "projeto usando o NOME DO APP em kebab-case (ex.: idea 'BauerInvest' "
-            "→ path 'bauerinvest'). A raiz do workspace é compartilhada por "
-            "vários projetos e NÃO pode ser governada. Nunca reutilize a pasta "
-            "de outro projeto."
+            "projeto usando o NOME DA IDEIA DO USUÁRIO em kebab-case. DERIVE o "
+            "path da ideia que o usuário descreveu (ex.: ideia 'gestor de estoque' "
+            "→ path 'gestor-de-estoque') — NUNCA copie o nome do exemplo. A raiz "
+            "do workspace é compartilhada por vários projetos e NÃO pode ser "
+            "governada. Nunca reutilize a pasta de outro projeto."
         )
         sub = str(args.get("path", "") or "").strip()
         if not sub or sub in (".", "./"):

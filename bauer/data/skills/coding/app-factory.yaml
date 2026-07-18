@@ -17,8 +17,10 @@ content: |
   ## Regra de pasta única (containment — 1 ideia = 1 pasta)
 
   Cada ideia/projeto vive em UMA pasta própria. `app_factory_init` EXIGE `path`:
-  use o NOME DO APP em kebab-case (ex.: app "BauerInvest" → `path: "bauerinvest"`) —
-  confira a grafia, o nome da pasta é a identidade do projeto. Essa
+  DERIVE o nome da pasta da IDEIA QUE O USUÁRIO DESCREVEU, em kebab-case
+  (ex.: ideia "gestor de estoque" → `path: "gestor-de-estoque"`). NUNCA copie o
+  nome do exemplo — use sempre a ideia real do usuário. O nome da pasta é a
+  identidade do projeto. Essa
   pasta vira o **projeto ativo** e a ToolRouter passa a **bloquear qualquer
   escrita FORA dela** — nada de arquivos soltos na raiz do workspace nem pastas
   irmãs. Escreva TUDO sob a pasta da ideia: `<pasta>/app/...`,

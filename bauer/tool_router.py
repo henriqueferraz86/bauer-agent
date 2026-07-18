@@ -856,8 +856,10 @@ class ToolRouter(
             "args": {
                 "idea": "str — descricao da ideia/aplicacao (obrigatorio)",
                 "path": (
-                    "str — pasta do NOVO projeto (OBRIGATORIO): nome do app em "
-                    "kebab-case, ex.: idea 'BauerInvest' → path 'bauerinvest'. "
+                    "str — pasta do NOVO projeto (OBRIGATORIO): nome DA IDEIA DO "
+                    "USUARIO em kebab-case, DERIVADO da ideia descrita neste chat "
+                    "(ex.: ideia 'gestor de estoque' -> path 'gestor-de-estoque'). "
+                    "NUNCA copie o nome do exemplo — use a ideia real do usuario. "
                     "Nunca '.' nem a raiz do workspace."
                 ),
                 "stack": "str — stack preferida, ex: FastAPI+React (opcional)",
