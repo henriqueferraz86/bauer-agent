@@ -379,6 +379,33 @@ def test_transcribe_cleans_up_temp_file(tmp_path: Path):
     assert not captured["path"].exists()
 
 
+def test_transcribe_rejects_bad_extension_415(tmp_path: Path):
+    """Extensão fora da whitelist é rejeitada ANTES de escrever em disco."""
+    with patch("bauer.transcription.transcribe_audio") as mock_stt:
+        client = _make_app(tmp_path)
+        resp = client.post("/transcribe", files={"file": ("payload.exe", b"abc", "application/octet-stream")})
+
+    assert resp.status_code == 415
+    mock_stt.assert_not_called()  # nunca chegou a transcrever
+
+
+def test_transcribe_rejects_oversized_413(tmp_path: Path):
+    """Corpo acima do limite é cortado no streaming → 413 sem materializar tudo.
+
+    Reduz MAX_AUDIO_BYTES para um valor minúsculo e envia um corpo maior — o
+    corte por chunk deve disparar 413 e nunca chamar a transcrição."""
+    with patch("bauer.transcription.MAX_AUDIO_BYTES", 8), \
+         patch("bauer.transcription.transcribe_audio") as mock_stt:
+        client = _make_app(tmp_path)
+        resp = client.post(
+            "/transcribe",
+            files={"file": ("voice.webm", b"x" * 4096, "audio/webm")},
+        )
+
+    assert resp.status_code == 413
+    mock_stt.assert_not_called()
+
+
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 
