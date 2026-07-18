@@ -39,6 +39,25 @@ _MAX_DECISION_CHARS = 300
 _MAX_SNIPPET_CHARS = 200
 
 
+def _safe_workspace(workspace: object) -> "str | bytes | Path | None":
+    """Normaliza o workspace para um caminho válido ou None.
+
+    Guard de tipo: um objeto truthy não-caminho (ex.: cfg.workspace vindo de
+    um MagicMock em teste, ou config malformado em produção) faria
+    Path(obj)/"decisions.db" criar arquivos em local arbitrário (ex.:
+    "MagicMock/mock.workspace/<id>/decisions.db"). Nesse caso devolve None,
+    que faz o chamador cair no fallback ":memory:" em vez de escrever no disco.
+
+    Usa os tipos CONCRETOS (str/bytes/Path), não o protocolo os.PathLike — um
+    MagicMock satisfaz isinstance(_, os.PathLike) (implementa __fspath__
+    automaticamente, devolvendo uma string), então o guard de protocolo o
+    deixaria passar. O guard de tipo concreto o rejeita.
+    """
+    if workspace is not None and not isinstance(workspace, (str, bytes, Path)):
+        return None
+    return workspace  # type: ignore[return-value]
+
+
 # ---------------------------------------------------------------------------
 # Prefetch
 # ---------------------------------------------------------------------------
@@ -62,6 +81,7 @@ def prefetch_memory_context(
     if not user_input or not user_input.strip():
         return None
 
+    workspace = _safe_workspace(workspace)
     decisions: list = []
     sessions: list = []
 
@@ -175,6 +195,8 @@ def sync_memory_after_turn(
         return
     if len(response.strip()) < 40:
         return
+
+    workspace = _safe_workspace(workspace)
 
     def _sync() -> None:
         try:

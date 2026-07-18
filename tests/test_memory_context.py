@@ -184,3 +184,27 @@ class TestContextManagerEphemeralSystem:
         ctx.add_user("user question")
         roles = [m["role"] for m in ctx.messages]
         assert roles == ["system", "user"]
+
+
+class TestWorkspaceTypeGuard:
+    """Guard de tipo do workspace — evita Path(MagicMock()) escrevendo lixo."""
+
+    def test_safe_workspace_passes_valid_paths(self, tmp_path):
+        from bauer.memory_context import _safe_workspace
+        assert _safe_workspace(None) is None
+        assert _safe_workspace("some/dir") == "some/dir"
+        assert _safe_workspace(tmp_path) == tmp_path
+
+    def test_safe_workspace_rejects_non_path(self):
+        from bauer.memory_context import _safe_workspace
+        assert _safe_workspace(MagicMock()) is None
+        assert _safe_workspace(123) is None
+
+    def test_prefetch_with_mock_workspace_writes_nothing_to_cwd(self, tmp_path, monkeypatch):
+        """Regressão: um MagicMock como workspace (comum em testes que mockam
+        config) fazia Path(MagicMock())/decisions.db criar 'MagicMock/...' na
+        raiz do repo. Com o guard, cai no ':memory:' e nada é escrito no CWD."""
+        monkeypatch.chdir(tmp_path)
+        # Não deve levantar nem criar diretórios de lixo.
+        prefetch_memory_context("qual a decisão?", workspace=MagicMock())
+        assert not any(p.name == "MagicMock" for p in tmp_path.iterdir())

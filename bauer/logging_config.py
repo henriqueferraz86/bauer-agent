@@ -38,7 +38,15 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
     stream.setFormatter(fmt)
     logger.addHandler(stream)
 
-    if file_path:
+    # Guard de tipo: só trata file_path como caminho se for str/bytes/Path
+    # (tipos CONCRETOS, não o protocolo os.PathLike — um MagicMock satisfaz
+    # isinstance(_, os.PathLike) por implementar __fspath__ automaticamente).
+    # Um objeto truthy não-caminho (ex.: cfg.logging.file vindo de um
+    # MagicMock em teste, ou um config malformado em produção) faria
+    # Path(obj) criar diretórios de lixo em local arbitrário (ex.:
+    # "MagicMock/mock.logging.file/<id>"). Nesse caso, pula o log em arquivo
+    # (o log de console segue funcionando) em vez de escrever onde não deve.
+    if file_path and isinstance(file_path, (str, bytes, Path)):
         path = Path(file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(path, encoding="utf-8")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from bauer.logging_config import get_logger, setup_logging
 
@@ -74,3 +75,21 @@ def test_get_logger_returns_bauer_logger():
 def test_get_logger_custom_name():
     logger = get_logger("bauer.submodule")
     assert logger.name == "bauer.submodule"
+
+
+def test_setup_logging_ignores_non_path_file(tmp_path, monkeypatch):
+    """Regressão: file_path truthy não-caminho (ex.: cfg.logging.file de um
+    MagicMock, ou config malformado) NÃO deve criar diretórios de lixo no CWD
+    — antes 'MagicMock/mock.logging.file/<id>' aparecia na raiz do repo. Com
+    o guard de tipo, o log em arquivo é pulado (console segue)."""
+    monkeypatch.chdir(tmp_path)
+    bauer_logger = logging.getLogger("bauer")
+    bauer_logger.handlers.clear()
+
+    logger = setup_logging(level="info", file_path=MagicMock())
+
+    # Nenhum FileHandler foi adicionado (só o StreamHandler de console).
+    assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+    # E nada de lixo "MagicMock/" foi criado no CWD isolado.
+    assert not any(p.name == "MagicMock" for p in tmp_path.iterdir())
+    bauer_logger.handlers.clear()
