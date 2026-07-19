@@ -208,3 +208,49 @@ class TestWorkspaceTypeGuard:
         # Não deve levantar nem criar diretórios de lixo.
         prefetch_memory_context("qual a decisão?", workspace=MagicMock())
         assert not any(p.name == "MagicMock" for p in tmp_path.iterdir())
+
+
+class TestStoreInstanceCache:
+    """#17 — prefetch/sync não devem reconstruir os stores a cada turno."""
+
+    def test_prefetch_reuses_cached_stores_for_same_workspace(self, tmp_path):
+        from bauer import memory_context as mc
+        mc._reset_store_cache()
+
+        dm_calls = {"n": 0}
+        ss_calls = {"n": 0}
+        real_dm = mc._decision_memory_for
+        real_ss = mc._session_store_for
+
+        def _count_dm(db_path):
+            dm_calls["n"] += 1  # conta só as CONSTRUÇÕES (miss de cache)
+            return real_dm(db_path)
+
+        # Envolvemos a classe real p/ contar __init__ via patch da construção.
+        with patch("bauer.decision_memory.DecisionMemory.__init__", autospec=True) as dm_init, \
+             patch("bauer.sqlite_session_store.SqliteSessionStore.__init__", autospec=True) as ss_init:
+            dm_init.return_value = None
+            ss_init.return_value = None
+            # métodos usados no prefetch → no-op p/ não tocar disco de verdade
+            with patch("bauer.decision_memory.DecisionMemory.search", return_value=[]), \
+                 patch("bauer.sqlite_session_store.SqliteSessionStore.search_sessions", return_value=[]):
+                mc.prefetch_memory_context("primeira pergunta", workspace=tmp_path)
+                mc.prefetch_memory_context("segunda pergunta", workspace=tmp_path)
+
+        # Cada store foi CONSTRUÍDO uma única vez, apesar de 2 turnos.
+        assert dm_init.call_count == 1, f"DecisionMemory reconstruído {dm_init.call_count}x"
+        assert ss_init.call_count == 1, f"SqliteSessionStore reconstruído {ss_init.call_count}x"
+        mc._reset_store_cache()
+
+    def test_memory_workspace_not_cached(self, tmp_path):
+        """workspace=None (:memory:) NÃO é cacheado — conexão thread-affine +
+        db vazio não deve vazar entre turnos."""
+        from bauer import memory_context as mc
+        mc._reset_store_cache()
+        dm1 = mc._decision_memory_for(":memory:")
+        dm2 = mc._decision_memory_for(":memory:")
+        assert dm1 is not dm2  # instâncias distintas
+        # já um caminho real É a mesma instância
+        p = str(tmp_path / "decisions.db")
+        assert mc._decision_memory_for(p) is mc._decision_memory_for(p)
+        mc._reset_store_cache()
