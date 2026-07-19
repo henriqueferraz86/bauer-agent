@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -193,25 +194,28 @@ class Scheduler:
             float(task.policy.get("max_runtime_s", profile.max_runtime_s_per_run) or 0),
         )
         max_tool_calls = int(task.policy.get("max_tool_calls", profile.max_tool_calls_per_run) or 0)
-        started = time.monotonic()
         last_error = ""
         for attempt in range(retry_count + 1):
             if attempt > 0 and retry_backoff:
                 time.sleep(retry_backoff)
             adapter = self.adapter_factory(task.runtime_adapter)
             try:
-                result = adapter.run_agent(
-                    {
-                        "run_id": run.id,
-                        "session_id": session.id,
-                        "agent_id": task.agent_id,
-                        "task": task.input.get("message") or task.input,
-                        "input": task.input,
-                        "policy": task.policy,
-                    }
+                # max_runtime_s é enforçado DURANTE a execução (deadline real
+                # por tentativa), não pós-fato. Cada retry ganha o teto cheio —
+                # antes 'started' era setado uma vez fora do loop, então retries
+                # com backoff comiam o orçamento e o limite disparava cedo demais.
+                request = {
+                    "run_id": run.id,
+                    "session_id": session.id,
+                    "agent_id": task.agent_id,
+                    "task": task.input.get("message") or task.input,
+                    "input": task.input,
+                    "policy": task.policy,
+                }
+                result = _run_with_deadline(
+                    lambda req=request: adapter.run_agent(req),
+                    float(max_runtime_s or 0),
                 )
-                if max_runtime_s and time.monotonic() - started > max_runtime_s:
-                    raise TimeoutError(f"scheduled task exceeded max_runtime_s={max_runtime_s:g}")
                 if result.get("status") == "failed":
                     raise RuntimeError(str(result.get("error") or "scheduled task failed"))
                 output = dict(result)
@@ -415,3 +419,38 @@ def _default_adapter_factory(name: str) -> Any:
     from .adapters import get_runtime_adapter
 
     return get_runtime_adapter(name)
+
+
+def _run_with_deadline(fn: Callable[[], Any], timeout_s: float) -> Any:
+    """Roda ``fn()`` com um teto de tempo REAL. Sem timeout (<=0), roda inline.
+
+    Antes, o scheduler checava max_runtime_s só DEPOIS do adapter retornar —
+    um adapter travado nunca era interrompido, e o limite só convertia um run
+    já concluído em falha (pós-fato). Aqui rodamos numa thread daemon e
+    esperamos com deadline; ao estourar, levantamos TimeoutError na hora (o
+    scheduler para de bloquear e marca o run como failed).
+
+    LIMITAÇÃO (Python): threads não podem ser mortas à força. Se o deadline
+    estourar, a thread do adapter CONTINUA rodando em background (leak até o
+    processo morrer) — mas ela só computa o resultado, não toca no estado do
+    run (o scheduler já seguiu). É best-effort: garante que o scheduler não
+    fica preso, não que o trabalho pare. Cancelamento real exigiria subprocess.
+    """
+    if not timeout_s or timeout_s <= 0:
+        return fn()
+    box: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            box["result"] = fn()
+        except Exception as exc:  # noqa: BLE001 — repropagado na thread chamadora
+            box["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise TimeoutError(f"adapter exceeded max_runtime_s={timeout_s:g}")
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")

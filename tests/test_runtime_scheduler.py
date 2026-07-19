@@ -222,6 +222,52 @@ def test_parallel_runs_ignores_terminal_runs(tmp_path: Path):
     budget.ensure_can_start(agent_id="a")  # vaga livre, não levanta
 
 
+def test_max_runtime_interrupts_stuck_adapter(tmp_path: Path):
+    """#16: um adapter que trava além de max_runtime_s é interrompido (deadline
+    real), o run vira failed e o scheduler NÃO fica bloqueado. Antes o limite
+    só era checado DEPOIS do adapter retornar (pós-fato)."""
+    import time as _time
+
+    root = tmp_path / "runtime"
+
+    class SlowAdapter:
+        name = "fake"
+
+        def run_agent(self, request):
+            _time.sleep(5)  # bem além do max_runtime_s do teste
+            return {"status": "completed", "run_id": request["run_id"]}
+
+    now = datetime(2026, 7, 8, 9, 0, tzinfo=UTC)
+    scheduler = Scheduler(root=root, adapter_factory=lambda _n: SlowAdapter())
+    scheduler.add_task({
+        **_task(next_run_at=(now - timedelta(minutes=1)).isoformat()),
+        "policy": {"max_runtime_s": 0.2},  # 200ms
+    })
+
+    t0 = _time.monotonic()
+    result = scheduler.tick(now=now)[0]
+    elapsed = _time.monotonic() - t0
+
+    assert result["status"] == "failed"
+    assert "max_runtime_s" in result["error"]
+    # não esperou os 5s do adapter — cortou perto do deadline
+    assert elapsed < 2.0
+    assert RunManager(root=root).list_runs()[0].status == "failed"
+
+
+def test_fast_adapter_within_deadline_completes(tmp_path: Path):
+    """Adapter rápido dentro do teto completa normalmente (deadline não atrapalha)."""
+    root = tmp_path / "runtime"
+    now = datetime(2026, 7, 8, 9, 0, tzinfo=UTC)
+    scheduler = Scheduler(root=root, adapter_factory=lambda _n: FakeAdapter())
+    scheduler.add_task({
+        **_task(next_run_at=(now - timedelta(minutes=1)).isoformat()),
+        "policy": {"max_runtime_s": 30},
+    })
+    result = scheduler.tick(now=now)[0]
+    assert result["status"] == "completed"
+
+
 def test_autonomy_locked_blocks_execution(tmp_path: Path):
     root = tmp_path / "runtime"
     BudgetManager(root=root).set_profile(mode="locked")
