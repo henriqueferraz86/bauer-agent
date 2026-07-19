@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 from bauer.core.events import EventBus
 from bauer.core.policy.engine import PolicyEngine
-from bauer.core.runtime.autonomy import BudgetManager
+from bauer.core.runtime.autonomy import BudgetExceededError, BudgetManager
 from bauer.core.runtime.run_manager import RunManager
 from bauer.core.runtime.resilience import RuntimeControl, RuntimeRecovery, WorkerRegistry
 from bauer.core.runtime.scheduler import Scheduler, next_run_after
@@ -185,6 +187,39 @@ def test_budget_blocked_task_does_not_refire_next_tick(tmp_path: Path):
 
     # tick imediatamente seguinte (mesmo instante): não deve mais estar "due"
     assert scheduler.due_tasks(now=now) == []
+
+
+def test_max_parallel_runs_enforced(tmp_path: Path):
+    """#11: max_parallel_runs era config MORTO (nunca enforçado). Agora
+    ensure_can_start conta runs não-terminais e recusa no teto."""
+    root = tmp_path / "runtime"
+    budget = BudgetManager(root=root)
+    budget.set_profile(max_parallel_runs=2, daily_budget_usd=1000.0)
+    rm = RunManager(root=root)  # mesmo root → compartilha os arquivos com o budget
+
+    rm.create_run(session_id="s1", agent_id="a", status="running")
+    rm.create_run(session_id="s2", agent_id="a", status="running")
+
+    # 2 runs ativos + teto 2 → o 3º é recusado
+    with pytest.raises(BudgetExceededError, match="max parallel runs"):
+        budget.ensure_can_start(agent_id="a")
+
+    # ao concluir um, abre vaga
+    run_id = rm.list_runs()[0].id
+    rm.complete_run(run_id)
+    budget.ensure_can_start(agent_id="a")  # não levanta
+
+
+def test_parallel_runs_ignores_terminal_runs(tmp_path: Path):
+    """Runs terminais (completed/failed/cancelled) não contam p/ o teto."""
+    root = tmp_path / "runtime"
+    budget = BudgetManager(root=root)
+    budget.set_profile(max_parallel_runs=1, daily_budget_usd=1000.0)
+    rm = RunManager(root=root)
+
+    r = rm.create_run(session_id="s", agent_id="a", status="running")
+    rm.complete_run(r.id)  # terminal → não conta
+    budget.ensure_can_start(agent_id="a")  # vaga livre, não levanta
 
 
 def test_autonomy_locked_blocks_execution(tmp_path: Path):

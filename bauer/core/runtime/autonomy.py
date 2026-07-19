@@ -99,6 +99,31 @@ class BudgetManager:
         profile = self.get_profile()
         if profile.mode == "locked":
             raise BudgetExceededError("autonomy mode is locked")
+
+        # max_parallel_runs (antes config MORTO — nunca era lido/enforçado):
+        # conta os runs não-terminais e recusa se já está no teto. A run deste
+        # check ainda NÃO existe (é criada depois), então nenhum self-count.
+        # Também limita o overshoot do TOCTOU de budget a no máx. N× enquanto a
+        # reserva de custo por-run (a outra metade do #11) não é wired.
+        if profile.max_parallel_runs and profile.max_parallel_runs > 0:
+            from .run_manager import TERMINAL_RUN_STATUSES
+            active = sum(
+                1 for r in self.store.list_latest("runs")
+                if r.get("status") not in TERMINAL_RUN_STATUSES
+            )
+            if active >= profile.max_parallel_runs:
+                message = f"max parallel runs reached: {active}/{profile.max_parallel_runs}"
+                self.event_bus.publish(
+                    "budget.exceeded",
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    status="exceeded",
+                    message=message,
+                    data={"scope": "parallel_runs", "active": active,
+                          "limit": profile.max_parallel_runs},
+                )
+                raise BudgetExceededError(message)
+
         checks = [
             ("daily", profile.daily_budget_usd, None),
             ("weekly", profile.weekly_budget_usd, None),
