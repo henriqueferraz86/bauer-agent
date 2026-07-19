@@ -45,6 +45,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -55,6 +56,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator
+
+logger = logging.getLogger("bauer.decision_memory")
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +80,11 @@ class DecisionRecord:
 
     # Set by search queries
     similarity: float = 0.0
+
+    # #09: vetor de embedding persistido (carregado por _row_to_record; usado
+    # em search p/ não re-embedar por turno). Interno — não faz parte da API.
+    _embedding_json: str | None = None
+    _embedding_sig: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -132,19 +140,28 @@ def _similarity(query: str, text: str) -> float:
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS decisions (
-    id          TEXT PRIMARY KEY,
-    context     TEXT NOT NULL DEFAULT '',
-    decision    TEXT NOT NULL DEFAULT '',
-    outcome     TEXT NOT NULL DEFAULT 'neutral',
-    tags_json   TEXT NOT NULL DEFAULT '[]',
-    score       REAL NOT NULL DEFAULT 0.5,
-    created_at  REAL NOT NULL,
-    session_id  TEXT
+    id             TEXT PRIMARY KEY,
+    context        TEXT NOT NULL DEFAULT '',
+    decision       TEXT NOT NULL DEFAULT '',
+    outcome        TEXT NOT NULL DEFAULT 'neutral',
+    tags_json      TEXT NOT NULL DEFAULT '[]',
+    score          REAL NOT NULL DEFAULT 0.5,
+    created_at     REAL NOT NULL,
+    session_id     TEXT,
+    embedding_json TEXT,
+    embedding_sig  TEXT
 );
 CREATE INDEX IF NOT EXISTS dec_outcome ON decisions(outcome);
 CREATE INDEX IF NOT EXISTS dec_session ON decisions(session_id);
 CREATE INDEX IF NOT EXISTS dec_score   ON decisions(score DESC);
 """
+
+# Colunas adicionadas depois do schema inicial — ALTER idempotente p/ bancos
+# existentes (CREATE TABLE IF NOT EXISTS não altera tabela já criada).
+_MIGRATIONS = {
+    "embedding_json": "ALTER TABLE decisions ADD COLUMN embedding_json TEXT",
+    "embedding_sig": "ALTER TABLE decisions ADD COLUMN embedding_sig TEXT",
+}
 
 
 class DecisionMemory:
@@ -215,13 +232,23 @@ class DecisionMemory:
         outcome = outcome if outcome in ("good", "bad", "neutral") else "neutral"
         score = max(0.0, min(1.0, score))
 
+        # #09: computa o embedding do (context+decision) UMA VEZ, no write, e
+        # persiste. Antes, search() re-embedava TODOS os registros a cada turno
+        # (até 5000 chamadas HTTP/turno com Ollama). Best-effort: se o engine
+        # falhar, grava NULL e o search embeda on-the-fly + backfilla depois.
+        emb_json, emb_sig = None, None
+        try:
+            emb_json, emb_sig = self._compute_embedding(f"{context[:2000]} {decision[:2000]}")
+        except Exception as exc:  # noqa: BLE001 — embedding é acessório; nunca falha o record
+            logger.debug("record: embedding falhou (grava NULL, backfilla no search): %s", exc)
+
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO decisions
                     (id, context, decision, outcome, tags_json,
-                     score, created_at, session_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     score, created_at, session_id, embedding_json, embedding_sig)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dec_id,
@@ -232,6 +259,8 @@ class DecisionMemory:
                     score,
                     now,
                     session_id or self._session_id,
+                    emb_json,
+                    emb_sig,
                 ),
             )
 
@@ -336,18 +365,34 @@ class DecisionMemory:
         if not records:
             return []
 
-        # Try semantic search via EmbeddingEngine first; fall back to TF-IDF
+        # Semântica via EmbeddingEngine, reusando os vetores PERSISTIDOS (#09).
+        # A query é embedada UMA vez; cada registro usa seu vetor gravado quando
+        # a assinatura (backend:dim) bate. Registros legados/sem vetor (ou com
+        # assinatura antiga, ex.: trocou Ollama↔TF-IDF) são embedados on-the-fly
+        # e BACKFILLADOS, então o custo por registro é pago só uma vez.
         try:
+            from .embeddings import cosine_similarity as _cos
             from .embeddings import get_default_engine as _get_engine
             _engine = _get_engine()
+            _sig = self._embedding_signature(_engine)
             _q_vec = _engine.embed(query)
+            _backfill: list[tuple[str, str, str]] = []
             for rec in records:
-                combined = f"{rec.context} {rec.decision}"
-                _c_vec = _engine.embed(combined)
-                from .embeddings import cosine_similarity as _cos
+                _c_vec = None
+                if rec._embedding_sig == _sig and rec._embedding_json:
+                    try:
+                        _c_vec = json.loads(rec._embedding_json)
+                    except Exception:  # noqa: BLE001 — JSON corrompido → re-embeda
+                        _c_vec = None
+                if _c_vec is None:
+                    combined = f"{rec.context} {rec.decision}"
+                    _c_vec = _engine.embed(combined)
+                    _backfill.append((rec.id, json.dumps(_c_vec), _sig))
                 rec.similarity = _cos(_q_vec, _c_vec)
+            if _backfill:
+                self._backfill_embeddings(_backfill)
         except Exception:
-            # Fall back to TF-IDF scoring
+            # Fall back to TF-IDF scoring (sem persistência)
             for rec in records:
                 combined = f"{rec.context} {rec.decision}"
                 rec.similarity = _similarity(query, combined)
@@ -355,6 +400,32 @@ class DecisionMemory:
         # Sort by similarity desc, then by quality score desc
         records.sort(key=lambda r: (r.similarity, r.score), reverse=True)
         return records[:top_k]
+
+    @staticmethod
+    def _embedding_signature(engine) -> str:
+        """Assinatura do backend de embedding — vetores de backends diferentes
+        (Ollama denso vs TF-IDF esparso) têm dims/semânticas incompatíveis, então
+        um vetor persistido só é reusável se a assinatura ainda bate."""
+        return f"{engine.backend}:{engine.dimension}"
+
+    def _compute_embedding(self, text: str) -> tuple[str, str]:
+        """Retorna (json_do_vetor, assinatura) para persistir no record."""
+        from .embeddings import get_default_engine as _get_engine
+        engine = _get_engine()
+        sig = self._embedding_signature(engine)
+        vec = engine.embed(text)
+        return json.dumps(vec), sig
+
+    def _backfill_embeddings(self, rows: "list[tuple[str, str, str]]") -> None:
+        """Grava vetores computados on-the-fly (id, json, sig) — best-effort."""
+        try:
+            with self._connect() as conn:
+                conn.executemany(
+                    "UPDATE decisions SET embedding_json = ?, embedding_sig = ? WHERE id = ?",
+                    [(j, s, i) for (i, j, s) in rows],
+                )
+        except Exception as exc:  # noqa: BLE001 — backfill é otimização; falha é tolerável
+            logger.debug("backfill de embeddings falhou (será refeito no próximo search): %s", exc)
 
     def get(self, dec_id: str) -> DecisionRecord | None:
         with self._connect() as conn:
@@ -415,6 +486,12 @@ class DecisionMemory:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Migração idempotente das colunas de embedding p/ bancos criados
+            # antes do #09 (o CREATE TABLE IF NOT EXISTS não as adiciona).
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(decisions)").fetchall()}
+            for col, ddl in _MIGRATIONS.items():
+                if col not in cols:
+                    conn.execute(ddl)
 
     def _load_all(
         self,
@@ -484,4 +561,6 @@ class DecisionMemory:
             score=d.get("score", 0.5),
             created_at=d.get("created_at") or 0.0,
             session_id=d.get("session_id"),
+            _embedding_json=d.get("embedding_json"),
+            _embedding_sig=d.get("embedding_sig"),
         )

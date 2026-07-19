@@ -511,3 +511,76 @@ class TestMakeDefaultEscalationEngine:
         await engine.escalate("some_unknown_reason", {})
         # catch_all rule should have fired
         assert any(e.rule_name == "catch_all" for e in received)
+
+
+class TestPersistedEmbeddings:
+    """#09 — o vetor é computado no record e reusado no search (não re-embeda
+    a base inteira a cada busca)."""
+
+    def _engine(self, monkeypatch, counter):
+        """Instala um engine determinístico que conta cada embed()."""
+        import bauer.embeddings as emb
+
+        class _FakeEngine:
+            backend = "fake"
+            dimension = 3
+
+            def embed(self, text):
+                counter["n"] += 1
+                # vetor trivial baseado no tamanho — determinístico
+                return [float(len(text) % 7), 1.0, 0.0]
+
+        eng = _FakeEngine()
+        monkeypatch.setattr(emb, "get_default_engine", lambda *a, **k: eng)
+        return eng
+
+    def test_record_persists_vector(self, tmp_path, monkeypatch):
+        counter = {"n": 0}
+        self._engine(monkeypatch, counter)
+        dm = DecisionMemory(db_path=tmp_path / "d.db")
+        dm.record("contexto", "decisao", score=0.6)
+        # o record embedou 1x e gravou o vetor + assinatura
+        row = dm.get(dm.list_recent(limit=1)[0].id)
+        assert row._embedding_json is not None
+        assert row._embedding_sig == "fake:3"
+        assert counter["n"] == 1
+
+    def test_search_reuses_persisted_vectors(self, tmp_path, monkeypatch):
+        counter = {"n": 0}
+        self._engine(monkeypatch, counter)
+        dm = DecisionMemory(db_path=tmp_path / "d.db")
+        for i in range(5):
+            dm.record(f"ctx {i}", f"dec {i}", score=0.5)
+        assert counter["n"] == 5  # 5 records → 5 embeds no write
+        counter["n"] = 0
+
+        dm.search("qual decisao?", top_k=3)
+        # SÓ a query foi embedada (1x) — os 5 registros usaram o vetor gravado.
+        assert counter["n"] == 1
+        dm.search("outra pergunta", top_k=3)
+        assert counter["n"] == 2  # +1 (só a nova query)
+
+    def test_backend_change_invalidates_and_backfills(self, tmp_path, monkeypatch):
+        import bauer.embeddings as emb
+        counter = {"n": 0}
+        self._engine(monkeypatch, counter)
+        dm = DecisionMemory(db_path=tmp_path / "d.db")
+        dm.record("ctx", "dec", score=0.5)
+        counter["n"] = 0
+
+        # troca o backend (assinatura muda) → o vetor gravado fica inválido
+        class _OtherEngine:
+            backend = "other"
+            dimension = 4
+
+            def embed(self, text):
+                counter["n"] += 1
+                return [1.0, 2.0, 3.0, 4.0]
+
+        monkeypatch.setattr(emb, "get_default_engine", lambda *a, **k: _OtherEngine())
+        dm.search("q", top_k=1)
+        # query (1) + o registro re-embedado on-the-fly (1) = 2
+        assert counter["n"] == 2
+        # e o registro foi BACKFILLADO com a nova assinatura
+        row = dm.get(dm.list_recent(limit=1)[0].id)
+        assert row._embedding_sig == "other:4"
