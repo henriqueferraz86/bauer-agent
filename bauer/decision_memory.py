@@ -45,6 +45,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -55,6 +56,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator
+
+logger = logging.getLogger("bauer.decision_memory")
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +239,8 @@ class DecisionMemory:
         emb_json, emb_sig = None, None
         try:
             emb_json, emb_sig = self._compute_embedding(f"{context[:2000]} {decision[:2000]}")
-        except Exception:  # noqa: BLE001 — embedding é acessório; nunca falha o record
-            pass
+        except Exception as exc:  # noqa: BLE001 — embedding é acessório; nunca falha o record
+            logger.debug("record: embedding falhou (grava NULL, backfilla no search): %s", exc)
 
         with self._connect() as conn:
             conn.execute(
@@ -421,8 +424,8 @@ class DecisionMemory:
                     "UPDATE decisions SET embedding_json = ?, embedding_sig = ? WHERE id = ?",
                     [(j, s, i) for (i, j, s) in rows],
                 )
-        except Exception:  # noqa: BLE001 — backfill é otimização; falha é tolerável
-            pass
+        except Exception as exc:  # noqa: BLE001 — backfill é otimização; falha é tolerável
+            logger.debug("backfill de embeddings falhou (será refeito no próximo search): %s", exc)
 
     def get(self, dec_id: str) -> DecisionRecord | None:
         with self._connect() as conn:
