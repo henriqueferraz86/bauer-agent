@@ -10,11 +10,11 @@ import yaml
 from .agent_spec import AgentSpec, agent_spec_from_mapping
 
 
-class AgentRegistryError(ValueError):
+class RuntimeAgentRegistryError(ValueError):
     pass
 
 
-class AgentRegistry:
+class RuntimeAgentRegistry:
     def __init__(self, roots: list[str | Path] | None = None):
         formal_root = Path(__file__).resolve().parents[2] / "data" / "agent_specs"
         self.roots = [Path(root) for root in (roots or [formal_root, Path("agents.yaml")])]
@@ -69,22 +69,22 @@ class AgentRegistry:
     def _read_specs(self, path: Path) -> list[dict[str, Any]]:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(raw, dict):
-            raise AgentRegistryError(f"{path}: agent spec must be a mapping")
+            raise RuntimeAgentRegistryError(f"{path}: agent spec must be a mapping")
         if isinstance(raw.get("agents"), list):
             return [item for item in raw["agents"] if isinstance(item, dict)]
         return [raw]
 
     def _validate(self, spec: AgentSpec, path: Path) -> None:
         if not spec.id:
-            raise AgentRegistryError(f"{path}: id is required")
+            raise RuntimeAgentRegistryError(f"{path}: id is required")
         if not spec.name:
-            raise AgentRegistryError(f"{path}: name is required")
+            raise RuntimeAgentRegistryError(f"{path}: name is required")
         if not spec.version:
-            raise AgentRegistryError(f"{path}: version is required")
+            raise RuntimeAgentRegistryError(f"{path}: version is required")
         if not spec.runtime_adapter:
-            raise AgentRegistryError(f"{path}: runtime_adapter is required")
+            raise RuntimeAgentRegistryError(f"{path}: runtime_adapter is required")
         if not spec.permissions:
-            raise AgentRegistryError(f"{path}: permissions must not be empty")
+            raise RuntimeAgentRegistryError(f"{path}: permissions must not be empty")
 
 
 def _version_key(version: str) -> tuple[Any, ...]:

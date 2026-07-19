@@ -114,9 +114,9 @@ class RunManager:
         version: str | None = None,
         status: RunStatus = "queued",
     ) -> Run:
-        from .agent_registry import AgentRegistry
+        from .agent_registry import RuntimeAgentRegistry
 
-        registry = self.agent_registry or AgentRegistry()
+        registry = self.agent_registry or RuntimeAgentRegistry()
         spec = registry.get(agent_id, version=version)
         if spec is None:
             raise KeyError(f"Agent not found: {agent_id}")
