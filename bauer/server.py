@@ -81,6 +81,23 @@ if _SERVE_POLICY_MODE not in ("off", "audit", "enforce"):
     _SERVE_POLICY_MODE = "audit"
 
 
+def _effective_ws(router) -> Path | None:
+    """Workspace do router como Path — ou None se não for um caminho de verdade.
+
+    `Path(router.workspace)` no call site produziria um Path-lixo
+    (``MagicMock/mock.workspace/<id>``) quando o router é um mock: esse Path
+    passa por qualquer ``isinstance(x, Path)`` a jusante e faz o prefetch de
+    memória criar ``decisions.db``/``sessions`` na CWD durante os testes
+    (poluição). Só converte quando o atributo é str/bytes/Path real."""
+    # Tipos concretos de propósito: MagicMock satisfaz os.PathLike
+    # (``__fspath__`` retorna uma str), então um guard por PathLike deixaria
+    # o mock passar. str/Path são os únicos casos reais (Path não aceita bytes).
+    ws = getattr(router, "workspace", None)
+    if isinstance(ws, (str, Path)):
+        return Path(ws)
+    return None
+
+
 def _sse(data: str, event: str | None = None) -> str:
     """Codifica um evento SSE preservando quebras de linha.
 
@@ -682,7 +699,7 @@ def create_app(
             _log.debug("memory prefetch failed: %s", exc)
             return None
 
-    def _resolve_request_context(message: str, effective_workspace: Path) -> dict:
+    def _resolve_request_context(message: str, effective_workspace: Path | None) -> dict:
         resolved: dict = {"agent_id": "", "agent": None, "skill": None}
         try:
             from .agent_registry import match_agents, merged_specialist_pool, resolve_user_agents_path
@@ -699,9 +716,10 @@ def create_app(
             resolved["skill"] = match_skill(message)
         except Exception as exc:
             _log.debug("skill match failed: %s", exc)
-        resolved["project_hint"] = _active_project_hint(effective_workspace)
-        resolved["project_brief"] = _project_brief_block(effective_workspace)
-        resolved["memory_context"] = _memory_context_block(message, effective_workspace)
+        if effective_workspace is not None:
+            resolved["project_hint"] = _active_project_hint(effective_workspace)
+            resolved["project_brief"] = _project_brief_block(effective_workspace)
+            resolved["memory_context"] = _memory_context_block(message, effective_workspace)
         return resolved
 
     def _apply_request_context(ctx: ContextManager, resolved: dict) -> None:
@@ -1337,7 +1355,7 @@ def create_app(
         _metrics.chat_requests_total += 1
         session_id = req.session_id or store.new_id()
         active_router, active_project_id = _resolve_project_router(session_id, req.project_id)
-        resolved = _resolve_request_context(req.message, Path(active_router.workspace))
+        resolved = _resolve_request_context(req.message, _effective_ws(active_router))
         resolved["project_id"] = active_project_id
         request_agent_id = resolved.get("agent_id") or "serve.chat"
         session_state = {"transport": "http", "endpoint": "/chat"}
@@ -1480,7 +1498,7 @@ def create_app(
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
         active_router, active_project_id = _resolve_project_router(sid, project_id)
-        resolved = _resolve_request_context(message, Path(active_router.workspace))
+        resolved = _resolve_request_context(message, _effective_ws(active_router))
         resolved["project_id"] = active_project_id
         request_agent_id = resolved.get("agent_id") or "serve.stream"
         session_state = {"transport": "sse", "endpoint": "/stream"}
@@ -1853,7 +1871,7 @@ def create_app(
 
         sid = req.session_id or store.new_id()
         active_router, active_project_id = _resolve_project_router(sid, req.project_id)
-        resolved = _resolve_request_context(req.message, Path(active_router.workspace))
+        resolved = _resolve_request_context(req.message, _effective_ws(active_router))
         resolved["project_id"] = active_project_id
         request_agent_id = "serve.loop"
         session_state = {"transport": "http", "endpoint": "/loop"}
@@ -2127,7 +2145,7 @@ def create_app(
         # /v1 (Claw3D/OpenAI-compat) fica FORA do router-por-projeto (Fase 1) —
         # API externa, sem noção de "projeto ativo" da UI desktop; sempre usa
         # o router default do serve.
-        resolved = _resolve_request_context(last_user_message, Path(router.workspace))
+        resolved = _resolve_request_context(last_user_message, _effective_ws(router))
         request_agent_id = resolved.get("agent_id") or "serve.openai"
         session_manager.get_or_create_session(
             sid,
