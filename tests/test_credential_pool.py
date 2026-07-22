@@ -17,6 +17,24 @@ from bauer.credential_pool import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_keyring(monkeypatch):
+    """Nenhum teste toca o keychain REAL do SO.
+
+    No Linux CI o keyring não tem backend → set() cai no arquivo e os testes
+    passavam. No Windows o Credential Manager EXISTE → set() ia pro keyring, o
+    arquivo (credential_pool.json) nunca era escrito, e os segredos vazavam pro
+    keychain real do dev; valores stale entre runs quebravam os asserts. Ou
+    seja: os testes do file-layer falhavam SÓ no Windows e poluíam o SO.
+
+    Desligar o keyring real por padrão torna a suíte determinística e hermética
+    em qualquer SO. Os testes do keyring-layer re-ligam explicitamente com mocks
+    nos seus próprios `with patch(...)`, que sobrepõem este autouse.
+    """
+    monkeypatch.setattr("bauer.credential_pool._keyring", None)
+    monkeypatch.setattr("bauer.credential_pool._KEYRING_AVAILABLE", False)
+
+
 # ── XOR crypto helpers ────────────────────────────────────────────────────────
 
 class TestXorCrypto:
