@@ -32,6 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import kanban_db as kb
+from .workspace_manager import _META_KEYS
+
+# Chaves de metadata estruturais que podem aparecer como `chave: valor` no
+# bloco de uma task. Reusa o whitelist do WorkspaceManager (priority, assignee,
+# parent, dispatch, claim_id, run_id, lane, orchestration_*, ...) + `criado`
+# e `spec`, que o writer emite mas não estão no _META_KEYS do dispatcher.
+# Restringir a este conjunto evita engolir prosa "palavra: texto" da descrição.
+_STRUCT_META_KEYS = _META_KEYS | {"criado", "spec"}
 
 
 # Maps WorkspaceManager statuses → kanban_db statuses.
@@ -103,7 +111,8 @@ def read_tasks_md(path: Path | str) -> list[ParsedTask]:
     raw = p.read_text(encoding="utf-8", errors="replace")
     tasks: list[ParsedTask] = []
     current: ParsedTask | None = None
-    in_metadata_block = True   # right after heading we expect key: value pairs
+    # Sem flag de "bloco de metadata": campos estruturais (id:, criado:, etc.)
+    # são reconhecidos por padrão em qualquer região do bloco (#10-G).
 
     for raw_line in raw.splitlines():
         line = raw_line.rstrip()
@@ -122,54 +131,55 @@ def read_tasks_md(path: Path | str) -> list[ParsedTask]:
                 tasks.append(current)
             status, title = head.group(1), head.group(2).strip()
             current = ParsedTask(id="", status=status, title=title)
-            in_metadata_block = True
             continue
 
         if current is None:
             # Lines before the first heading are file header — ignore.
             continue
 
-        # Blank line ends the metadata block, starts the description / comments.
+        # Linha em branco: separador — nada a fazer (id/metadata/prosa são
+        # reconhecidos por padrão em qualquer posição).
         if not line.strip():
-            in_metadata_block = False
             continue
 
-        # Comentário no formato que o WorkspaceManager REAL escreve, em
-        # qualquer região do bloco: "comment: <iso> | <author> | <texto>".
-        # Precisa vir ANTES do bloco de metadata — senão _METADATA_RE captura
-        # 'comment' como chave; e ANTES da prosa — senão vaza para description
-        # (era o bug #10-A). Preserva só o <texto> (split maxsplit=2 mantém '|'
-        # que exista no próprio texto).
+        # Comentário no formato que o WorkspaceManager REAL escreve:
+        # "comment: <iso> | <author> | <texto>". Precisa vir ANTES do
+        # reconhecimento de metadata — senão _METADATA_RE captura 'comment'
+        # como chave; e ANTES da prosa — senão vaza para description (bug
+        # #10-A). Preserva só o <texto> (split maxsplit=2 mantém '|' do texto).
         comment_line = _COMMENT_LINE_RE.match(line.strip())
         if comment_line:
             segs = comment_line.group(1).split("|", 2)
             text = (segs[2] if len(segs) == 3 else segs[-1]).strip()
             if text:
                 current.comments.append(text)
-            in_metadata_block = False
             continue
 
-        if in_metadata_block:
-            id_match = _ID_RE.match(line)
-            if id_match:
-                current.id = id_match.group(1).strip()
-                continue
-            meta_match = _METADATA_RE.match(line)
-            if meta_match:
-                key, value = meta_match.group(1).strip(), meta_match.group(2).strip()
-                if key == "criado":
-                    current.created_at = value
-                elif key == "spec":
-                    # Map workspace_manager's `spec:` to kanban_db's spec_id col.
-                    current.metadata["spec_id"] = value
-                elif key == "parent":
-                    current.metadata["parent"] = value
-                else:
-                    current.metadata[key] = value
-                continue
-            # Non-metadata line inside the metadata block — treat as start of
-            # description (fall through).
-            in_metadata_block = False
+        # `id:` em QUALQUER região (não só no bloco inicial). Tasks escritas
+        # pelo orquestrador ([Orch]) têm descrição ANTES dos campos — o `id:`
+        # cai fora do bloco de metadata. Sem reconhecê-lo aqui, o id fica vazio
+        # e a task INTEIRA é descartada (#10-G: perda de dados na migração).
+        id_match = _ID_RE.match(line)
+        if id_match and not current.id:
+            current.id = id_match.group(1).strip()
+            continue
+
+        # Metadata estrutural em qualquer região — restrita ao whitelist para
+        # não capturar prosa. (`Passo 1 do plano:` não casa: a chave precisa
+        # ser um único token minúsculo.)
+        meta_match = _METADATA_RE.match(line)
+        if meta_match and meta_match.group(1).strip() in _STRUCT_META_KEYS:
+            key, value = meta_match.group(1).strip(), meta_match.group(2).strip()
+            if key == "criado":
+                current.created_at = value
+            elif key == "spec":
+                # Map workspace_manager's `spec:` to kanban_db's spec_id col.
+                current.metadata["spec_id"] = value
+            elif key == "parent":
+                current.metadata["parent"] = value
+            else:
+                current.metadata[key] = value
+            continue
 
         # Description or comment region.
         bullet = _COMMENT_BULLET_RE.match(line.strip())
