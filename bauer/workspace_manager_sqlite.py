@@ -138,6 +138,14 @@ class WorkspaceManagerSqlite:
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
+        # Schema garantido AQUI, não em cada método (achado #10-D): 5 dos 8
+        # métodos públicos (get_task, update_task_status, update_task_metadata,
+        # add_task_comment, get_project_info) não chamavam _ensure_schema e
+        # explodiam com "no such table: tasks" num board novo. Só não aparecia
+        # porque a superfície gen-2 sempre cria tarefa antes (add_task garantia).
+        # Centralizar aqui é idempotente (1 query de versão) e imune a esquecer
+        # num método futuro.
+        self._ensure_schema(conn)
         return conn
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:

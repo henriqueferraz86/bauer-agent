@@ -299,3 +299,37 @@ def test_boards_are_isolated(tmp_path: Path, bauer_home: Path):
 
     assert [t.title for t in a.list_tasks()] == ["alpha task"]
     assert [t.title for t in b.list_tasks()] == ["beta task"]
+
+
+# ---------------------------------------------------------------------------
+# Schema garantido em TODO método público (#10-D)
+# ---------------------------------------------------------------------------
+
+
+def test_read_on_fresh_board_does_not_crash(tmp_path: Path, bauer_home: Path):
+    """get_task num board novo não pode estourar 'no such table: tasks'.
+
+    ACHADO #10-D: 5 dos 8 métodos públicos não chamavam _ensure_schema e
+    quebravam quando a PRIMEIRA operação do board não era add_task/init_project.
+    Só não aparecia porque a superfície gen-2 sempre cria tarefa antes. O
+    schema passou a ser garantido no _connect() — um lugar só.
+    """
+    wm = WorkspaceManagerSqlite(tmp_path / "fresh", board="board-novo")
+    with pytest.raises(WorkspaceError):        # tarefa ausente, NÃO erro de SQL
+        wm.get_task("001")
+
+
+def test_list_on_fresh_board_is_empty(tmp_path: Path, bauer_home: Path):
+    wm = WorkspaceManagerSqlite(tmp_path / "fresh2", board="board-novo-2")
+    assert wm.list_tasks() == []
+
+
+def test_update_status_on_fresh_board_raises_domain_error(tmp_path: Path, bauer_home: Path):
+    wm = WorkspaceManagerSqlite(tmp_path / "fresh3", board="board-novo-3")
+    with pytest.raises(WorkspaceError):        # domínio, não sqlite3.OperationalError
+        wm.update_task_status("001", "DONE")
+
+
+def test_project_info_on_fresh_board_does_not_crash(tmp_path: Path, bauer_home: Path):
+    wm = WorkspaceManagerSqlite(tmp_path / "fresh4", board="board-novo-4")
+    assert isinstance(wm.get_project_info(), str)
