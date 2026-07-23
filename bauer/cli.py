@@ -1658,7 +1658,12 @@ def kanban_migrate_cmd(
     from .kanban_migration import migrate_tasks_md, read_tasks_md
 
     tasks_md = workspace / "TASKS.md"
-    target = board or None
+    # Sem --board explícito, migra para o MESMO board que a factory vai ler
+    # (#10-F). Antes o default era o board ativo: o usuário migrava para um
+    # lugar e o sistema lia de outro — as tarefas "sumiam".
+    from .workspace_manager_factory import board_for_workspace
+
+    target = board or board_for_workspace(workspace)
     if not tasks_md.exists():
         console.print(f"[yellow]TASKS.md nao encontrado em {tasks_md}.[/yellow]")
         raise typer.Exit(code=1)
@@ -1679,7 +1684,7 @@ def kanban_migrate_cmd(
             tbl.add_row(t.id, t.status, t.title[:60], str(len(t.comments)))
         console.print(tbl)
         console.print(f"[dim]Use sem --dry-run para escrever no board "
-                       f"'{target or 'default'}'.[/dim]")
+                       f"'{target}' (board do projeto {workspace}).[/dim]")
         return
 
     report = migrate_tasks_md(tasks_md, board=target)

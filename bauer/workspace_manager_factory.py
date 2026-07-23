@@ -30,7 +30,29 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-__all__ = ["get_workspace_manager", "resolve_task_backend"]
+__all__ = ["get_workspace_manager", "resolve_task_backend", "board_for_workspace"]
+
+
+def board_for_workspace(workspace: str | Path) -> str:
+    """Board do kanban_db que corresponde a este workspace (achado #10-F).
+
+    No backend markdown o isolamento entre projetos vem de graça do CAMINHO
+    (``<projeto>/TASKS.md``). No sqlite ele vem do **board** — sem mapear
+    workspace→board, todo projeto cairia no board ativo e as tarefas de
+    projetos diferentes apareceriam misturadas.
+
+    Reusa ``projects_registry.project_id`` (sha1 do caminho absoluto, 12 chars)
+    — a identidade de projeto que o Bauer já usa em todo lugar. Não inventa
+    convenção nova, e não colide entre projetos homônimos em raízes
+    diferentes.
+
+    O ``bauer kanban-migrate`` usa ESTA MESMA função como default do
+    ``--board``: sem isso o usuário migraria os dados para um board e o
+    sistema leria de outro (as tarefas "sumiriam").
+    """
+    from .projects_registry import project_id
+
+    return project_id(workspace)
 
 
 def resolve_task_backend(override: str | None = None) -> str:
@@ -66,10 +88,14 @@ def get_workspace_manager(
             testes e no comando de migração.
         **kwargs: repassados só para o backend sqlite (``board``,
             ``regenerate_view``) — o markdown não os aceita e os ignora.
+            Sem ``board`` explícito, usa :func:`board_for_workspace` para
+            preservar o isolamento por projeto (#10-F). Quem sabe qual board
+            quer (swarm, `boards switch`, `--board`) continua mandando.
     """
     if resolve_task_backend(backend) == "sqlite":
         from .workspace_manager_sqlite import WorkspaceManagerSqlite
 
+        kwargs.setdefault("board", board_for_workspace(workspace))
         return WorkspaceManagerSqlite(workspace, **kwargs)
 
     from .workspace_manager import WorkspaceManager
