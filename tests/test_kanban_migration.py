@@ -391,3 +391,60 @@ id: 001
     with kb.connect("beta") as conn:
         kb.init_db(conn)
         assert kb.get_task_or_none(conn, "001") is None
+
+
+def test_parser_id_after_description_orchestrator_layout(tmp_path: Path):
+    """#10-G: task escrita pelo orquestrador tem descrição ANTES do `id:`.
+
+    O parser antigo só reconhecia `id:` no bloco de metadata logo após o
+    heading (antes da 1a linha em branco). Tasks [Orch] põem descrição
+    primeiro, então o `id:` caía fora do bloco, ficava vazio, e a task INTEIRA
+    era descartada — perda de dados silenciosa na migração.
+    """
+    md = tmp_path / "TASKS.md"
+    md.write_text(
+        "# TASKS\n\n"
+        "## [READY] [Orch] Executar task 009\n"
+        "\n"
+        "Implementar endpoint e persistir no banco.\n"
+        "\n"
+        "id: 017\n"
+        "criado: 2026-07-03\n"
+        "priority: medium\n"
+        "spec: hybrid-kanban-dispatcher\n"
+        "\n"
+        "Passo 1 do plano: fazer X.\n"
+        "\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    tasks = read_tasks_md(md)
+    assert len(tasks) == 1
+    t = tasks[0]
+    assert t.id == "017"                      # não foi descartada
+    assert t.status == "READY"
+    assert t.metadata.get("spec_id") == "hybrid-kanban-dispatcher"
+    assert t.created_at == "2026-07-03"
+    # os campos estruturais NÃO vazaram para a description...
+    assert "id:" not in t.description
+    assert "criado:" not in t.description
+    # ...mas a prosa "Passo 1 do plano:" (chave com espaços/maiúscula) fica
+    assert "Passo 1 do plano" in t.description
+
+
+def test_parser_prose_with_colon_not_swallowed_as_metadata(tmp_path: Path):
+    """Prosa "palavra: texto" com chave fora do whitelist fica na description."""
+    md = tmp_path / "TASKS.md"
+    md.write_text(
+        "## [TODO] Task\n"
+        "id: 001\n"
+        "\n"
+        "nota: isto e prosa, nao metadata.\n"
+        "outra linha qualquer.\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    t = read_tasks_md(md)[0]
+    assert t.id == "001"
+    assert "nota: isto e prosa" in t.description
+    assert "nota" not in t.metadata
