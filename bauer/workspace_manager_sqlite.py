@@ -248,13 +248,20 @@ class WorkspaceManagerSqlite:
         title: str,
         description: str = "",
         spec_id: str = "",
-        status: str = "TODO",
+        status: str = "READY",
         priority: str = "medium",
         assignee: str = "",
         parent_id: str = "",
         metadata: dict[str, str | int | None] | None = None,
     ) -> Task:
-        """Insert a new task. ID is numeric, zero-padded, sequential per board."""
+        """Insert a new task. ID is numeric, zero-padded, sequential per board.
+
+        Default status é ``READY`` para casar com
+        ``WorkspaceManager.add_task`` (achado #10-C): assim a virada de
+        backend por call site é um drop-in que não muda o status de tarefas
+        criadas sem status explícito. A superfície gen-2 (swarm/specify) passa
+        status explícito e não é afetada.
+        """
         title = (title or "").strip()
         if not title:
             raise WorkspaceError("title vazio.")

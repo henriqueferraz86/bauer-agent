@@ -50,6 +50,9 @@ _HEADING_RE = re.compile(r"^## \[([A-Z_]+)\] (.+)$")
 _ID_RE = re.compile(r"^id:\s*(\S+)\s*$")
 _METADATA_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s*:\s*(.+)$")
 _COMMENT_BULLET_RE = re.compile(r"^[\-\*]\s+(.*)$")
+# Linha de comentário emitida por WorkspaceManager.add_task_comment:
+#   "comment: <iso> | <author> | <texto>"  (o writer REAL — não usa bullets).
+_COMMENT_LINE_RE = re.compile(r"^comment:\s*(.+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +131,21 @@ def read_tasks_md(path: Path | str) -> list[ParsedTask]:
 
         # Blank line ends the metadata block, starts the description / comments.
         if not line.strip():
+            in_metadata_block = False
+            continue
+
+        # Comentário no formato que o WorkspaceManager REAL escreve, em
+        # qualquer região do bloco: "comment: <iso> | <author> | <texto>".
+        # Precisa vir ANTES do bloco de metadata — senão _METADATA_RE captura
+        # 'comment' como chave; e ANTES da prosa — senão vaza para description
+        # (era o bug #10-A). Preserva só o <texto> (split maxsplit=2 mantém '|'
+        # que exista no próprio texto).
+        comment_line = _COMMENT_LINE_RE.match(line.strip())
+        if comment_line:
+            segs = comment_line.group(1).split("|", 2)
+            text = (segs[2] if len(segs) == 3 else segs[-1]).strip()
+            if text:
+                current.comments.append(text)
             in_metadata_block = False
             continue
 

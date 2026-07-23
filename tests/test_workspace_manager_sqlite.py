@@ -62,7 +62,8 @@ def test_add_task_returns_task_with_zero_padded_id(wm: WorkspaceManagerSqlite):
     task = wm.add_task("My task")
     assert task.id == "001"
     assert task.title == "My task"
-    assert task.status == "TODO"
+    # Default alinhado ao WorkspaceManager legado (#10-C) — era "TODO".
+    assert task.status == "READY"
     assert task.priority == "medium"
 
 
