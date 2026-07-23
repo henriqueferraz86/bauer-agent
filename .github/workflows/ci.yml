@@ -12,12 +12,17 @@ on:
 
 jobs:
   test:
-    name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (Python ${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Windows entra como informativo nesta 1ª rodada (o produto mira Windows,
+    # mas o ambiente do runner difere do dev local): confirma-se verde e um
+    # follow-up trivial remove o continue-on-error. Ubuntu segue bloqueante.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
 
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
 
     steps:
