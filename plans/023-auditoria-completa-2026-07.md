@@ -51,7 +51,7 @@ re-planejar no master. Rastreado como item M0.
 | 08 | fix/08-state-store-lock | State store JSONL sem lock (lost-update) | Bug | L | core/runtime/state_store.py | TODO |
 | 11 | fix/11-budget-toctou | Budget TOCTOU + `max_parallel_runs` morto | Bug | M | core/runtime/autonomy.py | TODO |
 | 18 | refactor/18-runtime-registry-rename | Dois `AgentRegistry` com mesmo nome | Debt | M | core/runtime/agent_registry.py | TODO |
-| 10 | (spike) | Migração de task-store parada (2 gerações) | Debt | L | (characterization tests primeiro) | TODO |
+| 10 | spike/10-task-store-migration | Migração de task-store parada (2 gerações) | Debt | L | (characterization tests primeiro) | **SPIKE PRONTO** — plans/024 + tests/test_task_store_parity.py; 3 bloqueadores achados (#10-A comentários vazam na migração, #10-B status lossy, #10-C default diverge); rota faseada proposta, decisão de rumo pendente |
 
 Status: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `MERGED`
 
