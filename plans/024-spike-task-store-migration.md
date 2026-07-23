@@ -77,7 +77,16 @@ região do bloco (antes do parse de metadata/prosa), preservando só o texto
 removido). Os testes de migração existentes não pegaram isso porque escreviam
 markdown à mão no formato bullet.
 
-### 🟡 #10-B — Mapeamento de status é lossy (db → API md)
+### ✅ #10-B — Mapeamento de status é lossy (DECIDIDO: perda aceita)
+**Decisão do usuário: aceitar a perda (opção b).** Não exige código — é o
+comportamento atual, e fica pinado pelo teste
+`test_native_db_statuses_collapse_to_md_vocab` como característica aceita, não
+bug. Os 3 status nativos são usados só pela superfície swarm/specify; o
+mainline nunca precisou dessa granularidade. Evoluir para "ensinar os 9
+status aos consumidores legados" fica para quando houver necessidade real.
+Detalhe técnico abaixo.
+
+
 `kanban_db` tem 9 status; a API drop-in expõe 6. Os nativos
 `triage`/`review`/`archived` — que `swarm`/`specify` SETAM — **colapsam** ao
 serem lidos pela API compatível: `triage→TODO`, `review→IN_PROGRESS`,
@@ -85,19 +94,22 @@ serem lidos pela API compatível: `triage→TODO`, `review→IN_PROGRESS`,
 Um consumidor legado não os distingue. Ao virar, é preciso decidir: ou os
 consumidores legados aprendem os 9 status, ou aceita-se a perda de resolução.
 
-### 🟡 #10-C — Default de status diverge entre as APIs
+### ✅ #10-C — Default de status divergia (CORRIGIDO neste PR)
 `WorkspaceManager.add_task` default = `READY`; `WorkspaceManagerSqlite.add_task`
-default = `TODO` (pinado em `test_default_status_differs_documented`). Código
-que hoje omite `status` mudaria de comportamento na virada. Alinhar o default
-(ou tornar explícito em todos os call sites).
+default era `TODO`. Todos os call sites que **omitem** status são do mainline
+(`agent.py`, `task_cmd`, `execution_engine`, `kanban_server`, `spec_wizard`,
+`automation_scheduler`, `tools/kanban`, `migrate`, `orchestrate`) e dependem
+de `READY`; a superfície gen-2 passa status explícito. **Alinhado em `READY`**
+(o sqlite passou a casar com o legado — não o contrário, que mudaria o
+comportamento de todo mundo hoje). A troca por call site agora é drop-in de
+verdade. Pinado em `test_default_status_is_aligned`.
 
 ## 6. Rota recomendada (faseada)
 
 1. ~~**Fechar #10-A** — ensinar `read_tasks_md` a parsear a linha `comment:`.~~
    ✅ **FEITO neste PR** (a migração agora preserva comentários).
-2. **Decidir #10-B** — alinhar vocabulário de status OU documentar a perda
-   como aceitável. (decisão sua — envolve produto)
-3. **Alinhar #10-C** — unificar o default de `add_task`.
+2. ~~**Decidir #10-B**~~ ✅ **DECIDIDO: perda aceita** (sem código).
+3. ~~**Alinhar #10-C**~~ ✅ **FEITO neste PR** (default unificado em `READY`).
 4. **Cutover faseado por call site** — trocar `WorkspaceManager` →
    `WorkspaceManagerSqlite` começando pelos pontos de baixo risco
    (`ops_status`, `desktop_api` read-only) e terminando no mainline

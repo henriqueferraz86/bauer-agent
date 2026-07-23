@@ -85,13 +85,13 @@ class TestDirectApiParity:
             b = wm_sql.add_task(f"t{i}")
             assert a.id == b.id == str(i).zfill(3)
 
-    def test_default_status_differs_documented(self, wm_md, wm_sql):
-        # DIVERGÊNCIA conhecida: default do add_task não é o mesmo.
-        #   md  → "READY"   (workspace_manager.add_task)
-        #   sql → "TODO"    (workspace_manager_sqlite.add_task)
-        # Pinado para que uma virada saiba reconciliar o default.
+    def test_default_status_is_aligned(self, wm_md, wm_sql):
+        # ACHADO #10-C (CORRIGIDO): o default do add_task divergia
+        # (md=READY vs sqlite=TODO), o que mudaria o status de tarefas criadas
+        # sem status explícito ao trocar o backend. Alinhado em READY — a
+        # troca por call site agora é drop-in de verdade.
         assert wm_md.add_task("x").status == "READY"
-        assert wm_sql.add_task("x").status == "TODO"
+        assert wm_sql.add_task("x").status == "READY"
 
     def test_update_status_parity(self, wm_md, wm_sql):
         wm_md.add_task("t"); wm_sql.add_task("t")
