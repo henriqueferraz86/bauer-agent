@@ -12,12 +12,15 @@ on:
 
 jobs:
   test:
-    name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (Python ${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Windows e Ubuntu ambos bloqueantes: o 1º run confirmou a suíte verde no
+    # windows-latest (3.11 e 3.12), então o SO que o produto mira é gate real.
 
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
 
     steps:

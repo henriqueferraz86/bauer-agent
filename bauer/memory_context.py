@@ -234,19 +234,24 @@ def sync_memory_after_turn(
     workspace: str | Path | None = None,
     *,
     session_id: str = "",
-) -> None:
+) -> threading.Thread | None:
     """Record this turn in DecisionMemory asynchronously (fire-and-forget).
 
     Only records when the response is substantive (>40 chars) and the input
     is not a trivial slash command.  Runs in a daemon thread to avoid adding
     latency to the interactive loop.
+
+    Returns the daemon :class:`threading.Thread` when a recording was started
+    (``None`` when the turn was skipped). Callers no loop interativo ignoram o
+    retorno; testes usam ``.join()`` para esperar a gravação de forma
+    determinística (o fire-and-forget puro é uma corrida contra ``sleep``).
     """
     if not user_input or not response:
-        return
+        return None
     if user_input.strip().startswith("/"):
-        return
+        return None
     if len(response.strip()) < 40:
-        return
+        return None
 
     workspace = _safe_workspace(workspace)
 
@@ -276,3 +281,4 @@ def sync_memory_after_turn(
 
     t = threading.Thread(target=_sync, daemon=True)
     t.start()
+    return t
