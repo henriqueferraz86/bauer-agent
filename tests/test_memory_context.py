@@ -111,13 +111,19 @@ class TestSyncMemoryAfterTurn:
 
     def test_records_substantive_turn(self, tmp_path):
         from bauer.decision_memory import DecisionMemory
-        sync_memory_after_turn(
+        # join() na thread daemon em vez de sleep fixo: a 1ª chamada do
+        # processo paga cold-start do embedding engine (pode passar de 150ms),
+        # então um sleep flaka sob ordem "fria" (pegou no CI). O join espera a
+        # gravação terminar E libera a conexão de escrita antes de o teste ler
+        # (evita "database is locked" no Windows).
+        handle = sync_memory_after_turn(
             "como otimizar queries SQL lentas",
             "Use índices compostos nas colunas de filtragem mais frequentes e analise o EXPLAIN ANALYZE.",
             [{"tool": "web_search"}],
             workspace=tmp_path,
         )
-        time.sleep(0.15)
+        assert handle is not None
+        handle.join(timeout=10.0)
         dm = DecisionMemory(db_path=tmp_path / "decisions.db")
         records = dm.search("otimizar queries SQL", top_k=5)
         assert len(records) >= 1
