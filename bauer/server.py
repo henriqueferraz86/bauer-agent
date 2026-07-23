@@ -318,7 +318,13 @@ class _RateLimiter:
         if not window:
             return 0.0
         oldest = window[0]
-        return max(0.0, (oldest + self.window_s) - time.monotonic())
+        # Clamp no teto da janela: retry_after nunca é logicamente maior que
+        # window_s. Somar window_s a um timestamp monotônico grande e subtrair
+        # outro quase-igual perde precisão de float — o resultado podia sair
+        # 60.00000000000006 e estourar `assert retry <= 60.0` (flake real no
+        # CI Windows/3.12). O min() torna o teto exato, sem afetar o caso comum.
+        remaining = (oldest + self.window_s) - time.monotonic()
+        return max(0.0, min(self.window_s, remaining))
 
 
 def _require_fastapi():
