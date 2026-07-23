@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .automation_store import AutomationJob, AutomationRun, AutomationStore, next_after_run, now_iso
 from .task_dispatcher import TaskDispatcher
-from .workspace_manager import WorkspaceManager
+from .workspace_manager_factory import get_workspace_manager
 
 
 @dataclass
@@ -29,7 +29,7 @@ class AutomationScheduler:
     def __init__(self, workspace: str | Path = "workspace"):
         self.workspace = Path(workspace).resolve()
         self.store = AutomationStore(self.workspace)
-        self.wm = WorkspaceManager(self.workspace)
+        self.wm = get_workspace_manager(self.workspace)
         self.lock_path = self.workspace / ".bauer_automation" / "tick.lock"
 
     def tick(

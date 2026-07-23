@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from rich.table import Table
 from ..workspace_manager import WorkspaceError
-from ..workspace_manager import WorkspaceManager
+from ..workspace_manager_factory import get_workspace_manager
+from ..workspace_manager_factory import get_workspace_manager
 import typer
 
 from ._common import _PROJECT_WORKSPACE, console
@@ -39,7 +40,7 @@ def task_add(
         if extras:
             desc = " ".join(extras) + (f" {desc}" if desc else "")
 
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task(title, desc, spec_id=spec_id)
     spec_tag = f" [dim](spec: {spec_id})[/dim]" if spec_id else ""
     console.print(f"[green]✓ Tarefa {task.id} criada:[/green] {task.title}{spec_tag}")
@@ -51,7 +52,7 @@ def task_list(
     status: str = typer.Option("", "--status", help="Filtrar por status (TODO, DONE, ...)"),
 ):
     """Lista todas as tarefas com status."""
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     tasks = wm.list_tasks()
 
     if not tasks:
@@ -82,7 +83,7 @@ def task_list(
 
 
 def _task_update(workspace: Path, task_id: str, new_status: str) -> None:
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     try:
         task = wm.update_task_status(task_id, new_status)
         console.print(f"[green]{task.id}[/green] → [{new_status}] {task.title}")
@@ -192,7 +193,7 @@ def task_board(
         _BAR_EMPTY = "."
         _ELLIPSIS  = "..."
 
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     tasks = wm.list_tasks()
 
     if not tasks:

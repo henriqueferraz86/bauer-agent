@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from ..workspace_manager import WorkspaceManager
+from ..workspace_manager_factory import get_workspace_manager
 import typer
 
 from ._common import _PROJECT_WORKSPACE, console
@@ -18,7 +18,7 @@ def project_init(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
 ):
     """Inicializa o workspace com PROJECT.md e TASKS.md."""
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     created = wm.init_project(name, description)
     if created:
         for p in created:
@@ -32,7 +32,7 @@ def project_status(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
 ):
     """Mostra PROJECT.md e resumo de tarefas."""
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     console.print(wm.get_project_info())
 
     tasks = wm.list_tasks()
@@ -72,7 +72,7 @@ def project_board(
     _COMPACT_THRESHOLD = 8
 
     def _build_board():
-        wm = WorkspaceManager(workspace)
+        wm = get_workspace_manager(workspace)
         tasks = wm.list_tasks()
         by_status: dict[str, list] = {s: [] for s in _STATUS_ORDER}
         for t in tasks:

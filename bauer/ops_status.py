@@ -18,7 +18,8 @@ from .orchestration_store import OrchestrationStore
 from .schema_migrations import MigrationLedger
 from .supervisor import RuntimeSupervisor
 from .trajectory_store import TrajectoryStore
-from .workspace_manager import Task, WorkspaceManager
+from .workspace_manager import Task
+from .workspace_manager_factory import get_workspace_manager
 
 
 def build_ops_status(
@@ -27,7 +28,7 @@ def build_ops_status(
     limit: int = 10,
 ) -> dict[str, Any]:
     workspace_path = Path(workspace).resolve()
-    wm = WorkspaceManager(workspace_path)
+    wm = get_workspace_manager(workspace_path)
     store = KanbanStore(workspace_path)
     tasks = wm.list_tasks()
     now = int(time.time())

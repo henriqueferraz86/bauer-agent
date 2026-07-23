@@ -19,7 +19,8 @@ from typing import Callable, Iterable
 
 from .agent_lanes import AgentLaneSelection, resolve_agent_lane
 from .kanban_store import KanbanStore
-from .workspace_manager import Task, WorkspaceError, WorkspaceManager
+from .workspace_manager import Task, WorkspaceError
+from .workspace_manager_factory import get_workspace_manager
 
 
 TERMINAL_STATUSES = {"DONE", "BLOCKED", "FAILED"}
@@ -110,7 +111,7 @@ class TaskDispatcher:
         runner_name: str = "",
     ):
         self.workspace = Path(workspace).resolve()
-        self.wm = WorkspaceManager(self.workspace)
+        self.wm = get_workspace_manager(self.workspace)
         self.claim_ttl_seconds = max(30, int(claim_ttl_seconds))
         self.stale_seconds = max(30, int(stale_seconds))
         self.max_retries = max(1, int(max_retries))

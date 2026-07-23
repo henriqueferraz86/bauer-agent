@@ -82,6 +82,15 @@ class AgentSection(_StrictSection):
     # seguro). Faz as skills DISPARAREM sozinhas em vez de ficarem só no
     # catálogo. default True.
     skill_auto_inject: bool = True
+    # Backend do task-store (achado #10 da auditoria 023). "markdown" = o
+    # TASKS.md legado (WorkspaceManager); "sqlite" = o kernel kanban_db
+    # (WorkspaceManagerSqlite), que o swarm/specify/boards já usam.
+    # É um switch ÚNICO de propósito: todos os call sites resolvem o backend
+    # pela mesma factory, então a virada move todo mundo de uma vez — trocar
+    # um consumidor isolado criaria split-brain (leria uma base vazia).
+    # ANTES de virar para "sqlite", migre os dados: `bauer kanban-migrate`.
+    # default "markdown" = conservador, comportamento atual preservado.
+    task_backend: Literal["markdown", "sqlite"] = "markdown"
 
 
 class ObservabilitySection(_StrictSection):
