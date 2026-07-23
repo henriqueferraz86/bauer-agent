@@ -40,13 +40,13 @@ re-planejar no master. Rastreado como item M0.
 | 13 | chore/13-commit-uv-lock | `uv.lock` gitignorado + pins só `>=` | DX | S | .gitignore, ci.yml, pyproject.toml | **DONE** (pushado; +resolve DEPS-02 agno) |
 | 19 | docs/19-agents-md | `AGENTS.md` stub; sem contrato p/ agentes | DX | S | AGENTS.md, CLAUDE.md | TODO |
 | DOCS | docs/docs-nova-pasta | `docs/Nova pasta/` + deleções + links quebrados | Docs | S | docs/, README.md, CHANGELOG.md | TODO |
-| 04 | fix/04-path-coercion-guard | `Path(MagicMock())` polui a raiz (bug de coerção) | Test/Bug | M | memory_context.py, logging_config.py, conftest.py | TODO |
+| 04 | fix/04-path-coercion-guard | `Path(MagicMock())` polui a raiz (bug de coerção) | Test/Bug | M | memory_context.py, logging_config.py, conftest.py | **MERGED** (+ resíduo Windows: credential_pool → PR #70, poluição via server call sites → PR #71) |
 | 05 | fix/05-transcribe-body-limit | `/transcribe` lê upload inteiro sem limite (DoS) | Sec | S | server.py | TODO |
 | 09 | perf/09-decision-embed-cache | DecisionMemory re-embeda a base a cada turno | Perf | M | decision_memory.py | TODO |
 | 17 | perf/17-prefetch-instance-cache | prefetch reconstrói stores por turno | Perf | S | memory_context.py | TODO |
 | 20 | perf/20-async-blocking-io | I/O bloqueante em rotas async do FastAPI | Perf | S | server.py | TODO |
 | 15 | fix/15-ssrf-redirect-revalidate | SSRF: redirects não revalidados | Sec | M | tools/web.py | TODO |
-| 14 | test/14-ci-windows-matrix | CI só Ubuntu; produto mira Windows | Test | S | ci.yml | TODO |
+| 14 | test/14-ci-windows-matrix | CI só Ubuntu; produto mira Windows | Test | S | ci.yml | DESTRAVADO após merge de #70 + #71 (raiz Windows já verde salvo esses 2) |
 | 16 | fix/16-max-runtime-enforce | `max_runtime_s` não interrompe run travado | Bug | M | core/runtime/scheduler.py | TODO |
 | 08 | fix/08-state-store-lock | State store JSONL sem lock (lost-update) | Bug | L | core/runtime/state_store.py | TODO |
 | 11 | fix/11-budget-toctou | Budget TOCTOU + `max_parallel_runs` morto | Bug | M | core/runtime/autonomy.py | TODO |
