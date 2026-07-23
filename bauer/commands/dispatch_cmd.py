@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from rich.table import Table
-from ..workspace_manager import WorkspaceManager
+from ..workspace_manager_factory import get_workspace_manager
 import typer
 
 from ._common import _PROJECT_WORKSPACE, console
@@ -72,7 +72,7 @@ def dispatch_status_cmd(
 
     from ..kanban_store import KanbanStore
 
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     store = KanbanStore(workspace)
     tasks = wm.list_tasks()
     counts = Counter(t.status for t in tasks)

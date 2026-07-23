@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import os
 
-from ..workspace_manager import WorkspaceError, WorkspaceManager
+from ..workspace_manager import WorkspaceError
+from ..workspace_manager_factory import get_workspace_manager
 from .base import ToolError
 
 
@@ -35,7 +36,7 @@ class KanbanToolsMixin:
     """Ferramentas de gestao de tasks no kanban (SQLite/Markdown)."""
 
     def _load_kanban(self) -> dict:
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         tasks = wm.list_tasks()
         next_id = 1
         numeric_ids = [int(t.id) for t in tasks if t.id.isdigit()]
@@ -104,7 +105,7 @@ class KanbanToolsMixin:
 
     def _kanban_get_task(self, task_id: str) -> dict:
         workspace_id = self._kanban_workspace_id(task_id)
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         try:
             task = wm.get_task(workspace_id)
         except WorkspaceError as exc:
@@ -132,7 +133,7 @@ class KanbanToolsMixin:
                 f"{self._kanban_public_id(pinned_id)}."
             )
 
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         try:
             task = wm.get_task(workspace_id)
         except WorkspaceError as exc:
@@ -211,7 +212,7 @@ class KanbanToolsMixin:
             return
 
     def _kanban_clear_claim_metadata(self, workspace_id: str):
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         return wm.update_task_metadata(
             workspace_id,
             metadata={
@@ -232,7 +233,7 @@ class KanbanToolsMixin:
         if priority not in valid_priorities:
             raise ToolError(f"kanban_create: priority deve ser {valid_priorities}.")
 
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         parent_id = str(args.get("parent_id", "")).strip()
         parent_workspace_id = self._kanban_workspace_id(parent_id) if parent_id else ""
         status_arg = str(args.get("status", "todo")).strip().lower()
@@ -432,7 +433,7 @@ class KanbanToolsMixin:
     def _kanban_update_status(self, task_id: str, new_status: str, note: str = "") -> dict:
         workspace_id = self._kanban_workspace_id(task_id)
         workspace_status = self._kanban_workspace_status(new_status)
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         try:
             task = wm.update_task_status(workspace_id, workspace_status)
             if note:
@@ -449,7 +450,7 @@ class KanbanToolsMixin:
         result = str(args.get("result", ""))
         t = self._kanban_update_status(task_id, "done", f"Concluido: {result}" if result else "")
         task = self._kanban_clear_claim_metadata(self._kanban_workspace_id(task_id))
-        t = self._workspace_task_to_kanban(task, WorkspaceManager(self.workspace).list_tasks())
+        t = self._workspace_task_to_kanban(task, get_workspace_manager(self.workspace).list_tasks())
         self._kanban_record_worker_event(
             self._kanban_workspace_id(task_id),
             ctx,
@@ -471,7 +472,7 @@ class KanbanToolsMixin:
         ctx = self._kanban_enforce_worker_scope(task_id, "kanban_block")
         t = self._kanban_update_status(task_id, "blocked", f"Bloqueado: {reason}")
         task = self._kanban_clear_claim_metadata(self._kanban_workspace_id(task_id))
-        t = self._workspace_task_to_kanban(task, WorkspaceManager(self.workspace).list_tasks())
+        t = self._workspace_task_to_kanban(task, get_workspace_manager(self.workspace).list_tasks())
         self._kanban_record_worker_event(
             self._kanban_workspace_id(task_id),
             ctx,
@@ -519,7 +520,7 @@ class KanbanToolsMixin:
             raise ToolError("kanban_comment: 'comment' e obrigatorio.")
         ctx = self._kanban_enforce_worker_scope(task_id, "kanban_comment")
         author = str(args.get("author", "agent"))
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         workspace_id = self._kanban_workspace_id(task_id)
         try:
             task = wm.add_task_comment(workspace_id, comment, author=author)
@@ -543,7 +544,7 @@ class KanbanToolsMixin:
         if self._kanban_workspace_id(parent_id) == self._kanban_workspace_id(child_id):
             raise ToolError("kanban_link: parent_id e child_id nao podem ser iguais.")
 
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         parent_workspace_id = self._kanban_workspace_id(parent_id)
         child_workspace_id = self._kanban_workspace_id(child_id)
         try:

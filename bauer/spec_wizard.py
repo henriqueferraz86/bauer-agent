@@ -363,8 +363,8 @@ def wizard_create_spec(manager: SpecManager) -> Spec | None:
     console.print()
     if Confirm.ask("Criar uma tarefa em TASKS.md vinculada a este spec?", default=True):
         try:
-            from .workspace_manager import WorkspaceManager
-            _wm = WorkspaceManager()
+            from .workspace_manager_factory import get_workspace_manager
+            _wm = get_workspace_manager()
             _task_title = f"Implementar: {title}"
             _task_desc = (
                 f"Spec: {spec_id}\n"

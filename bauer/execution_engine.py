@@ -185,7 +185,7 @@ class DurableDAGExecutionEngine:
         claim_id: str = "",
     ) -> NodeWorkerResult:
         """Execute one persisted DAG node inside a dispatcher worker subprocess."""
-        from .workspace_manager import WorkspaceManager
+        from .workspace_manager_factory import get_workspace_manager
 
         run = self.store.get_run(run_id)
         if run is None:
@@ -197,7 +197,7 @@ class DurableDAGExecutionEngine:
         if node is None:
             raise ValueError(f"node {step_id} not found in orchestration run {run_id}")
 
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         task_id = task_id or node.task_id
         dispatch_run_id = node.dispatch_run_id
         if task_id:
@@ -342,10 +342,11 @@ class DurableDAGExecutionEngine:
     ) -> list[StepResult]:
         from .kanban_store import KanbanStore
         from .task_dispatcher import TaskDispatcher, WorkerResult
-        from .workspace_manager import WorkspaceError, WorkspaceManager
+        from .workspace_manager import WorkspaceError
+        from .workspace_manager_factory import get_workspace_manager
 
         dispatcher = TaskDispatcher(self.workspace)
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         task_ids: list[str] = []
         step_by_task: dict[str, dict[str, Any]] = {}
 
@@ -424,10 +425,10 @@ class DurableDAGExecutionEngine:
 
     def _queue_ready_nodes(self, run_id: str, steps: list[dict[str, Any]]) -> list[str]:
         from .task_dispatcher import TaskDispatcher
-        from .workspace_manager import WorkspaceManager
+        from .workspace_manager_factory import get_workspace_manager
 
         dispatcher = TaskDispatcher(self.workspace)
-        wm = WorkspaceManager(self.workspace)
+        wm = get_workspace_manager(self.workspace)
         nodes = {node.step_id: node for node in self.store.list_nodes(run_id)}
         succeeded = {step_id for step_id, node in nodes.items() if node.status == "succeeded"}
         queued: list[str] = []
@@ -482,6 +483,7 @@ class DurableDAGExecutionEngine:
 
     def _ensure_node_task(self, run_id: str, step: dict[str, Any], wm: Any):
         from .workspace_manager import WorkspaceError
+        from .workspace_manager_factory import get_workspace_manager
 
         step_id = int(step["id"])
         node = self.store.get_node(run_id, step_id)

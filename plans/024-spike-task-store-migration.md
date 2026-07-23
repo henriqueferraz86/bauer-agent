@@ -110,10 +110,17 @@ verdade. Pinado em `test_default_status_is_aligned`.
    ✅ **FEITO neste PR** (a migração agora preserva comentários).
 2. ~~**Decidir #10-B**~~ ✅ **DECIDIDO: perda aceita** (sem código).
 3. ~~**Alinhar #10-C**~~ ✅ **FEITO neste PR** (default unificado em `READY`).
-4. **Cutover faseado por call site** — trocar `WorkspaceManager` →
-   `WorkspaceManagerSqlite` começando pelos pontos de baixo risco
-   (`ops_status`, `desktop_api` read-only) e terminando no mainline
-   (`agent`/`dispatcher`). O `Task` idêntico torna cada troca mecânica.
+4. ~~**Cutover faseado por call site**~~ ⚠️ **CORRIGIDO — essa rota estava
+   ERRADA.** As duas gerações leem de fontes diferentes (arquivo vs. board
+   SQLite): apontar um consumidor isolado para o sqlite faria ele ler uma base
+   **vazia** enquanto os outros seguem no markdown — isso **cria** split-brain
+   em vez de curar.
+   **Rota correta (implementada): switch ÚNICO.** Todos os call sites (36 em
+   15 arquivos) resolvem o backend por `workspace_manager_factory.
+   get_workspace_manager()`, guiado por `agent.task_backend`
+   (`markdown` default | `sqlite`). A virada move **todos de uma vez**,
+   e só depois de `bauer kanban-migrate`. As APIs públicas das duas classes
+   são **idênticas** (8 métodos, zero gap medido), então a troca é fiel.
 5. **Congelar o gen 1** — depois que todo mundo lê/escreve no kanban_db,
    `TASKS.md` vira projeção read-only (o `WorkspaceManagerSqlite` já
    regenera o md como snapshot humano via `_regenerate_view`).

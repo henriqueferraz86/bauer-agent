@@ -819,8 +819,8 @@ class AgentBackend:
     def _cmd_tasks(self) -> str:
         """Lista read-only do kanban do workspace (TASKS.md)."""
         try:
-            from .workspace_manager import WorkspaceManager
-            wm = WorkspaceManager(self._router.workspace)
+            from .workspace_manager_factory import get_workspace_manager
+            wm = get_workspace_manager(self._router.workspace)
             tasks = wm.list_tasks()
         except Exception as exc:  # noqa: BLE001
             return f"⚠️ Não consegui ler as tasks: {exc}"

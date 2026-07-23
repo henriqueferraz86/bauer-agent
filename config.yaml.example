@@ -117,6 +117,21 @@ agent:
   # sozinhas em vez de ficarem só no catálogo. Padrão: true
   skill_auto_inject: true
 
+  # Backend do task-store. "markdown" = TASKS.md (legado, padrão);
+  # "sqlite" = kernel kanban_db (o mesmo store que swarm/specify/boards já
+  # usam), com escrita atômica (WAL + compare-and-swap) e multi-board.
+  #
+  # É um switch ÚNICO: todos os pontos do Bauer resolvem o backend pela mesma
+  # factory, então a virada move tudo de uma vez — não existe estado dividido.
+  #
+  # ⚠️  ANTES de mudar para "sqlite", migre seus dados (idempotente):
+  #         bauer kanban-migrate
+  #     Sem isso o store novo está vazio e suas tarefas parecem "sumir"
+  #     (elas continuam no TASKS.md — basta voltar a flag).
+  #
+  # Padrão: markdown
+  task_backend: markdown
+
 
 # =============================================================================
 # OLLAMA — LLM local (padrão)

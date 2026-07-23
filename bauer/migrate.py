@@ -768,8 +768,8 @@ class OpenClawMigrator:
             return
 
         try:
-            from .workspace_manager import WorkspaceManager
-            wm = WorkspaceManager(self.workspace_dir)
+            from .workspace_manager_factory import get_workspace_manager
+            wm = get_workspace_manager(self.workspace_dir)
             if not wm.tasks_file.exists() and not dry_run:
                 wm.init_project("Projeto")
         except Exception as exc:

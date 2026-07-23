@@ -12,7 +12,7 @@ from ..model_router import Route
 from ..model_router import RouterConfig
 from rich.rule import Rule
 from rich.table import Table
-from ..workspace_manager import WorkspaceManager
+from ..workspace_manager_factory import get_workspace_manager
 import sys
 import typer
 
@@ -414,7 +414,7 @@ def orchestrate_run(
         # Registra passos como tarefas no TASKS.md (se workspace inicializado)
         _task_ids: dict[int, str] = {}
         try:
-            _wm_orch = WorkspaceManager(workspace)
+            _wm_orch = get_workspace_manager(workspace)
             if _wm_orch.tasks_file.exists():
                 _spec_mgr_orch = _SpecManager(_SPECS_DIR) if _active_specs else None
                 for s in steps:

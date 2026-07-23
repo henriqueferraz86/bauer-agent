@@ -353,9 +353,9 @@ def build_desktop_router(
         project_id: str = Query("", description="projeto explicito (default: ativo global)"),
     ):
         try:
-            from .workspace_manager import WorkspaceManager
+            from .workspace_manager_factory import get_workspace_manager
 
-            wm = WorkspaceManager(_kanban_workspace(project_id or None))
+            wm = get_workspace_manager(_kanban_workspace(project_id or None))
             tasks = wm.list_tasks()
         except Exception:  # noqa: BLE001
             tasks = []

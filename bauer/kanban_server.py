@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .workspace_manager import WorkspaceManager
+from .workspace_manager_factory import get_workspace_manager
 
 # Lock global para operações de escrita em TASKS.md
 _write_lock = threading.Lock()
@@ -1128,7 +1128,7 @@ class _KanbanHandler(BaseHTTPRequestHandler):
                 return
             try:
                 with _write_lock:
-                    wm = WorkspaceManager(self.workspace)
+                    wm = get_workspace_manager(self.workspace)
                     if new_status == "READY":
                         from .task_dispatcher import TaskDispatcher
                         task = TaskDispatcher(self.workspace).mark_ready(task_id)
@@ -1173,7 +1173,7 @@ class _KanbanHandler(BaseHTTPRequestHandler):
                 status = "TODO"
             try:
                 with _write_lock:
-                    wm = WorkspaceManager(self.workspace)
+                    wm = get_workspace_manager(self.workspace)
                     if not wm.tasks_file.exists():
                         wm.init_project("Projeto")
                     metadata = {"dispatch": "true"} if status == "READY" else None
@@ -1222,7 +1222,7 @@ class _KanbanHandler(BaseHTTPRequestHandler):
 
     def _serve_tasks(self):
         try:
-            wm = WorkspaceManager(self.workspace)
+            wm = get_workspace_manager(self.workspace)
             tasks = wm.list_tasks()
             payload = {
                 "tasks": [

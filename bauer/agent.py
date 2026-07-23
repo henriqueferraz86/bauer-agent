@@ -2190,12 +2190,12 @@ def _handle_kanban_cmd(console, workspace: Any = "workspace") -> None:  # type: 
     from rich.text import Text as _Text
 
     try:
-        from .workspace_manager import WorkspaceManager
+        from .workspace_manager_factory import get_workspace_manager
     except ImportError:
         console.print("[dim]WorkspaceManager nao disponivel.[/dim]")
         return
 
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     tasks = wm.list_tasks()
 
     if not tasks:
@@ -2458,7 +2458,8 @@ def _handle_task_cmd(user_input: str, console, workspace: Any = "workspace") -> 
     from rich.table import Table
 
     try:
-        from .workspace_manager import WorkspaceManager, WorkspaceError
+        from .workspace_manager import WorkspaceError
+        from .workspace_manager_factory import get_workspace_manager
     except ImportError:
         console.print("[red]WorkspaceManager nao disponivel.[/red]")
         return
@@ -2471,7 +2472,7 @@ def _handle_task_cmd(user_input: str, console, workspace: Any = "workspace") -> 
         _handle_kanban_cmd(console, workspace)
         return
 
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
 
     if sub in ("list", "ls"):
         tasks = wm.list_tasks()
@@ -2589,7 +2590,7 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
 
     try:
         from .task_dispatcher import TaskDispatcher
-        from .workspace_manager import WorkspaceManager
+        from .workspace_manager_factory import get_workspace_manager
     except ImportError as exc:
         console.print(f"[red]Dispatcher nao disponivel:[/red] {exc}")
         return
@@ -2597,7 +2598,7 @@ def _handle_dispatch_cmd(user_input: str, console, workspace: Any = "workspace")
     if sub in ("status", "queue", "fila"):
         from .kanban_store import KanbanStore
 
-        wm = WorkspaceManager(workspace)
+        wm = get_workspace_manager(workspace)
         store = KanbanStore(workspace)
         tasks = wm.list_tasks()
         counts = Counter(t.status for t in tasks)
@@ -2916,8 +2917,8 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
 
     # Tenta carregar resumo de tarefas
     try:
-        from .workspace_manager import WorkspaceManager
-        wm = WorkspaceManager(workspace)
+        from .workspace_manager_factory import get_workspace_manager
+        wm = get_workspace_manager(workspace)
         tasks = wm.list_tasks()
         if tasks:
             from collections import Counter
@@ -3213,6 +3214,7 @@ def _ledger_block(workspace_dir: str | None) -> str:
         if not tasks_file.is_file():
             return ""
         from .workspace_manager import WorkspaceManager as _WM
+        from .workspace_manager_factory import get_workspace_manager
         wm = _WM(str(workspace_dir))
         _PENDING = {"TODO", "READY", "IN_PROGRESS", "BLOCKED"}
         pending = [t for t in wm.list_tasks() if t.status in _PENDING]
