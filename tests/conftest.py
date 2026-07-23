@@ -30,9 +30,12 @@ bauer.cli`), então a hermeticidade cobre também os testes de CLI.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from pathlib import Path
+
+import pytest
 
 # Módulo-level (não fixture): precisa valer antes de qualquer import/teste,
 # e cada worker do pytest-xdist importa este conftest — isolamento por worker.
@@ -47,3 +50,23 @@ os.environ["BAUER_HOME"] = tempfile.mkdtemp(prefix="bauer-tests-home-")
 os.environ["BAUER_AGENTS_FILE"] = str(
     Path(tempfile.gettempdir()) / "bauer-tests-no-such-agents" / "agents.yaml"
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kanban_board(request, monkeypatch):
+    """Board kanban_db próprio por teste.
+
+    O backend SQLite guarda tarefas num board GLOBAL sob BAUER_HOME — que este
+    conftest define uma vez por sessão. Com o backend markdown isso nunca doeu
+    (cada teste tinha seu tmp_path), mas ao medir/rodar com
+    `agent.task_backend=sqlite` todos os testes passariam a dividir
+    `boards/default/kanban.db` e o estado vazaria entre eles (testes de "lista
+    vazia" quebram por tarefas criadas por OUTRO teste).
+
+    Damos a cada teste um nome de board único. Testes que passam `board=`
+    explicitamente continuam mandando — isto só troca o ponteiro default.
+    """
+    # md5 do nodeid: determinístico entre runs (hash() varia com
+    # PYTHONHASHSEED) e sempre seguro como nome de diretório.
+    digest = hashlib.md5(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
+    monkeypatch.setenv("BAUER_KANBAN_BOARD", f"t-{digest}")

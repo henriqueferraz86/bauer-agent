@@ -104,6 +104,79 @@ de `READY`; a superfície gen-2 passa status explícito. **Alinhado em `READY`**
 comportamento de todo mundo hoje). A troca por call site agora é drop-in de
 verdade. Pinado em `test_default_status_is_aligned`.
 
+## 5.1 ⛔ O backend SQLite NÃO está pronto para ser default (medido)
+
+Depois de construir o switch único, rodei o experimento decisivo: **a suíte
+completa com `task_backend: sqlite`**. Resultado: **falha**. Isso invalida
+qualquer plano de "ligar o sqlite" — inclusive para usuários novos, que não
+têm dados a perder mas herdariam um backend que **quebra o dispatcher**.
+
+| Experimento | Falhas |
+|---|---|
+| default `sqlite` (como estava) | **25** |
+| default `sqlite` + fix #10-D | **30** (o fix removeu os crashes e expôs falhas mais fundas) |
+
+Concentradas no **mainline**: `task_dispatcher` (10), ferramentas kanban
+(10), `desktop_api` (4), `kanban_server` (2), `execution_engine` (2),
+`migrate`, `server_extended`.
+
+### ✅ #10-D — Schema não era garantido em 5 dos 8 métodos (CORRIGIDO)
+`get_task`, `update_task_status`, `update_task_metadata`, `add_task_comment`
+e `get_project_info` não chamavam `_ensure_schema` → `sqlite3.OperationalError:
+no such table: tasks` num board novo. Nunca apareceu porque a superfície gen-2
+sempre cria tarefa antes (só `add_task` garantia). **Corrigido no `_connect()`**
+— um lugar só, idempotente, imune a esquecer num método futuro. 4 testes de
+regressão em `test_workspace_manager_sqlite.py`.
+
+### ⚠️ CORREÇÃO DA ANÁLISE: "30 falhas" NÃO media o backend
+
+A leitura inicial deste documento ("o sqlite quebra o dispatcher") **não estava
+demonstrada**. Perseguindo as falhas até a raiz, a maior parte vem do
+**instrumento de medição**, não do backend:
+
+1. **Isolamento de teste.** `tests/conftest.py` define `BAUER_HOME` uma vez
+   por SESSÃO. O markdown isolava sozinho (cada teste tem seu `tmp_path`), mas
+   o sqlite guarda tarefas num **board global** → todos os testes dividiam
+   `boards/default/kanban.db` e o estado vazava. Corrigido com board único por
+   teste (md5 do nodeid). Efeito: **30 → 25**, `wave6_tools` 10 → 4.
+2. **Testes presos ao markdown.** `test_task_dispatcher.py` (e outros)
+   importam `WorkspaceManager` **diretamente** e criam tarefas no `TASKS.md`,
+   enquanto o código sob teste resolve o backend pela factory → lê o sqlite
+   vazio. Daí `Tarefa '001' nao encontrada`. É o teste montando cenário num
+   backend e exercitando o outro.
+
+**Conclusão honesta: ainda NÃO sabemos a saúde real do backend sqlite.** Para
+saber, falta portar os testes backend-agnósticos (dispatcher, wave6_tools,
+desktop_api) para montar cenário via `get_workspace_manager()`. É mecânico e
+seguro (com default `markdown` seguem passando igual), e transforma a suíte
+num instrumento capaz de validar **os dois** backends. **Sem isso, qualquer
+decisão de virar é chute** — inclusive para usuários novos.
+
+### ✅ #10-E — Semântica de `Task.metadata` divergia (CORRIGIDO)
+O sqlite reconstrói `metadata` **replayando eventos**. Duas consequências que
+quebram o dispatcher:
+1. **Vaza campo interno de evento** para o dict do usuário: `status_to`,
+   `author`, `text`, `title`, `last_error` aparecem em `Task.metadata`.
+2. **Chaves nunca somem.** O dispatcher precisa *remover* `claim_id` ao fazer
+   reclaim; um log append-only não expressa remoção. Falha real observada:
+   `assert "claim_id" not in ready.metadata`.
+
+**Corrigido — e sem remodelar nada.** Eu temia um gap de design (metadata como
+estado vs. projeção de eventos), mas o lado da **escrita já estava certo**:
+`update_task_metadata` já grava `None` como `""` num evento `metadata_set`,
+com o comentário explícito "Markdown deletion semantics". O bug era só na
+**leitura** (`_to_task`), que não honrava esse contrato. Duas regras
+espelhando o markdown, ambas reusando o que ele já definia:
+
+1. **Filtrar pelo whitelist `_META_KEYS`** — o mesmo do markdown. Mata o
+   vazamento (`status_to`/`author`/`text`/`title` não estão nele;
+   `claim_id`/`lane`/`last_error`/`orchestration_*` estão).
+2. **Valor vazio = chave removida** — completa a deleção que a escrita já
+   pretendia (o `del` que `_upsert_metadata` faz no markdown). É isso que
+   permite ao dispatcher SOLTAR o `claim_id` no reclaim.
+
+Não precisou tocar no dispatcher nem no schema.
+
 ## 6. Rota recomendada (faseada)
 
 1. ~~**Fechar #10-A** — ensinar `read_tasks_md` a parsear a linha `comment:`.~~
@@ -121,9 +194,22 @@ verdade. Pinado em `test_default_status_is_aligned`.
    (`markdown` default | `sqlite`). A virada move **todos de uma vez**,
    e só depois de `bauer kanban-migrate`. As APIs públicas das duas classes
    são **idênticas** (8 métodos, zero gap medido), então a troca é fiel.
-5. **Congelar o gen 1** — depois que todo mundo lê/escreve no kanban_db,
+5. 🔴 **Fechar #10-E (semântica de metadata)** — PRÉ-REQUISITO DURO. Enquanto
+   `Task.metadata` do sqlite vazar campos de evento e não permitir remoção de
+   chave, o dispatcher não funciona nele. Só depois disso a suíte pode fechar
+   verde com `task_backend: sqlite`.
+6. **Só então virar o default** — e o critério de aceite é objetivo: **suíte
+   completa verde com `sqlite`**. Repetir o experimento da seção 5.1.
+7. **Congelar o gen 1** — depois que todo mundo lê/escreve no kanban_db,
    `TASKS.md` vira projeção read-only (o `WorkspaceManagerSqlite` já
    regenera o md como snapshot humano via `_regenerate_view`).
+
+### E os usuários NOVOS?
+Tentador dar `sqlite` a quem instala agora ("não tem dados a perder"). **Não
+faça** enquanto #10-E estiver aberto: o risco não é de dados, é de
+**funcionamento** — o novato herdaria o dispatcher quebrado. Usuário novo
+segue em `markdown` até a suíte fechar verde com sqlite; aí o default passa a
+ser `sqlite` para todos os novos (existentes migram quando quiserem).
 
 ## 7. Alternativa (se NÃO virar)
 
