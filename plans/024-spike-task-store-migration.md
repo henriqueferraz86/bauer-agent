@@ -64,16 +64,18 @@ switch único que aponte todo mundo para o mesmo store.
 
 ## 5. Bloqueadores concretos (achados deste spike)
 
-### 🔴 #10-A — Comentários NÃO sobrevivem à migração (defeito de fidelidade)
+### ✅ #10-A — Comentários NÃO sobreviviam à migração (CORRIGIDO neste PR)
 `WorkspaceManager.add_task_comment` escreve a linha
 `comment: <iso> | <autor> | <texto>` dentro do bloco. Mas
-`kanban_migration.read_tasks_md` só reconhece comentários como **bullets
+`kanban_migration.read_tasks_md` só reconhecia comentários como **bullets
 Markdown `- `** (formato que a API real **nunca** produz). Resultado: o
-comentário **vaza para a `description`** da task migrada.
-Pego por `test_comment_survives_migration` (marcado `xfail(strict)`; quando
-corrigirem, ele XPASSA e falha, sinalizando p/ remover o marcador).
-Os testes de migração existentes não pegaram isso porque escrevem markdown
-à mão no formato bullet. **Correção necessária antes de qualquer virada.**
+comentário **vazava para a `description`** da task migrada.
+**Corrigido:** `read_tasks_md` agora reconhece a linha `comment:` em qualquer
+região do bloco (antes do parse de metadata/prosa), preservando só o texto
+(`split("|", 2)` mantém `|` que exista no próprio comentário).
+`test_comment_survives_migration` agora passa de verdade (o `xfail` foi
+removido). Os testes de migração existentes não pegaram isso porque escreviam
+markdown à mão no formato bullet.
 
 ### 🟡 #10-B — Mapeamento de status é lossy (db → API md)
 `kanban_db` tem 9 status; a API drop-in expõe 6. Os nativos
@@ -91,8 +93,8 @@ que hoje omite `status` mudaria de comportamento na virada. Alinhar o default
 
 ## 6. Rota recomendada (faseada)
 
-1. **Fechar #10-A** — ensinar `read_tasks_md` a parsear a linha `comment:`
-   (o formato que o writer real emite). Remover o `xfail` quando verde.
+1. ~~**Fechar #10-A** — ensinar `read_tasks_md` a parsear a linha `comment:`.~~
+   ✅ **FEITO neste PR** (a migração agora preserva comentários).
 2. **Decidir #10-B** — alinhar vocabulário de status OU documentar a perda
    como aceitável. (decisão sua — envolve produto)
 3. **Alinhar #10-C** — unificar o default de `add_task`.

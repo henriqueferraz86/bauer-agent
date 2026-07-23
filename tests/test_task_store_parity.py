@@ -142,17 +142,10 @@ class TestMigrationRoundTripParity:
         assert t.assignee == "bob"
         assert t.status == "IN_PROGRESS"           # IN_PROGRESS → running → IN_PROGRESS
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="ACHADO #10-A: WorkspaceManager.add_task_comment escreve "
-               "'comment: <ts> | autor | texto', mas kanban_migration.read_tasks_md "
-               "só reconhece bullets Markdown '- ' → o comentário vaza para a "
-               "description em vez de virar comentário. A migração precisa aprender "
-               "o formato 'comment:' ANTES de qualquer virada de default. "
-               "(xfail strict: quando alguém corrigir, este teste XPASSA e falha, "
-               "sinalizando p/ remover o marcador.)",
-    )
     def test_comment_survives_migration(self, tmp_path, bauer_home):
+        # ACHADO #10-A (CORRIGIDO): read_tasks_md agora reconhece a linha
+        # 'comment: <ts> | autor | texto' que o WorkspaceManager REAL escreve
+        # — antes ela vazava para a description em vez de virar comentário.
         src = WorkspaceManager(tmp_path / "ws")
         src.init_project("Projeto")
         src.add_task("Tarefa", description="corpo limpo")
@@ -161,8 +154,7 @@ class TestMigrationRoundTripParity:
         self._migrate(src.tasks_file)
         dst = WorkspaceManagerSqlite(tmp_path / "ws_view")
         t = dst.get_task("001")
-        # Contrato desejado (hoje QUEBRADO): comentário vira comentário, e a
-        # description não é poluída pela linha 'comment:'.
+        # Comentário vira comentário, e a description não é poluída pela linha.
         assert t.description == "corpo limpo"
         assert any("comentário de contexto" == c.get("text") for c in t.comments)
 
