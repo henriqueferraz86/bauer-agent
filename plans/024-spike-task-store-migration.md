@@ -7,14 +7,13 @@ retomar o tema começa por aqui, sem precisar do contexto da conversa original.
 **Estado em 2026-07-23:** #10-A a #10-E fechados (PRs #74/#75/#76 mergeados) e
 a suíte agora **mede os dois backends** (port dos testes, §6).
 
-**O backend SQLite está essencialmente saudável:** suíte completa com
-`task_backend: sqlite` → **1 falha** (era 25-30 quando medíamos o
-instrumento). Resta **exatamente um** gap arquitetural: **#10-F — isolamento
-por projeto** (§6.1).
+**✅ CRITÉRIO DE ACEITE BATIDO.** Suíte completa com `task_backend: sqlite` →
+**`6129 passed, 12 skipped, 0 failed`**. Os 6 achados (#10-A a #10-F) estão
+fechados. **Não há bloqueador técnico para a virada.**
 
-`agent.task_backend` segue em `markdown`. **Não vire ainda** — quem usa mais
-de um projeto veria as tarefas de todos misturadas. #10-F precisa de uma
-decisão sua sobre convenção de board.
+`agent.task_backend` segue em `markdown` por decisão conservadora — virar é
+agora só uma escolha de *quando*, seguindo o roteiro da §7 (migrar primeiro,
+depois trocar a flag; reverter é trivial).
 
 ---
 
@@ -178,7 +177,36 @@ Redirecionado para `patch("bauer.workspace_manager_factory.get_workspace_manager
 originais, 5 eram defeitos reais (#10-A a #10-E, corrigidos), o resto era o
 instrumento — e resta **exatamente um** gap arquitetural: #10-F.
 
-## 6.1 🔴 #10-F — Isolamento por projeto se perde no SQLite (ABERTO)
+## 6.1 ✅ #10-F — Isolamento por projeto (CORRIGIDO)
+
+**Resultado final: suíte completa com `task_backend: sqlite` →
+`6129 passed, 12 skipped, 0 failed`.** O critério de aceite da virada está
+batido: não há bloqueador técnico restante.
+
+**Como foi resolvido — reusando o que já existia.** A pergunta "o Hermes usa
+profile para isso?" levou à resposta certa: **não**. No Hermes, profiles
+*deliberadamente* compartilham o board (*"Profiles intentionally collapse onto
+a shared board: it IS the cross-profile coordination primitive"*) — quem isola
+projeto é o **board**, com seleção explícita (`--board`, env
+`HERMES_KANBAN_BOARD`, marker `kanban/current`). O Bauer já copiou esse
+modelo inteiro; só não o usava na factory.
+
+Então o board de um projeto passou a ser o **`projects_registry.project_id`**
+— a identidade canônica de projeto que o Bauer já usa (sha1 do caminho
+absoluto, 12 chars; sem colisão entre projetos homônimos em raízes
+diferentes). Nenhuma convenção nova inventada.
+
+1. `get_workspace_manager()` faz
+   `kwargs.setdefault("board", board_for_workspace(workspace))` — o
+   `setdefault` preserva a lição do Hermes: **quem sabe qual board quer
+   continua mandando** (swarm, `boards switch`, `--board`).
+2. **`bauer kanban-migrate` usa a MESMA função** como default do `--board`.
+   Era esse o conflito que travava o fix: antes ele gravava no board *ativo*
+   enquanto a factory leria outro — o usuário migraria os dados para um lugar
+   e o sistema leria de outro, e as tarefas "sumiriam". Agora os dois lados
+   derivam do mesmo ponto, por construção.
+
+### Detalhe histórico (o problema original)
 
 Única falha remanescente:
 `test_server_extended::test_kanban_endpoint_reads_active_project_board`.
@@ -201,16 +229,8 @@ passar a ler um board derivado, o usuário migra os dados para um lugar e o
 sistema lê de outro — as tarefas **somem da vista**. Corrigir exige alinhar
 migrate e factory na MESMA convenção de board.
 
-**É decisão sobre onde os dados moram — precisa de aprovação, não de código
-apressado.** Duas rotas:
-  a) **Board derivado do workspace** (isolamento igual ao markdown). Exige que
-     `kanban-migrate` use a mesma derivação por default.
-  b) **Manter board ativo** e aceitar que projetos compartilham board —
-     regressão de comportamento frente ao markdown; só aceitável se
-     multi-projeto não for usado de verdade.
-
-**Enquanto #10-F estiver aberto, não vire o default** — quem usa mais de um
-projeto veria as tarefas misturadas.
+Resolvido conforme descrito acima (board = `project_id`, mesma convenção nos
+dois lados).
 
 ## 7. Como virar (quando chegar a hora)
 
