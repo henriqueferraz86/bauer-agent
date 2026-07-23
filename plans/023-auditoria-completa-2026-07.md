@@ -46,7 +46,7 @@ re-planejar no master. Rastreado como item M0.
 | 17 | perf/17-prefetch-instance-cache | prefetch reconstrói stores por turno | Perf | S | memory_context.py | TODO |
 | 20 | perf/20-async-blocking-io | I/O bloqueante em rotas async do FastAPI | Perf | S | server.py | TODO |
 | 15 | fix/15-ssrf-redirect-revalidate | SSRF: redirects não revalidados | Sec | M | tools/web.py | TODO |
-| 14 | test/14-ci-windows-matrix | CI só Ubuntu; produto mira Windows | Test | S | ci.yml | **IN PROGRESS** (#70+#71 mergeados; windows-latest add. como informativo — após 1º run verde, follow-up remove continue-on-error) |
+| 14 | test/14-ci-windows-matrix | CI só Ubuntu; produto mira Windows | Test | S | ci.yml | **DONE** (PR #73; windows-latest 3.11+3.12 verdes no 1º run → gate bloqueante) |
 | 16 | fix/16-max-runtime-enforce | `max_runtime_s` não interrompe run travado | Bug | M | core/runtime/scheduler.py | TODO |
 | 08 | fix/08-state-store-lock | State store JSONL sem lock (lost-update) | Bug | L | core/runtime/state_store.py | TODO |
 | 11 | fix/11-budget-toctou | Budget TOCTOU + `max_parallel_runs` morto | Bug | M | core/runtime/autonomy.py | TODO |

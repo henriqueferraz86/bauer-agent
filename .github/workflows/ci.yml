@@ -14,10 +14,8 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Windows entra como informativo nesta 1ª rodada (o produto mira Windows,
-    # mas o ambiente do runner difere do dev local): confirma-se verde e um
-    # follow-up trivial remove o continue-on-error. Ubuntu segue bloqueante.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # Windows e Ubuntu ambos bloqueantes: o 1º run confirmou a suíte verde no
+    # windows-latest (3.11 e 3.12), então o SO que o produto mira é gate real.
 
     strategy:
       fail-fast: false
