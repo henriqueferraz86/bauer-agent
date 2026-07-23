@@ -13,12 +13,12 @@ from bauer.kanban_server import _KanbanHandler
 from bauer.kanban_store import KanbanStore
 from bauer.orchestration_store import OrchestrationStore
 from bauer.task_dispatcher import TaskDispatcher
-from bauer.workspace_manager import WorkspaceManager
+from bauer.workspace_manager_factory import get_workspace_manager
 
 
 def _workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
-    WorkspaceManager(workspace).init_project("Kanban Server Test")
+    get_workspace_manager(workspace).init_project("Kanban Server Test")
     return workspace
 
 
@@ -45,7 +45,7 @@ def _post_json(url: str, payload: dict) -> dict:
 
 def test_dashboard_serves_events_runs_and_task_metadata(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Visible task", metadata={"dispatch": "true"})
     store = KanbanStore(workspace)
     store.start_run(run_id="run-visible", task_id=task.id, status="running", attempt=1)
@@ -91,7 +91,7 @@ def test_dashboard_serves_orchestration_drilldown(tmp_path: Path):
 
 def test_dashboard_dispatch_action_retry_and_reclaim(tmp_path: Path, monkeypatch):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     failed = wm.add_task("Failed task", status="FAILED")
     running = wm.add_task("Running task")
     dispatcher = TaskDispatcher(workspace)

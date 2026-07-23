@@ -372,10 +372,10 @@ class TestComandosNovosETasks:
         assert "Nenhuma tarefa" in resp
 
     def test_tasks_lista_kanban(self, tmp_path):
-        from bauer.workspace_manager import WorkspaceManager
+        from bauer.workspace_manager_factory import get_workspace_manager
 
         backend = _make_backend(tmp_path)
-        wm = WorkspaceManager(backend._router.workspace)
+        wm = get_workspace_manager(backend._router.workspace)
         wm.add_task("Revisar relatório de vendas")
         resp = backend.process(_msg("/tasks"))
         assert "Revisar relatório" in resp

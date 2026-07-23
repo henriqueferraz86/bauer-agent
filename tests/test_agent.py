@@ -122,11 +122,11 @@ def test_task_command_uses_active_workspace(tmp_path: Path):
 
 def test_project_command_uses_active_workspace(tmp_path: Path):
     from bauer.agent import _handle_project_cmd
-    from bauer.workspace_manager import WorkspaceManager
+    from bauer.workspace_manager_factory import get_workspace_manager
     from rich.console import Console
 
     active_ws = tmp_path / "company-a" / "workspace"
-    WorkspaceManager(active_ws).init_project("Active Project", "From active workspace")
+    get_workspace_manager(active_ws).init_project("Active Project", "From active workspace")
     console = Console(record=True, width=120)
 
     _handle_project_cmd(console, active_ws)
@@ -227,12 +227,12 @@ def test_run_agent_session_falls_back_to_150_without_config(ws: Path, router: To
 
 def test_dispatch_command_dry_run_uses_active_workspace(tmp_path: Path):
     from bauer.agent import _handle_dispatch_cmd
-    from bauer.workspace_manager import WorkspaceManager
+    from bauer.workspace_manager_factory import get_workspace_manager
     from rich.console import Console
 
     active_ws = tmp_path / "company-a" / "workspace"
     global_ws = tmp_path / "workspace"
-    wm = WorkspaceManager(active_ws)
+    wm = get_workspace_manager(active_ws)
     wm.init_project("Active Project")
     wm.add_task("Queued task", status="READY", metadata={"dispatch": "true"})
     console = Console(record=True, width=120)
@@ -247,11 +247,11 @@ def test_dispatch_command_dry_run_uses_active_workspace(tmp_path: Path):
 
 def test_run_agent_session_dispatch_status_uses_router_workspace(tmp_path: Path):
     from bauer.agent import run_agent_session
-    from bauer.workspace_manager import WorkspaceManager
+    from bauer.workspace_manager_factory import get_workspace_manager
     from rich.console import Console
 
     active_ws = tmp_path / "company-a" / "workspace"
-    WorkspaceManager(active_ws).init_project("Active Project")
+    get_workspace_manager(active_ws).init_project("Active Project")
     router = ToolRouter(workspace=active_ws)
     client = _make_client()
     console = Console()

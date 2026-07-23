@@ -4,10 +4,17 @@
 correções mergeadas. Este documento é a **fonte de verdade** do assunto — quem
 retomar o tema começa por aqui, sem precisar do contexto da conversa original.
 
-**Estado em 2026-07-23:** os 5 bloqueadores estão fechados (PRs #74, #75, #76
-mergeados). `agent.task_backend` segue em `markdown`. **A virada ainda NÃO
-deve ser feita** — não por defeito conhecido, mas porque ainda não temos como
-medir o backend SQLite (ver §6).
+**Estado em 2026-07-23:** #10-A a #10-E fechados (PRs #74/#75/#76 mergeados) e
+a suíte agora **mede os dois backends** (port dos testes, §6).
+
+**O backend SQLite está essencialmente saudável:** suíte completa com
+`task_backend: sqlite` → **1 falha** (era 25-30 quando medíamos o
+instrumento). Resta **exatamente um** gap arquitetural: **#10-F — isolamento
+por projeto** (§6.1).
+
+`agent.task_backend` segue em `markdown`. **Não vire ainda** — quem usa mais
+de um projeto veria as tarefas de todos misturadas. #10-F precisa de uma
+decisão sua sobre convenção de board.
 
 ---
 
@@ -139,20 +146,71 @@ medição**:
    `Tarefa '001' nao encontrada`. É o teste montando cenário num backend e
    exercitando o outro.
 
-**Conclusão honesta: ainda NÃO sabemos a saúde real do backend SQLite.**
-Não há defeito de produto conhecido em aberto — há um instrumento incapaz de
-medir.
+### ✅ RESOLVIDO — port feito, medição agora é conclusiva
 
-### Próximo passo executável
-Portar os testes **backend-agnósticos** (`test_task_dispatcher`,
-`test_wave6_tools`, `test_desktop_api`, `test_execution_engine`,
-`test_kanban_server`) para montar cenário via `get_workspace_manager()` em vez
-de `WorkspaceManager` direto. É **mecânico e seguro**: com default `markdown`
-seguem passando idênticos, e a suíte passa a validar **os dois** backends.
-Testes que exercitam comportamento *específico do markdown*
-(`test_workspace_manager.py`) devem continuar usando `WorkspaceManager`.
+Portados 9 arquivos para montar cenário via `get_workspace_manager()`:
+`test_task_dispatcher`, `test_wave6_tools`, `test_kanban_server`,
+`test_execution_engine`, `test_server_extended`, `test_desktop_api`,
+`test_agent`, `test_automation_scheduler`, `test_channel_base`.
 
-Só depois disso o experimento da §7 vira conclusivo.
+Deliberadamente **NÃO** portados (usam `WorkspaceManager` de propósito):
+`test_workspace_manager.py` (testa o markdown em si),
+`test_task_store_parity.py` (compara as duas gerações),
+`test_kanban_store.py` (sidecar).
+
+Cuidado especial em `test_desktop_api.py`: havia um
+`patch("bauer.workspace_manager.WorkspaceManager")` que viraria **bug
+silencioso** — como `desktop_api` passou a importar a factory, o patch não
+interceptaria mais nada e o teste exercitaria código real achando-se mockado.
+Redirecionado para `patch("bauer.workspace_manager_factory.get_workspace_manager")`.
+
+### 📊 Evolução das medições (o histórico importa)
+
+| Medição | Falhas | Media o quê |
+|---|---|---|
+| 1ª — sqlite cru | 25 | instrumento |
+| 2ª — + #10-D (schema) | 30 | instrumento |
+| 3ª — + #10-E (metadata) | 30 | instrumento |
+| 4ª — + isolamento de board | 25 | instrumento (parcial) |
+| **5ª — + port dos testes** | **1** | **o BACKEND** |
+
+**Conclusão: o backend SQLite está essencialmente saudável.** Das ~30 falhas
+originais, 5 eram defeitos reais (#10-A a #10-E, corrigidos), o resto era o
+instrumento — e resta **exatamente um** gap arquitetural: #10-F.
+
+## 6.1 🔴 #10-F — Isolamento por projeto se perde no SQLite (ABERTO)
+
+Única falha remanescente:
+`test_server_extended::test_kanban_endpoint_reads_active_project_board`.
+
+O endpoint kanban deve mostrar as tarefas do **projeto ativo**; sob sqlite
+mostra **as de todos os projetos misturadas**:
+```
+assert 'tarefa da raiz do serve' not in ['tarefa do projeto bauerinvest',
+                                          'tarefa da raiz do serve']
+```
+
+**Causa:** no markdown o isolamento vem de graça do **caminho**
+(`<projeto>/TASKS.md`). No sqlite vem do **board** — mas
+`get_workspace_manager(workspace)` recebe só o workspace e **não deriva
+board**, então todo projeto cai no board ativo/default.
+
+**Complicação que impede o fix óbvio:** derivar o board do workspace conflita
+com o `bauer kanban-migrate`, que grava no board **ativo**. Se a factory
+passar a ler um board derivado, o usuário migra os dados para um lugar e o
+sistema lê de outro — as tarefas **somem da vista**. Corrigir exige alinhar
+migrate e factory na MESMA convenção de board.
+
+**É decisão sobre onde os dados moram — precisa de aprovação, não de código
+apressado.** Duas rotas:
+  a) **Board derivado do workspace** (isolamento igual ao markdown). Exige que
+     `kanban-migrate` use a mesma derivação por default.
+  b) **Manter board ativo** e aceitar que projetos compartilham board —
+     regressão de comportamento frente ao markdown; só aceitável se
+     multi-projeto não for usado de verdade.
+
+**Enquanto #10-F estiver aberto, não vire o default** — quem usa mais de um
+projeto veria as tarefas misturadas.
 
 ## 7. Como virar (quando chegar a hora)
 

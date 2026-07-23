@@ -6,7 +6,7 @@ from pathlib import Path
 
 from bauer.automation_scheduler import AutomationScheduler
 from bauer.automation_store import AutomationStore, next_run_after, parse_schedule
-from bauer.workspace_manager import WorkspaceManager
+from bauer.workspace_manager_factory import get_workspace_manager
 
 
 def test_parse_schedule_interval_daily_once_and_cron():
@@ -30,7 +30,7 @@ def test_next_run_after_daily_rolls_to_next_day():
 
 def test_tick_enqueues_due_job_as_ready_task(tmp_path: Path):
     workspace = tmp_path / "workspace"
-    WorkspaceManager(workspace).init_project("Automation Test")
+    get_workspace_manager(workspace).init_project("Automation Test")
     store = AutomationStore(workspace)
     job = store.create_job(
         name="daily-report",
@@ -42,7 +42,7 @@ def test_tick_enqueues_due_job_as_ready_task(tmp_path: Path):
 
     result = AutomationScheduler(workspace).tick(now="2026-06-01T09:00:00+00:00")
 
-    tasks = WorkspaceManager(workspace).list_tasks()
+    tasks = get_workspace_manager(workspace).list_tasks()
     runs = store.list_runs(job_id=job.job_id)
     updated = store.get_job(job.job_id)
     assert result.due == ["daily-report"]
@@ -73,7 +73,7 @@ def test_tick_skips_paused_jobs(tmp_path: Path):
     result = AutomationScheduler(workspace).tick(now="2026-06-01T09:00:00+00:00")
 
     assert result.due == []
-    assert WorkspaceManager(workspace).list_tasks() == []
+    assert get_workspace_manager(workspace).list_tasks() == []
 
 
 def test_once_job_completes_after_queue(tmp_path: Path):
@@ -105,7 +105,7 @@ def test_manual_run_enqueues_even_when_not_due(tmp_path: Path):
 
     run = AutomationScheduler(workspace).run_now("manual", due_at="2026-06-01T09:00:00+00:00")
 
-    task = WorkspaceManager(workspace).get_task(run.task_id)
+    task = get_workspace_manager(workspace).get_task(run.task_id)
     updated = store.get_job(job.job_id)
     assert task.status == "READY"
     assert task.metadata["automation_name"] == "manual"

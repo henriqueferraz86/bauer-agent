@@ -8,18 +8,18 @@ from pathlib import Path
 import bauer.task_dispatcher as task_dispatcher_module
 from bauer.kanban_store import KanbanStore
 from bauer.task_dispatcher import TaskDispatcher, WorkerResult
-from bauer.workspace_manager import WorkspaceManager
+from bauer.workspace_manager_factory import get_workspace_manager
 
 
 def _workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
-    WorkspaceManager(workspace).init_project("Dispatcher Test")
+    get_workspace_manager(workspace).init_project("Dispatcher Test")
     return workspace
 
 
 def test_mark_ready_sets_dispatch_metadata(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Run me")
 
     ready = TaskDispatcher(workspace).mark_ready(task.id, assignee="coder", max_retries=3)
@@ -33,7 +33,7 @@ def test_mark_ready_sets_dispatch_metadata(tmp_path: Path):
 
 def test_dispatch_success_completes_task(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Successful task")
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
@@ -61,7 +61,7 @@ def test_dispatch_success_completes_task(tmp_path: Path):
 
 def test_dispatch_failure_retries_until_failed(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Flaky task")
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id, max_retries=2)
@@ -96,7 +96,7 @@ def test_dispatch_failure_retries_until_failed(tmp_path: Path):
 
 def test_reclaim_stale_claim_returns_task_to_ready(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Stale task")
     dispatcher = TaskDispatcher(workspace, claim_ttl_seconds=30, stale_seconds=30)
     dispatcher.mark_ready(task.id)
@@ -125,7 +125,7 @@ def test_reclaim_stale_claim_returns_task_to_ready(tmp_path: Path):
 
 def test_detect_crashed_worker_returns_task_to_ready(tmp_path: Path, monkeypatch):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Crashed worker")
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
@@ -147,7 +147,7 @@ def test_detect_crashed_worker_returns_task_to_ready(tmp_path: Path, monkeypatch
 
 def test_cancel_and_retry_task(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Cancelable")
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
@@ -169,7 +169,7 @@ def test_cancel_and_retry_task(tmp_path: Path):
 
 def test_max_in_progress_blocks_new_claim(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     first = wm.add_task("Already running")
     second = wm.add_task("Waiting")
     dispatcher = TaskDispatcher(workspace)
@@ -193,7 +193,7 @@ def test_max_in_progress_blocks_new_claim(tmp_path: Path):
 
 def test_dry_run_respects_max_spawn_without_claiming(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     first = wm.add_task("First")
     second = wm.add_task("Second")
     dispatcher = TaskDispatcher(workspace)
@@ -209,7 +209,7 @@ def test_dry_run_respects_max_spawn_without_claiming(tmp_path: Path):
 
 def test_dispatch_once_can_scope_claims_to_explicit_task_ids(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     first = wm.add_task("Unrelated")
     second = wm.add_task("Scoped")
     dispatcher = TaskDispatcher(workspace)
@@ -243,7 +243,7 @@ agents:
 """.strip(),
         encoding="utf-8",
     )
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Needs Python", metadata={"capability": "python"})
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
@@ -279,7 +279,7 @@ agents:
 """.strip(),
         encoding="utf-8",
     )
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     first = wm.add_task("First", assignee="coder")
     second = wm.add_task("Second", assignee="coder")
     dispatcher = TaskDispatcher(workspace)
@@ -300,7 +300,7 @@ agents:
 
 def test_watchdog_tick_records_daemon_event(tmp_path: Path):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Daemon work")
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
@@ -319,7 +319,7 @@ def test_watchdog_tick_records_daemon_event(tmp_path: Path):
 
 def test_cancel_task_can_request_worker_termination(tmp_path: Path, monkeypatch):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Terminate me")
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
@@ -344,7 +344,7 @@ def test_cancel_task_can_request_worker_termination(tmp_path: Path, monkeypatch)
 
 def test_orchestration_task_worker_uses_node_worker_subprocess(tmp_path: Path, monkeypatch):
     workspace = _workspace(tmp_path)
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task(
         "Orchestration node",
         metadata={
@@ -405,7 +405,7 @@ agents:
 """.strip(),
         encoding="utf-8",
     )
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     task = wm.add_task("Ops visible", metadata={"capability": "python"})
     dispatcher = TaskDispatcher(workspace)
     dispatcher.mark_ready(task.id)
