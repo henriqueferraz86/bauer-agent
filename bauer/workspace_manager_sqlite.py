@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import kanban_db as kb
-from .workspace_manager import Task, WorkspaceError, _normalize_task_id
+from .workspace_manager import _META_KEYS, Task, WorkspaceError, _normalize_task_id
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +190,14 @@ class WorkspaceManagerSqlite:
             if not isinstance(payload, dict):
                 continue
             for key, value in payload.items():
-                metadata[str(key).strip().lower()] = "" if value is None else str(value)
+                meta_key = str(key).strip().lower()
+                # ACHADO #10-E (1/2): só chaves do whitelist viram metadata do
+                # usuário. Sem isso, campo INTERNO de evento (status_to, author,
+                # text, title, ...) vazava para Task.metadata — o markdown nunca
+                # expôs isso, e o dispatcher via lixo que não pediu.
+                if meta_key not in _META_KEYS:
+                    continue
+                metadata[meta_key] = "" if value is None else str(value)
 
         # Hot dispatcher fields live in dedicated columns; surface them under
         # the same metadata keys that the markdown backend used so callers
@@ -205,6 +212,13 @@ class WorkspaceManagerSqlite:
             metadata.setdefault("max_retries", str(db_task.max_retries))
         if db_task.last_failure_error:
             metadata.setdefault("last_error", db_task.last_failure_error)
+
+        # ACHADO #10-E (2/2): valor vazio = chave REMOVIDA, igual ao markdown
+        # (_upsert_metadata faz `del` da linha quando o valor é vazio). O lado
+        # da escrita já grava None como "" com intenção de deleção; sem esta
+        # linha a chave sobrevivia para sempre — e o dispatcher, que precisa
+        # SOLTAR o claim_id no reclaim, nunca conseguia removê-lo.
+        metadata = {k: v for k, v in metadata.items() if v != ""}
 
         return Task(
             id=db_task.id,

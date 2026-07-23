@@ -128,7 +128,31 @@ sempre cria tarefa antes (só `add_task` garantia). **Corrigido no `_connect()`*
 — um lugar só, idempotente, imune a esquecer num método futuro. 4 testes de
 regressão em `test_workspace_manager_sqlite.py`.
 
-### 🔴 #10-E — Semântica de `Task.metadata` diverge (BLOQUEADOR ABERTO)
+### ⚠️ CORREÇÃO DA ANÁLISE: "30 falhas" NÃO media o backend
+
+A leitura inicial deste documento ("o sqlite quebra o dispatcher") **não estava
+demonstrada**. Perseguindo as falhas até a raiz, a maior parte vem do
+**instrumento de medição**, não do backend:
+
+1. **Isolamento de teste.** `tests/conftest.py` define `BAUER_HOME` uma vez
+   por SESSÃO. O markdown isolava sozinho (cada teste tem seu `tmp_path`), mas
+   o sqlite guarda tarefas num **board global** → todos os testes dividiam
+   `boards/default/kanban.db` e o estado vazava. Corrigido com board único por
+   teste (md5 do nodeid). Efeito: **30 → 25**, `wave6_tools` 10 → 4.
+2. **Testes presos ao markdown.** `test_task_dispatcher.py` (e outros)
+   importam `WorkspaceManager` **diretamente** e criam tarefas no `TASKS.md`,
+   enquanto o código sob teste resolve o backend pela factory → lê o sqlite
+   vazio. Daí `Tarefa '001' nao encontrada`. É o teste montando cenário num
+   backend e exercitando o outro.
+
+**Conclusão honesta: ainda NÃO sabemos a saúde real do backend sqlite.** Para
+saber, falta portar os testes backend-agnósticos (dispatcher, wave6_tools,
+desktop_api) para montar cenário via `get_workspace_manager()`. É mecânico e
+seguro (com default `markdown` seguem passando igual), e transforma a suíte
+num instrumento capaz de validar **os dois** backends. **Sem isso, qualquer
+decisão de virar é chute** — inclusive para usuários novos.
+
+### ✅ #10-E — Semântica de `Task.metadata` divergia (CORRIGIDO)
 O sqlite reconstrói `metadata` **replayando eventos**. Duas consequências que
 quebram o dispatcher:
 1. **Vaza campo interno de evento** para o dict do usuário: `status_to`,
@@ -137,10 +161,21 @@ quebram o dispatcher:
    reclaim; um log append-only não expressa remoção. Falha real observada:
    `assert "claim_id" not in ready.metadata`.
 
-É **gap de design**, não ajuste: exige modelar metadata como estado
-(com deleção) em vez de projeção de eventos — ou dar ao dispatcher uma API
-própria de claim. **Enquanto #10-E estiver aberto, `sqlite` não pode ser
-default de ninguém.**
+**Corrigido — e sem remodelar nada.** Eu temia um gap de design (metadata como
+estado vs. projeção de eventos), mas o lado da **escrita já estava certo**:
+`update_task_metadata` já grava `None` como `""` num evento `metadata_set`,
+com o comentário explícito "Markdown deletion semantics". O bug era só na
+**leitura** (`_to_task`), que não honrava esse contrato. Duas regras
+espelhando o markdown, ambas reusando o que ele já definia:
+
+1. **Filtrar pelo whitelist `_META_KEYS`** — o mesmo do markdown. Mata o
+   vazamento (`status_to`/`author`/`text`/`title` não estão nele;
+   `claim_id`/`lane`/`last_error`/`orchestration_*` estão).
+2. **Valor vazio = chave removida** — completa a deleção que a escrita já
+   pretendia (o `del` que `_upsert_metadata` faz no markdown). É isso que
+   permite ao dispatcher SOLTAR o `claim_id` no reclaim.
+
+Não precisou tocar no dispatcher nem no schema.
 
 ## 6. Rota recomendada (faseada)
 
