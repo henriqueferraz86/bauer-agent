@@ -1347,7 +1347,7 @@ def test_kanban_endpoint_reads_active_project_board(tmp_path: Path):
     criadas por projeto sumiam do painel."""
     from unittest.mock import patch as _patch
     from bauer.tool_router import ToolRouter
-    from bauer.workspace_manager import WorkspaceManager
+    from bauer.workspace_manager_factory import get_workspace_manager
     from bauer import projects_registry as pr
 
     ws = tmp_path / "workspace"
@@ -1355,8 +1355,8 @@ def test_kanban_endpoint_reads_active_project_board(tmp_path: Path):
     proj = ws / "bauerinvest"
     proj.mkdir()
     # Tarefa no board do PROJETO; e uma diferente no board da RAIZ do serve.
-    WorkspaceManager(proj).add_task("tarefa do projeto bauerinvest")
-    WorkspaceManager(ws).add_task("tarefa da raiz do serve")
+    get_workspace_manager(proj).add_task("tarefa do projeto bauerinvest")
+    get_workspace_manager(ws).add_task("tarefa da raiz do serve")
 
     reg = tmp_path / "projects.json"
     with _patch("bauer.projects_registry._DEFAULT_REGISTRY", reg):

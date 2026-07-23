@@ -225,7 +225,9 @@ class TestKanbanEndpoint:
                 self.priority, self.assignee = "high", "bauer"
 
         tasks = [FakeTask("001", "TODO", "a"), FakeTask("002", "DONE", "b")]
-        with patch("bauer.workspace_manager.WorkspaceManager") as WM:
+        # Alvo é a FACTORY (desktop_api resolve o backend por ela) — patchar a
+        # classe concreta não interceptaria mais nada.
+        with patch("bauer.workspace_manager_factory.get_workspace_manager") as WM:
             WM.return_value.list_tasks.return_value = tasks
             r = env["client"].get("/api/kanban")
         data = r.json()
@@ -298,10 +300,12 @@ class TestKanbanProjectAware:
         return TestClient(app)
 
     def _seed_tasks(self, workspace: Path, titles: list[str]):
-        from bauer.workspace_manager import WorkspaceManager
+        from bauer.workspace_manager_factory import get_workspace_manager
 
         workspace.mkdir(parents=True, exist_ok=True)
-        wm = WorkspaceManager(workspace)
+        # Semeia pelo MESMO backend que o código sob teste vai ler — senão o
+        # cenário é montado numa geração e exercitado na outra (#10, §6).
+        wm = get_workspace_manager(workspace)
         for t in titles:
             wm.add_task(t)
 

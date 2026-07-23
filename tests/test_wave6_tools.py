@@ -13,7 +13,7 @@ import pytest
 from bauer.kanban_store import KanbanStore
 from bauer.task_dispatcher import TaskDispatcher
 from bauer.tool_router import ToolError, ToolRouter
-from bauer.workspace_manager import WorkspaceManager
+from bauer.workspace_manager_factory import get_workspace_manager
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -528,11 +528,11 @@ class TestKanbanCreate:
         assert "Implementar feature X" in result
         board = router._load_kanban()
         assert "T0001" in board["tasks"]
-        tasks = WorkspaceManager(ws).list_tasks()
+        tasks = get_workspace_manager(ws).list_tasks()
         assert tasks[0].title == "Implementar feature X"
 
     def test_lista_tarefa_criada_pelo_workspace_manager(self, router, ws):
-        WorkspaceManager(ws).add_task("Criada pelo humano")
+        get_workspace_manager(ws).add_task("Criada pelo humano")
         result = router._kanban_list({})
         assert "T0001" in result
         assert "Criada pelo humano" in result
@@ -691,7 +691,7 @@ class TestKanbanWorkflow:
             router._kanban_comment({"task_id": "T0001"})
 
     def test_worker_protocol_complete_updates_run(self, router, ws, monkeypatch):
-        wm = WorkspaceManager(ws)
+        wm = get_workspace_manager(ws)
         task = wm.add_task("Worker owned")
         dispatcher = TaskDispatcher(ws)
         dispatcher.mark_ready(task.id)
@@ -716,7 +716,7 @@ class TestKanbanWorkflow:
         assert "worker.completed_by_tool" in {event.event_type for event in events}
 
     def test_worker_protocol_blocks_foreign_task(self, router, ws, monkeypatch):
-        wm = WorkspaceManager(ws)
+        wm = get_workspace_manager(ws)
         first = wm.add_task("Pinned")
         second = wm.add_task("Foreign")
         dispatcher = TaskDispatcher(ws)
@@ -749,7 +749,7 @@ class TestKanbanWorkflow:
         assert "kanban_create" not in schema_names
 
     def test_denied_worker_tool_records_event(self, ws, monkeypatch):
-        wm = WorkspaceManager(ws)
+        wm = get_workspace_manager(ws)
         task = wm.add_task("Worker scoped")
         dispatcher = TaskDispatcher(ws)
         dispatcher.mark_ready(task.id)

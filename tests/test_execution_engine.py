@@ -9,7 +9,7 @@ from bauer.execution_engine import DurableDAGExecutionEngine
 from bauer.kanban_store import KanbanStore
 from bauer.orchestration_store import OrchestrationStore
 from bauer.orchestrator import StepResult
-from bauer.workspace_manager import WorkspaceManager
+from bauer.workspace_manager_factory import get_workspace_manager
 
 
 def _steps() -> list[dict]:
@@ -114,7 +114,7 @@ def test_durable_dispatcher_runtime_materializes_nodes_as_kanban_tasks(tmp_path:
 
     assert result.node_runtime == "dispatcher"
     assert orch.execute_parallel_steps.call_count == 0
-    tasks = WorkspaceManager(tmp_path).list_tasks()
+    tasks = get_workspace_manager(tmp_path).list_tasks()
     nodes = OrchestrationStore(tmp_path).list_nodes(result.run_id)
     assert [task.status for task in tasks] == ["DONE", "DONE"]
     assert [node.status for node in nodes] == ["succeeded", "succeeded"]
@@ -129,7 +129,7 @@ def test_durable_dispatcher_runtime_materializes_nodes_as_kanban_tasks(tmp_path:
 
 def test_dispatcher_runtime_filters_claims_to_orchestration_tasks(tmp_path: Path):
     workspace = tmp_path
-    wm = WorkspaceManager(workspace)
+    wm = get_workspace_manager(workspace)
     wm.init_project("Scoped Dispatch")
     unrelated = wm.add_task("Unrelated READY", status="READY")
 
@@ -149,7 +149,7 @@ def test_background_submit_queues_ready_nodes_and_worker_advances_dag(tmp_path: 
 
     submitted = engine.submit("background orchestration")
 
-    wm = WorkspaceManager(tmp_path)
+    wm = get_workspace_manager(tmp_path)
     store = OrchestrationStore(tmp_path)
     nodes = store.list_nodes(submitted.run_id)
     assert submitted.status == "running"
