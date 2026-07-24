@@ -277,12 +277,16 @@ def test_web_fetch_falls_back_to_browser_on_empty_static_extract(ws: Path):
     from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
 
     router = ToolRouter(workspace=ws, web_enabled=True)
+    url = "https://www.fifa.com/en/tournaments/mens/world-cup"
     fake_page = MagicMock()
     fake_page.content.return_value = "<html><body><p>Próximo jogo: 10 de julho.</p></body></html>"
+    # page.url é onde o Playwright REALMENTE parou (o guard de SSRF pós-redirect
+    # revalida isso antes de devolver o conteúdo) — sem redirect, é a própria URL.
+    fake_page.url = url
 
     with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
          patch.object(router, "_ensure_browser", return_value=fake_page):
-        result = router._web_fetch({"url": "https://www.fifa.com/en/tournaments/mens/world-cup"})
+        result = router._web_fetch({"url": url})
 
     assert "Próximo jogo: 10 de julho." in result
     fake_page.goto.assert_called_once()
@@ -295,12 +299,36 @@ def test_web_fetch_keeps_original_message_when_browser_fallback_also_empty(ws: P
     router = ToolRouter(workspace=ws, web_enabled=True)
     fake_page = MagicMock()
     fake_page.content.return_value = "<html><body></body></html>"  # também vazio
+    fake_page.url = "https://example.com"
 
     with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
          patch.object(router, "_ensure_browser", return_value=fake_page):
         result = router._web_fetch({"url": "https://example.com"})
 
     assert result == EMPTY_EXTRACT_HTTPX
+
+
+def test_web_fetch_browser_fallback_descarta_conteudo_apos_redirect_interno(ws: Path):
+    """Regressão SSRF: o Playwright segue redirects por conta própria, então a
+    checagem da URL inicial não diz nada sobre onde a página parou. Se o destino
+    final for interno (metadata da cloud), o conteúdo é DESCARTADO — nunca chega
+    no contexto do modelo — e web_fetch degrada pra mensagem original."""
+    from bauer.web.dispatcher import EMPTY_EXTRACT_HTTPX
+
+    router = ToolRouter(workspace=ws, web_enabled=True)
+    fake_page = MagicMock()
+    fake_page.content.return_value = (
+        "<html><body><p>AccessKeyId: AKIA... SecretAccessKey: ...</p></body></html>"
+    )
+    # A URL inicial é pública e passou no guard; o 302 levou pro IMDS.
+    fake_page.url = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+
+    with patch.object(router._web, "extract", return_value=EMPTY_EXTRACT_HTTPX), \
+         patch.object(router, "_ensure_browser", return_value=fake_page):
+        result = router._web_fetch({"url": "https://site-publico.com/r"})
+
+    assert result == EMPTY_EXTRACT_HTTPX
+    assert "AKIA" not in result and "SecretAccessKey" not in result
 
 
 def test_web_fetch_falls_back_gracefully_when_playwright_missing(ws: Path):

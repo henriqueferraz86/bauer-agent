@@ -65,21 +65,25 @@ def test_extract_backend_desconhecido_levanta_webError():
 # URL safety
 # ---------------------------------------------------------------------------
 
+# Estes casam com "bloqueado" (não com o substantivo "interno"/"privado") desde
+# que _validate_url delega para bauer.url_safety: o motivo agora vem do guard
+# central, que nomeia a REDE que bateu ("127.0.0.0/8"). O que importa testar é
+# que continua levantando WebError e citando o host barrado.
 def test_bloqueia_localhost():
     d = WebDispatcher(None)
-    with pytest.raises(WebError, match="interno"):
+    with pytest.raises(WebError, match=r"(?i)bloquead.*localhost|localhost.*bloquead"):
         d.extract("http://localhost/secret")
 
 
 def test_bloqueia_127():
     d = WebDispatcher(None)
-    with pytest.raises(WebError, match="interno"):
+    with pytest.raises(WebError, match=r"(?i)bloquead.*127\.0\.0\.1"):
         d.extract("http://127.0.0.1/secret")
 
 
 def test_bloqueia_ip_privado():
     d = WebDispatcher(None)
-    with pytest.raises(WebError, match="privado"):
+    with pytest.raises(WebError, match=r"(?i)bloquead.*192\.168\.1\.1"):
         d.extract("http://192.168.1.1/secret")
 
 
@@ -274,6 +278,97 @@ def test_extract_httpx_trunca_texto_longo():
 
     assert len(result) < 10000
     assert "truncado" in result
+
+
+def _redirect_to(location: str):
+    """Response falsa 302 apontando para *location*."""
+    import httpx
+    resp = MagicMock()
+    resp.is_redirect = True
+    resp.headers = {"location": location}
+    resp.url = httpx.URL("https://site-publico.com/r")
+    return resp
+
+
+def _ok_html(body: str = "<html><body><p>conteudo</p></body></html>"):
+    resp = MagicMock()
+    resp.is_redirect = False
+    resp.text = body
+    resp.headers = {"content-type": "text/html"}
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+def test_extract_httpx_bloqueia_ssrf_via_redirect():
+    """Regressão: a URL inicial é publica e passa no guard, mas o servidor
+    responde 302 para o endpoint de metadata da cloud. Cada Location e
+    revalidado ANTES de ser seguido — a 2a request NUNCA sai, entao o conteudo
+    interno nao chega no contexto do modelo."""
+    d = WebDispatcher(_cfg(extract_backend="httpx"))
+    calls = {"n": 0}
+
+    def _fake_get(*a, **k):
+        calls["n"] += 1
+        return _redirect_to("http://169.254.169.254/latest/meta-data/")
+
+    with patch("httpx.Client.get", side_effect=_fake_get):
+        with pytest.raises(WebError, match=r"(?i)(ssrf|bloquead|metadata|interno)"):
+            d._extract_httpx("https://site-publico.com/r", 5000)
+
+    assert calls["n"] == 1, "a request para o host interno nao pode ter saido"
+
+
+@pytest.mark.parametrize("alvo", [
+    "http://127.0.0.1:8080/admin",
+    "http://10.0.0.5/",
+    "http://192.168.1.1/",
+    "http://[::1]/",
+])
+def test_extract_httpx_bloqueia_redirect_para_rede_interna(alvo):
+    """Nao e so o IP de metadata: loopback e RFC-1918 tambem sao barrados."""
+    d = WebDispatcher(_cfg(extract_backend="httpx"))
+
+    with patch("httpx.Client.get", return_value=_redirect_to(alvo)):
+        with pytest.raises(WebError):
+            d._extract_httpx("https://site-publico.com/r", 5000)
+
+
+def test_extract_httpx_segue_redirect_para_host_publico():
+    """O guard nao pode quebrar o caso normal: redirect para host publico
+    (http→https, canonicalizacao de dominio) continua sendo seguido."""
+    d = WebDispatcher(_cfg(extract_backend="httpx"))
+    respostas = [_redirect_to("https://site-publico.com/final"), _ok_html()]
+
+    with patch("httpx.Client.get", side_effect=respostas) as mock_get:
+        result = d._extract_httpx("https://site-publico.com/r", 5000)
+
+    assert "conteudo" in result
+    assert mock_get.call_count == 2
+    # O 2o GET foi para o destino do redirect, nao para a URL original.
+    assert mock_get.call_args_list[1].args[0] == "https://site-publico.com/final"
+
+
+def test_extract_httpx_para_no_teto_de_redirects():
+    """Cadeia infinita de redirects publicos para no _MAX_REDIRECTS em vez de
+    girar para sempre."""
+    d = WebDispatcher(_cfg(extract_backend="httpx"))
+
+    with patch("httpx.Client.get",
+               return_value=_redirect_to("https://site-publico.com/loop")) as mock_get:
+        with pytest.raises(WebError, match=r"(?i)redirect demais"):
+            d._extract_httpx("https://site-publico.com/r", 5000)
+
+    assert mock_get.call_count == d._MAX_REDIRECTS + 1
+
+
+def test_validate_url_delega_para_url_safety():
+    """_validate_url usa o guard central, nao o blocklist manual antigo: o
+    metadata do GCP e bloqueado POR NOME (sem DNS), coisa que a lista de
+    prefixos ('localhost', '127.', '169.254.') nao pegava."""
+    d = WebDispatcher(_cfg())
+
+    with pytest.raises(WebError, match=r"(?i)(ssrf|bloquead)"):
+        d._validate_url("http://metadata.google.internal/computeMetadata/v1/")
 
 
 def test_extract_binario_retorna_aviso():
