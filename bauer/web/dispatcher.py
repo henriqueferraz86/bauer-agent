@@ -39,6 +39,14 @@ if TYPE_CHECKING:
 
 _SEARXNG_DEFAULT_URL = "http://localhost:8080"
 
+# Guard SSRF central — mesmo padrão lazy de bauer/tools/web.py (o blocklist
+# manual de _validate_url é o fallback quando o módulo não está importável).
+try:
+    from bauer.url_safety import UrlSafetyError, check_url as _check_url
+    _URL_SAFETY_AVAILABLE = True
+except ImportError:  # pragma: no cover - módulo sempre presente na stack padrão
+    _URL_SAFETY_AVAILABLE = False
+
 # Mensagens-sentinela de extração vazia — nomeadas (não string literal
 # duplicada) porque bauer/tools/web.py precisa detectá-las pra decidir se
 # tenta o fallback via browser real (páginas JS-renderizadas/SPA).
@@ -543,15 +551,56 @@ class WebDispatcher:
 
     # --- Backends de extração -------------------------------------------------
 
+    # Teto de saltos de redirect — igual ao de bauer/tools/web.py (http_request).
+    _MAX_REDIRECTS = 5
+
+    def _get_revalidating_redirects(self, url: str):
+        """GET que segue redirects MANUALMENTE, revalidando cada salto.
+
+        SSRF via redirect: `_validate_url` só olha a URL que o chamador passou.
+        Com `follow_redirects=True` o httpx seguiria um 3xx para
+        http://169.254.169.254/ (metadata da cloud) ou um IP RFC-1918 sem que
+        nenhum guard fosse consultado de novo — o conteúdo interno voltaria como
+        texto direto pro contexto do modelo. Aqui cada `Location` passa pelo
+        MESMO `_validate_url` ANTES de ser seguido, então a request maliciosa
+        nunca chega a sair. Mesma estratégia já usada na tool `http_request`.
+        """
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; BauerAgent/1.0)"}
+        resp = self._http.get(
+            url, timeout=self.timeout, follow_redirects=False, headers=headers,
+        )
+        hops = 0
+        while resp.is_redirect and hops < self._MAX_REDIRECTS:
+            location = resp.headers.get("location")
+            if not location:
+                break
+            next_url = str(resp.url.join(location))  # resolve Location relativo
+            self._validate_url(next_url)             # levanta WebError se interno
+            resp = self._http.get(
+                next_url, timeout=self.timeout, follow_redirects=False,
+                headers=headers,
+            )
+            hops += 1
+        if resp.is_redirect and hops >= self._MAX_REDIRECTS:
+            # Estourar o teto tem que ser erro explícito. Devolver a resposta
+            # 3xx aqui seria pior que inútil: `raise_for_status()` não levanta
+            # em 3xx e o corpo de um redirect não tem content-type de texto, o
+            # chamador acabaria reportando "conteúdo binário" para o que na
+            # verdade é um loop de redirect.
+            raise WebError(
+                f"Redirect demais ao acessar {url} "
+                f"(limite de {self._MAX_REDIRECTS} saltos)."
+            )
+        return resp
+
     def _extract_httpx(self, url: str, max_chars: int) -> str:
         """httpx + BeautifulSoup (padrão, leve, zero config)."""
         import httpx
         try:
-            resp = self._http.get(
-                url, timeout=self.timeout, follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; BauerAgent/1.0)"},
-            )
+            resp = self._get_revalidating_redirects(url)
             resp.raise_for_status()
+        except WebError:
+            raise
         except httpx.TimeoutException:
             raise WebError(f"Timeout ao acessar {url}")
         except httpx.HTTPStatusError as exc:
@@ -575,6 +624,14 @@ class WebDispatcher:
         """crawl4ai — extração LLM-friendly em Markdown (MIT).
 
         Requer: pip install crawl4ai && crawl4ai-setup
+
+        SSRF via redirect (limitação conhecida): o crawl4ai dirige um browser
+        headless e segue redirects internamente — não há hook para revalidar
+        cada salto como em `_get_revalidating_redirects`. O que dá para fazer é
+        barrar a URL FINAL: se o crawler terminou num host interno, o conteúdo
+        é descartado e nunca entra no contexto do modelo. A request em si já
+        saiu (SSRF cego), mas a exfiltração de metadata/rede interna — o dano
+        real — fica bloqueada.
         """
         try:
             from crawl4ai import AsyncWebCrawler
@@ -587,14 +644,18 @@ class WebDispatcher:
                 "  crawl4ai-setup\n"
                 "Ou use o backend padrão: web.extract_backend: httpx"
             )
-        async def _crawl() -> str:
+        async def _crawl() -> tuple[str, str]:
             async with AsyncWebCrawler() as crawler:
                 result = await crawler.arun(url=url)
-                return result.markdown or result.extracted_content or ""
+                text = result.markdown or result.extracted_content or ""
+                return text, str(getattr(result, "url", "") or "")
         try:
-            text = asyncio.run(_crawl())
+            text, final_url = asyncio.run(_crawl())
         except Exception as exc:
             raise WebError(f"Erro crawl4ai em {url}: {exc}") from exc
+
+        if final_url and final_url != url:
+            self._validate_url(final_url)  # levanta WebError se interno
 
         if not text:
             return EMPTY_EXTRACT_CRAWL4AI
@@ -605,12 +666,28 @@ class WebDispatcher:
     # --- Validação de URL -----------------------------------------------------
 
     def _validate_url(self, url: str) -> None:
-        """Bloqueia URLs para hosts internos/privados."""
+        """Bloqueia URLs para hosts internos/privados.
+
+        Delega para `bauer.url_safety` (fonte única de verdade do guard SSRF,
+        usada também pelas tools web_fetch/http_request): além do blocklist
+        manual abaixo ele cobre endpoints de metadata por nome
+        (metadata.google.internal), fc00::/7, CGNAT e — o que mais importa —
+        RESOLVE o hostname e recheca os IPs, pegando o caso de um nome público
+        que aponta para 127.0.0.1. O blocklist manual fica como fallback para
+        quando o módulo não estiver importável.
+        """
         import ipaddress
         import urllib.parse as _urlparse
 
         if not url.startswith(("http://", "https://")):
             raise WebError("URL deve começar com http:// ou https://")
+
+        if _URL_SAFETY_AVAILABLE:
+            try:
+                _check_url(url)
+            except UrlSafetyError as exc:
+                raise WebError(f"Acesso bloqueado (SSRF): {exc}") from exc
+            return
 
         parsed = _urlparse.urlparse(url)
         hostname = parsed.hostname or ""

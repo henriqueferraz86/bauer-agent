@@ -75,19 +75,31 @@ class WebToolsMixin:
         thread-affine, não pode rodar inline na thread chamadora de
         `execute()`). Retorna "" em qualquer falha (Playwright ausente,
         timeout, site bloqueou) — o chamador decide como degradar.
+
+        SSRF via redirect: o Playwright segue redirects internamente, então a
+        checagem de `_web_fetch` (só a URL inicial) não vale para onde a página
+        realmente parou. Validamos `page.url` DEPOIS do goto e descartamos o
+        conteúdo se o destino final for interno — o dano real é a metadata da
+        cloud entrar no contexto do modelo, e isso fica barrado.
         """
         from ..web.dispatcher import clean_html_text
 
-        def _do() -> str:
+        def _do() -> tuple[str, str]:
             page = self._ensure_browser()
             page.goto(url, wait_until="networkidle", timeout=30_000)
-            return page.content()
+            return page.content(), str(page.url or "")
 
         try:
             pool = self._get_browser_executor()
-            html = pool.submit(_do).result(timeout=35)
+            html, final_url = pool.submit(_do).result(timeout=35)
         except Exception:
             return ""
+
+        if final_url and final_url != url and _URL_SAFETY_AVAILABLE:
+            try:
+                _is_safe_url(final_url)
+            except UrlSafetyError:
+                return ""  # redirect terminou em host interno — descarta
 
         text = clean_html_text(html)
         if text and len(text) > max_chars:
