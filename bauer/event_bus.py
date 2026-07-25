@@ -58,20 +58,65 @@ class EventBus:
     use `async_dispatch=True` para chamar em thread separado.
     """
 
+    # Retenção: o `events` crescia para SEMPRE. Combinado com o `ORDER BY ts
+    # DESC` sem índice em `ts`, o history() degradava linearmente até virar
+    # full scan + sort de um arquivo de centenas de MB. O audit_trail.py já
+    # resolvia isso; aqui não havia nada.
+    _RETENTION_DAYS = 30
+    _MAX_EVENTS = 200_000
+    # Poda a cada N escritas — rodar em todo publish custaria um DELETE por
+    # evento no caminho quente, que é justamente o que se quer evitar.
+    _PRUNE_EVERY = 500
+
     def __init__(
         self,
         db_path: Optional[Path] = None,
         async_dispatch: bool = False,
         persist: bool = True,
+        retention_days: int | None = None,
+        max_events: int | None = None,
     ) -> None:
         self._db_path = db_path or _DEFAULT_DB
         self._async_dispatch = async_dispatch
         self._persist = persist
         self._subs: Dict[str, List[Subscription]] = {}
         self._lock = threading.Lock()
+        self._retention_days = (
+            self._RETENTION_DAYS if retention_days is None else retention_days
+        )
+        self._max_events = self._MAX_EVENTS if max_events is None else max_events
+
+        # Conexão PERSISTENTE. Antes abria-se uma conexão nova a CADA evento
+        # (connect + insert + commit + close no caminho quente do publish) e a
+        # cada history(). check_same_thread=False + _db_lock porque o bus é
+        # explicitamente multi-thread (async_dispatch spawna threads).
+        self._conn: Optional[sqlite3.Connection] = None
+        self._db_lock = threading.Lock()
+        self._writes_since_prune = 0
 
         if self._persist:
             self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        """Conexão configurada. WAL + busy_timeout eram a diferença entre este
+        store e todos os outros do projeto (audit_trail, checkpoint, kanban_db,
+        goal_tracker): sem eles, escritores concorrentes batem em
+        `database is locked`."""
+        con = sqlite3.connect(str(self._db_path), timeout=10.0, check_same_thread=False)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=NORMAL")
+        con.execute("PRAGMA busy_timeout=5000")
+        return con
+
+    def close(self) -> None:
+        """Fecha a conexão persistente. Idempotente."""
+        with self._db_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception as exc:
+                    logger.debug("event_bus: erro ao fechar conexao: %s", exc)
+                self._conn = None
 
     # ------------------------------------------------------------------
     # DB
@@ -79,51 +124,88 @@ class EventBus:
 
     def _init_db(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(str(self._db_path))
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS events (
-                id TEXT PRIMARY KEY,
-                topic TEXT NOT NULL,
-                source TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                ts REAL NOT NULL
+        with self._db_lock:
+            self._conn = self._connect()
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    id TEXT PRIMARY KEY,
+                    topic TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    ts REAL NOT NULL
+                )
+            """)
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic)")
+            # Índice em `ts`: history() faz `ORDER BY ts DESC LIMIT ?` e não
+            # havia índice nenhum — full scan + sort da tabela inteira, com
+            # custo crescendo junto com o histórico.
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC)")
+            self._conn.commit()
+
+    def _prune_locked(self) -> None:
+        """Aplica retenção. Chamador já segura `_db_lock`."""
+        if self._conn is None:
+            return
+        if self._retention_days > 0:
+            corte = time.time() - (self._retention_days * 86400)
+            self._conn.execute("DELETE FROM events WHERE ts < ?", (corte,))
+        if self._max_events > 0:
+            # Mantém os N mais recentes. Usa o índice de ts para o OFFSET.
+            self._conn.execute(
+                "DELETE FROM events WHERE id IN ("
+                "  SELECT id FROM events ORDER BY ts DESC LIMIT -1 OFFSET ?"
+                ")",
+                (self._max_events,),
             )
-        """)
-        con.execute("CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic)")
-        con.commit()
-        con.close()
+        self._conn.commit()
+
+    def prune(self) -> None:
+        """Aplica retenção sob demanda (usado por manutenção e testes)."""
+        if not self._persist:
+            return
+        with self._db_lock:
+            try:
+                self._prune_locked()
+            except Exception as exc:
+                logger.debug("event_bus: falha ao podar eventos: %s", exc)
 
     def _save_event(self, evt: Event) -> None:
         if not self._persist:
             return
-        try:
-            con = sqlite3.connect(str(self._db_path))
-            con.execute(
-                "INSERT OR IGNORE INTO events VALUES (?,?,?,?,?)",
-                (evt.id, evt.topic, evt.source, json.dumps(evt.payload), evt.ts),
-            )
-            con.commit()
-            con.close()
-        except Exception as exc:
-            logger.debug("event_bus: falha ao persistir evento %s: %s", evt.id, exc)
+        with self._db_lock:
+            if self._conn is None:
+                return
+            try:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO events VALUES (?,?,?,?,?)",
+                    (evt.id, evt.topic, evt.source, json.dumps(evt.payload), evt.ts),
+                )
+                self._conn.commit()
+                self._writes_since_prune += 1
+                if self._writes_since_prune >= self._PRUNE_EVERY:
+                    self._writes_since_prune = 0
+                    self._prune_locked()
+            except Exception as exc:
+                logger.debug("event_bus: falha ao persistir evento %s: %s", evt.id, exc)
 
     def history(self, topic: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         """Retorna histórico de eventos do banco."""
         if not self._persist:
             return []
         try:
-            con = sqlite3.connect(str(self._db_path))
-            if topic:
-                rows = con.execute(
-                    "SELECT id,topic,source,payload,ts FROM events WHERE topic=? ORDER BY ts DESC LIMIT ?",
-                    (topic, limit),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT id,topic,source,payload,ts FROM events ORDER BY ts DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
-            con.close()
+            with self._db_lock:
+                if self._conn is None:
+                    return []
+                if topic:
+                    rows = self._conn.execute(
+                        "SELECT id,topic,source,payload,ts FROM events WHERE topic=? ORDER BY ts DESC LIMIT ?",
+                        (topic, limit),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        "SELECT id,topic,source,payload,ts FROM events ORDER BY ts DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
             return [
                 {"id": r[0], "topic": r[1], "source": r[2],
                  "payload": json.loads(r[3]), "ts": r[4]}

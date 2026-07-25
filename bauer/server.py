@@ -34,9 +34,11 @@ Claw3D / Virtual Office:
 """
 
 import hmac
+import ipaddress
 import os
+import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -290,35 +292,74 @@ _metrics = _Metrics()
 class _RateLimiter:
     """Rate limiter em-memória baseado em sliding window por chave (IP ou API key).
 
-    Thread-safe para uso com uvicorn (single-threaded async).
     Cada chave tem uma deque de timestamps das últimas requisições.
+
+    Thread-safe DE VERDADE (com lock). O docstring anterior afirmava
+    thread-safety justificando com "uvicorn é single-threaded async" — falso
+    para os endpoints declarados com `def` em vez de `async def`: o FastAPI
+    roda esses no threadpool. `len(window) >= max` seguido de `window.append()`
+    é read-modify-write; sem seção crítica, duas threads leem o mesmo tamanho
+    abaixo do limite e ambas passam.
     """
+
+    # Teto de chaves rastreadas. Um atacante que varia a chave a cada request
+    # (X-Forwarded-For forjado, X-API-Key aleatória) faria o dict crescer sem
+    # limite — o limitador viraria o próprio vetor de exaustão de memória.
+    _MAX_KEYS = 10_000
 
     def __init__(self, max_requests: int = 60, window_s: float = 60.0):
         self.max_requests = max_requests
         self.window_s = window_s
-        self._windows: dict[str, deque] = defaultdict(deque)
+        # dict simples, não defaultdict: a criação de bucket passa a ser
+        # explícita, para poder recusá-la quando o teto é atingido.
+        self._windows: dict[str, deque] = {}
+        self._lock = threading.Lock()
+
+    def _prune_locked(self, now: float) -> None:
+        """Remove buckets sem nenhum timestamp dentro da janela.
+
+        Sem isto o dict só crescia: `is_allowed` esvaziava a deque de uma chave
+        ociosa mas nunca removia a própria chave.
+        """
+        cutoff = now - self.window_s
+        vazias = [k for k, w in self._windows.items() if not w or w[-1] < cutoff]
+        for k in vazias:
+            del self._windows[k]
 
     def is_allowed(self, key: str) -> bool:
         """Verifica se a chave está dentro do limite. Registra a requisição se permitida."""
         if self.max_requests <= 0:
             return True  # desativado
         now = time.monotonic()
-        window = self._windows[key]
-        cutoff = now - self.window_s
-        while window and window[0] < cutoff:
-            window.popleft()
-        if len(window) >= self.max_requests:
-            return False
-        window.append(now)
-        return True
+        with self._lock:
+            window = self._windows.get(key)
+            if window is None:
+                if len(self._windows) >= self._MAX_KEYS:
+                    # Tenta abrir espaço descartando o que já expirou antes de
+                    # recusar — o caso comum (muitas chaves antigas ociosas)
+                    # se resolve aqui.
+                    self._prune_locked(now)
+                if len(self._windows) >= self._MAX_KEYS:
+                    # Ainda cheio de chaves ATIVAS: nega em vez de crescer.
+                    # Fail-closed é o lado certo de errar num limitador.
+                    return False
+                window = self._windows[key] = deque()
+
+            cutoff = now - self.window_s
+            while window and window[0] < cutoff:
+                window.popleft()
+            if len(window) >= self.max_requests:
+                return False
+            window.append(now)
+            return True
 
     def retry_after(self, key: str) -> float:
         """Segundos até a próxima requisição ser permitida para a chave."""
-        window = self._windows.get(key)
-        if not window:
-            return 0.0
-        oldest = window[0]
+        with self._lock:
+            window = self._windows.get(key)
+            if not window:
+                return 0.0
+            oldest = window[0]
         # Clamp no teto da janela: retry_after nunca é logicamente maior que
         # window_s. Somar window_s a um timestamp monotônico grande e subtrair
         # outro quase-igual perde precisão de float — o resultado podia sair
@@ -326,6 +367,82 @@ class _RateLimiter:
         # CI Windows/3.12). O min() torna o teto exato, sem afetar o caso comum.
         remaining = (oldest + self.window_s) - time.monotonic()
         return max(0.0, min(self.window_s, remaining))
+
+    def tracked_keys(self) -> int:
+        """Quantidade de chaves rastreadas (observabilidade e testes)."""
+        with self._lock:
+            return len(self._windows)
+
+
+def _parse_trusted_proxies(entries: "list[str] | None") -> tuple[list, bool]:
+    """Converte `serve.trusted_proxies` em redes utilizáveis.
+
+    Aceita IP (`10.0.0.1`), CIDR (`10.0.0.0/8`) e o coringa `*` (confia em
+    qualquer peer — opt-in explícito ao comportamento antigo, útil quando o
+    serve só é alcançável através do proxy). Entradas inválidas são ignoradas
+    em vez de derrubar o servidor no boot.
+    """
+    redes: list = []
+    coringa = False
+    for raw in entries or []:
+        item = str(raw).strip()
+        if not item:
+            continue
+        if item == "*":
+            coringa = True
+            continue
+        try:
+            redes.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return redes, coringa
+
+
+def _peer_is_trusted(peer: str, redes: list, coringa: bool) -> bool:
+    if coringa:
+        return True
+    if not peer or not redes:
+        return False
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(addr in rede for rede in redes)
+
+
+def _client_ip_from(
+    peer: str, forwarded: str, redes: list, coringa: bool
+) -> str:
+    """IP do cliente, honrando X-Forwarded-For SÓ vindo de proxy confiável.
+
+    O código anterior confiava no header incondicionalmente. Como `X-Forwarded-For`
+    é escolhido pelo cliente, bastava variá-lo a cada request para receber um
+    bucket novo no rate limiter — o limite nunca disparava — e ainda fazer o
+    dict de buckets crescer sem limite. O limitador virava o vetor de DoS.
+
+    Algoritmo (o correto, não só "pega o primeiro"): caminha o XFF da DIREITA
+    para a ESQUERDA pulando proxies confiáveis; o primeiro não-confiável é o
+    cliente real. Pegar o item mais à esquerda seria spoofável mesmo atrás de
+    um proxy confiável, porque o cliente pode enviar o próprio XFF e o proxy
+    apenas ANEXA o peer ao final.
+
+    Sem `trusted_proxies` configurado (default), o header é ignorado e vale o
+    peer do socket. Falha para o lado seguro: no máximo agrupa demais.
+    """
+    if not _peer_is_trusted(peer, redes, coringa):
+        return peer or "unknown"
+    cadeia = [p.strip() for p in (forwarded or "").split(",") if p.strip()]
+    for candidato in reversed(cadeia):
+        # O coringa NÃO se aplica aqui, só ao peer. Ele significa "confie no
+        # proxy que me conectou", não "confie em toda a cadeia" — se valesse
+        # para a cadeia, todo salto seria pulado, a varredura não acharia
+        # ninguém e o header voltaria a ser ignorado, anulando a própria
+        # configuração. Com `*` e sem CIDRs, o salto mais à direita é o que o
+        # proxy anexou: exatamente o peer que falou com ele.
+        if not _peer_is_trusted(candidato, redes, coringa=False):
+            return candidato
+    # Cadeia vazia ou 100% de proxies confiáveis: o peer é o melhor que temos.
+    return peer or "unknown"
 
 
 @dataclass(frozen=True)
@@ -550,6 +667,7 @@ def create_app(
     rate_limit_requests: int = 60,
     rate_limit_window_s: float = 60.0,
     rate_limit_per_key: bool = False,
+    trusted_proxies: list[str] | None = None,
     cors_origins: list[str] | None = None,
     enable_gzip: bool = True,
     enable_access_log: bool = False,
@@ -1109,6 +1227,11 @@ def create_app(
         max_requests=rate_limit_requests,
         window_s=rate_limit_window_s,
     )
+    _trusted_redes, _trusted_coringa = _parse_trusted_proxies(trusted_proxies)
+    # Aviso único (não a cada request) para quem está atrás de proxy sem
+    # configurar: o rate limit passa a agrupar TODO mundo no IP do proxy —
+    # seguro, porém restritivo demais. Melhor gritar do que degradar calado.
+    _xff_avisado = {"feito": False}
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
@@ -1128,11 +1251,26 @@ def create_app(
     # --- auth + rate limit -------------------------------------------------------
 
     def _get_client_ip(request: Request) -> str:
-        """Extrai IP real do cliente, respeitando proxies."""
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
+        """IP real do cliente — só confia em X-Forwarded-For de proxy conhecido.
+
+        Ver `_client_ip_from` para o porquê e o algoritmo. Configure em
+        config.yaml: `serve.trusted_proxies: ["10.0.0.0/8"]` (ou `["*"]` se o
+        serve só for alcançável através do proxy).
+        """
+        peer = request.client.host if request.client else ""
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded and not _trusted_redes and not _trusted_coringa and not _xff_avisado["feito"]:
+            _xff_avisado["feito"] = True
+            _access_logger.warning(
+                "X-Forwarded-For recebido de %s mas serve.trusted_proxies esta vazio: "
+                "o header sera IGNORADO (ele e escolhido pelo cliente, e confiar nele "
+                "sem lista de proxies torna o rate limit contornavel). O limite passa a "
+                "valer por IP do proxy, agrupando todos os clientes. Configure "
+                "serve.trusted_proxies: [\"<cidr-do-proxy>\"] — ou [\"*\"] se o serve so "
+                "for alcancavel atraves dele.",
+                peer,
+            )
+        return _client_ip_from(peer, forwarded, _trusted_redes, _trusted_coringa)
 
     def _extract_incoming_key(request: Request) -> str:
         return (
@@ -1146,15 +1284,10 @@ def create_app(
             return f"key:{k}" if k else _get_client_ip(request)
         return _get_client_ip(request)
 
-    def _check_rate_limit(request: Request) -> None:
-        key = _rate_limit_key(request)
-        if not _limiter.is_allowed(key):
-            retry = _limiter.retry_after(key)
-            raise HTTPException(
-                status_code=429,
-                detail=f"Rate limit excedido. Tente novamente em {retry:.0f}s.",
-                headers={"Retry-After": str(int(retry) + 1)},
-            )
+    # NOTA: aqui existia um `_check_rate_limit()` que nunca era chamado —
+    # duplicava a lógica já aplicada no `_metrics_middleware`. Duas cópias da
+    # mesma regra é convite para divergirem (uma sendo corrigida e a outra não).
+    # O middleware é o único ponto de enforcement, e vale para TODA rota.
 
     def _verify_key(request: Request) -> None:
         if not api_key:

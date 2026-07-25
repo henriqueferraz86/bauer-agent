@@ -584,6 +584,14 @@ class ServeSection(_StrictSection):
     rate_limit_requests: int = Field(ge=0, default=60)   # max requests por IP/key por janela; 0 = desativado
     rate_limit_window_s: float = Field(ge=1.0, default=60.0)  # janela em segundos
     rate_limit_per_key: bool = False   # True = limitar por API key em vez de por IP
+    # Proxies cujo X-Forwarded-For pode ser acreditado. IP, CIDR ou "*".
+    # VAZIO (default) = o header é IGNORADO e vale o peer do socket. Isso é
+    # deliberado: X-Forwarded-For é escolhido pelo cliente, e confiar nele sem
+    # lista tornava o rate limit contornável (bastava variar o header a cada
+    # request para ganhar um bucket novo) e o dict de buckets ilimitado.
+    # Atrás de um reverse proxy, configure com o CIDR dele — senão o limite
+    # agrupa todos os clientes no IP do proxy.
+    trusted_proxies: list[str] = []
     cors_origins: list[str] = []       # origens CORS permitidas; vazio = CORS desativado; ["*"] = todas
     enable_gzip: bool = True           # compressão GZip para respostas > 1 KB
     enable_access_log: bool = False    # gravar JSON access log por request (método, path, status, latência)

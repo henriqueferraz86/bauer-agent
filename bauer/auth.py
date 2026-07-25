@@ -295,22 +295,52 @@ class AuthToken:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
+def _restringir(caminho: Path, modo: int) -> None:
+    """chmod best-effort — nunca derruba o fluxo de auth.
+
+    Windows e alguns filesystems (FAT, montagens de rede) não implementam
+    permissões POSIX; ali o chmod é no-op ou levanta. Em ambos os casos o
+    correto é seguir: no Windows a ACL do perfil do usuário já restringe
+    ~/.bauer, e falhar o login por causa de um chmod seria pior que o risco
+    que ele mitiga.
+    """
+    try:
+        os.chmod(caminho, modo)
+    except OSError as exc:
+        from .logging_config import log_suppressed
+        log_suppressed(f"auth.chmod({caminho.name})", exc)
+
+
 class TokenStore:
     """Armazenamento seguro de tokens."""
 
     def __init__(self, base_dir: Path | None = None):
         self.base_dir = base_dir or Path.home() / ".bauer"
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        _restringir(self.base_dir, 0o700)
         self.tokens_file = self.base_dir / "auth.json"
         self._obfuscation_key = self._get_or_create_key()
 
     def _get_or_create_key(self) -> str:
-        """Chave de ofuscação baseada no machine ID."""
+        """Segredo local aleatório que deriva a chave Fernet dos tokens.
+
+        Gravado em ~/.bauer/.auth_key com permissão 0o600. Sem isso o umask
+        padrão (022) criava o arquivo 0644 — world-readable — e a chave ficava
+        LADO A LADO com o `auth.json` que ela protege. Toda a criptografia
+        (Fernet + PBKDF2 100k) era anulada para qualquer outro usuário da
+        máquina: bastava ler os dois arquivos.
+
+        NÃO é derivado de machine ID, ao contrário do que o docstring anterior
+        afirmava — é um `secrets.token_hex` aleatório por instalação.
+        """
         key_file = self.base_dir / ".auth_key"
         if key_file.exists():
+            # Corrige instalações existentes, criadas antes deste fix.
+            _restringir(key_file, 0o600)
             return key_file.read_text().strip()
         key = secrets.token_hex(16)
         key_file.write_text(key)
+        _restringir(key_file, 0o600)
         return key
 
     def save(self, token: AuthToken) -> None:
@@ -337,6 +367,9 @@ class TokenStore:
 
         with open(self.tokens_file, "w", encoding="utf-8") as f:
             json.dump(secure_data, f, indent=2)
+        # Defesa em profundidade: com a .auth_key já em 0600 o ciphertext
+        # sozinho é inútil, mas não há razão para deixá-lo legível por todos.
+        _restringir(self.tokens_file, 0o600)
 
     def load(self, provider: str) -> AuthToken | None:
         """Carrega token de um provider."""

@@ -399,8 +399,69 @@ def _strip_orphan_tool_messages(messages: list[dict]) -> list[dict]:
     return clean
 
 
+def _message_chars(msg: dict) -> int:
+    """Chars faturáveis de UMA mensagem — inclui o que NÃO está em `content`.
+
+    Bug real: contar só `content` fazia uma mensagem `assistant` com tool_calls
+    valer ZERO tokens, porque nesse formato o `content` vem `None` e a carga
+    inteira (nome da função + JSON dos argumentos) mora em `tool_calls`. Numa
+    sessão agêntica — o workload principal do Bauer — isso é a maior parte do
+    contexto. As consequências encadeavam:
+
+      1. `used_tokens()`/`usage_pct()` subrelatavam grosseiramente;
+      2. `_auto_summarize` não disparava (o gerente "via" folga que não existia);
+      3. quando disparava, `_split_tail_by_tokens` punha TUDO no tail (cada
+         mensagem custava 0) e `to_compress` saía vazio — a compressão virava
+         no-op silencioso;
+      4. `_trim()` idem;
+      5. o provider then estourava o contexto, e o `shrink_budget` /
+         `_parse_provider_context_cap` entrava como remendo.
+
+    Conta também `tool_call_id`/`name` (pequenos, mas de graça) e trata
+    `content` em lista (formato multimodal//blocos) somando o texto de cada
+    bloco — `len()` numa lista devolveria a CONTAGEM DE BLOCOS, o que seria
+    outro zero disfarçado.
+    """
+    total = 0
+
+    content = msg.get("content")
+    if isinstance(content, str):
+        total += len(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                total += len(block)
+            elif isinstance(block, dict):
+                # Blocos de texto: só o texto conta. Blocos de imagem carregam
+                # data-URL base64 gigante em `image_url`, que NÃO vira token de
+                # texto — somá-lo superestimaria em centenas de milhares.
+                total += len(str(block.get("text") or ""))
+    elif content is not None:
+        total += len(str(content))
+
+    for tc in msg.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        if isinstance(fn, dict):
+            total += len(str(fn.get("name") or ""))
+            total += len(str(fn.get("arguments") or ""))
+        total += len(str(tc.get("id") or ""))
+
+    total += len(str(msg.get("tool_call_id") or ""))
+    total += len(str(msg.get("name") or ""))
+    return total
+
+
 def _estimate_tokens(messages: list[dict]) -> int:
-    total_chars = sum(len(m.get("content", "") or "") for m in messages)
+    """Estimativa de tokens do histórico (heurística chars/CHARS_PER_TOKEN).
+
+    Segue conservadora em um ponto conhecido: não soma o overhead fixo por
+    mensagem do chat template (~4 tokens de role/delimitadores). Com centenas
+    de mensagens curtas de tool isso subestima na casa do milhar — bem longe,
+    porém, dos ~250 K tokens que o bug do `tool_calls` escondia.
+    """
+    total_chars = sum(_message_chars(m) for m in messages)
     return total_chars // CHARS_PER_TOKEN
 
 
@@ -563,7 +624,10 @@ def _summarize_llm_structured(
     previous_summary: str | None = None,
 ) -> tuple[str, bool]:
     """Compressão semântica estruturada via LLM. Retorna (summary_text, success)."""
-    content_tokens = sum(len(m.get("content") or "") for m in messages) // _CHARS_PER_TOKEN
+    # Mesmo bug do _estimate_tokens: contar só `content` zerava as mensagens
+    # com tool_calls, e o budget do sumário caía no piso _MIN_SUMMARY_TOKENS
+    # mesmo comprimindo um bloco enorme de chamadas de tool.
+    content_tokens = sum(_message_chars(m) for m in messages) // _CHARS_PER_TOKEN
     budget = max(_MIN_SUMMARY_TOKENS, min(int(content_tokens * _SUMMARY_RATIO), _SUMMARY_TOKENS_CEILING))
 
     serialized = _serialize_for_summary(messages)

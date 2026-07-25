@@ -27,6 +27,98 @@ def test_estimate_tokens_accumulates():
     assert _estimate_tokens(msgs) == 2
 
 
+# --- _estimate_tokens: carga fora de `content` (regressão P0-2) --------------
+#
+# Contar só `content` fazia a mensagem `assistant` com tool_calls valer ZERO:
+# nesse formato o `content` vem None e a carga toda mora em `tool_calls`. Numa
+# sessão agêntica isso é a maior parte do contexto, e o efeito era a compressão
+# virar no-op silencioso (ver test_split_tail_*_tool_calls abaixo).
+
+
+def test_estimate_tokens_conta_tool_calls():
+    msgs = [{
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "write_file", "arguments": "X" * 20_000},
+        }],
+    }]
+    tokens = _estimate_tokens(msgs)
+    assert tokens > 4_000, f"tool_calls de 20k chars nao pode valer {tokens} tokens"
+
+
+def test_estimate_tokens_conta_content_e_tool_calls_juntos():
+    """Assistant pode responder texto E chamar tool no mesmo turno."""
+    msgs = [{
+        "role": "assistant",
+        "content": "a" * 400,                       # 100 tokens
+        "tool_calls": [{
+            "id": "c",
+            "function": {"name": "ls", "arguments": "b" * 400},   # ~100 tokens
+        }],
+    }]
+    assert _estimate_tokens(msgs) >= 200
+
+
+def test_estimate_tokens_conta_tool_call_id_da_resposta():
+    """Mensagem role=tool carrega tool_call_id além do content."""
+    com_id = [{"role": "tool", "tool_call_id": "call_abcdefgh", "content": "ok"}]
+    sem_id = [{"role": "tool", "content": "ok"}]
+    assert _estimate_tokens(com_id) > _estimate_tokens(sem_id)
+
+
+def test_estimate_tokens_content_em_lista_soma_o_texto():
+    """content multimodal e uma LISTA de blocos: len(lista) devolveria a
+    contagem de blocos (outro zero disfarcado). Soma-se o texto de cada bloco."""
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "a" * 400},
+        {"type": "text", "text": "b" * 400},
+    ]}]
+    assert _estimate_tokens(msgs) == 200
+
+
+def test_estimate_tokens_ignora_base64_de_imagem():
+    """O data-URL da imagem NAO vira token de texto — soma-lo superestimaria
+    em centenas de milhares e dispararia compressao sem necessidade."""
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "a" * 400},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "Z" * 500_000}},
+    ]}]
+    assert _estimate_tokens(msgs) == 100
+
+
+def test_estimate_tokens_nao_quebra_com_formato_torto():
+    """Defensivo: tool_calls malformado (string solta, function ausente) nao
+    pode levantar — o gerente de contexto roda em TODO turno."""
+    msgs = [
+        {"role": "assistant", "tool_calls": ["nao-e-dict"]},
+        {"role": "assistant", "tool_calls": [{"id": "x"}]},          # sem function
+        {"role": "assistant", "tool_calls": [{"function": "str"}]},  # function nao-dict
+        {"role": "user"},                                            # sem content
+        {"role": "user", "content": 12345},                          # content nao-str
+    ]
+    assert _estimate_tokens(msgs) >= 0
+
+
+def test_split_tail_nao_engole_tudo_com_tool_calls():
+    """O sintoma que mais doia: com cada mensagem custando 0, o tail cabia
+    inteiro no budget, `to_compress` saia VAZIO e a compressao nao comprimia
+    nada — silenciosamente, ate o provider estourar o contexto."""
+    from bauer.context_manager import _split_tail_by_tokens
+
+    msgs = [{
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": f"c{i}", "function": {"name": "f", "arguments": "X" * 20_000}}],
+    } for i in range(50)]
+
+    to_compress, tail = _split_tail_by_tokens(msgs, tail_budget=100)
+    assert to_compress, "to_compress vazio = compressao virou no-op"
+    assert len(tail) == 1, f"tail deveria caber ~1 mensagem no budget de 100, veio {len(tail)}"
+
+
 # --- budget -----------------------------------------------------------------
 
 
