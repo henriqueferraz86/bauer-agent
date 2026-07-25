@@ -501,3 +501,28 @@ def env_var_status() -> list[dict[str, Any]]:
                 "auth_type": p.auth_type,
             })
     return rows
+
+
+def resolver_contexto_aplicado(provider: str, requested_context: int) -> int:
+    """Janela de contexto efetiva de um par (provider, modelo). FONTE ÚNICA.
+
+    Regra (já era a de `channel_base.py`; faltava no CLI e no `bauer serve`):
+
+    - **ollama / local**: o `requested_context` manda. Quem define `num_ctx` é
+      você, e pedir mais do que a VRAM aguenta trava a máquina — não cabe ao
+      Bauer "melhorar" esse número por conta própria.
+    - **cloud**: ``max(requested, janela_real_do_provider)``. O default de
+      `requested_context` no config é 8192, um valor conservador pensado para
+      modelo local; aplicá-lo a um modelo cloud de 128k desperdiça 94% da
+      janela — e, pior, dispara compressão de contexto sem necessidade nenhuma.
+
+    Bug que isto corrige: no CLI, o `_resolve_context` do preflight aplica
+    ``min(requested, modelfile, env, ram_seguro)`` — regra correta para Ollama,
+    onde a RAM limita. Para provider cloud NENHUM desses candidatos existe, e o
+    resultado vira ``applied = requested = 8192`` fixo, sem nunca consultar a
+    janela real do modelo.
+    """
+    pedido = int(requested_context or 0)
+    if (provider or "").strip().lower() in ("ollama", ""):
+        return pedido
+    return max(pedido, get_default_context(provider))

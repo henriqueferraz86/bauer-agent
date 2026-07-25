@@ -1050,6 +1050,22 @@ def _format_tool_display(action: str, result: str) -> str:
     return f"[dim]{short}{'…' if len(r) > 150 else ''}[/dim]"
 
 
+
+def _detectar_provider_por_host(host: str) -> str:
+    """Infere o provider a partir da URL do client, quando ele nao se identifica.
+
+    A porta 11434 e o sinal forte: e a porta do Ollama, fixa por convencao. A
+    heuristica antiga olhava so o NOME do host ("ollama" in host), que falha em
+    localhost/127.0.0.1 — ou seja, em praticamente toda instalacao real.
+    """
+    h = (host or "").lower()
+    if not h:
+        return "openai"
+    if ":11434" in h or "ollama" in h:
+        return "ollama"
+    return "openai"
+
+
 def _collect_response(
     client: OllamaClient,
     model_name: str,
@@ -4310,10 +4326,21 @@ def run_agent_session(
     system_prompt = _build_system_prompt(router)
     if learning_hints:
         system_prompt += f"\n\n# Aprendizados desta sessão\n{learning_hints}"
-    # Determina provider a partir do tipo do client para context budget correto
-    _provider = getattr(client, "_provider", None) or (
-        "ollama" if hasattr(client, "host") and "ollama" in getattr(client, "host", "").lower()
-        else "openai"
+    # Determina provider a partir do client — usado no painel E no context budget.
+    #
+    # A heurística anterior era `"ollama" in host`, que falha em TODA URL real
+    # do Ollama: `http://localhost:11434` e `http://127.0.0.1:11434` não contêm
+    # a substring "ollama" (só acerta se o host for literalmente `ollama`, nome
+    # de serviço em Docker Compose). Consequências, ambas vistas em uso real:
+    #   1. o painel exibia "openai" numa sessão local — contradizendo a própria
+    #      mensagem "Modelo local + contexto 8192" impressa logo acima;
+    #   2. este `_provider` vai para o ContextManager, que o usa para escolher a
+    #      janela de fallback — um Ollama seria orçado com a janela da OpenAI.
+    #
+    # A porta 11434 é o sinal confiável (é a do Ollama, fixa por convenção);
+    # o nome só como reforço.
+    _provider = getattr(client, "_provider", None) or _detectar_provider_por_host(
+        getattr(client, "host", "")
     )
     ctx = ContextManager(
         applied_context=applied_context,

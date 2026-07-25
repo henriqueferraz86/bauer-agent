@@ -691,6 +691,7 @@ def create_app(
 
     _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
+    from .provider_profile import resolver_contexto_aplicado
     from .core.events import EventBus
     from .core.observability import AuditLog, RunTraceStore
     from .core.runtime.run_manager import RunManager
@@ -885,8 +886,13 @@ def create_app(
             return system_prompt
 
     def _new_context() -> ContextManager:
+        # Le do _state, nao da closure do boot: o contexto muda junto com o
+        # modelo. `provider` tambem passa a ser informado — sem ele o
+        # ContextManager caia no default "ollama" para escolher a janela de
+        # fallback, o que so nao doia porque applied_context era truthy.
         return ContextManager(
-            applied_context=applied_context,
+            applied_context=int(_state["applied_context"]),
+            provider=str(_state["provider"] or "ollama"),
             system_prompt=_current_system_prompt(),
         )
 
@@ -1148,6 +1154,9 @@ def create_app(
         "model": model_name,
         "client": client,
         "provider": _detect_provider(client),
+        # Contexto MORA no _state, não mais numa closure imutável do boot: ele
+        # muda junto com o modelo (ver `resolver_contexto_aplicado`).
+        "applied_context": applied_context,
     }
 
     # ── Roteamento por-turno (Fase 12 / Sprint 34c) — opt-in ──────────────────
@@ -1353,7 +1362,7 @@ def create_app(
         return {
             "model": _state["model"],
             "provider": _state["provider"],
-            "context_tokens": applied_context,
+            "context_tokens": _state["applied_context"],
             "tools": router.available_tools(),
             "auth_enabled": bool(api_key),
         }
@@ -1428,13 +1437,32 @@ def create_app(
             if new_client is not None:
                 _state["client"] = new_client
 
+        # Contexto acompanha o modelo. Sem isto, trocar de um modelo local de
+        # 8k para um cloud de 128k mantinha o budget em 8192 (6144 uteis) para
+        # sempre — e o /status reportava o valor velho, escondendo o problema.
+        _ctx_pedido = applied_context
+        if config_path is not None:
+            try:
+                from .config_loader import load_config as _lc
+                _ctx_pedido = int(_lc(config_path).model.requested_context)
+            except Exception as exc:  # noqa: BLE001
+                from .logging_config import log_suppressed
+                log_suppressed("serve.switch.requested_context", exc)
+        _state["applied_context"] = resolver_contexto_aplicado(
+            _state["provider"], _ctx_pedido
+        )
+
         # Warmup: sobe o modelo local na GPU já no switch (background), pra a
         # primeira mensagem não travar carregando vários GB. Só para Ollama.
         if _state["provider"] in ("ollama", ""):
             _oll_host = getattr(_state.get("client"), "host", None) or "http://localhost:11434"
             _warmup_ollama_model(_oll_host, _state["model"])
 
-        return {"active": _state["model"], "provider": _state["provider"]}
+        return {
+            "active": _state["model"],
+            "provider": _state["provider"],
+            "context_tokens": _state["applied_context"],
+        }
 
     _register_observability_routes(
         app,
