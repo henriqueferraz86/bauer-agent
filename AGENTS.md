@@ -7,19 +7,28 @@ servidor HTTP em FastAPI, e um Kernel de execução governada opt-in.
 ## Como verificar (rode ANTES de abrir PR)
 
 ```bash
-# Ambiente (uv é o gerenciador; o lock é versionado)
-uv sync --all-extras --frozen        # instala do uv.lock (reproduzível)
-# ou, para dev:  pip install -e ".[dev]"
+# 1. Ambiente — EXATAMENTE o que o CI usa. Não substitua por pip.
+uv sync --frozen --extra dev
 
-# Testes (a rede de segurança — não há type-checker no CI)
-pytest tests/ -q --tb=short
-
-# Lint BLOQUEANTE (o único que barra merge)
-ruff check bauer/ --select E9,F63,F7,F82
-
-# Lint informativo (não bloqueia)
-ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
+# 2. Tudo o mais roda via `uv run`, que garante o venv do lock
+uv run pytest tests/ -q --tb=short
+uv run ruff check bauer/ --select E9,F63,F7,F82     # BLOQUEANTE no CI
+uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
 ```
+
+> **Use `uv sync --frozen`, não `pip install -e ".[dev]"`.** Os dois instalam
+> coisas *diferentes*: o `pip` resolve as constraints `>=` na hora, o `uv`
+> obedece ao `uv.lock` versionado — que é o que o CI executa. Rodar com o
+> ambiente errado já custou caro mais de uma vez neste repo: uma suíte inteira
+> "falhando" por falta de `pytest-asyncio` num venv alheio, e um baseline de
+> mypy medido com pydantic 2.9.2 enquanto o CI usava 2.13.4.
+>
+> `tests/test_dev_env_parity.py` detecta isso e diz o que fazer — se ele falhar,
+> conserte o ambiente antes de investigar qualquer outra falha da suíte.
+>
+> Ao mexer em dependências no `pyproject.toml`, rode **`uv lock`** e commite o
+> `uv.lock` junto. O CI valida com `uv lock --check` e o `--frozen` recusa
+> divergência.
 
 - A suíte é hermética por design: `tests/conftest.py` aponta `BAUER_CONFIG`/
   `BAUER_HOME`/`BAUER_AGENTS_FILE` para caminhos inexistentes, então nenhum

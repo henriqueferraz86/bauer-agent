@@ -613,22 +613,32 @@ class KernelSection(_StrictSection):
     max_replans: int = Field(ge=0, default=1)          # loop evaluating→planning (budget)
 
 
+def _adapters_padrao() -> dict[str, dict[str, Any]]:
+    """Adapters default do runtime.
+
+    Era um `lambda` inline no Field. mypy infere o retorno do lambda pelos
+    VALORES: como os dicts internos misturam bool/str/int, o join vira
+    `dict[str, object]`, que não casa com o `dict[str, Any]` declarado no
+    campo. A anotação explícita aqui resolve — sem `# type: ignore`, e sem
+    afrouxar o tipo do campo.
+    """
+    return {
+        "bauer_native": {"enabled": True},
+        "agno": {
+            "enabled": True,
+            "mode": "sdk",
+            "base_url": "http://localhost:7777",
+            "timeout_s": 120,
+        },
+    }
+
+
 class RuntimeSection(_StrictSection):
     profile: Literal["low", "medium", "high"] = "low"
     ram_limit_mb: int = Field(ge=512, default=4096)
     safety_margin_mb: int = Field(ge=0, default=1024)
     default_adapter: str = "bauer_native"
-    adapters: dict[str, dict[str, Any]] = Field(
-        default_factory=lambda: {
-            "bauer_native": {"enabled": True},
-            "agno": {
-                "enabled": True,
-                "mode": "sdk",
-                "base_url": "http://localhost:7777",
-                "timeout_s": 120,
-            },
-        }
-    )
+    adapters: dict[str, dict[str, Any]] = Field(default_factory=_adapters_padrao)
 
 
 class RouterSection(_StrictSection):
