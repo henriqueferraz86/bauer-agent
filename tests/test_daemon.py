@@ -18,6 +18,13 @@ from bauer.daemon import (
     is_daemon_alive,
 )
 from bauer.process_supervisor import ProcessSupervisor
+# Deadline de wall-clock destes testes. E REDE DE SEGURANCA CONTRA TRAVAMENTO,
+# nao assertiva de velocidade: no caminho feliz nunca e alcancado (os testes
+# terminam em dezenas de ms), e no caminho quebrado so decide quanto se espera
+# antes de ver a falha. Apertá-lo nao deixa o codigo mais rapido — so converte
+# lentidao de runner em vermelho falso. Ver conftest.py para o incidente que
+# motivou isto (CI do master, Windows/3.12, timeout=3.0 estourado).
+DEADLINE_ANTI_TRAVAMENTO = 30.0
 
 
 # ===========================================================================
@@ -87,7 +94,7 @@ class TestProcessSupervisor:
         s = ProcessSupervisor(max_restarts=5, backoff_base=0.001, backoff_cap=0.01)
         s.record_failure(ValueError("oops"))
         # Should complete quickly with tiny backoff
-        await asyncio.wait_for(s.wait_backoff(), timeout=1.0)
+        await asyncio.wait_for(s.wait_backoff(), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
     def test_stats_returns_dict(self):
         s = ProcessSupervisor(worker_id=42, max_restarts=5)
@@ -241,7 +248,7 @@ class TestBauerDaemon:
 
         # Patch _claim_next_task to return None (no tasks)
         with patch.object(d, "_claim_next_task", new=AsyncMock(return_value=None)):
-            exit_code = await asyncio.wait_for(d.start(), timeout=3.0)
+            exit_code = await asyncio.wait_for(d.start(), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         # budget_watchdog should have triggered shutdown
         assert d._shutdown_event.is_set()
@@ -266,7 +273,7 @@ class TestBauerDaemon:
 
         with patch.object(d, "_claim_next_task", side_effect=fake_claim):
             with patch.object(d, "_run_task_via_dispatcher", new=AsyncMock()):
-                exit_code = await asyncio.wait_for(d.start(), timeout=5.0)
+                exit_code = await asyncio.wait_for(d.start(), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         assert d._tasks_completed >= 1
 
@@ -284,7 +291,7 @@ class TestBauerDaemon:
             raise RuntimeError("simulated crash")
 
         with patch.object(d, "_claim_next_task", side_effect=crash_claim):
-            exit_code = await asyncio.wait_for(d.start(), timeout=5.0)
+            exit_code = await asyncio.wait_for(d.start(), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         assert exit_code == 1  # crash exit
         assert "exceeded_restarts" in d._shutdown_reason
@@ -305,7 +312,7 @@ class TestBauerDaemon:
         d._budget._cost_usd = d._budget.max_cost_usd
 
         with patch.object(d, "_claim_next_task", new=AsyncMock(return_value=None)):
-            await asyncio.wait_for(d.start(), timeout=3.0)
+            await asyncio.wait_for(d.start(), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         assert "budget_exhausted" in escalations
 

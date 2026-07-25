@@ -18,6 +18,13 @@ from bauer.trigger_manager import (
     TriggerManager,
     WebhookTrigger,
 )
+# Deadline de wall-clock destes testes. E REDE DE SEGURANCA CONTRA TRAVAMENTO,
+# nao assertiva de velocidade: no caminho feliz nunca e alcancado (os testes
+# terminam em dezenas de ms), e no caminho quebrado so decide quanto se espera
+# antes de ver a falha. Apertá-lo nao deixa o codigo mais rapido — so converte
+# lentidao de runner em vermelho falso. Ver conftest.py para o incidente que
+# motivou isto (CI do master, Windows/3.12, timeout=3.0 estourado).
+DEADLINE_ANTI_TRAVAMENTO = 30.0
 
 
 # ===========================================================================
@@ -78,7 +85,7 @@ class TestCronTrigger:
         t = CronTrigger("cron1", interval_seconds=0.05, max_fires=1)
         shutdown = asyncio.Event()
 
-        await asyncio.wait_for(t.run(cb, shutdown), timeout=2.0)
+        await asyncio.wait_for(t.run(cb, shutdown), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         assert len(events) == 1
         assert events[0].trigger_id == "cron1"
@@ -94,7 +101,7 @@ class TestCronTrigger:
         t = CronTrigger("cron2", interval_seconds=10.0, fire_on_start=True, max_fires=1)
         shutdown = asyncio.Event()
 
-        await asyncio.wait_for(t.run(cb, shutdown), timeout=1.0)
+        await asyncio.wait_for(t.run(cb, shutdown), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         assert len(events) == 1
         assert events[0].reason == "cron_start"
@@ -109,7 +116,7 @@ class TestCronTrigger:
         t = CronTrigger("cron3", interval_seconds=0.03, max_fires=3)
         shutdown = asyncio.Event()
 
-        await asyncio.wait_for(t.run(cb, shutdown), timeout=3.0)
+        await asyncio.wait_for(t.run(cb, shutdown), timeout=DEADLINE_ANTI_TRAVAMENTO)
 
         assert len(events) == 3
 
@@ -154,7 +161,7 @@ class TestCronTrigger:
 
         t = CronTrigger("cron6", interval_seconds=0.03, max_fires=2)
         shutdown = asyncio.Event()
-        await asyncio.wait_for(t.run(cb, shutdown), timeout=2.0)
+        await asyncio.wait_for(t.run(cb, shutdown), timeout=DEADLINE_ANTI_TRAVAMENTO)
         assert t.fire_count == 2
         assert t.last_fired is not None
 
