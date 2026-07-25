@@ -155,12 +155,53 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+  changes:
+    # Detecta o escopo do diff. Sem isso, uma PR que só toca Python esperava
+    # ~5min de build Node/Rust à toa E podia ser BLOQUEADA por uma falha sem
+    # relação nenhuma com o diff — foi o que aconteceu: o `npm audit` consulta
+    # a base de advisories ao vivo, então o mesmo lockfile passou num dia e
+    # falhou no outro, sem ninguém commitar nada.
+    name: Detectar escopo do diff
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Há mudança em desktop/?
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # Base ausente/inalcançável (1º push da branch, schedule, force-push):
+          # roda tudo. Fail-safe é rodar a mais, nunca a menos.
+          if [ -z "$base" ] \
+             || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$base" "${{ github.sha }}" | grep -q '^desktop/'; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+
   desktop-build:
     # Build smoke do SPA (Bauer Desktop Fase 1) — garante que o frontend
     # React+Vite compila e emite para bauer/static/. Não roda testes de
     # componente (fora de escopo desta fase).
     name: Desktop SPA build
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
 
     steps:
       - name: Checkout
@@ -195,6 +236,8 @@ jobs:
     name: Tauri build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os != 'windows-latest' }}
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     strategy:
       fail-fast: false
       matrix:
