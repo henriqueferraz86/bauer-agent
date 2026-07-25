@@ -227,32 +227,46 @@ class FileWatcher:
         self._stop = False
 
     def start(self) -> None:
-        """Inicia o watcher em background thread (daemon)."""
+        """Inicia o watcher em background thread (daemon).
+
+        O snapshot inicial de mtime é tirado AQUI, na thread chamadora, antes
+        de a thread subir. Quando ele ficava dentro de `_loop`, `start()`
+        retornava com o watcher ainda desarmado: se a thread demorasse a ganhar
+        CPU (runner de CI carregado), o baseline era colhido DEPOIS de uma
+        escrita subsequente, o mtime já registrado batia com o atual e a
+        mudança nunca era detectada — silenciosamente, sem erro. Agora
+        `start()` retornar significa "armado".
+        """
         if self._thread and self._thread.is_alive():
             return
         self._stop = False
+        self._snapshot()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="file-watcher"
         )
         self._thread.start()
 
+    def _snapshot(self) -> None:
+        """Registra o mtime atual de cada path observado."""
+        for p in self._paths:
+            try:
+                self._mtimes[p] = p.stat().st_mtime
+            except OSError:
+                # FileNotFoundError e amigos (permissao, path invalido): trata
+                # como "nao existe" — a primeira aparicao do arquivo vira mudanca.
+                self._mtimes[p] = 0.0
+
     def stop(self) -> None:
         self._stop = True
 
     def _loop(self) -> None:
-        # Inicializa snapshot
-        for p in self._paths:
-            try:
-                self._mtimes[p] = p.stat().st_mtime
-            except FileNotFoundError:
-                self._mtimes[p] = 0.0
-
+        # Snapshot inicial ja foi tirado em start() (ver docstring de la).
         while not self._stop:
             time.sleep(self._interval)
             for p in self._paths:
                 try:
                     mtime = p.stat().st_mtime
-                except FileNotFoundError:
+                except OSError:
                     mtime = 0.0
 
                 prev = self._mtimes.get(p, 0.0)
