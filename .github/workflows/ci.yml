@@ -73,6 +73,34 @@ jobs:
         # Codigo que nao compila ou referencia nomes inexistentes nunca deve mergear.
         run: ruff check bauer/ --select E9,F63,F7,F82
 
+  typecheck:
+    # BLOQUEANTE. O pacote publica py.typed — promete tipos corretos a quem
+    # consome — e nada verificava isso. Catraca: os 80 modulos com divida estao
+    # listados em [[tool.mypy.overrides]] no pyproject; todo o resto (213
+    # modulos, 52% do codigo) e checado. Modulo NOVO ja nasce checado.
+    # Se este job falhar por causa de codigo novo, corrija o tipo — NAO
+    # adicione o modulo na lista de divida.
+    name: Typecheck (mypy, bloqueante)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        # mypy precisa das deps para resolver os tipos reais (pydantic, httpx,
+        # typer); so instalar o mypy daria erro fantasma de import.
+        run: pip install -e ".[dev]"
+
+      - name: mypy
+        run: mypy bauer/
+
   lint:
     name: Lint informativo (estilo)
     runs-on: ubuntu-latest
