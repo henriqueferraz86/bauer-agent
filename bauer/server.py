@@ -39,8 +39,9 @@ import os
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Timeout de turno (wall-clock) do loop de tool-calling em /stream — sem isso,
 # uma sessao que entra num loop de tool calls (ou uma chamada de LLM/tool
@@ -442,6 +443,169 @@ def _client_ip_from(
             return candidato
     # Cadeia vazia ou 100% de proxies confiáveis: o peer é o melhor que temos.
     return peer or "unknown"
+
+
+@dataclass(frozen=True)
+class _ObservabilityDeps:
+    """Stores que as rotas de observabilidade leem. Dependências EXPLÍCITAS.
+
+    Enquanto essas rotas viviam dentro de `create_app`, elas capturavam por
+    closure de um escopo com ~40 nomes — impossível saber, olhando a rota, o
+    que ela realmente usa, e impossível testá-la sem construir o app inteiro.
+    """
+    store: Any
+    event_bus: Any
+    run_manager: Any
+    trace_store: Any
+    audit_log: Any
+    approval_manager: Any
+    runtime_root: Path
+
+
+def _janela_para_delta(janela: str):
+    """Converte '24h' / '7d' / '2w' em timedelta. Levanta HTTPException se torto.
+
+    Estava duplicado literalmente em /audit/report e /audit/skills/insights —
+    mesmo regex, mesmo dict de unidades, mesma mensagem de erro.
+    """
+    from datetime import timedelta
+    from fastapi import HTTPException
+    import re
+
+    m = re.fullmatch(r"(\d+)([mhdw])", janela.strip().lower())
+    if not m:
+        raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
+    qtd, unidade = int(m.group(1)), m.group(2)
+    return {
+        "m": timedelta(minutes=qtd), "h": timedelta(hours=qtd),
+        "d": timedelta(days=qtd), "w": timedelta(weeks=qtd),
+    }[unidade]
+
+
+def _register_observability_routes(app, deps: _ObservabilityDeps, verify_key) -> None:
+    """Rotas de leitura: sessions, events, runs, audit e approvals.
+
+    Extraído de `create_app` (que tinha 2.005 linhas e complexidade ciclomática
+    238 — o maior god object do repositório). Só movimentação: nenhuma rota,
+    assinatura ou resposta mudou.
+    """
+    from dataclasses import asdict
+    from datetime import datetime
+
+    from fastapi import Depends, HTTPException, Query
+
+    from .core.events import EventBus
+    from .core.observability import AuditLog
+
+    @app.get("/sessions")
+    def list_sessions(_: None = Depends(verify_key)):
+        return {"sessions": deps.store.list_sessions()}
+
+    @app.get("/events")
+    def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(verify_key)):
+        return {"events": [EventBus.to_dict(e) for e in deps.event_bus.list_events(limit=limit)]}
+
+    @app.get("/runs")
+    def list_runs(_: None = Depends(verify_key)):
+        return {"runs": [asdict(run) for run in deps.run_manager.list_runs()]}
+
+    @app.get("/runs/{run_id}")
+    def get_run(run_id: str, _: None = Depends(verify_key)):
+        run = deps.run_manager.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(run)
+
+    @app.get("/runs/{run_id}/events")
+    def list_run_events(run_id: str, _: None = Depends(verify_key)):
+        return {"events": [EventBus.to_dict(e) for e in deps.event_bus.list_events(run_id=run_id)]}
+
+    @app.get("/runs/{run_id}/trace")
+    def get_run_trace(run_id: str, _: None = Depends(verify_key)):
+        if deps.run_manager.get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return deps.trace_store.get_trace(run_id)
+
+    @app.get("/audit")
+    def list_audit(
+        run_id: str = Query("", description="filtra por run_id"),
+        limit: int = Query(100, ge=1, le=1000),
+        _: None = Depends(verify_key),
+    ):
+        return {
+            "audit": [
+                AuditLog.to_dict(r)
+                for r in deps.audit_log.list_records(run_id=run_id or None, limit=limit)
+            ]
+        }
+
+    @app.get("/audit/report")
+    def audit_report_endpoint(
+        last: str = Query("24h", description="janela: 24h, 7d, 2w"),
+        _: None = Depends(verify_key),
+    ):
+        from .core.audit import build_report
+        delta = _janela_para_delta(last)
+        return asdict(build_report(
+            deps.runtime_root, since=datetime.now() - delta, window_label=last,
+        ))
+
+    @app.get("/audit/runs/{run_id}")
+    def audit_run_endpoint(run_id: str, _: None = Depends(verify_key)):
+        from .core.audit import audit_run
+        audited = audit_run(deps.runtime_root, run_id, include_events=True, include_tools=True)
+        if audited is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(audited)
+
+    @app.get("/audit/runs/{run_id}/score")
+    def audit_score_endpoint(run_id: str, _: None = Depends(verify_key)):
+        from .core.audit import score_run_by_id
+        score = score_run_by_id(deps.runtime_root, run_id)
+        if score is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
+        return asdict(score)
+
+    @app.get("/audit/skills/insights")
+    def audit_skill_insights_endpoint(
+        last: str = Query("7d", description="janela: 24h, 7d, 2w"),
+        _: None = Depends(verify_key),
+    ):
+        from .core.audit import build_skill_insights
+        delta = _janela_para_delta(last)
+        return asdict(build_skill_insights(
+            deps.runtime_root,
+            since=datetime.now() - delta,
+            window_label=last,
+            suggest_new=True,
+        ))
+
+    @app.get("/approvals")
+    def list_approvals(
+        status: str = Query("", description="pending | approved | denied"),
+        _: None = Depends(verify_key),
+    ):
+        return {"approvals": [asdict(r) for r in deps.approval_manager.list(status=status or None)]}
+
+    @app.post("/approvals/{approval_id}/approve")
+    def approve_request(approval_id: str, _: None = Depends(verify_key)):
+        try:
+            return asdict(deps.approval_manager.approve(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    @app.post("/approvals/{approval_id}/deny")
+    def deny_request(approval_id: str, _: None = Depends(verify_key)):
+        try:
+            return asdict(deps.approval_manager.deny(approval_id))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+
+    @app.delete("/sessions/{session_id}")
+    def delete_session(session_id: str, _: None = Depends(verify_key)):
+        if not deps.store.delete(session_id):
+            raise HTTPException(status_code=404, detail=f"Sessao '{session_id}' nao encontrada.")
+        return {"deleted": session_id}
 
 
 def _require_fastapi():
@@ -1272,142 +1436,19 @@ def create_app(
 
         return {"active": _state["model"], "provider": _state["provider"]}
 
-    @app.get("/sessions")
-    def list_sessions(_: None = Depends(_verify_key)):
-        return {"sessions": store.list_sessions()}
-
-    @app.get("/events")
-    def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(_verify_key)):
-        return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(limit=limit)]}
-
-    @app.get("/runs")
-    def list_runs(_: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        return {"runs": [asdict(run) for run in run_manager.list_runs()]}
-
-    @app.get("/runs/{run_id}")
-    def get_run(run_id: str, _: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        run = run_manager.get_run(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
-        return asdict(run)
-
-    @app.get("/runs/{run_id}/events")
-    def list_run_events(run_id: str, _: None = Depends(_verify_key)):
-        return {"events": [EventBus.to_dict(event) for event in event_bus.list_events(run_id=run_id)]}
-
-    @app.get("/runs/{run_id}/trace")
-    def get_run_trace(run_id: str, _: None = Depends(_verify_key)):
-        if run_manager.get_run(run_id) is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
-        return trace_store.get_trace(run_id)
-
-    @app.get("/audit")
-    def list_audit(
-        run_id: str = Query("", description="filtra por run_id"),
-        limit: int = Query(100, ge=1, le=1000),
-        _: None = Depends(_verify_key),
-    ):
-        return {
-            "audit": [
-                AuditLog.to_dict(record)
-                for record in audit_log.list_records(run_id=run_id or None, limit=limit)
-            ]
-        }
-
-    @app.get("/audit/report")
-    def audit_report_endpoint(
-        last: str = Query("24h", description="janela: 24h, 7d, 2w"),
-        _: None = Depends(_verify_key),
-    ):
-        from dataclasses import asdict
-        from datetime import datetime, timedelta
-        import re
-        from .core.audit import build_report
-
-        match = re.fullmatch(r"(\d+)([mhdw])", last.strip().lower())
-        if not match:
-            raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
-        amount, unit = int(match.group(1)), match.group(2)
-        delta = {
-            "m": timedelta(minutes=amount), "h": timedelta(hours=amount),
-            "d": timedelta(days=amount), "w": timedelta(weeks=amount),
-        }[unit]
-        return asdict(build_report(runtime_root, since=datetime.now() - delta, window_label=last))
-
-    @app.get("/audit/runs/{run_id}")
-    def audit_run_endpoint(run_id: str, _: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        from .core.audit import audit_run
-
-        audited = audit_run(runtime_root, run_id, include_events=True, include_tools=True)
-        if audited is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
-        return asdict(audited)
-
-    @app.get("/audit/runs/{run_id}/score")
-    def audit_score_endpoint(run_id: str, _: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        from .core.audit import score_run_by_id
-
-        score = score_run_by_id(runtime_root, run_id)
-        if score is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' nao encontrada.")
-        return asdict(score)
-
-    @app.get("/audit/skills/insights")
-    def audit_skill_insights_endpoint(
-        last: str = Query("7d", description="janela: 24h, 7d, 2w"),
-        _: None = Depends(_verify_key),
-    ):
-        from dataclasses import asdict
-        from datetime import datetime, timedelta
-        import re
-        from .core.audit import build_skill_insights
-
-        match = re.fullmatch(r"(\d+)([mhdw])", last.strip().lower())
-        if not match:
-            raise HTTPException(status_code=400, detail="Use janela como 24h, 7d ou 2w.")
-        amount, unit = int(match.group(1)), match.group(2)
-        delta = {
-            "m": timedelta(minutes=amount), "h": timedelta(hours=amount),
-            "d": timedelta(days=amount), "w": timedelta(weeks=amount),
-        }[unit]
-        return asdict(build_skill_insights(
-            runtime_root,
-            since=datetime.now() - delta,
-            window_label=last,
-            suggest_new=True,
-        ))
-
-    @app.get("/approvals")
-    def list_approvals(status: str = Query("", description="pending | approved | denied"), _: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        return {"approvals": [asdict(record) for record in approval_manager.list(status=status or None)]}
-
-    @app.post("/approvals/{approval_id}/approve")
-    def approve_request(approval_id: str, _: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        try:
-            return asdict(approval_manager.approve(approval_id))
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
-
-    @app.post("/approvals/{approval_id}/deny")
-    def deny_request(approval_id: str, _: None = Depends(_verify_key)):
-        from dataclasses import asdict
-        try:
-            return asdict(approval_manager.deny(approval_id))
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
-
-    @app.delete("/sessions/{session_id}")
-    def delete_session(session_id: str, _: None = Depends(_verify_key)):
-        deleted = store.delete(session_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail=f"Sessao '{session_id}' nao encontrada.")
-        return {"deleted": session_id}
+    _register_observability_routes(
+        app,
+        _ObservabilityDeps(
+            store=store,
+            event_bus=event_bus,
+            run_manager=run_manager,
+            trace_store=trace_store,
+            audit_log=audit_log,
+            approval_manager=approval_manager,
+            runtime_root=runtime_root,
+        ),
+        _verify_key,
+    )
 
     def _chat_via_kernel(req: ChatRequest, session_id: str, active_router, resolved: dict,
                          request_agent_id: str, ctx, turn_client, turn_model, route):
