@@ -108,6 +108,15 @@ ignore = ["E501", "W291", "W293", "E302", "E303"]
 #   - a lista so pode ENCOLHER — tirar um nome de la e o passo de quitacao.
 #
 # 213 modulos / 48.273 LOC (52% do codigo) ja passam limpos e estao travados.
+#
+# COMO REGERAR A LISTA DE DIVIDA — use o MESMO ambiente do CI:
+#     pip install -e ".[dev]"     (nao o python do sistema!)
+#     mypy bauer/
+# Aprendido na marra: a primeira versao desta lista foi medida com o python do
+# sistema (pydantic 2.9.2) enquanto o CI instala o extra `dev` (pydantic
+# 2.13.4). As libs mudam os proprios stubs entre versoes, entao um modulo pode
+# passar num ambiente e falhar no outro — foi exatamente o que aconteceu com
+# config_loader.py.
 python_version = "3.11"
 ignore_missing_imports = true       # deps opcionais (fastapi, playwright, ddgs...)
 follow_imports = "silent"           # nao propaga erro de modulo com divida
@@ -116,6 +125,17 @@ warn_unused_configs = true
 # de erros nos modulos hoje limpos, o que derrubaria a catraca no primeiro dia:
 #   disallow_untyped_defs, disallow_any_generics, strict_optional estrito.
 # Sao os proximos degraus, um por PR.
+
+[[tool.mypy.overrides]]
+# Libs de terceiros que NAO devem ser analisadas. numpy (puxado por extras de
+# audio/voz em venvs locais, nao pelo extra `dev` do CI) publica stubs com
+# `type X = ...`, sintaxe de Python 3.12+ — com python_version=3.11 o mypy
+# aborta com erro de SINTAXE no stub e para de checar o resto. O CI nao tinha
+# numpy e passava; a maquina do dev tinha e nao rodava. skip evita a
+# divergencia dos dois lados.
+module = ["numpy"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [[tool.mypy.overrides]]
 # ── REGISTRO DE DIVIDA DE TIPAGEM ─────────────────────────────────────────────
