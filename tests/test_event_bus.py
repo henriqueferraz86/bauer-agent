@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -348,12 +349,62 @@ class TestFileWatcher:
         test_file.write_text("a")
         watcher = FileWatcher(bus, [test_file], interval_sec=0.05)
         watcher.start()
-        time.sleep(0.15)
+
+        # Duas coisas precisam ser deterministicas aqui, e cada uma ja causou
+        # (ou quase causou) um flake:
+        #
+        # 1. A MUDANCA precisa ser visivel no mtime. No Windows o relogio de
+        #    arquivo tem granularidade de ~15.6ms: medido neste repo, 131 de
+        #    200 escritas consecutivas ficam com mtime IDENTICO. Confiar em
+        #    "escrevi de novo, logo o mtime mudou" e um flake de ~65%. O utime
+        #    explicito torna a mudanca inequivoca sem depender do relogio.
+        # 2. A DETECCAO nao pode ter prazo cravado: num runner carregado a
+        #    thread de polling pode nao ganhar CPU em 150ms. Espera-se ate a
+        #    condicao, com teto generoso.
         test_file.write_text("b")
-        time.sleep(0.15)
+        novo_mtime = test_file.stat().st_mtime + 10
+        os.utime(test_file, (novo_mtime, novo_mtime))
+
+        deadline = time.monotonic() + 5.0
+        while not sources and time.monotonic() < deadline:
+            time.sleep(0.02)
         watcher.stop()
 
         assert any(s == "file_watcher" for s in sources)
+
+    def test_start_arma_o_watcher_antes_de_retornar(self, tmp_path):
+        """Regressao (flake de CI, Windows/3.12): o snapshot inicial de mtime
+        ficava dentro de `_loop`, entao `start()` retornava com o watcher ainda
+        desarmado. Se a thread demorasse a ganhar CPU, o baseline era colhido
+        DEPOIS da escrita seguinte — o mtime gravado ja era o novo, nenhuma
+        mudanca era detectada e o evento nunca saia, em silencio.
+
+        Assertiva deterministica (nao depende de timing): quando `start()`
+        retorna, o mtime do arquivo JA tem que estar registrado.
+        """
+        bus = _bus(tmp_path)
+        test_file = tmp_path / "w.txt"
+        test_file.write_text("a")
+        mtime_antes = test_file.stat().st_mtime
+
+        watcher = FileWatcher(bus, [test_file], interval_sec=60.0)  # nunca poll
+        watcher.start()
+        try:
+            assert watcher._mtimes.get(test_file) == mtime_antes
+        finally:
+            watcher.stop()
+
+    def test_snapshot_de_arquivo_inexistente_nao_quebra_start(self, tmp_path):
+        """Path que nao existe (ou ilegivel) vira baseline 0.0 — a primeira
+        aparicao do arquivo conta como mudanca, e start() nao levanta."""
+        bus = _bus(tmp_path)
+        ausente = tmp_path / "nao_existe.txt"
+        watcher = FileWatcher(bus, [ausente], interval_sec=60.0)
+        watcher.start()
+        try:
+            assert watcher._mtimes.get(ausente) == 0.0
+        finally:
+            watcher.stop()
 
 
 # ---------------------------------------------------------------------------
