@@ -93,13 +93,19 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install deps
-        # mypy precisa das deps para resolver os tipos reais (pydantic, httpx,
-        # typer); so instalar o mypy daria erro fantasma de import.
-        run: pip install -e ".[dev]"
+      - name: Install uv
+        run: pip install uv
+
+      - name: Instalar dependencias TRAVADAS no uv.lock
+        # Nao basta instalar o mypy: ele precisa das deps para resolver os tipos
+        # reais (pydantic, httpx, typer) — so o mypy daria erro fantasma de
+        # import. E tem que ser do LOCK: a 1a versao deste job usou pip, e o
+        # baseline acabou medido com pydantic 2.9.2 enquanto o CI rodava 2.13.4.
+        # Libs mudam os proprios stubs entre versoes.
+        run: uv sync --frozen --extra dev
 
       - name: mypy
-        run: mypy bauer/
+        run: uv run mypy bauer/
 
   lint:
     name: Lint informativo (estilo)
