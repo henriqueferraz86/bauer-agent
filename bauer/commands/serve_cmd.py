@@ -115,6 +115,7 @@ def serve(
         rate_limit_requests=cfg.serve.rate_limit_requests,
         rate_limit_window_s=cfg.serve.rate_limit_window_s,
         rate_limit_per_key=cfg.serve.rate_limit_per_key,
+        trusted_proxies=list(cfg.serve.trusted_proxies) or None,
         cors_origins=list(cfg.serve.cors_origins) or None,
         enable_gzip=cfg.serve.enable_gzip,
         enable_access_log=cfg.serve.enable_access_log,
