@@ -70,3 +70,25 @@ def _isolate_kanban_board(request, monkeypatch):
     # PYTHONHASHSEED) e sempre seguro como nome de diretório.
     digest = hashlib.md5(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
     monkeypatch.setenv("BAUER_KANBAN_BOARD", f"t-{digest}")
+
+
+# ── Deadline anti-travamento para testes assíncronos ────────────────────────
+#
+# Flake real (CI do master, Windows/3.12, 2026-07-25):
+# `test_start_shuts_down_when_budget_exhausted` estourou um
+# `asyncio.wait_for(..., timeout=3.0)`. O watchdog que o teste espera roda a
+# cada 50ms — margem de 60x — mas o job levou ~7min contra 5m44s dos anteriores:
+# runner carregado. Localmente o mesmo teste passa 25/25.
+#
+# A lição, que vale para TODO deadline de wall-clock em teste:
+#
+#   O timeout aqui é REDE DE SEGURANÇA CONTRA TRAVAMENTO, não uma assertiva de
+#   velocidade. No caminho feliz ele nunca é alcançado — o teste termina em
+#   dezenas de ms. No caminho quebrado, ele só decide QUANTO você espera antes
+#   de ver a falha. Apertá-lo não torna o código mais rápido nem o teste mais
+#   rigoroso: só transforma lentidão do runner em vermelho falso.
+#
+# Por isso o valor é generoso. Se um teste precisa mesmo afirmar "isto é
+# rápido", meça o que o código faz (iterações, chamadas) — não o relógio de
+# parede de uma VM compartilhada.
+DEADLINE_ANTI_TRAVAMENTO = 30.0
