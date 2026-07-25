@@ -29,5 +29,21 @@
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.6.3",
     "vite": "^6.4.3"
+  },
+  "comment:overrides": [
+    "brace-expansion: a cadeia inteira de 8 vulns HIGH do audit (minimatch, glob,",
+    "cacache, make-fetch-happen, node-gyp, ttf2woff2, svgtofont, @tabler/icons-webfont)",
+    "e cascata de 'depends on vulnerable versions of' a partir de UMA raiz:",
+    "brace-expansion <=5.0.7 (DoS por expansao ilimitada). Nao existe 2.x corrigido —",
+    "5.0.8 e a unica versao com fix, e tem exports duais CJS/ESM, entao os consumidores",
+    "CJS que pedem ^2.0.2 (minimatch@9) continuam funcionando.",
+    "postcss: Path Traversal no auto-load de source map (GHSA-r28c-9q8g-f849).",
+    "npm audit fix nao resolve nenhum dos dois: o @tabler/icons-webfont e vulneravel",
+    "em >=3.36.1, ou seja, nao ha conserto para frente dentro do ^3.24.0 — o resolver",
+    "fica em loop se auto-sugerindo. Override e o caminho que corrige sem downgrade."
+  ],
+  "overrides": {
+    "brace-expansion": "^5.0.8",
+    "postcss": "^8.5.23"
   }
 }
