@@ -456,3 +456,123 @@ class TestSingleton:
 
     def teardown_method(self, method):
         reset_event_bus()
+
+
+# ---------------------------------------------------------------------------
+# Higiene do SQLite (conexao persistente, WAL, indice em ts, retencao)
+# ---------------------------------------------------------------------------
+
+class TestSqliteHygiene:
+    """O `events` era o unico store do projeto sem WAL, sem busy_timeout, sem
+    indice em `ts` (apesar do ORDER BY ts DESC) e sem retencao — abrindo ainda
+    uma conexao NOVA por evento no caminho quente do publish. O audit_trail.py
+    ja fazia tudo isso certo."""
+
+    def test_wal_e_busy_timeout_ativos(self, tmp_path):
+        bus = _bus(tmp_path)
+        try:
+            modo = bus._conn.execute("PRAGMA journal_mode").fetchone()[0]
+            busy = bus._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            assert modo.lower() == "wal", f"journal_mode={modo}, escritores concorrentes travam"
+            assert busy >= 5000, f"busy_timeout={busy}"
+        finally:
+            bus.close()
+
+    def test_indice_em_ts_existe(self, tmp_path):
+        """history() faz ORDER BY ts DESC — sem indice era full scan + sort."""
+        bus = _bus(tmp_path)
+        try:
+            idx = {r[1] for r in bus._conn.execute("PRAGMA index_list(events)").fetchall()}
+            assert "idx_events_ts" in idx
+        finally:
+            bus.close()
+
+    def test_query_de_history_usa_o_indice(self, tmp_path):
+        """Prova via EXPLAIN que o plano deixou de ser scan+sort."""
+        bus = _bus(tmp_path)
+        try:
+            plano = " ".join(
+                str(r) for r in bus._conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT id FROM events ORDER BY ts DESC LIMIT 50"
+                ).fetchall()
+            )
+            assert "idx_events_ts" in plano, f"plano nao usa o indice: {plano}"
+            assert "TEMP B-TREE" not in plano.upper(), f"ainda ordena em memoria: {plano}"
+        finally:
+            bus.close()
+
+    def test_conexao_e_reaproveitada_entre_publishes(self, tmp_path):
+        """Antes: connect+insert+commit+close a CADA evento publicado."""
+        bus = _bus(tmp_path)
+        try:
+            conn_inicial = bus._conn
+            for i in range(50):
+                bus.publish("t", {"i": i})
+            assert bus._conn is conn_inicial
+            assert len(bus.history(limit=100)) == 50
+        finally:
+            bus.close()
+
+    def test_retencao_por_idade(self, tmp_path):
+        bus = EventBus(db_path=tmp_path / "r.db", retention_days=1)
+        try:
+            antigo = Event(topic="t", payload={}, ts=time.time() - 10 * 86400)
+            recente = Event(topic="t", payload={}, ts=time.time())
+            bus._save_event(antigo)
+            bus._save_event(recente)
+            assert len(bus.history(limit=10)) == 2
+            bus.prune()
+            restantes = bus.history(limit=10)
+            assert len(restantes) == 1 and restantes[0]["id"] == recente.id
+        finally:
+            bus.close()
+
+    def test_retencao_por_quantidade(self, tmp_path):
+        """Sem teto, a tabela crescia para sempre."""
+        bus = EventBus(db_path=tmp_path / "n.db", max_events=10, retention_days=0)
+        try:
+            for i in range(100):
+                bus.publish("t", {"i": i})
+            bus.prune()
+            assert len(bus.history(limit=999)) == 10
+        finally:
+            bus.close()
+
+    def test_escrita_concorrente_nao_perde_evento(self, tmp_path):
+        """WAL + busy_timeout + lock: 8 threads publicando nao podem levantar
+        `database is locked` nem perder registro."""
+        import threading
+
+        bus = _bus(tmp_path)
+        erros = []
+
+        def publica(n):
+            try:
+                for i in range(25):
+                    bus.publish("carga", {"t": n, "i": i})
+            except Exception as exc:  # noqa: BLE001
+                erros.append(exc)
+
+        try:
+            threads = [threading.Thread(target=publica, args=(n,)) for n in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not erros, f"escrita concorrente falhou: {erros[:3]}"
+            assert len(bus.history(limit=500)) == 200
+        finally:
+            bus.close()
+
+    def test_close_e_idempotente(self, tmp_path):
+        bus = _bus(tmp_path)
+        bus.close()
+        bus.close()
+        assert bus._conn is None
+
+    def test_persist_false_nao_toca_disco(self, tmp_path):
+        db = tmp_path / "nao_criar.db"
+        bus = EventBus(db_path=db, persist=False)
+        bus.publish("t", {"x": 1})
+        assert not db.exists()
+        assert bus.history() == []
