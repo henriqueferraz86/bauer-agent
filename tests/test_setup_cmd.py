@@ -7,6 +7,10 @@ que ele CARREGA no schema estrito do Bauer).
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import pytest
+
 from bauer.commands.setup_cmd import _SUGGESTED_MODEL, pick_model, render_config
 
 
@@ -71,3 +75,85 @@ class TestSetupCommand:
         assert result.exit_code == 0
         assert (tmp_path / "config.yaml").exists()
         assert (tmp_path / "workspace").is_dir()   # criado no setup, não só no 1º uso
+
+
+# ── Contexto derivado do MODELO, nao 8192 cravado ───────────────────────────
+#
+# `requested_context` e TETO na regra do preflight
+# (`min(requested, modelfile, env, ram_seguro)`). Gravar 8192 fixo, sem olhar
+# o modelo, prendia quem roda um 27b/30b de janela 32k em 25% da capacidade —
+# em silencio, e ainda perdendo tools para o auto-allowlist de contexto pequeno.
+
+class TestContextoInicial:
+    def _reg(self):
+        from bauer.model_registry import load_registry
+        return load_registry()
+
+    def test_modelo_curado_usa_a_janela_dele(self):
+        from bauer.commands.setup_cmd import contexto_inicial_para
+        assert contexto_inicial_para("qwen3.6:27b", registry=self._reg()) == 32768
+
+    def test_modelo_desconhecido_cai_no_fallback(self):
+        """Sem registry, sem Ollama e sem entrada: mantem o 8192 historico em vez
+        de chutar um valor que pode nao caber na maquina."""
+        from bauer.commands.setup_cmd import contexto_inicial_para
+        assert contexto_inicial_para("nao-existe:999b", registry=self._reg()) == 8192
+
+    def test_sem_registry_e_sem_client_nao_quebra(self):
+        from bauer.commands.setup_cmd import contexto_inicial_para
+        assert contexto_inicial_para("qwen3.6:27b") == 8192
+
+    def test_teto_protege_contra_janela_gigante(self):
+        """Modelos anunciam 131072 nativo. Gravar isso no config de quem roda
+        local trocaria 'contexto pequeno' por 'nao sobe' — cada 1k custa KV cache."""
+        from unittest.mock import MagicMock
+
+        from bauer.commands.setup_cmd import _TETO_CONTEXTO_LOCAL, contexto_inicial_para
+        import bauer.model_registry as mr
+
+        info = MagicMock()
+        info.max_context_safe = 131072
+        with patch.object(mr, "auto_detect_from_ollama", return_value=info):
+            ctx = contexto_inicial_para("gigante:1b", registry=None, client=MagicMock())
+        assert ctx == _TETO_CONTEXTO_LOCAL == 32768
+
+    def test_registry_tem_prioridade_sobre_autodetect(self):
+        """O registry e curado e ja pondera RAM; o /api/show so diz o nativo."""
+        from unittest.mock import MagicMock
+
+        from bauer.commands.setup_cmd import contexto_inicial_para
+        import bauer.model_registry as mr
+
+        chamou = {"n": 0}
+
+        def _spy(*a, **k):
+            chamou["n"] += 1
+            return None
+
+        with patch.object(mr, "auto_detect_from_ollama", side_effect=_spy):
+            contexto_inicial_para("qwen3.6:27b", registry=self._reg(), client=MagicMock())
+        assert chamou["n"] == 0, "consultou o Ollama tendo o registry"
+
+    def test_render_config_propaga_o_contexto(self):
+        from bauer.commands.setup_cmd import render_config
+        d = render_config("qwen3-coder:30b", "k" * 64, registry=self._reg())
+        assert d["model"]["requested_context"] == 32768
+
+
+class TestModelosRegistrados:
+    """Modelo fora do models.yaml cai no perfil auto-detectado, que desliga o
+    bloqueio por RAM (ram_per_1k_ctx_mb=0) — o Bauer perde a protecao de
+    'nao cabe nesta maquina'. Estes tres apareciam em instalacao real."""
+
+    @pytest.mark.parametrize("modelo,tools", [
+        ("qwen3:14b", True),
+        ("qwen2.5-coder:14b", True),
+        ("deepseek-r1:14b", False),   # raciocinio: nao faz tool calling nativo
+    ])
+    def test_modelo_esta_no_registry(self, modelo, tools):
+        from bauer.model_registry import load_registry
+        info = load_registry().get(modelo)
+        assert info is not None, f"{modelo} nao registrado"
+        assert info.max_context_safe == 32768
+        assert info.supports_tools is tools
+        assert info.ram_per_1k_ctx_mb > 0, "sem custo por contexto = sem protecao de RAM"
