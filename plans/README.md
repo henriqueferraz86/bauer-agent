@@ -18,7 +18,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [004](004-fix-xor-fallback.md) | Eliminar o fallback XOR silencioso em auth.py | P5 | P1 | S | — | DONE |
 | [005](005-commands-integration-tests.md) | Testes de integração para os módulos de bauer/commands/ | P3 | P1 | M | — | DONE |
 | [006](006-distributed-agents-mvp.md) | Agentes Distribuídos MVP — dispatch remoto HTTP entre instâncias bauer serve | P6 | P2 | M | — | DONE |
-| [007](007-auth-key-file-permissions.md) | Restringir `.auth_key` para 0o600 + corrigir docstring | P5 | P1 | S | — | TODO |
+| [007](007-auth-key-file-permissions.md) | Restringir `.auth_key` para 0o600 + corrigir docstring | P5 | P1 | S | — | DONE (PR #86) |
 | [008](008-webhook-ssrf-guard.md) | Aplicar guard SSRF (`url_safety`) na entrega de webhooks | P7 | P1 | S | — | TODO |
 | [009](009-server-request-body-limits.md) | Limitar tamanho do body em /chat e /v1/chat/completions | P7 | P2 | S | — | TODO |
 | [010](010-orchestrator-resume-robustness.md) | Robustez do orquestrador: validar StepResult no `--resume` + avisar DAG circular | P4 | P2 | S | — | TODO |
