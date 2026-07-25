@@ -51,6 +51,45 @@ models:
       - general
       - orchestration_light
 
+  # ── Modelos vistos em instalacao real e que faltavam no registry ───────────
+  # Sem entrada aqui eles caem no perfil auto-detectado (ram_per_1k_ctx_mb=0),
+  # que NAO bloqueia por RAM — o Bauer perde a protecao de "nao cabe na maquina".
+  # Valores derivados dos vizinhos ja curados de mesmo porte.
+  "qwen3:14b":
+    provider: ollama
+    ram_base_mb: 9000
+    ram_per_1k_ctx_mb: 120
+    max_context_safe: 32768
+    supports_tools: true
+    ram_profile: high
+    recommended_for:
+      - orchestration
+      - reasoning
+
+  "qwen2.5-coder:14b":
+    provider: ollama
+    ram_base_mb: 9000
+    ram_per_1k_ctx_mb: 120
+    max_context_safe: 32768
+    supports_tools: true
+    ram_profile: high
+    recommended_for:
+      - coding
+      - refactor
+
+  # deepseek-r1 e modelo de RACIOCINIO: gasta contexto com chain-of-thought e
+  # nao faz tool calling nativo (mesmo supports_tools=false do :32b ja curado).
+  "deepseek-r1:14b":
+    provider: ollama
+    ram_base_mb: 9000
+    ram_per_1k_ctx_mb: 120
+    max_context_safe: 32768
+    supports_tools: false
+    ram_profile: high
+    recommended_for:
+      - reasoning
+      - analysis
+
   "qwen2.5:14b":
     provider: ollama
     ram_base_mb: 9000

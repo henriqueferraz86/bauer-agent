@@ -40,6 +40,57 @@ def pick_model(installed: List[str], preferred: Optional[str] = None) -> Optiona
     return installed[0] if installed else None
 
 
+# Teto para o contexto inferido automaticamente em modelo LOCAL.
+#
+# Modelos modernos anunciam janelas nativas enormes (131072 é comum), mas cada
+# 1k de contexto custa RAM/VRAM de KV cache — gravar 131072 no config de quem
+# roda um 27b na própria máquina trocaria "contexto pequeno demais" por "não
+# sobe". 32768 é o mesmo teto que os modelos curados do `models.yaml` já usam.
+_TETO_CONTEXTO_LOCAL = 32768
+
+# Piso histórico. Continua sendo o fallback quando não dá para descobrir nada
+# sobre o modelo (Ollama offline, modelo fora do registry e sem /api/show).
+_CONTEXTO_FALLBACK = 8192
+
+
+def contexto_inicial_para(model: str, *, registry=None, client=None) -> int:
+    """Contexto a gravar no config para *model*, derivado do MODELO.
+
+    Antes isto era `8192` cravado, independente do que estivesse instalado —
+    e o `requested_context` é TETO na regra do preflight
+    (`min(requested, modelfile, env, ram_seguro)`). Resultado prático: quem
+    rodava um 27b/30b com janela de 32k ficava preso em 8192 para sempre, sem
+    nenhum aviso, e ainda perdia tools pelo auto-allowlist de contexto pequeno.
+
+    Ordem de preferência:
+      1. `models.yaml` — curado, e o `max_context_safe` de lá já pondera RAM;
+      2. `/api/show` do Ollama — `context_length` nativo, cobre modelo que não
+         está no registry (a maioria das instalações tem algum);
+      3. 8192 — o comportamento antigo, só quando nada é descobrível.
+    """
+    if registry is not None:
+        try:
+            info = registry.get(model)
+            if info is not None and info.max_context_safe:
+                return min(int(info.max_context_safe), _TETO_CONTEXTO_LOCAL)
+        except Exception as exc:  # noqa: BLE001 — setup nunca falha por causa disto
+            from ..logging_config import log_suppressed
+            log_suppressed("setup.contexto.registry", exc)
+
+    if client is not None:
+        try:
+            from ..model_registry import auto_detect_from_ollama
+
+            info = auto_detect_from_ollama(client, model)
+            if info is not None and info.max_context_safe:
+                return min(int(info.max_context_safe), _TETO_CONTEXTO_LOCAL)
+        except Exception as exc:  # noqa: BLE001
+            from ..logging_config import log_suppressed
+            log_suppressed("setup.contexto.autodetect", exc)
+
+    return _CONTEXTO_FALLBACK
+
+
 def render_config(
     model: str,
     api_key: str,
@@ -48,6 +99,8 @@ def render_config(
     ollama_host: str = "http://localhost:11434",
     serve_host: str = "127.0.0.1",
     serve_port: int = 8000,
+    registry=None,
+    client=None,
 ) -> Dict[str, Any]:
     """Monta o dict de config canônico do Bauer para uso local.
 
@@ -58,7 +111,9 @@ def render_config(
         "model": {
             "provider": provider,
             "name": model,
-            "requested_context": 8192,
+            "requested_context": contexto_inicial_para(
+                model, registry=registry, client=client
+            ),
         },
         "ollama": {
             "host": ollama_host,
@@ -123,7 +178,27 @@ def setup(
             raise typer.Exit(code=0)
 
     api_key = secrets.token_hex(32)
-    data = render_config(chosen, api_key)
+
+    # Contexto derivado do modelo escolhido, não mais 8192 cravado. O registry
+    # é a fonte preferida (curado + ciente de RAM); o client cobre modelo que
+    # não está nele, lendo o context_length nativo via /api/show.
+    _reg = None
+    try:
+        from ..model_registry import load_registry
+        _reg = load_registry()
+    except Exception as exc:  # noqa: BLE001 — sem registry, cai no auto-detect/fallback
+        from ..logging_config import log_suppressed
+        log_suppressed("setup.load_registry", exc)
+
+    data = render_config(chosen, api_key, registry=_reg, client=oc)
+    _ctx_escolhido = data["model"]["requested_context"]
+    if _ctx_escolhido > _CONTEXTO_FALLBACK:
+        console.print(
+            f"  Contexto: [green]{_ctx_escolhido:,}[/green] tokens "
+            f"[dim](da janela do modelo; antes era {_CONTEXTO_FALLBACK} fixo)[/dim]"
+        )
+    else:
+        console.print(f"  Contexto: [green]{_ctx_escolhido:,}[/green] tokens")
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
