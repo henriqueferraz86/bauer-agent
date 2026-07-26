@@ -778,6 +778,43 @@ def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None
     return None
 
 
+
+def _e_resposta_degenerada(texto: str) -> bool:
+    """A resposta e um loop de repeticao do modelo, nao um conteudo real?
+
+    Caso real (qwen3.6:27b em modo bridge, contexto apertado): o modelo tentou
+    emitir um tool call e degenerou em `{"{"{"{"{"...` por dezenas de repeticoes.
+    Como nao e JSON valido, `_try_parse_tool` devolvia None e o agente tratava a
+    string inteira como RESPOSTA FINAL — imprimindo o lixo para o usuario como
+    se fosse a answer do modelo.
+
+    Heuristica deliberadamente conservadora (falso positivo aqui censura uma
+    resposta legitima, o que e pior que deixar passar um lixo):
+
+      - texto minimamente longo (respostas curtas repetitivas sao normais:
+        "ok ok", tabelas, listas);
+      - poucos caracteres distintos, indicando alfabeto colapsado;
+      - um fragmento curto que, repetido, cobre quase todo o texto.
+    """
+    t = (texto or "").strip()
+    if len(t) < 40:
+        return False
+
+    # Alfabeto colapsado: `{"{"{"...` usa 3 caracteres distintos em 100+ chars.
+    if len(set(t)) <= 4:
+        return True
+
+    # Fragmento curto que se repete cobrindo a maior parte do texto.
+    for tam in range(1, 13):
+        if len(t) < tam * 6:          # precisa de repeticao suficiente p/ concluir
+            break
+        frag = t[:tam]
+        repeticoes = t.count(frag)
+        if repeticoes >= 6 and repeticoes * tam >= len(t) * 0.85:
+            return True
+    return False
+
+
 def _try_parse_tool(response: str, router: ToolRouter) -> dict | None:
     """Tenta parsear a resposta como tool action. Retorna dict ou None.
 
@@ -1953,14 +1990,32 @@ def run_one_turn(
         # Resposta vazia: recovery em camadas (retry → compress+retry).
         # Só tenta o recovery completo uma vez por run para não mascarar
         # um provider genuinamente fora do ar.
-        if not response.strip():
+        # Resposta DEGENERADA conta como vazia para efeito de recuperação: um
+        # `{"{"{"{"...` não é conteúdo, é o modelo em loop de repetição. Sem
+        # isto o texto caía direto no caminho de "resposta final" e era impresso
+        # cru para o usuário — o pior desfecho possível, porque parece resposta.
+        # A causa mais comum é a mesma da resposta vazia (contexto sobrecarregado
+        # / prompt truncado), então o recovery em camadas — que inclui
+        # force_compress — é exatamente o tratamento certo.
+        _degenerada = _e_resposta_degenerada(response)
+        if not response.strip() or _degenerada:
+            if _degenerada:
+                import logging as _lg
+                _lg.getLogger("bauer.agent").warning(
+                    "resposta degenerada do modelo (%d chars, %d distintos) — acionando recovery",
+                    len(response), len(set(response)),
+                )
             if not _empty_recovered:
                 _empty_recovered = True
                 response, diagnostico = _recover_empty_response(client, model_name, ctx)
-                if not response:
-                    return diagnostico, tool_log
+                if not response or _e_resposta_degenerada(response):
+                    return diagnostico or (
+                        "[Modelo entrou em loop de repetição e não se recuperou. "
+                        "Causa provável: contexto pequeno demais para o prompt — "
+                        "aumente model.requested_context ou use /clear.]"
+                    ), tool_log
             else:
-                return "[Modelo retornou resposta vazia repetidamente — sessão instável]", tool_log
+                return "[Modelo retornou resposta vazia ou degenerada repetidamente — sessão instável]", tool_log
 
         ctx.add_assistant(response)
 
