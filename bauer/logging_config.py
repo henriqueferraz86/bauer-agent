@@ -47,13 +47,47 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
     # "MagicMock/mock.logging.file/<id>"). Nesse caso, pula o log em arquivo
     # (o log de console segue funcionando) em vez de escrever onde não deve.
     if file_path and isinstance(file_path, (str, bytes, Path)):
-        path = Path(file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(path, encoding="utf-8")
-        file_handler.setFormatter(fmt)
-        logger.addHandler(file_handler)
+        handler = _make_file_handler(Path(file_path), fmt)
+        # Fallback para um caminho garantidamente do usuário quando o
+        # configurado não é gravável. Bug real (Beelink): logging.file default
+        # é "./logs/bauer.log" — RELATIVO ao cwd — e ali o `./logs` pertencia
+        # ao root, então FileHandler estourava PermissionError e derrubava
+        # `bauer doctor` inteiro com traceback. Log é caminho ACESSÓRIO: nunca
+        # deve quebrar o comando (ver AGENTS.md).
+        if handler is None:
+            from .paths import get_bauer_home
+            fallback = get_bauer_home() / "logs" / "bauer.log"
+            if fallback != Path(file_path):
+                handler = _make_file_handler(fallback, fmt)
+        if handler is not None:
+            logger.addHandler(handler)
 
     return logger
+
+
+def _make_file_handler(
+    path: Path, fmt: logging.Formatter
+) -> "logging.FileHandler | None":
+    """Cria um FileHandler ou devolve None se o caminho não for gravável.
+
+    `FileHandler.__init__` ABRE o arquivo (mkdir do pai + open), então tanto o
+    mkdir quanto a abertura podem levantar OSError/PermissionError. Sem este
+    guard, qualquer caminho de log não-gravável derrubava o processo inteiro —
+    e log é acessório, deve degradar para só-console, não crashar.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+        handler.setFormatter(fmt)
+        return handler
+    except OSError as exc:
+        # stderr direto, não via logger: o logger ainda está sendo montado.
+        print(
+            f"[bauer] aviso: nao foi possivel escrever log em '{path}' ({exc}). "
+            "Seguindo apenas com log de console.",
+            file=sys.stderr,
+        )
+        return None
 
 
 def get_logger(name: str = "bauer") -> logging.Logger:
