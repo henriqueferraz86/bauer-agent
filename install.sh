@@ -67,12 +67,27 @@ info "Usando $PYTHON $PYVER"
 
 write_launcher() {
     mkdir -p "$BIN_DIR"
-    cat > "$BAUER_BIN" << 'LAUNCHER'
+    # Heredoc SEM aspas ('LAUNCHER' vira LAUNCHER): $INSTALL_DIR e $PYVER
+    # expandem AGORA, na geração, gravando o CAMINHO ABSOLUTO do venv no
+    # launcher. `\$@` fica escapado para expandir em runtime.
+    #
+    # Por que absoluto e não "$HOME/...": o launcher resolvia o venv por $HOME
+    # EM RUNTIME. Isso quebra assim que o binário e usado fora do contexto de
+    # quem instalou — movido para /usr/local/bin (global), rodado por outro
+    # usuario, ou via sudo (aí $HOME=/root e o venv não existe). Foi
+    # exatamente essa fragilidade que levou, num deploy real, a alguem cravar
+    # `cd /root/.bauer` num wrapper manual — que depois falhava para todo
+    # usuario nao-root. Gravar o caminho real detectado na instalacao elimina
+    # a classe inteira: o launcher aponta para O venv, nao para "o venv de
+    # quem chama".
+    cat > "$BAUER_BIN" << LAUNCHER
 #!/usr/bin/env bash
-# -P (safe path): sem ele, `python -m` põe o CWD no sys.path — rodar `bauer`
-# dentro de um clone antigo do repo executaria o código do clone, não o
+# -P (safe path): sem ele, \`python -m\` poe o CWD no sys.path — rodar \`bauer\`
+# dentro de um clone antigo do repo executaria o codigo do clone, nao o
 # instalado (shadowing).
-exec "$HOME/.local/share/bauer-agent/.venv/bin/python" -P -m bauer.cli "$@"
+# Caminho do venv gravado como ABSOLUTO na instalacao (nao \$HOME em runtime) —
+# assim funciona para qualquer usuario/cwd. Gerado por install.sh.
+exec "$INSTALL_DIR/.venv/bin/python" -P -m bauer.cli "\$@"
 LAUNCHER
     chmod +x "$BAUER_BIN"
 }

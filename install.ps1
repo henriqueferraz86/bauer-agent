@@ -136,15 +136,20 @@ $pipTarget = if ($Extra) { "$InstallDir\[$Extra]" } else { $InstallDir }
 # ─── Launchers ───────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force $BinDir | Out-Null
 
+# Caminho do venv gravado ABSOLUTO (via $VenvDir, expandido AGORA), nao
+# %LOCALAPPDATA% em runtime: um launcher que resolve o venv pela env var do
+# chamador quebra se rodado por outro usuario Windows. Grava-se o caminho real
+# detectado na instalacao. (Mesma correcao do install.sh — ver comentario la.)
+
 # .cmd — funciona em cmd.exe e terminais sem PS
 @"
 @echo off
-"%LOCALAPPDATA%\BauerAgent\.venv\Scripts\python.exe" -m bauer.cli %*
+"$VenvDir\Scripts\python.exe" -m bauer.cli %*
 "@ | Out-File -FilePath $BauerCmd -Encoding ascii
 
 # .ps1 — funciona em PowerShell puro
 @"
-& `"`$env:LOCALAPPDATA\BauerAgent\.venv\Scripts\python.exe`" -m bauer.cli @args
+& "$VenvDir\Scripts\python.exe" -m bauer.cli @args
 "@ | Out-File -FilePath $BauerPs1 -Encoding utf8
 
 # ─── PATH ────────────────────────────────────────────────────────────────────
