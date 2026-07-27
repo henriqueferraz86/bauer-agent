@@ -59,10 +59,12 @@ class McpToolsMixin:
         except McpError as exc:
             raise ToolError(
                 f"mcp_call: erro de conexao com '{server_name}': {exc}"
+                + self._sufixo_dica(exc)
             ) from exc
         except Exception as exc:
             raise ToolError(
                 f"mcp_call: erro inesperado chamando '{tool_name}' em '{server_name}': {exc}"
+                + self._sufixo_dica(exc)
             ) from exc
 
     def _mcp_list_servers(self, args: dict) -> str:
@@ -147,10 +149,12 @@ class McpToolsMixin:
         except McpError as exc:
             raise ToolError(
                 f"mcp_list_tools: erro de conexao com '{server_name}': {exc}"
+                + self._sufixo_dica(exc)
             ) from exc
         except Exception as exc:
             raise ToolError(
                 f"mcp_list_tools: erro inesperado listando tools de '{server_name}': {exc}"
+                + self._sufixo_dica(exc)
             ) from exc
 
         if not tools:
@@ -176,6 +180,59 @@ class McpToolsMixin:
                 lines.append(f"  args: {', '.join(campos)}")
         lines.append(f"\nChame com mcp_call(server=\"{server_name}\", tool=..., arguments={{...}}).")
         return "\n".join(lines)
+
+    @classmethod
+    def _sufixo_dica(cls, exc: Exception) -> str:
+        """A dica formatada para colar no fim de uma mensagem de erro."""
+        dica = cls._mcp_dica(exc)
+        return f"\n  -> {dica}" if dica else ""
+
+    @staticmethod
+    def _mcp_dica(exc: Exception) -> str:
+        """Traduz a falha de um servidor MCP no PROXIMO PASSO do usuario.
+
+        A causa do SO ja vinha na mensagem ("politica de Controle de Aplicativo
+        bloqueou este arquivo"), mas dizer o que aconteceu nao e dizer o que
+        fazer — e quem esbarra nisso costuma estar no meio de outra tarefa.
+        """
+        texto = str(exc).lower()
+        if "controle de aplicativo" in texto or "application control" in texto or "4551" in texto:
+            return (
+                "O binario nao e assinado e a politica de aplicativo do Windows "
+                "(Smart App Control/WDAC) recusa executa-lo. Baixar de novo nao "
+                "resolve — a politica olha a assinatura. Saidas: rodar via WSL "
+                "(`wsl -e /caminho/servidor`), via Docker, ou trocar por um "
+                "servidor MCP instalavel por pip/npx."
+            )
+        # As duas grafias do mesmo erro: o Windows localiza a mensagem, entao
+        # "cannot find the file" e "nao pode encontrar o arquivo" sao o WinError 2.
+        if any(t in texto for t in (
+            "no such file", "cannot find", "not found", "nao encontrado",
+            "nao pode encontrar", "não pode encontrar", "errno 2", "winerror 2",
+        )):
+            return (
+                "O comando nao foi encontrado. Confira o primeiro item de "
+                "`command` no config: use caminho absoluto, ou garanta que o "
+                "executavel esta no PATH do processo que roda o Bauer."
+            )
+        if "permission denied" in texto or "acesso negado" in texto or "errno 13" in texto:
+            return (
+                "Sem permissao de execucao. Em Linux/macOS, `chmod +x` no "
+                "binario; se persistir, e politica de execucao do sistema."
+            )
+        if "timeout" in texto:
+            return (
+                "O processo subiu mas nao respondeu ao handshake dentro do "
+                "timeout. Rode o comando na mao para ver o que ele imprime, e "
+                "confirme que ele fala MCP por stdio (e nao HTTP)."
+            )
+        if "invalid json" in texto or "jsonrpc" in texto or "sse" in texto:
+            return (
+                "O servidor respondeu algo que nao e JSON-RPC valido. Se for "
+                "remoto, confirme que a `url` aponta para o endpoint MCP e nao "
+                "para a pagina do projeto."
+            )
+        return ""
 
     def _resolve_mcp_transport(self, server_name: str) -> dict:
         """Resolve o transporte de um servidor: stdio (processo) ou http (remoto).

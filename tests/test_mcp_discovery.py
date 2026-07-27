@@ -178,3 +178,33 @@ def test_env_var_com_url_vira_transporte_http(monkeypatch):
     t = _Router()._resolve_mcp_transport("remoto")
 
     assert t["kind"] == "http" and t["url"] == "https://exemplo/mcp"
+
+
+# ─── dica acionavel no erro ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("mensagem,esperado", [
+    ("[WinError 4551] politica de Controle de Aplicativo bloqueou este arquivo", "WSL"),
+    ("Application Control policy blocked this file", "WSL"),
+    ("[WinError 2] O sistema nao pode encontrar o arquivo especificado", "PATH"),
+    ("[Errno 2] No such file or directory", "PATH"),
+    ("[Errno 13] Permission denied", "chmod"),
+    ("timeout de 60.0s aguardando resposta", "handshake"),
+    ("Invalid JSON response from https://exemplo", "endpoint MCP"),
+])
+def test_dica_traduz_falha_em_proximo_passo(mensagem, esperado):
+    """A causa do SO ja vinha na mensagem; o que faltava era o que FAZER."""
+    assert esperado in _Router()._mcp_dica(Exception(mensagem))
+
+
+def test_falha_sem_padrao_conhecido_nao_inventa_dica():
+    assert _Router()._mcp_dica(Exception("algo totalmente inesperado")) == ""
+    assert _Router()._sufixo_dica(Exception("algo totalmente inesperado")) == ""
+
+
+def test_erro_de_servidor_inexistente_carrega_a_dica():
+    router = _Router(_Cfg({"x": {"command": ["/caminho/que/nao/existe"], "timeout": 5}}))
+
+    with pytest.raises(ToolError) as exc:
+        router._mcp_list_tools({"server": "x"})
+
+    assert "->" in str(exc.value), "a dica deve vir anexada ao erro"

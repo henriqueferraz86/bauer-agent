@@ -323,6 +323,42 @@ def doctor(
     except Exception as _web_exc:
         console.print(f"[dim]Web search: não foi possível detectar ({_web_exc})[/dim]")
 
+    # --- Servidores MCP ----------------------------------------------------------
+    # Faz o handshake de verdade em cada servidor configurado. Sem isto o usuário
+    # só descobre que o servidor não sobe quando o agente tenta usá-lo no meio de
+    # uma tarefa — e a causa (binário bloqueado por política, comando fora do
+    # PATH) fica enterrada num erro de tool.
+    try:
+        import os
+
+        from .tools.mcp import McpToolsMixin
+
+        class _McpProbe(McpToolsMixin):
+            def __init__(self, mcp_cfg):
+                self._mcp_config = mcp_cfg
+
+        _probe = _McpProbe(getattr(cfg, "mcp", None))
+        _nomes = sorted({
+            *(getattr(getattr(cfg, "mcp", None), "servers", None) or {}),
+            *(k[len("MCP_SERVER_"):].lower() for k, v in os.environ.items()
+              if k.startswith("MCP_SERVER_") and v.strip()),
+        })
+        if _nomes:
+            _mt = Table(show_header=False, box=None, padding=(0, 1))
+            for _nome in _nomes:
+                try:
+                    with _probe._mcp_client_for(_nome) as _cli:
+                        _tools = _cli.list_tools()
+                    _mt.add_row(f"{_nome}:", f"[green]ok[/green] — {len(_tools)} tool(s)")
+                except Exception as _exc:
+                    _mt.add_row(f"{_nome}:", f"[red]falhou[/red] — {str(_exc).splitlines()[0][:90]}")
+                    _dica = _probe._mcp_dica(_exc)
+                    if _dica:
+                        _mt.add_row("", f"[dim]{_dica}[/dim]")
+            console.print(Panel(_mt, title="Servidores MCP", border_style="cyan"))
+    except Exception as _mcp_exc:
+        console.print(f"[dim]MCP: não foi possível verificar ({_mcp_exc})[/dim]")
+
     # Tools vs contexto — armadilha em modelos locais: expor todas as ~79 tools
     # gera um prompt de ~14k tokens que estoura contextos pequenos, e o Ollama
     # TRUNCA o prompt silenciosamente (pode cortar a pergunta ou as tools).
