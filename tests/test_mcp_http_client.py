@@ -317,3 +317,77 @@ def test_mcp_manager_from_config_command_key():
     assert "my_stdio_server" in manager.server_names()
     # It's registered as a stdio server (not yet started)
     assert "my_stdio_server" in manager._configs
+
+
+# ---------------------------------------------------------------------------
+# Streamable HTTP: resposta em SSE e sessao (bugs achados ligando o GitMCP)
+# ---------------------------------------------------------------------------
+
+def _sse_response(payload: dict, status: int = 200, session_id: str | None = None):
+    """Resposta 200 text/event-stream, como o GitMCP responde a TODO POST."""
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = f"event: message\ndata: {json.dumps(payload)}\n\n"
+    resp.json.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+    headers = {"content-type": "text/event-stream"}
+    if session_id:
+        headers["mcp-session-id"] = session_id
+    resp.headers = headers
+    return resp
+
+
+def test_resposta_em_sse_e_parseada():
+    """Anunciamos text/event-stream no Accept; chamar resp.json() direto
+    quebrava em todo servidor que exerce essa opcao."""
+    client = McpHttpClient("https://exemplo/mcp")
+    esperado = _jsonrpc_response({"tools": [{"name": "buscar"}]})
+
+    with patch("httpx.post", return_value=_sse_response(esperado)):
+        out = client._jsonrpc("tools/list", {})
+
+    assert out["result"]["tools"][0]["name"] == "buscar"
+
+
+def test_sse_ignora_frames_de_progresso_antes_do_resultado():
+    client = McpHttpClient("https://exemplo/mcp")
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"content-type": "text/event-stream"}
+    resp.text = (
+        'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
+        'event: message\ndata: {"jsonrpc":"2.0","id":"1","result":{"ok":true}}\n\n'
+    )
+
+    with patch("httpx.post", return_value=resp):
+        out = client._jsonrpc("tools/list", {})
+
+    assert out["result"] == {"ok": True}
+
+
+def test_sse_sem_frame_jsonrpc_falha_com_mensagem_util():
+    client = McpHttpClient("https://exemplo/mcp")
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"content-type": "text/event-stream"}
+    resp.text = "event: ping\ndata: nao-e-json\n\n"
+
+    with patch("httpx.post", return_value=resp):
+        with pytest.raises(McpHttpError, match="nenhum frame JSON-RPC valido"):
+            client._jsonrpc("tools/list", {})
+
+
+def test_session_id_do_initialize_vai_nas_chamadas_seguintes():
+    """GitMCP recusa tools/list com -32000 sem o header Mcp-Session-Id."""
+    client = McpHttpClient("https://exemplo/mcp")
+    primeira = _sse_response(_jsonrpc_response({"capabilities": {}}), session_id="sess-123")
+
+    with patch("httpx.post", return_value=primeira):
+        client._jsonrpc("initialize", {})
+
+    assert client._headers["Mcp-Session-Id"] == "sess-123"
+
+    segunda = _sse_response(_jsonrpc_response({"tools": []}))
+    with patch("httpx.post", return_value=segunda) as post:
+        client._jsonrpc("tools/list", {})
+
+    assert post.call_args.kwargs["headers"]["Mcp-Session-Id"] == "sess-123"

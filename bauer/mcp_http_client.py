@@ -323,10 +323,50 @@ class McpHttpClient:
                 f"{resp.text[:200]}"
             )
 
+        # Sessao do Streamable HTTP: o servidor pode emitir Mcp-Session-Id no
+        # initialize e EXIGIR o header em toda chamada seguinte (GitMCP recusa
+        # tools/list com -32000 sem ele). Guardar aqui cobre qualquer metodo que
+        # inaugure a sessao, nao so o initialize.
+        _sid = resp.headers.get("mcp-session-id")
+        if _sid and self._headers.get("Mcp-Session-Id") != _sid:
+            self._headers["Mcp-Session-Id"] = _sid
+
+        # Streamable HTTP permite responder um POST em text/event-stream, e nos
+        # ANUNCIAMOS isso no Accept (ver _headers). Chamar resp.json() direto
+        # quebrava em todo servidor que exerce essa opcao — GitMCP, por exemplo,
+        # responde 200 text/event-stream sempre.
+        if "text/event-stream" in resp.headers.get("content-type", ""):
+            return self._parse_sse_payload(resp.text, method)
+
         try:
             return resp.json()
         except json.JSONDecodeError as exc:
             raise McpHttpError(f"Invalid JSON response from {self._url}: {exc}") from exc
+
+    @staticmethod
+    def _parse_sse_payload(body: str, method: str) -> dict[str, Any]:
+        """Extrai a resposta JSON-RPC de um corpo SSE (frames `data:`).
+
+        Devolve o ultimo frame que parseia como objeto JSON-RPC: servidores
+        podem emitir notificacoes de progresso antes do resultado.
+        """
+        resultado: dict[str, Any] | None = None
+        for bloco in body.replace("\r\n", "\n").split("\n\n"):
+            linhas = [ln[5:].strip() for ln in bloco.split("\n") if ln.startswith("data:")]
+            if not linhas:
+                continue
+            try:
+                parsed = json.loads("\n".join(linhas))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and ("result" in parsed or "error" in parsed):
+                resultado = parsed
+        if resultado is None:
+            raise McpHttpError(
+                f"Resposta SSE de {method} nao trouxe nenhum frame JSON-RPC valido: "
+                f"{body[:200]}"
+            )
+        return resultado
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
         """Fire-and-forget notification (no id, no response expected)."""
