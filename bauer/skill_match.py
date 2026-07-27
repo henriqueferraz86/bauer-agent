@@ -27,9 +27,14 @@ DEFAULT_THRESHOLD = 0.30
 #: 2000 vinha de quando toda skill do pacote era um checklist de ~300 chars.
 #: Skills PROCEDIMENTAIS (code-review: fixa o ponto de comparação, roda dois
 #: eixos, agrega) passam de 6k, e truncar no meio entrega a preparação sem a
-#: revisão — pior que não injetar. 7000 cobre as atuais com folga; o pior caso
-#: custa ~1.7k tokens, e só na volta em que uma skill grande casa.
-_CONTENT_CAP = 7000
+#: revisão — pior que não injetar. O pior caso custa ~2.2k tokens, e só na volta
+#: em que uma skill grande casa.
+#:
+#: Truncar é SILENCIOSO: nada avisa que a skill chegou pela metade. Por isso o
+#: teto tem que ficar com folga confortável sobre a maior skill do pacote (hoje
+#: code-review, ~6.9k) — e `test_skill_cabe_no_teto_de_injecao` falha o CI se
+#: alguma passar, em vez de deixar a degradação acontecer calada em produção.
+_CONTENT_CAP = 9000
 
 _DOCS_CACHE: "list[dict] | None" = None
 

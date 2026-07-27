@@ -58,6 +58,11 @@ content: |
   O que o repo documenta sobre como escrever código: `AGENTS.md`, `CLAUDE.md`,
   `CONTRIBUTING.md`, `CODING_STANDARDS.md`, `bauer-decisions.md`, ADRs.
 
+  **Essa lista é onde procurar, não o que existe.** Só cite um arquivo de padrão
+  depois de tê-lo aberto. Se não conseguiu abrir nenhum (sem ferramentas, sem
+  acesso), escreva "padrões do repo não verificados" e siga só com o baseline —
+  nunca invente que o repo documenta ou deixa de documentar algo.
+
   Além do que o repo documenta, o eixo Standards SEMPRE carrega o baseline de
   smells abaixo. Três regras o governam:
 
@@ -69,7 +74,10 @@ content: |
   - **Nada que a ferramenta já pega.** Se lint, formatter, type checker ou CI já
     reprovam aquilo, não é achado de review.
 
-  Cada smell lê *o que é* → *como resolver*; case contra o diff:
+  Cada smell lê *o que é* → *como resolver*; case contra o diff. **Reporte só o
+  que você achou**: o baseline é lente, não formulário. Não escreva uma linha
+  por smell para dizer que não encontrou — diff limpo produz seção curta, e
+  isso é o resultado certo.
 
   - **Nome misterioso** — função, variável ou tipo cujo nome não revela o que
     faz ou guarda. → renomeie; se nenhum nome honesto aparece, o design está turvo.
@@ -106,6 +114,12 @@ content: |
   - (b) smells do baseline — nomeie o smell e cite o hunk.
 
   Separe violação dura (padrão documentado) de juízo (baseline). Até 400 palavras.
+
+  **Cobertura obrigatória.** Todo arquivo do diff é olhado. Feche o passe com uma
+  linha listando os arquivos e o que cada um rendeu — inclusive os sem achado
+  ("`install.sh` — nada"). Script de instalação, YAML de CI e teste contam como
+  arquivo: bug em instalador quebra usuário igual, e ficar só no arquivo mais
+  interessante é o modo de falha mais comum aqui.
 
   ## 5. Passe Spec
 

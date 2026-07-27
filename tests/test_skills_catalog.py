@@ -52,6 +52,23 @@ def test_every_skill_has_required_fields():
             assert data.get(field), f"{p.relative_to(_SKILLS_DIR)} sem campo '{field}'"
 
 
+def test_skill_cabe_no_teto_de_injecao():
+    """Nenhuma skill do pacote pode estourar o teto da auto-injeção.
+
+    Truncar é silencioso: a skill chega pela metade e nada avisa. Numa skill de
+    procedimento isso entrega a preparação sem a revisão. Falhar aqui é o aviso.
+    """
+    from bauer.skill_match import _CONTENT_CAP
+
+    for p in _all_yaml_files():
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        content = str(data.get("content") or data.get("invoke") or "").strip()
+        assert len(content) <= _CONTENT_CAP, (
+            f"{p.relative_to(_SKILLS_DIR)}: {len(content)} chars passa do teto "
+            f"({_CONTENT_CAP}) e seria injetada truncada"
+        )
+
+
 def test_descriptions_are_meaningful():
     for p in _all_yaml_files():
         data = yaml.safe_load(p.read_text(encoding="utf-8"))
