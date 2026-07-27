@@ -236,6 +236,31 @@ def test_auto_detect_deriva_supports_tools_das_capabilities():
     assert auto_detect_from_ollama(client, "bge-m3").supports_tools is False
 
 
+# ─── system prompt no modo native ────────────────────────────────────────────
+
+
+def test_native_nao_duplica_a_assinatura_das_tools_no_system_prompt():
+    """O `tools=` da API já carrega nome, descrição e schema de cada tool.
+
+    Medido no Beelink com 83 tools: inlinar tudo no system prompt punha o
+    prompt em ~19.9k tokens contra ~13.6k só dos schemas. Antes isso nunca
+    doía com modelo local (Ollama jamais entrava no caminho native).
+    """
+    from bauer.agent import _build_system_prompt
+    from bauer.tool_router import ToolRouter
+
+    router = ToolRouter(workspace="x", web_enabled=True)
+    native = _build_system_prompt(router, tool_mode="native")
+    bridge = _build_system_prompt(router, tool_mode="bridge")
+
+    assert len(native) < len(bridge) / 2, "modo native ainda repete os schemas"
+    # os NOMES continuam, como índice barato
+    assert "write_file" in native and "run_command" in native
+    # a assinatura detalhada, não
+    assert "write_file(path, content" not in native
+    assert "write_file(path, content" in bridge
+
+
 # ─── teto de RAM x modelo na GPU ─────────────────────────────────────────────
 
 

@@ -566,10 +566,17 @@ def _build_system_prompt(router: ToolRouter, tool_mode: str = "bridge") -> str:
         # Function calling nativo: as tools são invocadas pela API. NÃO ensinar
         # o formato JSON-de-texto (isso fazia modelos fracos emitir a tool call
         # como texto, que o caminho nativo não executa — "0 tools"). Ver plans/023.
+        #
+        # E NÃO repetir a assinatura das tools aqui: o `tools=` da requisição já
+        # carrega nome, descrição e JSON Schema de cada uma. Inlinar o
+        # `tools_section` duplicava tudo — medido no Beelink com 83 tools, o
+        # prompt ia a ~19.9k tokens contra ~13.6k só dos schemas, ~6k a mais
+        # (19% de uma janela de 32k) gastos dizendo duas vezes a mesma coisa.
+        # Só os NOMES ficam, como índice barato para o modelo se orientar.
         tool_protocol_block = (
             "# FERRAMENTAS DISPONIVEIS\n"
             f"Voce tem estas ferramentas via function calling nativo: {tool_names}\n"
-            f"{tools_section}\n\n"
+            "A assinatura completa de cada uma chega pela API — nao peca ao usuario.\n\n"
             "# COMO USAR FERRAMENTAS\n"
             "Quando a tarefa exigir ler/escrever arquivos, rodar comandos ou buscar na web,\n"
             "CHAME a ferramenta apropriada de verdade (tool call nativo). NAO escreva o comando\n"
