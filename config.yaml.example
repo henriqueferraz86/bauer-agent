@@ -645,7 +645,7 @@ web:
 
 
 # =============================================================================
-# MCP — servidores Model Context Protocol (stdio)
+# MCP — servidores Model Context Protocol (stdio local ou HTTP remoto)
 # =============================================================================
 
 mcp:
@@ -666,13 +666,25 @@ mcp:
     # Exemplo: Graphify — grafo de conhecimento do codebase (9 tools MCP:
     # query_graph, get_node, get_neighbors, get_community, god_nodes,
     # graph_stats, shortest_path, list_prs, get_pr_impact, triage_prs).
-    # Requer `pip install "graphifyy[mcp]"` e `graphify .` rodado uma vez
-    # na raiz do repo pra construir o graph.json inicial. `cwd` deve ser a
-    # raiz do repo que se quer consultar. Ver docs/integrations/graphify.md.
+    # Requer `pip install "graphifyy[mcp]"` e o grafo construido uma vez na
+    # raiz do repo: `python -m graphify . --code-only` (--code-only usa AST
+    # local e nao pede API key; sem ele o build para e exige chave de LLM para
+    # os arquivos de doc). `cwd` deve ser a raiz do repo que se quer consultar.
+    # O entry point e `graphify.serve` — NAO existe subcomando `graphify serve`.
+    # Ver docs/integrations/graphify.md.
     # graphify:
-    #   command: ["graphify", "serve", "--transport", "stdio"]
+    #   command: ["python", "-m", "graphify.serve", "--transport", "stdio"]
     #   cwd: /caminho/do/seu/repo
     #   timeout: 30
+
+    # Exemplo: servidor MCP REMOTO (HTTP/SSE) — use `url` em vez de `command`.
+    # GitMCP serve a documentacao de qualquer repo publico: troque o dominio
+    # github.com pelo gitmcp.io no endereco do repo.
+    # gitmcp_bauer:
+    #   url: https://gitmcp.io/henriqueferraz86/bauer-agent
+    #   timeout: 45
+    #   # headers:            # p/ servidores remotos que exigem auth
+    #   #   Authorization: Bearer ${TOKEN}
 
 
 # =============================================================================

@@ -48,17 +48,9 @@ class McpToolsMixin:
             finally:
                 legacy_call.close()
 
-        server_cmd, server_env, server_timeout = self._resolve_mcp_server(server_name)
-
-        from ..mcp_client import McpClient, McpServerConfig, McpError, McpToolError, McpTimeoutError
-        cfg = McpServerConfig(
-            name=server_name,
-            command=server_cmd,
-            env=server_env,
-            timeout=server_timeout,
-        )
+        from ..mcp_client import McpError, McpToolError, McpTimeoutError
         try:
-            with McpClient(cfg) as client:
+            with self._mcp_client_for(server_name) as client:
                 return client.call_tool(tool_name, arguments)
         except McpToolError as exc:
             raise ToolError(str(exc)) from exc
@@ -90,27 +82,25 @@ class McpToolsMixin:
 
         mcp_config = getattr(self, "_mcp_config", None)
         servers = getattr(mcp_config, "servers", None) or {} if mcp_config is not None else {}
-        for name, srv in servers.items():
-            if hasattr(srv, "command"):
-                cmd = srv.command if isinstance(srv.command, list) else str(srv.command).split()
-                env = dict(getattr(srv, "env", {}) or {})
-                timeout = float(getattr(srv, "timeout", 30))
-            elif isinstance(srv, dict) and "command" in srv:
-                cmd = srv["command"]
-                cmd = cmd.split() if isinstance(cmd, str) else cmd
-                env = dict(srv.get("env", {}) or {})
-                timeout = float(srv.get("timeout", 30))
-            else:
+        for name in servers:
+            try:
+                info = self._resolve_mcp_transport(name)
+            except ToolError:
                 continue
-            found[name] = {"command": cmd, "env": env, "timeout": timeout, "origem": "config.yaml"}
+            info["origem"] = "config.yaml"
+            found[name] = info
 
-        # Env vars vencem o config (mesma ordem de _resolve_mcp_server).
+        # Env vars vencem o config (mesma ordem de _resolve_mcp_transport).
         for key, val in os.environ.items():
             if not key.startswith("MCP_SERVER_") or not val.strip():
                 continue
             name = key[len("MCP_SERVER_"):].lower()
-            found[name] = {"command": val.split(), "env": {}, "timeout": 30.0,
-                           "origem": f"env {key}"}
+            try:
+                info = self._resolve_mcp_transport(name)
+            except ToolError:
+                continue
+            info["origem"] = f"env {key}"
+            found[name] = info
 
         if not found:
             return (
@@ -122,7 +112,15 @@ class McpToolsMixin:
         for name in sorted(found):
             info = found[name]
             lines.append(f"\n- {name}  ({info['origem']}, timeout {info['timeout']:.0f}s)")
+            if info["kind"] == "http":
+                lines.append(f"  url: {info['url']}  [remoto]")
+                if info["headers"]:
+                    # Só os NOMES: header de MCP remoto carrega Authorization.
+                    lines.append(f"  headers: {', '.join(sorted(info['headers']))} (valores omitidos)")
+                continue
             lines.append(f"  comando: {' '.join(info['command'])}")
+            if info.get("cwd"):
+                lines.append(f"  cwd: {info['cwd']}")
             if info["env"]:
                 # Só os NOMES das variáveis: env de servidor MCP é onde moram
                 # api keys, e o retorno de tool vai inteiro para o provider.
@@ -140,17 +138,9 @@ class McpToolsMixin:
         if not server_name:
             raise ToolError("mcp_list_tools requer 'server'. Use mcp_list_servers para ver os nomes.")
 
-        server_cmd, server_env, server_timeout = self._resolve_mcp_server(server_name)
-
-        from ..mcp_client import McpClient, McpServerConfig, McpError, McpTimeoutError
-        cfg = McpServerConfig(
-            name=server_name,
-            command=server_cmd,
-            env=server_env,
-            timeout=server_timeout,
-        )
+        from ..mcp_client import McpError, McpTimeoutError
         try:
-            with McpClient(cfg) as client:
+            with self._mcp_client_for(server_name) as client:
                 tools = client.list_tools()
         except McpTimeoutError as exc:
             raise ToolError(str(exc)) from exc
@@ -186,6 +176,73 @@ class McpToolsMixin:
                 lines.append(f"  args: {', '.join(campos)}")
         lines.append(f"\nChame com mcp_call(server=\"{server_name}\", tool=..., arguments={{...}}).")
         return "\n".join(lines)
+
+    def _resolve_mcp_transport(self, server_name: str) -> dict:
+        """Resolve o transporte de um servidor: stdio (processo) ou http (remoto).
+
+        `_resolve_mcp_server` continua existindo para quem só quer o comando, mas
+        perde duas coisas que importam: o `cwd` (que o config aceita, o
+        McpServerConfig suporta, e o exemplo do Graphify EXIGE para apontar a
+        raiz do repo) e servidores `url`, que nem passavam pelo schema.
+
+        Returns:
+            {"kind": "stdio", "command", "env", "timeout", "cwd"} ou
+            {"kind": "http", "url", "headers", "timeout"}
+        """
+        import os
+
+        env_key = f"MCP_SERVER_{server_name.upper().replace('-', '_')}"
+        env_val = os.environ.get(env_key, "").strip()
+        if env_val:
+            if env_val.startswith(("http://", "https://")):
+                return {"kind": "http", "url": env_val, "headers": {}, "timeout": 30.0}
+            return {"kind": "stdio", "command": env_val.split(), "env": {},
+                    "timeout": 30.0, "cwd": None}
+
+        mcp_config = getattr(self, "_mcp_config", None)
+        servers = getattr(mcp_config, "servers", None) or {} if mcp_config is not None else {}
+        srv = servers.get(server_name)
+        if srv is not None:
+            get = (lambda k, d=None: getattr(srv, k, d)) if hasattr(srv, "command") \
+                else (lambda k, d=None: srv.get(k, d))
+            url = get("url")
+            timeout = float(get("timeout", 30) or 30)
+            if url:
+                return {"kind": "http", "url": str(url),
+                        "headers": dict(get("headers", {}) or {}), "timeout": timeout}
+            cmd = get("command")
+            if cmd:
+                cmd = cmd.split() if isinstance(cmd, str) else list(cmd)
+                return {"kind": "stdio", "command": cmd, "env": dict(get("env", {}) or {}),
+                        "timeout": timeout, "cwd": get("cwd")}
+
+        raise ToolError(
+            f"Servidor MCP '{server_name}' nao configurado.\n"
+            "Configure via:\n"
+            f"  1. Variavel de ambiente: {env_key}=python -m meu_servidor (ou uma URL http)\n"
+            "  2. config.yaml:\n"
+            "       mcp:\n"
+            "         servers:\n"
+            f"           {server_name}:\n"
+            "             command: [\"python\", \"-m\", \"meu_servidor\"]   # local\n"
+            "             # ou, para servidor remoto:\n"
+            "             # url: https://exemplo/mcp"
+        )
+
+    def _mcp_client_for(self, server_name: str):
+        """Cliente MCP pronto para uso em `with`, no transporte configurado."""
+        t = self._resolve_mcp_transport(server_name)
+        if t["kind"] == "http":
+            from ..mcp_http_client import McpHttpClient
+            return McpHttpClient(t["url"], headers=t["headers"], timeout=t["timeout"])
+        from ..mcp_client import McpClient, McpServerConfig
+        return McpClient(McpServerConfig(
+            name=server_name,
+            command=t["command"],
+            env=t["env"],
+            timeout=t["timeout"],
+            cwd=t["cwd"],
+        ))
 
     def _get_mcp_server_cmd(self, server_name: str) -> list[str]:
         """Compatibilidade com a API MCP anterior que retornava apenas o comando."""

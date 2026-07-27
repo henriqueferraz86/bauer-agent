@@ -69,3 +69,6 @@ test_request.json
 .DS_Store
 Thumbs.db
 _quantfx_staging/
+
+# Graphify — grafo do codebase, regenerável (python -m graphify . --code-only)
+graphify-out/

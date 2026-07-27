@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 class ConfigError(Exception):
@@ -736,6 +736,10 @@ class McpServerEntry(_StrictSection):
     env: dict[str, str] = Field(default_factory=dict)
     timeout: float = Field(ge=1.0, le=300.0, default=30.0)
     cwd: str | None = None
+    #: Servidor MCP remoto (HTTP/SSE) em vez de processo local. Exclusivo com
+    #: `command` — ex.: GitMCP, que serve qualquer repo publico por URL.
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("command")
     @classmethod
@@ -743,6 +747,17 @@ class McpServerEntry(_StrictSection):
         if isinstance(v, str):
             return v.split()
         return v
+
+    @model_validator(mode="after")
+    def _exige_um_transporte(self) -> "McpServerEntry":
+        # Sem isto, `url` num servidor que tambem tem `command` seria ignorado em
+        # silencio — o servidor subiria por stdio e ninguem entenderia por que.
+        if bool(self.command) == bool(self.url):
+            raise ValueError(
+                "servidor MCP precisa de EXATAMENTE um transporte: "
+                "`command` (processo local via stdio) ou `url` (HTTP/SSE remoto)."
+            )
+        return self
 
 
 class McpSection(_StrictSection):

@@ -124,3 +124,57 @@ def test_list_tools_em_servidor_inexistente_orienta(monkeypatch):
     monkeypatch.delenv("MCP_SERVER_FANTASMA", raising=False)
     with pytest.raises(ToolError, match="nao configurado"):
         _Router(_Cfg({}))._mcp_list_tools({"server": "fantasma"})
+
+
+# ─── transporte: stdio com cwd, e HTTP remoto ────────────────────────────────
+
+def test_cwd_do_config_chega_no_cliente(monkeypatch):
+    """cwd era descartado por _resolve_mcp_server — e o exemplo do Graphify
+    depende dele para apontar a raiz do repo que se quer consultar."""
+    monkeypatch.delenv("MCP_SERVER_GRAPHIFY", raising=False)
+    router = _Router(_Cfg({
+        "graphify": {"command": ["graphify", "serve"], "cwd": "/repo/alvo", "timeout": 30},
+    }))
+
+    t = router._resolve_mcp_transport("graphify")
+
+    assert t["kind"] == "stdio"
+    assert t["cwd"] == "/repo/alvo"
+
+    client = router._mcp_client_for("graphify")
+    assert client.config.cwd == "/repo/alvo"
+
+
+def test_servidor_remoto_usa_cliente_http(monkeypatch):
+    monkeypatch.delenv("MCP_SERVER_GITMCP", raising=False)
+    router = _Router(_Cfg({
+        "gitmcp": {"url": "https://gitmcp.io/dono/repo", "timeout": 45},
+    }))
+
+    t = router._resolve_mcp_transport("gitmcp")
+    assert t["kind"] == "http" and t["url"] == "https://gitmcp.io/dono/repo"
+
+    from bauer.mcp_http_client import McpHttpClient
+    assert isinstance(router._mcp_client_for("gitmcp"), McpHttpClient)
+
+
+def test_lista_mostra_remoto_sem_vazar_header(monkeypatch):
+    monkeypatch.delenv("MCP_SERVER_GITMCP", raising=False)
+    router = _Router(_Cfg({
+        "gitmcp": {"url": "https://gitmcp.io/dono/repo",
+                   "headers": {"Authorization": "Bearer nao-pode-vazar"}},
+    }))
+
+    out = router._mcp_list_servers({})
+
+    assert "https://gitmcp.io/dono/repo" in out and "[remoto]" in out
+    assert "Authorization" in out
+    assert "nao-pode-vazar" not in out
+
+
+def test_env_var_com_url_vira_transporte_http(monkeypatch):
+    monkeypatch.setenv("MCP_SERVER_REMOTO", "https://exemplo/mcp")
+
+    t = _Router()._resolve_mcp_transport("remoto")
+
+    assert t["kind"] == "http" and t["url"] == "https://exemplo/mcp"
