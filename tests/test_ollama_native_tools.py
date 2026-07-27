@@ -236,6 +236,39 @@ def test_auto_detect_deriva_supports_tools_das_capabilities():
     assert auto_detect_from_ollama(client, "bge-m3").supports_tools is False
 
 
+# ─── resposta vazia no caminho native ────────────────────────────────────────
+
+
+def test_native_nao_devolve_conteudo_vazio_para_o_contexto():
+    """Turno assistant em branco no histórico só atrapalha a retentativa."""
+    from bauer.agent import _run_native_tool_turn
+
+    class _Ctx:
+        def __init__(self):
+            self.messages = []
+            self.assistants = []
+
+        def get_payload(self):
+            return []
+
+        def add_assistant(self, txt):
+            self.assistants.append(txt)
+
+        def add_user(self, txt):
+            pass
+
+    client = MagicMock()
+    client.chat_with_tools.return_value = {"content": "", "tool_calls": []}
+    router = MagicMock()
+    router.get_tool_schemas.return_value = []
+
+    ctx = _Ctx()
+    out = _run_native_tool_turn(ctx, router, client, "m", [])
+
+    assert out == ""
+    assert ctx.assistants == [], "conteúdo vazio não pode entrar no contexto"
+
+
 # ─── system prompt no modo native ────────────────────────────────────────────
 
 

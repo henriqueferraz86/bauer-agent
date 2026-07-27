@@ -1697,8 +1697,12 @@ def _run_native_tool_turn(
     content = msg.get("content") or ""
 
     if not tool_calls:
-        # Modelo respondeu sem chamar tools — retorna o texto
-        ctx.add_assistant(content)
+        # Modelo respondeu sem chamar tools — retorna o texto.
+        # Conteúdo vazio NÃO entra no contexto: o caller trata isso como
+        # "resposta vazia" e aciona o recovery, e um turno assistant em branco
+        # no histórico só atrapalharia a retentativa.
+        if content.strip():
+            ctx.add_assistant(content)
         return content
 
     if len(tool_log) >= MAX_TOOL_TURNS:
@@ -1981,6 +1985,7 @@ def run_one_turn(
     use_native = _client_supports_native_tools(client)
 
     if use_native:
+        _native_empty_recovered = False
         while not budget.exhausted:
             budget.consume()
             try:
@@ -1993,6 +1998,33 @@ def run_one_turn(
                 use_native = False
                 budget.refund()
                 break
+
+            # Resposta vazia sem tool call: o bridge já recuperava disso desde
+            # sempre (retry → force_compress → retry); o caminho native devolvia
+            # a string vazia como se fosse a resposta final e o turno morria com
+            # "Resposta vazia — parei". Nunca doeu porque só provider cloud caía
+            # aqui; com o Ollama usando native, dói.
+            #
+            # A camada de compressão é o tratamento certo: medido no Beelink,
+            # o qwen3-coder:30b devolve vazio (eval_count=1) a partir de ~13k
+            # tokens de prompt mesmo com num_ctx=32768 — encolher o payload é
+            # literalmente a saída.
+            if result is not None and not str(result).strip():
+                if not _native_empty_recovered:
+                    _native_empty_recovered = True
+                    recovered, diagnostico = _recover_empty_response(client, model_name, ctx)
+                    if recovered.strip():
+                        ctx.add_assistant(recovered)
+                        return recovered, tool_log
+                    return diagnostico or (
+                        "[Modelo retornou resposta vazia e não se recuperou. Causa "
+                        "provável: prompt grande demais para este modelo — reduza "
+                        "tools.tool_allowlist ou use /clear.]"
+                    ), tool_log
+                return (
+                    "[Modelo retornou resposta vazia repetidamente — sessão instável]"
+                ), tool_log
+
             if result is not None:
                 return result, tool_log
             _maybe_reflect(ctx, len(tool_log))
