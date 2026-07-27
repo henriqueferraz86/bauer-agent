@@ -692,9 +692,13 @@ mcp:
     # Exemplo: servidor MCP REMOTO (HTTP/SSE) — use `url` em vez de `command`.
     # GitMCP serve a documentacao de qualquer repo publico: troque o dominio
     # github.com pelo gitmcp.io no endereco do repo.
-    # gitmcp_bauer:
-    #   url: https://gitmcp.io/henriqueferraz86/bauer-agent
-    #   timeout: 45
+    # Prefira o endpoint DINAMICO (/docs): as tools recebem owner+repo como
+    # argumento, entao um servidor so consulta qualquer repo. Apontar o GitMCP
+    # para o SEU proprio repo e a configuracao menos util que existe — o codigo
+    # ja esta no disco, e read_file/search_text sao mais rapidos e exatos.
+    # gitmcp:
+    #   url: https://gitmcp.io/docs
+    #   timeout: 60
     #   # headers:            # p/ servidores remotos que exigem auth
     #   #   Authorization: Bearer ${TOKEN}
 
