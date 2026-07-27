@@ -92,9 +92,29 @@ LAUNCHER
     chmod +x "$BAUER_BIN"
 }
 
+# Instalação via pipx (`pipx install bauer-agent`) não passa por este script e
+# não tem clone: vive em ~/.local/share/pipx/venvs/bauer-agent. Detectar isso é
+# o que evita o pior desfecho do --update — mandar "execute sem --update para
+# instalar" a quem JÁ tem o Bauer instalado faz nascer uma segunda instalação
+# paralela, e aí qual das duas roda vira questão de ordem do PATH.
+PIPX_VENV="${PIPX_HOME:-$HOME/.local/share/pipx}/venvs/bauer-agent"
+
 # ─── Update ──────────────────────────────────────────────────────────────────
 if [ "$DO_UPDATE" = 1 ]; then
-    [ -d "$INSTALL_DIR/.git" ] || die "Instalação não encontrada em $INSTALL_DIR. Execute sem --update para instalar."
+    if [ ! -d "$INSTALL_DIR/.git" ] && [ -d "$PIPX_VENV" ]; then
+        info "Instalação pipx detectada em $PIPX_VENV — atualizando por ela."
+        if command -v pipx >/dev/null 2>&1; then
+            _pipx="pipx"
+        elif "${PYTHON:-python3}" -m pipx --version >/dev/null 2>&1; then
+            _pipx="${PYTHON:-python3} -m pipx"
+        else
+            die "pipx não está no PATH. Atualize com: python3 -m pipx install --force 'git+$REPO@master'"
+        fi
+        $_pipx install --force "git+$REPO@master"
+        ok "Bauer Agent atualizado via pipx!"
+        exit 0
+    fi
+    [ -d "$INSTALL_DIR/.git" ] || die "Nenhuma instalação encontrada (nem clone em $INSTALL_DIR, nem venv pipx). Execute sem --update para instalar."
     info "Atualizando $INSTALL_DIR ..."
     # Preserva o config.yaml do usuário — o reset --hard abaixo o descartaria.
     # (O config.yaml deixou de ser versionado, mas quem instalou antes ainda
