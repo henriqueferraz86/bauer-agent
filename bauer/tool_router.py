@@ -46,6 +46,8 @@ Tools de agente (sempre disponíveis):
   clarify        — pergunta ao usuário mid-task
   delegate_task  — delega subtarefa a sub-agente isolado
   vision_analyze — análise de imagem via modelo multimodal (requer llm_client)
+  mcp_list_servers — lista servidores MCP configurados (nao inicia nenhum)
+  mcp_list_tools   — lista as tools de um servidor MCP, com os argumentos
   mcp_call       — chama tool em servidor MCP via stdio (requer pip install mcp)
 """
 
@@ -234,6 +236,10 @@ _TOOL_SECURITY: dict[str, dict] = {
     "browser_vision": {"permission": "network", "risk": "low",    "approval": False},
     "browser_dialog": {"permission": "network", "risk": "medium", "approval": False},
     "browser_cdp":    {"permission": "network", "risk": "high",   "approval": True},
+    # mcp_list_servers só lê a config; mcp_list_tools inicia o servidor (mesmo
+    # custo e mesmos modos de falha do mcp_call), mas não executa nenhuma tool.
+    "mcp_list_servers": {"permission": "read",  "risk": "low",    "approval": False},
+    "mcp_list_tools": {"permission": "network", "risk": "low",    "approval": False},
     "mcp_call":       {"permission": "network", "risk": "medium", "approval": False},
     # Canais do Bauer Gateway — outbound para humanos (outbox durável)
     "channel_send":   {"permission": "network", "risk": "medium", "approval": False},
@@ -264,6 +270,7 @@ _TOOL_TIMEOUTS: dict[str, int] = {
     "browser_snapshot": 30,
     "browser_click":    30,
     "browser_type":     30,
+    "mcp_list_tools":   60,
     "mcp_call":         60,
     # IO tools
     "image_generate": 120,
@@ -1136,12 +1143,33 @@ class ToolRouter(
             },
         }
 
-        # ── Tool mcp_call — cliente MCP ─────────────────────────────────────
+        # ── Tools MCP — descoberta (pull) + chamada ─────────────────────────
+        self._tools["mcp_list_servers"] = {
+            "fn": self._mcp_list_servers,
+            "description": (
+                "Lista os servidores MCP configurados (nome, comando, timeout) sem iniciar "
+                "nenhum. Use ANTES de mcp_call quando nao souber quais servidores existem."
+            ),
+            "args": {},
+        }
+
+        self._tools["mcp_list_tools"] = {
+            "fn": self._mcp_list_tools,
+            "description": (
+                "Lista as tools que um servidor MCP oferece, com os argumentos de cada uma. "
+                "Use para descobrir o valor de 'tool' e o formato de 'arguments' do mcp_call."
+            ),
+            "args": {
+                "server": "str — nome do servidor MCP configurado (obrigatorio)",
+            },
+        }
+
         self._tools["mcp_call"] = {
             "fn": self._mcp_call,
             "description": (
                 "Chama uma tool em servidor MCP (Model Context Protocol) via stdio. "
-                "Requer: pip install mcp. Configure servidores em config.yaml: mcp.servers."
+                "Configure servidores em config.yaml: mcp.servers. Se nao souber o nome do "
+                "servidor ou da tool, chame mcp_list_servers / mcp_list_tools antes."
             ),
             "args": {
                 "server": "str — nome do servidor MCP configurado (obrigatorio)",
