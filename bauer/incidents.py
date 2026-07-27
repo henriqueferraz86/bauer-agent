@@ -39,8 +39,28 @@ from typing import Any
 
 logger = logging.getLogger("bauer.incidents")
 
+#: Local ANTIGO: relativo ao CWD. Mantido só para leitura — o `list_incidents`
+#: ainda varre aqui para não perder telemetria já gravada em pastas de projeto.
 INCIDENTS_DIR = Path("logs") / "incidents"
 INCIDENTS_MAX = 200  # retenção: acima disso, remove os mais antigos
+
+
+def default_incidents_dir() -> Path:
+    """Diretório canônico de incidentes: `$BAUER_HOME/logs/incidents`.
+
+    Era `./logs/incidents`, relativo ao CWD. Como o `bauer run`/`bauer agent`
+    roda de dentro do projeto do usuário, cada pasta de trabalho ganhava um
+    `logs/incidents/` próprio — a telemetria ficava espalhada (e portanto
+    inagregável), e em CWD read-only sumia em silêncio, já que
+    `record_incident` engole toda exceção. Mesma classe de bug do log do
+    doctor (PR #94), que na época foi corrigido só no ponto reportado.
+
+    Resolvido em tempo de CHAMADA, não no import, para respeitar $BAUER_HOME
+    definido depois (testes, CI).
+    """
+    from .paths import get_bauer_home
+
+    return get_bauer_home() / "logs" / "incidents"
 
 
 def record_incident(kind: str, incidents_dir: Path | None = None, **details: Any) -> Path | None:
@@ -50,7 +70,7 @@ def record_incident(kind: str, incidents_dir: Path | None = None, **details: Any
     `details`: metadados serializáveis — NUNCA inclua conteúdo de mensagens.
     """
     try:
-        base = incidents_dir or INCIDENTS_DIR
+        base = incidents_dir or default_incidents_dir()
         base.mkdir(parents=True, exist_ok=True)
 
         ts = time.localtime()
@@ -79,20 +99,34 @@ def record_incident(kind: str, incidents_dir: Path | None = None, **details: Any
 
 
 def list_incidents(incidents_dir: Path | None = None, kind: str | None = None) -> list[dict]:
-    """Lê incidentes gravados (mais recentes primeiro). Para CLI/diagnóstico."""
-    base = incidents_dir or INCIDENTS_DIR
-    if not base.exists():
-        return []
+    """Lê incidentes gravados (mais recentes primeiro). Para CLI/diagnóstico.
+
+    Sem `incidents_dir` explícito, varre o diretório canônico E o antigo
+    `./logs/incidents` do CWD — assim a telemetria escrita antes da mudança
+    de local continua aparecendo em vez de sumir do relatório.
+    """
+    if incidents_dir is not None:
+        bases = [incidents_dir]
+    else:
+        bases = [default_incidents_dir(), INCIDENTS_DIR]
+
     out: list[dict] = []
-    for f in sorted(base.glob("*.json"), reverse=True):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if kind and data.get("kind") != kind:
-                continue
-            data["_file"] = str(f)
-            out.append(data)
-        except Exception:
+    seen: set[str] = set()
+    for base in bases:
+        if not base.exists() or str(base.resolve()) in seen:
             continue
+        seen.add(str(base.resolve()))
+        for f in sorted(base.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if kind and data.get("kind") != kind:
+                    continue
+                data["_file"] = str(f)
+                out.append(data)
+            except Exception:
+                continue
+    # Mais recentes primeiro, agora ordenando ENTRE os diretórios.
+    out.sort(key=lambda d: d.get("timestamp", ""), reverse=True)
     return out
 
 
