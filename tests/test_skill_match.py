@@ -67,10 +67,10 @@ class TestMatchSkill:
         m = match_skill("analise de dados e grafico", docs=docs)
         assert m is not None and len(m.content) == _CONTENT_CAP
 
-    def test_skill_procedimental_cabe_inteira(self):
-        # Skill de procedimento (~6k) não pode chegar decapitada: truncar no meio
-        # entrega a preparação sem a revisão.
-        content = "PASSO 1\n" + ("x" * 5900) + "\nPASSO FINAL"
+    def test_skill_grande_cabe_inteira(self):
+        # Skill do tamanho da app-factory (~4.8k) não pode chegar decapitada:
+        # metade de um gate de spec-driven é pior que gate nenhum.
+        content = "PASSO 1\n" + ("x" * 4800) + "\nPASSO FINAL"
         docs = [{"name": "Grande", "description": "analise de dados grafico",
                  "tags": [], "content": content, "source": "builtin"}]
         m = match_skill("analise de dados e grafico", docs=docs)

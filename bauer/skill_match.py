@@ -24,11 +24,11 @@ DEFAULT_THRESHOLD = 0.30
 #: Teto do conteúdo injetado — não estourar o contexto (modelos fracos são
 #: sensíveis a prompt longo). Skills maiores entram truncadas.
 #:
-#: 2000 vinha de quando toda skill do pacote era um checklist de ~300 chars.
-#: Skills PROCEDIMENTAIS (code-review: fixa o ponto de comparação, roda dois
-#: eixos, agrega) passam de 6k, e truncar no meio entrega a preparação sem a
-#: revisão — pior que não injetar. O pior caso custa ~2.2k tokens, e só na volta
-#: em que uma skill grande casa.
+#: 2000 vinha de quando toda skill do pacote era um checklist de ~300 chars —
+#: e ficou parado enquanto o catálogo crescia. Com esse teto, `app-factory`
+#: (4842 chars, a skill que segura o gate de spec-driven) chegava PELA METADE em
+#: toda injeção automática, e nada avisava. O pior caso custa ~2.2k tokens, e só
+#: na volta em que uma skill grande casa.
 #:
 #: Truncar é SILENCIOSO: nada avisa que a skill chegou pela metade. Por isso o
 #: teto tem que ficar com folga confortável sobre a maior skill do pacote (hoje

@@ -1,156 +1,42 @@
 name: Code Review
-description: "Revisão de um diff contra um ponto fixo em dois eixos separados — Standards (segue os padrões documentados do repo?) e Spec (implementa o que a issue/PRD pediu?), relatados lado a lado sem fundir."
+description: "Checklist e critérios para revisão de código — segurança, legibilidade, performance, testes."
 # Vocabulário de disparo: o matcher não normaliza acento nem flexão, então as
 # duas grafias de "revisao/mudancas" e as formas verbais precisam estar aqui.
-# Só termos de REVISÃO — "commit", "branch" e "merge" foram tirados de propósito:
-# são vocabulário de git em geral e faziam "faz o merge dessa branch" injetar
-# esta skill, contra o falha-seguro do módulo (na dúvida, não injeta).
-tags: [code-review, review, revisar, revisao, revisão, mudancas, mudanças, diff, spec, standards]
-# Baseado em skills/engineering/code-review de github.com/mattpocock/skills (MIT),
-# adaptado ao runtime do Bauer: sem sub-agentes paralelos (delegate_task local é uma
-# chamada LLM sem ferramentas, com payload truncado em 4096 chars), os dois eixos
-# rodam como passes separados no agente principal.
+# Só termos de REVISÃO — "commit", "branch" e "merge" ficam de fora: são
+# vocabulário de git em geral e faziam "faz o merge dessa branch" injetar esta
+# skill, contra o falha-seguro do módulo.
+tags: [code-review, review, revisar, revisao, revisão, mudancas, mudanças, diff]
 content: |
-  # Code Review — dois eixos
+  # Code Review — Checklist completo
 
-  Revisão do diff entre `HEAD` e um ponto fixo que o usuário fornece, em dois
-  eixos que NÃO se misturam:
+  ## 1. Correção
+  - A lógica está correta para todos os casos (happy path + edge cases)?
+  - Há tratamento de erros adequado nas boundaries (IO, rede, parsing)?
+  - Race conditions ou concorrência não-tratada?
 
-  - **Standards** — o código segue os padrões documentados deste repo?
-  - **Spec** — o código implementa fielmente a issue/PRD que o originou?
+  ## 2. Segurança
+  - Input de usuário é sanitizado/validado antes de usar?
+  - Credenciais em variáveis de ambiente, nunca em código?
+  - SQL parametrizado (sem f-strings em queries)?
+  - Path traversal bloqueado ao lidar com caminhos de arquivo?
 
-  Um diff pode passar num eixo e falhar no outro: código impecável que
-  implementa a coisa errada é *Standards pass, Spec fail*; código que faz
-  exatamente o que a issue pediu mas viola as convenções do projeto é *Spec
-  pass, Standards fail*. Relatar separado impede que um eixo mascare o outro.
+  ## 3. Legibilidade
+  - Nomes de variáveis/funções descritivos sem abreviações obscuras?
+  - Funções fazem UMA coisa (SRP)?
+  - Comentários explicam o PORQUÊ, não o quê?
+  - Código morto removido?
 
-  ## 1. Fixar o ponto de comparação
+  ## 4. Performance
+  - N+1 queries em loops?
+  - Operações O(n²) onde O(n log n) é possível?
+  - Cache onde faz sentido?
 
-  O ponto fixo é o que o usuário disse — SHA, branch, tag, `master`, `HEAD~5`.
-  Se ele não disse, pergunte. Não invente `master` como padrão.
+  ## 5. Testes
+  - Novo código tem testes unitários?
+  - Casos de erro testados (não só happy path)?
+  - Mocks usados apenas onde necessário?
 
-  Antes de qualquer análise, valide (é barato e evita gastar dois passes longos
-  em cima de nada):
-
-  - `git rev-parse <ponto-fixo>` resolve?
-  - `git diff <ponto-fixo>...HEAD --stat` traz algo? (três pontos: compara
-    contra o merge-base, não contra a ponta)
-
-  Ref inválida ou diff vazio: pare aqui e diga isso. Registre também
-  `git log <ponto-fixo>..HEAD --oneline` — a lista de commits é a fonte das
-  referências de issue no passo 2.
-
-  ## 2. Achar a spec
-
-  Nesta ordem, parando no primeiro que existir:
-
-  1. Referência de issue nas mensagens de commit (`#123`, `Closes #45`) —
-     buscar com `gh issue view <n>` se o repo tiver remote no GitHub.
-  2. Caminho que o usuário passou como argumento.
-  3. Arquivo de spec/PRD em `docs/`, `specs/` ou `plans/` cujo nome case com a
-     branch ou a feature.
-  4. Nada encontrado: pergunte onde está. Se o usuário disser que não há spec,
-     o eixo Spec é pulado e o relatório final diz "sem spec disponível" — não
-     invente critério de aceitação para preencher a seção.
-
-  ## 3. Achar os padrões
-
-  O que o repo documenta sobre como escrever código: `AGENTS.md`, `CLAUDE.md`,
-  `CONTRIBUTING.md`, `CODING_STANDARDS.md`, `bauer-decisions.md`, ADRs.
-
-  **Essa lista é onde procurar, não o que existe.** Só cite um arquivo de padrão
-  depois de tê-lo aberto. Se não conseguiu abrir nenhum (sem ferramentas, sem
-  acesso), escreva "padrões do repo não verificados" e siga só com o baseline —
-  nunca invente que o repo documenta ou deixa de documentar algo.
-
-  Além do que o repo documenta, o eixo Standards SEMPRE carrega o baseline de
-  smells abaixo. Três regras o governam:
-
-  - **O repo vence.** Padrão documentado (ou decisão registrada, incluindo modo
-    de código mínimo) sempre ganha do baseline. Onde o repo endossa algo que o
-    baseline sinalizaria, suprima o smell.
-  - **Sempre juízo, nunca violação.** Cada smell é heurística rotulada
-    ("possível Feature Envy"). Violação dura só existe contra padrão documentado.
-  - **Nada que a ferramenta já pega.** Se lint, formatter, type checker ou CI já
-    reprovam aquilo, não é achado de review.
-
-  Cada smell lê *o que é* → *como resolver*; case contra o diff. **Reporte só o
-  que você achou**: o baseline é lente, não formulário. Não escreva uma linha
-  por smell para dizer que não encontrou — diff limpo produz seção curta, e
-  isso é o resultado certo.
-
-  - **Nome misterioso** — função, variável ou tipo cujo nome não revela o que
-    faz ou guarda. → renomeie; se nenhum nome honesto aparece, o design está turvo.
-  - **Código duplicado** — a mesma forma lógica aparece em mais de um hunk ou
-    arquivo da mudança. → extraia a forma comum, chame dos dois lados.
-  - **Feature Envy** — método que mexe mais nos dados de outro objeto do que nos
-    próprios. → mova o método para junto dos dados que ele inveja.
-  - **Data Clumps** — os mesmos campos/parâmetros andam sempre juntos (um tipo
-    querendo nascer). → junte num tipo só e passe ele.
-  - **Obsessão por primitivo** — string ou int no lugar de um conceito de
-    domínio que merece tipo próprio. → dê um tipo pequeno ao conceito.
-  - **Switches repetidos** — o mesmo `if`/`match` sobre o mesmo tipo reaparece ao
-    longo do diff. → polimorfismo, ou um mapa único compartilhado pelos dois lados.
-  - **Shotgun Surgery** — uma mudança lógica obriga edições espalhadas por muitos
-    arquivos do diff. → junte no mesmo módulo o que muda junto.
-  - **Divergent Change** — um arquivo é editado por vários motivos não
-    relacionados. → separe, para cada módulo mudar por uma razão só.
-  - **Generalidade especulativa** — abstração, parâmetro ou hook criado para
-    necessidade que a spec não tem. → apague; inline de volta até a necessidade real.
-  - **Cadeias de mensagem** — navegação longa `a.b().c().d()` que o chamador não
-    deveria conhecer. → esconda a caminhada atrás de um método do primeiro objeto.
-  - **Middle Man** — classe ou função que quase só repassa. → corte, chame o alvo direto.
-  - **Herança recusada** — subclasse que ignora ou sobrescreve quase tudo que
-    herda. → troque herança por composição.
-
-  ## 4. Passe Standards
-
-  Rode este eixo INTEIRO antes de olhar a spec. Não deixe o que a issue pediu
-  entrar aqui — este passe só compara o diff contra padrões e baseline.
-
-  Relate, por arquivo/hunk quando fizer sentido:
-
-  - (a) onde o diff viola padrão documentado — cite o padrão (arquivo + a regra);
-  - (b) smells do baseline — nomeie o smell e cite o hunk.
-
-  Separe violação dura (padrão documentado) de juízo (baseline). Até 400 palavras.
-
-  **Cobertura obrigatória.** Todo arquivo do diff é olhado. Feche o passe com uma
-  linha listando os arquivos e o que cada um rendeu — inclusive os sem achado
-  ("`install.sh` — nada"). Script de instalação, YAML de CI e teste contam como
-  arquivo: bug em instalador quebra usuário igual, e ficar só no arquivo mais
-  interessante é o modo de falha mais comum aqui.
-
-  ## 5. Passe Spec
-
-  Só agora abra a spec. Relate:
-
-  - (a) requisitos que a spec pediu e estão faltando ou pela metade;
-  - (b) comportamento no diff que ninguém pediu (scope creep);
-  - (c) requisitos que parecem implementados mas cuja implementação parece errada.
-
-  Cite a linha da spec em cada achado. Até 400 palavras.
-
-  ## 6. Agregar
-
-  Apresente os dois relatórios sob `## Standards` e `## Spec`, como saíram.
-  **Não funda nem reordene entre eixos** — a separação existe justamente para
-  impedir isso.
-
-  Feche com uma linha: total de achados por eixo e o pior achado *dentro de cada
-  eixo*. Não eleja um vencedor entre os eixos.
-
-  ## Escalonamento opcional
-
-  Se o diff tocar autenticação, credenciais, deserialização, subprocess ou
-  caminhos de arquivo vindos de input, vale um parecer do `security-specialist`
-  via `delegate_task`. Cuidado com o transporte: o sub-agente local **não tem
-  ferramentas** (não roda git, não lê arquivo) e o payload é cortado em **4096
-  chars**. Então mande a pergunta fechada com o trecho já extraído colado no
-  `context` — nunca o diff inteiro, nunca um caminho esperando que ele abra.
-
-  ## Tom
-
-  - Distinga bloqueador (must fix) de sugestão (consider) — o rótulo é o produto.
-  - Prefira pergunta: "o que acontece se X for None aqui?" em vez de "está errado".
-  - Diga o que está bem feito quando estiver; review que só acusa é ignorado.
+  ## Tom do feedback
+  - Prefira perguntas: "O que acontece se X?" em vez de "Está errado"
+  - Distingua bloqueador (must fix) de sugestão (consider)
+  - Elogie o que está bem feito
