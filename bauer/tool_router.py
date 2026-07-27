@@ -46,6 +46,7 @@ Tools de agente (sempre disponíveis):
   clarify        — pergunta ao usuário mid-task
   delegate_task  — delega subtarefa a sub-agente isolado
   vision_analyze — análise de imagem via modelo multimodal (requer llm_client)
+  sqlite_query   — SELECT em arquivo SQLite (conexao somente leitura)
   mcp_list_servers — lista servidores MCP configurados (nao inicia nenhum)
   mcp_list_tools   — lista as tools de um servidor MCP, com os argumentos
   mcp_call       — chama tool em servidor MCP via stdio (requer pip install mcp)
@@ -78,6 +79,8 @@ from .tools.media import _looks_multimodal  # noqa: F401 — re-export p/ testes
 from .tools.memory import MemoryToolsMixin
 from .tools.session import SessionToolsMixin
 from .tools.skills import SkillsToolsMixin
+from .tools.sqlite import _DEFAULT_ROWS as _SQLITE_DEFAULT_ROWS
+from .tools.sqlite import SqliteToolsMixin
 from .tools.social import SocialToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
@@ -238,6 +241,7 @@ _TOOL_SECURITY: dict[str, dict] = {
     "browser_cdp":    {"permission": "network", "risk": "high",   "approval": True},
     # mcp_list_servers só lê a config; mcp_list_tools inicia o servidor (mesmo
     # custo e mesmos modos de falha do mcp_call), mas não executa nenhuma tool.
+    "sqlite_query":   {"permission": "read",    "risk": "low",    "approval": False},
     "mcp_list_servers": {"permission": "read",  "risk": "low",    "approval": False},
     "mcp_list_tools": {"permission": "network", "risk": "low",    "approval": False},
     "mcp_call":       {"permission": "network", "risk": "medium", "approval": False},
@@ -270,6 +274,7 @@ _TOOL_TIMEOUTS: dict[str, int] = {
     "browser_snapshot": 30,
     "browser_click":    30,
     "browser_type":     30,
+    "sqlite_query":     30,
     "mcp_list_tools":   60,
     "mcp_call":         60,
     # IO tools
@@ -397,6 +402,7 @@ class ToolRouter(
     SessionToolsMixin,
     SkillsToolsMixin,
     SocialToolsMixin,
+    SqliteToolsMixin,
     UtilityToolsMixin,
     WebToolsMixin,
 ):
@@ -1140,6 +1146,23 @@ class ToolRouter(
             "args": {
                 "method": "str — metodo CDP ex: 'Page.captureScreenshot' (obrigatorio)",
                 "params": "dict — parametros do comando (opcional)",
+            },
+        }
+
+        # ── Tool sqlite_query — leitura de banco SQLite ─────────────────────
+        self._tools["sqlite_query"] = {
+            "fn": self._sqlite_query,
+            "description": (
+                "Roda uma consulta SELECT em arquivo SQLite (.db/.sqlite) e devolve as "
+                "linhas. Conexao SOMENTE LEITURA — o driver recusa escrita. Aceita "
+                "apenas bancos dentro do workspace ou do diretorio do Bauer (~/.bauer), "
+                "onde ficam sessions.db, event_bus.db, kanban.sqlite3 e decisions.db."
+            ),
+            "args": {
+                "path": "str — caminho do arquivo SQLite (obrigatorio)",
+                "sql": "str — consulta SELECT, com ? para parametros (obrigatorio)",
+                "params": "list — valores dos ? na ordem (opcional)",
+                "limit": f"int — maximo de linhas (default {_SQLITE_DEFAULT_ROWS})",
             },
         }
 
