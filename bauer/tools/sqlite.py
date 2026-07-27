@@ -118,8 +118,11 @@ class SqliteToolsMixin:
         try:
             from ..paths import get_bauer_home
             permitidos.append(Path(get_bauer_home()).resolve())
-        except Exception:
-            pass  # sem BAUER_HOME resolvivel, sobra o workspace
+        except Exception as exc:
+            from ..logging_config import log_suppressed
+
+            # Sem BAUER_HOME resolvivel, sobra o workspace — restringe, nao afrouxa.
+            log_suppressed("sqlite_query.bauer_home", exc)
 
         for raiz in permitidos:
             try:

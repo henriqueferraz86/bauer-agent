@@ -39,6 +39,10 @@ def _fake_env(tmp_path: Path, *, pipx_installed: bool) -> tuple[dict, Path]:
     stub.chmod(0o755)
 
     env = dict(os.environ)
+    # PIPX_HOME vem setado no runner do GitHub (/opt/pipx). Sem limpar, o script
+    # procura a instalacao la em vez de no HOME falso e o teste mede o ambiente
+    # do CI, nao o comportamento do script.
+    env.pop("PIPX_HOME", None)
     env.update({"HOME": str(home), "PATH": f"{bindir}{os.pathsep}{env['PATH']}"})
     return env, log
 
@@ -70,3 +74,16 @@ def test_update_sem_nenhuma_instalacao_nao_sugere_duplicar(tmp_path: Path):
     assert result.returncode != 0
     assert not log.exists(), "não devia ter chamado pipx sem instalação pipx"
     assert "Nenhuma instalação encontrada" in result.stderr
+
+
+def test_update_honra_pipx_home(tmp_path: Path):
+    """Quem usa PIPX_HOME customizado tem o venv fora de ~/.local/share/pipx."""
+    env, log = _fake_env(tmp_path, pipx_installed=False)
+    pipx_home = tmp_path / "pipx_alternativo"
+    (pipx_home / "venvs" / "bauer-agent").mkdir(parents=True)
+    env["PIPX_HOME"] = str(pipx_home)
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert log.exists(), "devia ter achado a instalacao via PIPX_HOME"

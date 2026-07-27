@@ -272,8 +272,10 @@ def _grafo_desatualizado(probe, nome: str) -> str:
                 f"grafo desatualizado ({n} commit(s) depois do ultimo build) — "
                 "rode `python -m graphify . --code-only`"
             )
-    except Exception:
-        pass  # diagnostico nunca derruba o doctor
+    except Exception as exc:
+        from .logging_config import log_suppressed
+
+        log_suppressed("doctor.grafo_desatualizado", exc)  # diagnostico nunca derruba o doctor
     return ""
 
 
