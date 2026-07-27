@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .base import SandboxError, ToolError
 
@@ -24,6 +25,15 @@ _MAX_CHARS = 20_000
 
 
 class SqliteToolsMixin:
+
+    if TYPE_CHECKING:
+        # Vem do host (ToolRouter/FsToolsMixin). Declarado aqui para o mixin
+        # fechar no mypy sozinho — `bauer.tools.sqlite` NAO entra no registro de
+        # divida de tipagem do pyproject, que so pode encolher.
+        workspace: Path
+
+        @staticmethod
+        def _coerce_int(value: object, default: int, minimum: int) -> int: ...
 
     def _sqlite_query(self, args: dict) -> str:
         """Roda SELECT em um arquivo SQLite, em conexao read-only.
