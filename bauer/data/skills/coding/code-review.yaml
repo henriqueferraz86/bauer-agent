@@ -1,5 +1,11 @@
 name: Code Review
 description: "Revisão de um diff contra um ponto fixo em dois eixos separados — Standards (segue os padrões documentados do repo?) e Spec (implementa o que a issue/PRD pediu?), relatados lado a lado sem fundir."
+# Vocabulário de disparo: o matcher não normaliza acento nem flexão, então as
+# duas grafias de "revisao/mudancas" e as formas verbais precisam estar aqui.
+# Só termos de REVISÃO — "commit", "branch" e "merge" foram tirados de propósito:
+# são vocabulário de git em geral e faziam "faz o merge dessa branch" injetar
+# esta skill, contra o falha-seguro do módulo (na dúvida, não injeta).
+tags: [code-review, review, revisar, revisao, revisão, mudancas, mudanças, diff, spec, standards]
 # Baseado em skills/engineering/code-review de github.com/mattpocock/skills (MIT),
 # adaptado ao runtime do Bauer: sem sub-agentes paralelos (delegate_task local é uma
 # chamada LLM sem ferramentas, com payload truncado em 4096 chars), os dois eixos

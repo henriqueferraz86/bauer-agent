@@ -23,7 +23,13 @@ DEFAULT_THRESHOLD = 0.30
 
 #: Teto do conteúdo injetado — não estourar o contexto (modelos fracos são
 #: sensíveis a prompt longo). Skills maiores entram truncadas.
-_CONTENT_CAP = 2000
+#:
+#: 2000 vinha de quando toda skill do pacote era um checklist de ~300 chars.
+#: Skills PROCEDIMENTAIS (code-review: fixa o ponto de comparação, roda dois
+#: eixos, agrega) passam de 6k, e truncar no meio entrega a preparação sem a
+#: revisão — pior que não injetar. 7000 cobre as atuais com folga; o pior caso
+#: custa ~1.7k tokens, e só na volta em que uma skill grande casa.
+_CONTENT_CAP = 7000
 
 _DOCS_CACHE: "list[dict] | None" = None
 
@@ -132,6 +138,7 @@ def match_skill(
         return None
     best: "dict | None" = None
     best_score = 0.0
+    best_coverage = 0.0
     for d in _get_docs(docs):
         name_tags = f"{d['name']} {' '.join(d['tags'])}"
         description = d["description"]
@@ -147,8 +154,18 @@ def match_skill(
         elif qt & _tokens(description):
             score += 0.10
         score = min(score, 1.0)
-        if score > best_score:
+        # Empate é comum porque o score satura em 1.0 ("code review" batia o teto
+        # em Code Review E em Security Code Review). Desempata por quanto do NOME
+        # a query cobre: um nome com qualificador que o usuário não disse é skill
+        # mais estreita e perde o pedido genérico. Antes o desempate era a ordem
+        # de leitura do diretório — alfabética, e portanto arbitrária.
+        name_tokens = _tokens(d["name"])
+        coverage = len(qt & name_tokens) / len(name_tokens) if name_tokens else 0.0
+        if score > best_score + 1e-9 or (
+            abs(score - best_score) <= 1e-9 and coverage > best_coverage
+        ):
             best_score = score
+            best_coverage = coverage
             best = d
     if best is None or best_score < threshold:
         return None

@@ -9,6 +9,7 @@ from __future__ import annotations
 from bauer.skill_match import (
     DEFAULT_THRESHOLD,
     MatchedSkill,
+    _CONTENT_CAP,
     match_skill,
     skill_injection_block,
     reset_cache,
@@ -62,9 +63,39 @@ class TestMatchSkill:
 
     def test_content_truncado_no_teto(self):
         docs = [{"name": "Grande", "description": "analise de dados grafico",
-                 "tags": [], "content": "X" * 5000, "source": "builtin"}]
+                 "tags": [], "content": "X" * (_CONTENT_CAP + 5000), "source": "builtin"}]
         m = match_skill("analise de dados e grafico", docs=docs)
-        assert m is not None and len(m.content) <= 2000
+        assert m is not None and len(m.content) == _CONTENT_CAP
+
+    def test_skill_procedimental_cabe_inteira(self):
+        # Skill de procedimento (~6k) não pode chegar decapitada: truncar no meio
+        # entrega a preparação sem a revisão.
+        content = "PASSO 1\n" + ("x" * 5900) + "\nPASSO FINAL"
+        docs = [{"name": "Grande", "description": "analise de dados grafico",
+                 "tags": [], "content": content, "source": "builtin"}]
+        m = match_skill("analise de dados e grafico", docs=docs)
+        assert m is not None and m.content.endswith("PASSO FINAL")
+
+    def test_empate_prefere_nome_mais_coberto_pela_query(self):
+        # Mesmo score (ambos saturam em 1.0): vence o nome sem qualificador que a
+        # query não pediu — e não a ordem de leitura do diretório.
+        generica = {"name": "Code Review", "description": "revisao de codigo em dois eixos",
+                    "tags": [], "content": "guia generico", "source": "builtin"}
+        estreita = {"name": "Security Code Review", "description": "revisao de codigo focada em seguranca",
+                    "tags": [], "content": "guia de seguranca", "source": "builtin"}
+        for ordem in ([estreita, generica], [generica, estreita]):
+            m = match_skill("faz um code review dessa branch", docs=ordem)
+            assert m is not None and m.name == "Code Review"
+
+    def test_query_especifica_ainda_casa_skill_estreita(self):
+        # O desempate não pode sequestrar o pedido específico: dizendo "security",
+        # a cobertura do nome estreito passa a ser total.
+        generica = {"name": "Code Review", "description": "revisao de codigo em dois eixos",
+                    "tags": [], "content": "guia generico", "source": "builtin"}
+        estreita = {"name": "Security Code Review", "description": "revisao de codigo focada em seguranca",
+                    "tags": [], "content": "guia de seguranca", "source": "builtin"}
+        m = match_skill("security code review dessa branch", docs=[generica, estreita])
+        assert m is not None and m.name == "Security Code Review"
 
     def test_source_preservado(self):
         docs = [{"name": "MinhaSkill", "description": "seguranca sql injection authz",
