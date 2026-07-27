@@ -982,25 +982,44 @@ def _valid_fields_for(section_name: str) -> str:
     return ""
 
 
+def resolve_config_path(path: str | Path = "config.yaml") -> Path:
+    """Resolve QUAL config.yaml será realmente lido.
+
+    Ordem de busca:
+      1. Caminho fornecido (ou "config.yaml" no cwd)
+      2. ~/.bauer/config.yaml  ($BAUER_HOME/config.yaml)
+
+    Existe como função pública porque quem EXIBE o caminho (o `bauer doctor`
+    e o boot do `bauer serve`) precisa mostrar o arquivo carregado, não o
+    pedido. Os dois imprimiam `path.resolve()` cru, então rodar de um
+    diretório sem config.yaml anunciava `/tmp/config.yaml` — um arquivo
+    inexistente — enquanto lia o de $BAUER_HOME. Justamente a confusão que
+    aquela linha foi criada para acabar.
+
+    Levanta ConfigError quando nenhum dos dois existe.
+    """
+    p = Path(path)
+    if p.exists():
+        return p
+
+    from .paths import config_path as _config_path
+
+    fallback = _config_path()
+    if fallback.exists():
+        return fallback
+    raise ConfigError(
+        f"Arquivo de config não encontrado: {p}\n"
+        f"Também tentei: {fallback}\n"
+        f"Execute 'bauer init' para criar a configuração inicial."
+    )
+
+
 def load_config(path: str | Path = "config.yaml") -> BauerConfig:
     """Lê e valida config.yaml. Aplica .env automaticamente. Levanta ConfigError em falha.
 
-    Ordem de busca (quando o caminho padrão não existe):
-      1. Caminho fornecido (ou "config.yaml" no cwd)
-      2. ~/.bauer/config.yaml  ($BAUER_HOME/config.yaml)
+    Ordem de busca em `resolve_config_path`.
     """
-    p = Path(path)
-    if not p.exists():
-        from .paths import config_path as _config_path
-        fallback = _config_path()
-        if fallback.exists():
-            p = fallback
-        else:
-            raise ConfigError(
-                f"Arquivo de config não encontrado: {p}\n"
-                f"Também tentei: {fallback}\n"
-                f"Execute 'bauer init' para criar a configuração inicial."
-            )
+    p = resolve_config_path(path)
 
     try:
         raw = yaml.safe_load(p.read_text(encoding="utf-8"))

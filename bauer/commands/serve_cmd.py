@@ -8,7 +8,13 @@ from rich.table import Table
 from ..logging_config import setup_logging
 import typer
 
-from ._common import _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, _WORKSPACE_DIR, console
+from ._common import (
+    _MEMORY_DIR,
+    _RUNTIME_STATE_DEFAULT,
+    _WORKSPACE_DIR,
+    _loaded_config_path,
+    console,
+)
 from ._runtime import _build_client, _build_router, _get_or_run_state, _load_or_die, _resolve_model_with_ram_check, _start_gateway_thread_cli, build_fallback_clients
 
 serve_app = typer.Typer(
@@ -131,7 +137,7 @@ def serve(
     console.print(f"  HTTP:       {base_url}")
     console.print(f"  Docs:       {base_url}/docs")
     console.print(f"  Auth:       {auth_status}")
-    console.print(f"[dim]  Config:     {config.resolve()}[/dim]")
+    console.print(f"[dim]  Config:     {_loaded_config_path(config)}[/dim]")
     console.print(f"  Tools:      {', '.join(router.available_tools())}")
     console.print(f"[dim]  OpenAI-compat:  POST {base_url}/v1/chat/completions[/dim]")
 
