@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -33,6 +33,9 @@ class ModelfileParams:
     context_length: int | None  # da arquitetura nativa (model_info)
     size_bytes: int             # tamanho do arquivo no disco
     raw: dict[str, Any]
+    #: `capabilities` do /api/show — ex.: ["completion", "tools", "vision"].
+    #: Fonte da verdade sobre function calling nativo deste modelo.
+    capabilities: list[str] = field(default_factory=list)
 
 
 class OllamaClient:
@@ -44,6 +47,8 @@ class OllamaClient:
         )
         self.num_ctx: int | None = None   # definido pelo doctor (applied_context)
         self.think: bool | None = None   # None → False (desabilita thinking mode)
+        #: Tokens da última chamada com tools — lido pelo cost_meter.
+        self.last_usage: dict[str, Any] = {}
 
     # --- saude / disponibilidade ------------------------------------------------
 
@@ -154,8 +159,132 @@ class OllamaClient:
                 break
         # Tamanho do arquivo em bytes (disponível no /api/show via details.size ou tags)
         size_bytes = data.get("size_vram") or 0
-        return ModelfileParams(num_ctx=num_ctx, context_length=context_length, size_bytes=size_bytes, raw=data)
+        caps = data.get("capabilities") or []
+        if not isinstance(caps, list):
+            caps = []
+        return ModelfileParams(
+            num_ctx=num_ctx,
+            context_length=context_length,
+            size_bytes=size_bytes,
+            raw=data,
+            capabilities=[str(c) for c in caps],
+        )
 
+    def model_supports_tools(self, name: str) -> bool:
+        """True se o /api/show do modelo lista a capability "tools".
+
+        Best-effort: qualquer falha (modelo ausente, Ollama fora) devolve False,
+        e o caminho native ainda é tentado — um HTTP 400 do /api/chat faz o
+        downgrade para o bridge de qualquer jeito.
+        """
+        try:
+            return "tools" in {c.lower() for c in self.show_model(name).capabilities}
+        except Exception:
+            return False
+
+
+    # --- native function calling -------------------------------------------------
+
+    @property
+    def supports_native_tools(self) -> bool:
+        """True — o /api/chat do Ollama aceita `tools=` desde a 0.3.
+
+        Não é uma promessa por MODELO: um modelo sem a capability "tools"
+        devolve HTTP 400, que o agent traduz em downgrade definitivo para o
+        Tool Bridge. Use `model_supports_tools(name)` para checar antes.
+        """
+        return True
+
+    def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str = "auto",
+    ) -> dict[str, Any]:
+        """Function calling nativo via /api/chat. Mesmo contrato do OpenAIClient.
+
+        Devolve a `message` no FORMATO OpenAI (`content` + `tool_calls` com
+        `function.arguments` como STRING JSON), porque é isso que o agent
+        consome. O Ollama fala um dialeto quase-OpenAI com duas diferenças que
+        esta função absorve nas duas direções:
+
+        - **arguments é objeto, não string.** Na resposta ele manda dict; na
+          requisição ele REJEITA string com HTTP 400 ("Value looks like object,
+          but can't find closing '}' symbol"). Como o histórico que o agent
+          monta guarda arguments como string, mandá-lo de volta cru quebrava a
+          segunda rodada — e o 400 seria lido como "provider sem tools",
+          derrubando a sessão inteira para o bridge.
+        - **não existe `tool_choice`.** O parâmetro é aceito e ignorado aqui,
+          para manter a assinatura compatível com o OpenAIClient.
+        """
+        self.last_usage: dict[str, Any] = {}
+        think_flag = self.think if self.think is not None else False
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [_ollama_outbound_message(m) for m in messages],
+            "tools": tools,
+            "stream": False,
+            "think": think_flag,
+        }
+        if self.num_ctx:
+            body["options"] = {"num_ctx": self.num_ctx}
+
+        try:
+            r = httpx.post(
+                f"{self.host}/api/chat",
+                json=body,
+                headers=self._headers,
+                timeout=httpx.Timeout(
+                    connect=float(self.timeout),
+                    read=300.0,
+                    write=10.0,
+                    pool=5.0,
+                ),
+                verify=shared_ssl_context(),
+            )
+        except httpx.ConnectError as exc:
+            raise OllamaError(
+                f"Conexao recusada em {self.host}.\n"
+                f"Verifique se o Ollama esta rodando: ollama serve"
+            ) from exc
+        except httpx.TimeoutException:
+            raise OllamaError(
+                f"Timeout ({self.timeout}s) em {self.host}.\n"
+                f"O modelo pode estar sendo carregado — tente novamente."
+            )
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"Erro em /api/chat: {exc}") from exc
+
+        if r.status_code >= 400:
+            # "HTTP <code>" no texto é o que _is_native_unsupported_error do
+            # agent procura para decidir o downgrade para bridge — um modelo
+            # sem tools responde 400 aqui.
+            raise OllamaError(
+                f"HTTP {r.status_code} em /api/chat (tools) para '{model}': "
+                f"{r.text[:300]}"
+            )
+
+        try:
+            data = r.json()
+        except json.JSONDecodeError as exc:
+            raise OllamaError(f"Resposta inesperada do Ollama: {exc}") from exc
+
+        # Contadores do Ollama traduzidos para o vocabulário do cost_meter.
+        prompt_tokens = int(data.get("prompt_eval_count") or 0)
+        completion_tokens = int(data.get("eval_count") or 0)
+        self.last_usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+
+        msg = data.get("message") or {}
+        return {
+            "role": "assistant",
+            "content": msg.get("content") or "",
+            "tool_calls": _openai_tool_calls(msg.get("tool_calls") or []),
+        }
 
     def chat_stream(self, model: str, messages: list[dict], num_ctx: int | None = None) -> Iterator[str]:
         """Streaming de resposta via /api/chat. Yields chunks de texto conforme chegam.
@@ -229,6 +358,64 @@ class OllamaClient:
             ) from exc
         except httpx.HTTPError as exc:
             raise OllamaError(f"Erro em /api/chat: {exc}") from exc
+
+
+def _ollama_outbound_message(msg: dict) -> dict:
+    """Converte uma mensagem do histórico do agent para o dialeto do Ollama.
+
+    Só mexe no que precisa: `tool_calls[].function.arguments` guardado como
+    string JSON vira objeto. O resto (inclusive `tool_call_id`, que o Ollama
+    ignora) passa intacto — testado contra o Ollama 0.32 com id/type presentes.
+    """
+    tool_calls = msg.get("tool_calls")
+    if not tool_calls:
+        return msg
+
+    converted: list[dict] = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = dict(tc.get("function") or {})
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                fn["arguments"] = json.loads(args) if args.strip() else {}
+            except json.JSONDecodeError:
+                # Argumento ilegível: manda objeto vazio em vez de derrubar a
+                # requisição inteira com 400 — o modelo recebe o resultado da
+                # tool e segue.
+                fn["arguments"] = {}
+        elif args is None:
+            fn["arguments"] = {}
+        converted.append({**tc, "function": fn})
+
+    return {**msg, "tool_calls": converted}
+
+
+def _openai_tool_calls(tool_calls: list) -> list[dict]:
+    """Normaliza os tool_calls do Ollama para o formato OpenAI que o agent lê.
+
+    `arguments` (dict no Ollama) vira string JSON, e `id`/`type` são
+    sintetizados quando ausentes — versões mais antigas do Ollama não mandam
+    `id`, e o agent usa esse valor como `tool_call_id` do resultado.
+    """
+    out: list[dict] = []
+    for i, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args if args is not None else {}, ensure_ascii=False)
+            except (TypeError, ValueError):
+                args = "{}"
+        out.append({
+            "id": tc.get("id") or f"call_{i}",
+            "type": tc.get("type") or "function",
+            "function": {"name": fn.get("name", ""), "arguments": args},
+        })
+    return out
 
 
 def _extract_num_ctx(parameters: Any) -> int | None:

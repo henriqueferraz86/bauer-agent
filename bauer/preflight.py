@@ -224,14 +224,25 @@ def run_doctor(
     findings.extend(ctx_notes)
 
     # --- tool mode ---------------------------------------------------------------
+    # Esta linha precisa bater com o gate real do agent
+    # (`_client_supports_native_tools`), senão o doctor vira decoração: durante
+    # meses ele imprimiu "native" para modelos Ollama enquanto o runtime rodava
+    # sempre no bridge, e "bridge" para providers cloud que rodavam native.
     if is_cloud:
-        tool_mode = "bridge"
-        findings.append("Tool mode: bridge (provider cloud)")
+        # Todo provider OpenAI-compat aceita `tools=` (OpenAIClient.
+        # supports_native_tools é True incondicionalmente).
+        tool_mode = "native"
+        findings.append("Tool mode: native (provider OpenAI-compat)")
     elif info is not None and info.supports_tools is True:
         tool_mode = "native"
+        findings.append("Tool mode: native (modelo anuncia capability 'tools')")
     else:
-        tool_mode = "bridge"  # padrão conservador; Fase 4 implementa de fato
-        findings.append(f"Tool mode planejado: {tool_mode}")
+        tool_mode = "bridge"
+        findings.append(
+            "Tool mode: bridge — o modelo não declara suporte a tools nativas. "
+            "Modelos menores seguem mal o bridge por prompt em tarefas "
+            "multi-passo; prefira um modelo com capability 'tools'."
+        )
 
     # --- segurança do serve -------------------------------------------------------
     _serve_host = config.serve.host

@@ -1591,6 +1591,27 @@ class _NativeToolsUnsupported(Exception):
 _NATIVE_UNSUPPORTED_CODES = {400, 404, 405, 422, 501}
 
 
+def _client_supports_native_tools(client) -> bool:
+    """True se este cliente sabe fazer function calling nativo.
+
+    Checa as CLASSES CONCRETAS (não duck typing) porque um MagicMock de teste
+    responderia True para qualquer getattr e ligaria o caminho native onde o
+    teste espera o bridge.
+
+    O OllamaClient entrou aqui junto do `chat_with_tools` dele: antes o gate
+    era `isinstance(client, OpenAIClient)`, então `provider: ollama` caía SEMPRE
+    no Tool Bridge por prompt — inclusive nos modelos que anunciam a capability
+    "tools" — e o `supports_tools: true` do models.yaml só mudava o que o
+    `bauer doctor` imprimia, nunca o caminho de execução.
+    """
+    from .ollama_client import OllamaClient as _OllamaClientCls
+    from .openai_client import OpenAIClient as _OpenAIClientCls
+
+    if not isinstance(client, _OpenAIClientCls | _OllamaClientCls):
+        return False
+    return bool(getattr(client, "supports_native_tools", False))
+
+
 def _is_native_unsupported_error(exc: Exception) -> bool:
     """True se o erro indica que o provider não aceita o parâmetro tools=."""
     import re as _re
@@ -1950,10 +1971,7 @@ def run_one_turn(
     from .tool_dedup import ToolCallDeduper as _Deduper
     _deduper = _Deduper()
 
-    # Native tool calling: disponível em OpenAIClient mas não em OllamaClient.
-    # Checa a classe concreta para evitar falsos positivos com MagicMock em testes.
-    from .openai_client import OpenAIClient as _OpenAIClient
-    use_native = isinstance(client, _OpenAIClient) and getattr(client, "supports_native_tools", False)
+    use_native = _client_supports_native_tools(client)
 
     if use_native:
         while not budget.exhausted:
@@ -3366,7 +3384,6 @@ def _run_tool_loop_body(
     tool_turns = 0
     cli_tool_log: list[dict] = []
     _overflow_compress_attempted = False
-    from .openai_client import OpenAIClient as _OpenAIClientCls
     from .tool_dedup import ToolCallDeduper as _CliDeduper
     _cli_deduper = _CliDeduper()
 
@@ -3516,10 +3533,7 @@ def _run_tool_loop_body(
                     )
                     state.client = _fb_client
                     state.active_model = _fb_model
-                    state.native_session_ok = (
-                        isinstance(_fb_client, _OpenAIClientCls)
-                        and getattr(_fb_client, "supports_native_tools", False)
-                    )
+                    state.native_session_ok = _client_supports_native_tools(_fb_client)
                     _did_fallback = True
             if not _did_fallback:
                 _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
@@ -4528,11 +4542,7 @@ def run_agent_session(
     # Native tool calling no chat interativo (antes só o run_one_turn usava).
     # Flag de sessão: 1º HTTP 400/404/405/422/501 em tools= → downgrade
     # definitivo para o bridge JSON pelo resto da sessão.
-    from .openai_client import OpenAIClient as _OpenAIClientCls
-    _native_session_ok = (
-        isinstance(client, _OpenAIClientCls)
-        and getattr(client, "supports_native_tools", False)
-    )
+    _native_session_ok = _client_supports_native_tools(client)
     # Índice do próximo fallback a tentar — avança a cada falha, não reinicia
     # no primeiro item (senão ficaria preso no mesmo provider quebrado).
     _fb_idx = 0
