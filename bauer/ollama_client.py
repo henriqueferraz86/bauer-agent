@@ -170,6 +170,28 @@ class OllamaClient:
             capabilities=[str(c) for c in caps],
         )
 
+    def loaded_on_gpu(self, name: str) -> bool:
+        """True se o modelo está carregado com pelo menos parte dos pesos em VRAM.
+
+        Lê o /api/ps (modelos residentes agora). Best-effort: se o Ollama não
+        responde ou o modelo não está carregado, devolve False — o chamador
+        cai no cálculo conservador por RAM.
+        """
+        try:
+            r = httpx.get(
+                f"{self.host}/api/ps",
+                headers=self._headers,
+                timeout=min(float(self.timeout), 3.0),
+                verify=shared_ssl_context(),
+            )
+            r.raise_for_status()
+            for m in r.json().get("models", []):
+                if m.get("name") == name or m.get("model") == name:
+                    return int(m.get("size_vram") or 0) > 0
+        except Exception:
+            return False
+        return False
+
     def model_supports_tools(self, name: str) -> bool:
         """True se o /api/show do modelo lista a capability "tools".
 

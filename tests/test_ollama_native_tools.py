@@ -236,6 +236,50 @@ def test_auto_detect_deriva_supports_tools_das_capabilities():
     assert auto_detect_from_ollama(client, "bge-m3").supports_tools is False
 
 
+# ─── teto de RAM x modelo na GPU ─────────────────────────────────────────────
+
+
+def test_loaded_on_gpu_le_size_vram():
+    payload = {"models": [{"name": "qwen3-coder:30b", "size": 21_000, "size_vram": 21_000}]}
+    with patch("httpx.get", return_value=_resp(200, payload)):
+        assert _client().loaded_on_gpu("qwen3-coder:30b") is True
+
+    payload = {"models": [{"name": "qwen3-coder:30b", "size": 21_000, "size_vram": 0}]}
+    with patch("httpx.get", return_value=_resp(200, payload)):
+        assert _client().loaded_on_gpu("qwen3-coder:30b") is False
+
+    # modelo não carregado / Ollama fora → conservador
+    with patch("httpx.get", return_value=_resp(200, {"models": []})):
+        assert _client().loaded_on_gpu("qwen3-coder:30b") is False
+    with patch("httpx.get", side_effect=OSError("boom")):
+        assert _client().loaded_on_gpu("qwen3-coder:30b") is False
+
+
+def test_contexto_nao_e_zerado_por_ram_quando_modelo_esta_na_gpu():
+    """Regressão medida no Beelink: doctor dava `blocked` com o modelo em GPU.
+
+    Com o registry finalmente carregando (antes vinha vazio em install pip), a
+    fórmula de RAM passou a valer — e ela assume inferência em CPU. Máquina com
+    18 GB livres e um 30b em VRAM virava applied=0/limited_by=ram_safe.
+    """
+    from bauer.model_registry import ModelInfo
+    from bauer.preflight import _resolve_context
+
+    info = ModelInfo(provider="ollama", ram_base_mb=19000, ram_per_1k_ctx_mb=200,
+                     max_context_safe=32768, supports_tools=True, ram_profile="high")
+    kwargs = dict(requested=32768, minimum=2048, auto_downgrade=True,
+                  modelfile_num_ctx=None, env_num_ctx=None, info=info,
+                  ram_available_mb=18000, safety_margin_mb=1024)
+
+    applied_cpu, reason_cpu, _ = _resolve_context(**kwargs, on_gpu=False)
+    assert applied_cpu == 0 and "ram_safe" in reason_cpu
+
+    applied_gpu, reason_gpu, notes = _resolve_context(**kwargs, on_gpu=True)
+    assert applied_gpu == 32768
+    assert "ram_safe" not in reason_gpu
+    assert any("GPU" in n for n in notes)
+
+
 # ─── empacotamento do models.yaml ────────────────────────────────────────────
 
 
