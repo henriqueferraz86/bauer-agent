@@ -234,6 +234,49 @@ from bauer.commands._runtime import (  # noqa: E402,F401
 # --- comandos ---------------------------------------------------------------
 
 
+def _grafo_desatualizado(probe, nome: str) -> str:
+    """Avisa se o grafo do Graphify e mais antigo que o ultimo commit do repo.
+
+    O graph.json e um retrato ESTATICO: nao envelhece com barulho, envelhece em
+    silencio, e um grafo velho responde com a mesma confianca sobre codigo que
+    ja mudou. Aviso aqui em vez de agendar rebuild em background: rebuild custa
+    minutos de CPU e so faz sentido se o repo mudou de verdade.
+    """
+    import subprocess
+
+    try:
+        transporte = probe._resolve_mcp_transport(nome)
+        if transporte.get("kind") != "stdio":
+            return ""
+        if not any("graphify" in str(parte).lower() for parte in transporte.get("command", [])):
+            return ""
+        raiz = Path(transporte.get("cwd") or ".")
+        grafo = raiz / "graphify-out" / "graph.json"
+        if not grafo.exists():
+            return "grafo ausente — rode `python -m graphify . --code-only` na raiz do repo"
+
+        ultimo = subprocess.run(
+            ["git", "-C", str(raiz), "log", "-1", "--format=%ct"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if ultimo.returncode != 0 or not ultimo.stdout.strip():
+            return ""
+        if int(ultimo.stdout.strip()) > grafo.stat().st_mtime:
+            atraso = subprocess.run(
+                ["git", "-C", str(raiz), "log", "--oneline",
+                 f"--since=@{int(grafo.stat().st_mtime)}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            n = len([l for l in atraso.stdout.splitlines() if l.strip()])
+            return (
+                f"grafo desatualizado ({n} commit(s) depois do ultimo build) — "
+                "rode `python -m graphify . --code-only`"
+            )
+    except Exception:
+        pass  # diagnostico nunca derruba o doctor
+    return ""
+
+
 @app.command(rich_help_panel=PANEL_START)
 def doctor(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
@@ -350,6 +393,9 @@ def doctor(
                     with _probe._mcp_client_for(_nome) as _cli:
                         _tools = _cli.list_tools()
                     _mt.add_row(f"{_nome}:", f"[green]ok[/green] — {len(_tools)} tool(s)")
+                    _velho = _grafo_desatualizado(_probe, _nome)
+                    if _velho:
+                        _mt.add_row("", f"[yellow]{_velho}[/yellow]")
                 except Exception as _exc:
                     _mt.add_row(f"{_nome}:", f"[red]falhou[/red] — {str(_exc).splitlines()[0][:90]}")
                     _dica = _probe._mcp_dica(_exc)
