@@ -72,3 +72,6 @@ _quantfx_staging/
 
 # Graphify — grafo do codebase, regenerável (python -m graphify . --code-only)
 graphify-out/
+
+# Worktrees temporarios do proprio Bauer (scratch, nunca versionado).
+.bauer_worktrees/
