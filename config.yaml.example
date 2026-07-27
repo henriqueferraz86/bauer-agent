@@ -677,6 +677,18 @@ mcp:
     #   cwd: /caminho/do/seu/repo
     #   timeout: 30
 
+    # Exemplo: MCP Toolbox for Databases (googleapis/genai-toolbox) — da ao
+    # agente acesso SQL, que nenhuma tool nativa faz. Duas travas, porque uma
+    # so nao basta: o `database` de cada source abre com `file:...?mode=ro` (o
+    # driver recusa escrita) E o tools.yaml declara SOMENTE consultas
+    # parametrizadas, sem nenhuma tool de SQL arbitrario. Importa porque todo
+    # MCP entra pela mesma porta `mcp_call`, catalogada risk=medium/approval=
+    # False — uma tool destrutiva do outro lado nao teria a aprovacao que
+    # `run_command` (execute/high) exigiria.
+    # bauer_db:
+    #   command: ["/caminho/toolbox", "--config", "/caminho/tools.yaml", "--stdio"]
+    #   timeout: 60
+
     # Exemplo: servidor MCP REMOTO (HTTP/SSE) — use `url` em vez de `command`.
     # GitMCP serve a documentacao de qualquer repo publico: troque o dominio
     # github.com pelo gitmcp.io no endereco do repo.
