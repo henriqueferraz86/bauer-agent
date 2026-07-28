@@ -123,3 +123,158 @@ def project_board(
                 break
 
     console.print("\n[dim]Board encerrado.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Projeto ATIVO (registro multi-projeto — ~/.bauer/projects.json)
+#
+# Distinto dos comandos acima, que operam no PROJECT.md de UM workspace. Aqui é
+# o ponteiro que diz "em qual projeto o Bauer está" para o `serve` e o Desktop.
+#
+# Existiam porque faltava: `set_active()` tinha UM call site em todo o codebase
+# — `desktop_api.py`, ou seja, só o botão da tela Projetos. Pela CLI não havia
+# como trocar, então quem trabalha no terminal ficava com o Desktop apontando
+# para outro projeto, em silêncio.
+# ---------------------------------------------------------------------------
+
+
+def _caminho_ou_none(valor: str) -> "Path | None":
+    """Resolve um caminho, ou None se o texto não for um caminho utilizável.
+
+    O alvo do `project use` pode ser nome, id OU caminho — quando é nome/id,
+    `resolve()` pode falhar (caractere inválido no SO, path longo demais). Isso
+    não é erro: só significa "não era caminho, tenta o próximo critério".
+    """
+    try:
+        return Path(valor).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _resolver_projeto(alvo: str):
+    """Resolve nome, id ou caminho para uma entrada do registro.
+
+    Retorna (entry, erro). Aceita as três formas porque é o que o usuário tem à
+    mão: o nome que ele vê no `project list`, o id que aparece no JSON, ou o
+    próprio caminho quando ele está dentro da pasta.
+    """
+    from .. import projects_registry as pr
+
+    projetos = pr.list_projects(enrich=False)
+    if not projetos:
+        return None, "Nenhum projeto registrado. Rode `bauer agent` de dentro da pasta para registrar."
+
+    alvo_norm = alvo.strip()
+
+    exatos = [p for p in projetos if p.get("id") == alvo_norm]
+    if exatos:
+        return exatos[0], None
+
+    por_nome = [p for p in projetos if (p.get("name") or "").lower() == alvo_norm.lower()]
+    if len(por_nome) == 1:
+        return por_nome[0], None
+    if len(por_nome) > 1:
+        ids = ", ".join(p["id"] for p in por_nome)
+        return None, f"'{alvo_norm}' é ambíguo — há {len(por_nome)} projetos com esse nome. Use o id: {ids}"
+
+    cam = _caminho_ou_none(alvo_norm)
+    if cam is not None:
+        por_path = [
+            p for p in projetos if _caminho_ou_none(p.get("path", "")) == cam
+        ]
+        if por_path:
+            return por_path[0], None
+
+    parciais = [p for p in projetos if alvo_norm.lower() in (p.get("name") or "").lower()]
+    if len(parciais) == 1:
+        return parciais[0], None
+    if len(parciais) > 1:
+        nomes = ", ".join(p.get("name", "?") for p in parciais)
+        return None, f"'{alvo_norm}' casa com mais de um projeto: {nomes}"
+
+    disponiveis = ", ".join(p.get("name", "?") for p in projetos)
+    return None, f"Projeto '{alvo_norm}' não encontrado. Registrados: {disponiveis}"
+
+
+@project_app.command("list")
+def project_list():
+    """Lista os projetos registrados e marca o ativo."""
+    from rich.table import Table
+
+    from .. import projects_registry as pr
+
+    projetos = pr.list_projects(enrich=False)
+    if not projetos:
+        console.print(
+            "[yellow]Nenhum projeto registrado.[/yellow]\n"
+            "[dim]Rode `bauer agent` de dentro da pasta do projeto para registrar.[/dim]"
+        )
+        return
+
+    tabela = Table(show_header=True, header_style="bold")
+    tabela.add_column("", width=2)
+    tabela.add_column("Nome")
+    tabela.add_column("Caminho", style="dim")
+    tabela.add_column("id", style="dim")
+
+    for p in projetos:
+        ativo = p.get("active")
+        tabela.add_row(
+            "[green]●[/green]" if ativo else "",
+            f"[bold]{p.get('name', '?')}[/bold]" if ativo else p.get("name", "?"),
+            str(p.get("path", "")),
+            p.get("id", ""),
+        )
+    console.print(tabela)
+    console.print("[dim]● = ativo (usado pelo `bauer serve` e pelo Desktop)[/dim]")
+
+
+@project_app.command("use")
+def project_use(
+    alvo: str = typer.Argument(..., metavar="PROJETO", help="Nome, id ou caminho do projeto"),
+):
+    """Define o projeto ATIVO — o que o `bauer serve` e o Desktop usam.
+
+    Aceita nome, id ou caminho:
+
+        bauer project use forex-ia
+        bauer project use ~/projetos/forex-ia
+    """
+    from .. import projects_registry as pr
+
+    entry, erro = _resolver_projeto(alvo)
+    if erro:
+        console.print(f"[red]{erro}[/red]")
+        raise typer.Exit(code=1)
+
+    pid = entry["id"]
+    anterior = pr.get_active()
+    if anterior == pid:
+        console.print(f"[dim]'{entry.get('name')}' já era o projeto ativo.[/dim]")
+        return
+
+    if not pr.set_active(pid):
+        console.print(f"[red]Não consegui ativar '{entry.get('name')}'.[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[green]✓ Projeto ativo: [bold]{entry.get('name')}[/bold][/green] "
+        f"[dim]{entry.get('path')}[/dim]"
+    )
+    if anterior:
+        ant = pr.get_project(anterior) or {}
+        if ant.get("name"):
+            console.print(f"[dim]  (antes: {ant['name']})[/dim]")
+
+
+@project_app.command("active")
+def project_active():
+    """Mostra qual projeto está ativo."""
+    from .. import projects_registry as pr
+
+    pid = pr.get_active()
+    if not pid:
+        console.print("[yellow]Nenhum projeto ativo.[/yellow] [dim]Use `bauer project use <nome>`.[/dim]")
+        raise typer.Exit(code=1)
+    entry = pr.get_project(pid) or {}
+    console.print(f"[bold]{entry.get('name', pid)}[/bold] [dim]{entry.get('path', '')}[/dim]")
