@@ -610,7 +610,7 @@ def _start_embedded_server(
         )
         return None
 
-    system_prompt = _build_system_prompt(router)
+    system_prompt = _build_system_prompt(router, client=client)
     fastapi_app = create_app(
         model_name=model_name,
         applied_context=applied_context,

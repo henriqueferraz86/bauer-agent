@@ -1,4 +1,4 @@
-"""`bauer run` — entrada autônoma única: roda uma tarefa de ponta a ponta.
+r"""`bauer run` — entrada autônoma única: roda uma tarefa de ponta a ponta.
 
 A porta da frente para "faça isso do início ao fim, sem eu ter que confirmar
 cada passo". Fachada FINA (plano 022): a máquina de rodadas mora em
@@ -113,7 +113,7 @@ def run(
     from ..context_manager import ContextManager
     applied_context = int(getattr(cfg.model, "requested_context", 0) or 8192)
     ctx = ContextManager(applied_context=applied_context,
-                         system_prompt=_build_system_prompt(router))
+                         system_prompt=_build_system_prompt(router, client=client))
 
     # Kernel: governa quando ligado no config (mesma admissão da web).
     kernel = None

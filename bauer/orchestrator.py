@@ -477,7 +477,7 @@ class AgentOrchestrator:
         # Execução usa self.client (provider principal: Groq, OpenAI, Ollama…).
         # self._planner_client é reservado exclusivamente para planejamento (qwen3:0.6b).
         if needs_tools:
-            base_system = _build_system_prompt(self.router)
+            base_system = _build_system_prompt(self.router, client=self.client)
             if agent_system:
                 system_prompt = base_system + f"\n\n# ESPECIALIZACAO DO AGENT '{agent_name}'\n{agent_system}"
             else:

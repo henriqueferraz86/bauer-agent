@@ -537,13 +537,33 @@ KANBAN_WORKER_GUIDANCE = (
 )
 
 
-def _build_system_prompt(router: ToolRouter, tool_mode: str = "bridge") -> str:
+def _build_system_prompt(
+    router: ToolRouter,
+    tool_mode: str | None = None,
+    *,
+    client=None,
+) -> str:
     """Monta o system prompt com a lista de tools disponíveis.
 
     tool_mode="native" omite as instruções de emitir tool call como JSON de
     texto (function calling nativo executa as tools pela API). tool_mode="bridge"
-    (default) mantém o protocolo JSON histórico. Ver plans/023.
+    mantém o protocolo JSON histórico. Ver plans/023.
+
+    Passe ``client`` e deixe ``tool_mode=None`` para DERIVAR o modo do mesmo
+    gate que o runtime usa (`_client_supports_native_tools`). Isso existe porque
+    o default antigo era o literal "bridge", e 5 dos 7 call sites simplesmente
+    não passavam nada — mandavam "responda SOMENTE com o JSON {...}" enquanto o
+    cliente executava tool calling NATIVO. Instrução em conflito direto: o
+    modelo ora chamava a tool, ora devolvia o JSON como texto, ora prosa. Para
+    provider cloud (sempre native) isso valia desde sempre; medido no Beelink,
+    o `bauer run` dava 0 tools por causa disso.
+
+    Sem `client` e sem `tool_mode`, mantém "bridge" — comportamento antigo.
     """
+    if tool_mode is None:
+        tool_mode = "native" if (
+            client is not None and _client_supports_native_tools(client)
+        ) else "bridge"
     from datetime import datetime, timezone
     now = datetime.now()
     now_utc = datetime.now(timezone.utc)
@@ -4449,7 +4469,7 @@ def run_agent_session(
     global MAX_TOOL_TURNS
     MAX_TOOL_TURNS = _resolve_max_tool_turns()
 
-    system_prompt = _build_system_prompt(router)
+    system_prompt = _build_system_prompt(router, client=client)
     if learning_hints:
         system_prompt += f"\n\n# Aprendizados desta sessão\n{learning_hints}"
     # Determina provider a partir do client — usado no painel E no context budget.

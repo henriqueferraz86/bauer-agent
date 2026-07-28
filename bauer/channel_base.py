@@ -247,7 +247,7 @@ class AgentBackend:
                 except Exception:  # noqa: BLE001
                     self._fallback_clients = []
                 self._store = SqliteSessionStore(self.sessions_dir)
-                self._system_prompt = _build_system_prompt(self._router)
+                self._system_prompt = _build_system_prompt(self._router, client=self._client)
                 self._init_error = ""
                 try:
                     self._config_mtime = self.config_path.stat().st_mtime
