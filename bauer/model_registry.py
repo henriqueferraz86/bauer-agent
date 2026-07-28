@@ -93,8 +93,13 @@ def registry_sources(path: str | Path = "models.yaml") -> list[Path]:
         home_models = get_bauer_home() / "models.yaml"
         if home_models.exists() and home_models not in sources:
             sources.append(home_models)
-    except Exception:
-        pass
+    except OSError as exc:
+        # $BAUER_HOME inacessível (disco cheio, permissão, path inválido):
+        # segue com o registry empacotado em vez de derrubar o CLI inteiro.
+        # Só OSError — erro de programação aqui deve aparecer, não sumir.
+        from .logging_config import log_suppressed
+
+        log_suppressed("model_registry.bauer_home_indisponivel", exc)
 
     p = Path(path)
     if p.exists() and p.resolve() not in [s.resolve() for s in sources]:
