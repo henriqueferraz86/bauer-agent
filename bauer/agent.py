@@ -566,15 +566,30 @@ def _build_system_prompt(router: ToolRouter, tool_mode: str = "bridge") -> str:
         # Function calling nativo: as tools são invocadas pela API. NÃO ensinar
         # o formato JSON-de-texto (isso fazia modelos fracos emitir a tool call
         # como texto, que o caminho nativo não executa — "0 tools"). Ver plans/023.
+        #
+        # E NÃO repetir a assinatura das tools aqui: o `tools=` da requisição já
+        # carrega nome, descrição e JSON Schema de cada uma. Inlinar o
+        # `tools_section` duplicava tudo — medido no Beelink com 83 tools, o
+        # prompt ia a ~19.9k tokens contra ~13.6k só dos schemas, ~6k a mais
+        # (19% de uma janela de 32k) gastos dizendo duas vezes a mesma coisa.
+        # Só os NOMES ficam, como índice barato para o modelo se orientar.
         tool_protocol_block = (
             "# FERRAMENTAS DISPONIVEIS\n"
             f"Voce tem estas ferramentas via function calling nativo: {tool_names}\n"
-            f"{tools_section}\n\n"
+            "A assinatura completa de cada uma chega pela API — nao peca ao usuario.\n\n"
             "# COMO USAR FERRAMENTAS\n"
             "Quando a tarefa exigir ler/escrever arquivos, rodar comandos ou buscar na web,\n"
             "CHAME a ferramenta apropriada de verdade (tool call nativo). NAO escreva o comando\n"
             "em texto nem em JSON no corpo da resposta — invoque a tool.\n"
-            "Para saudacoes, perguntas, explicacoes, codigo em bloco e conversas, responda em TEXTO PURO.\n\n"
+            "# REGRA DE PRECEDENCIA — ACAO VENCE EXPLICACAO\n"
+            "Se o pedido contem um VERBO DE ACAO (crie, escreva, salve, edite, rode, execute,\n"
+            "instale, apague), a PRIMEIRA coisa da sua resposta e a tool call. Nada antes dela.\n"
+            "Entregar o codigo em bloco markdown em vez de chamar write_file NAO cumpre o\n"
+            "pedido — o arquivo nao existe no disco, e a tarefa FALHOU.\n"
+            "  'crie fib.py com uma funcao fib(n)'  -> tool call write_file(path, content)\n"
+            "  'como se escreve um fibonacci?'      -> texto puro com o codigo em bloco\n"
+            "So responda em TEXTO PURO quando o pedido for saudacao, pergunta, explicacao ou\n"
+            "conversa — ou seja, quando NAO houver nada para mudar no disco nem executar.\n\n"
             "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
             "Se o usuario pedir um comando shell (ex: 'pytest tests/', 'git status', 'python script.py'),\n"
             "VOCE PODE E DEVE executar via a tool run_command (arg `command`). NUNCA responda\n"
@@ -1591,6 +1606,27 @@ class _NativeToolsUnsupported(Exception):
 _NATIVE_UNSUPPORTED_CODES = {400, 404, 405, 422, 501}
 
 
+def _client_supports_native_tools(client) -> bool:
+    """True se este cliente sabe fazer function calling nativo.
+
+    Checa as CLASSES CONCRETAS (não duck typing) porque um MagicMock de teste
+    responderia True para qualquer getattr e ligaria o caminho native onde o
+    teste espera o bridge.
+
+    O OllamaClient entrou aqui junto do `chat_with_tools` dele: antes o gate
+    era `isinstance(client, OpenAIClient)`, então `provider: ollama` caía SEMPRE
+    no Tool Bridge por prompt — inclusive nos modelos que anunciam a capability
+    "tools" — e o `supports_tools: true` do models.yaml só mudava o que o
+    `bauer doctor` imprimia, nunca o caminho de execução.
+    """
+    from .ollama_client import OllamaClient as _OllamaClientCls
+    from .openai_client import OpenAIClient as _OpenAIClientCls
+
+    if not isinstance(client, _OpenAIClientCls | _OllamaClientCls):
+        return False
+    return bool(getattr(client, "supports_native_tools", False))
+
+
 def _is_native_unsupported_error(exc: Exception) -> bool:
     """True se o erro indica que o provider não aceita o parâmetro tools=."""
     import re as _re
@@ -1669,8 +1705,12 @@ def _run_native_tool_turn(
     content = msg.get("content") or ""
 
     if not tool_calls:
-        # Modelo respondeu sem chamar tools — retorna o texto
-        ctx.add_assistant(content)
+        # Modelo respondeu sem chamar tools — retorna o texto.
+        # Conteúdo vazio NÃO entra no contexto: o caller trata isso como
+        # "resposta vazia" e aciona o recovery, e um turno assistant em branco
+        # no histórico só atrapalharia a retentativa.
+        if content.strip():
+            ctx.add_assistant(content)
         return content
 
     if len(tool_log) >= MAX_TOOL_TURNS:
@@ -1950,12 +1990,10 @@ def run_one_turn(
     from .tool_dedup import ToolCallDeduper as _Deduper
     _deduper = _Deduper()
 
-    # Native tool calling: disponível em OpenAIClient mas não em OllamaClient.
-    # Checa a classe concreta para evitar falsos positivos com MagicMock em testes.
-    from .openai_client import OpenAIClient as _OpenAIClient
-    use_native = isinstance(client, _OpenAIClient) and getattr(client, "supports_native_tools", False)
+    use_native = _client_supports_native_tools(client)
 
     if use_native:
+        _native_empty_recovered = False
         while not budget.exhausted:
             budget.consume()
             try:
@@ -1968,6 +2006,43 @@ def run_one_turn(
                 use_native = False
                 budget.refund()
                 break
+
+            # Resposta vazia sem tool call: o bridge já recuperava disso desde
+            # sempre (retry → force_compress → retry); o caminho native devolvia
+            # a string vazia como se fosse a resposta final e o turno morria com
+            # "Resposta vazia — parei". Nunca doeu porque só provider cloud caía
+            # aqui; com o Ollama usando native, dói.
+            #
+            # A camada de compressão é o tratamento certo: medido no Beelink,
+            # o qwen3-coder:30b devolve vazio (eval_count=1) a partir de ~13k
+            # tokens de prompt mesmo com num_ctx=32768 — encolher o payload é
+            # literalmente a saída.
+            if result is not None and not str(result).strip():
+                if not _native_empty_recovered:
+                    _native_empty_recovered = True
+                    # A recuperação chama o provider de novo; se ELA falhar, o
+                    # turno vira "Erro de provider" e o usuário perde tudo que
+                    # as tools já fizeram nas rodadas anteriores. Falha de
+                    # recuperação é diagnóstico, não erro de transporte.
+                    try:
+                        recovered, diagnostico = _recover_empty_response(client, model_name, ctx)
+                    except Exception as _rec_exc:  # noqa: BLE001
+                        recovered, diagnostico = "", (
+                            f"[Modelo retornou resposta vazia e a recuperação também "
+                            f"falhou: {_rec_exc}]"
+                        )
+                    if recovered.strip():
+                        ctx.add_assistant(recovered)
+                        return recovered, tool_log
+                    return diagnostico or (
+                        "[Modelo retornou resposta vazia e não se recuperou. Causa "
+                        "provável: prompt grande demais para este modelo — reduza "
+                        "tools.tool_allowlist ou use /clear.]"
+                    ), tool_log
+                return (
+                    "[Modelo retornou resposta vazia repetidamente — sessão instável]"
+                ), tool_log
+
             if result is not None:
                 return result, tool_log
             _maybe_reflect(ctx, len(tool_log))
@@ -3366,7 +3441,6 @@ def _run_tool_loop_body(
     tool_turns = 0
     cli_tool_log: list[dict] = []
     _overflow_compress_attempted = False
-    from .openai_client import OpenAIClient as _OpenAIClientCls
     from .tool_dedup import ToolCallDeduper as _CliDeduper
     _cli_deduper = _CliDeduper()
 
@@ -3516,10 +3590,7 @@ def _run_tool_loop_body(
                     )
                     state.client = _fb_client
                     state.active_model = _fb_model
-                    state.native_session_ok = (
-                        isinstance(_fb_client, _OpenAIClientCls)
-                        and getattr(_fb_client, "supports_native_tools", False)
-                    )
+                    state.native_session_ok = _client_supports_native_tools(_fb_client)
                     _did_fallback = True
             if not _did_fallback:
                 _err_type = "Ollama" if isinstance(exc, OllamaError) else "Provider"
@@ -4528,11 +4599,7 @@ def run_agent_session(
     # Native tool calling no chat interativo (antes só o run_one_turn usava).
     # Flag de sessão: 1º HTTP 400/404/405/422/501 em tools= → downgrade
     # definitivo para o bridge JSON pelo resto da sessão.
-    from .openai_client import OpenAIClient as _OpenAIClientCls
-    _native_session_ok = (
-        isinstance(client, _OpenAIClientCls)
-        and getattr(client, "supports_native_tools", False)
-    )
+    _native_session_ok = _client_supports_native_tools(client)
     # Índice do próximo fallback a tentar — avança a cada falha, não reinicia
     # no primeiro item (senão ficaria preso no mesmo provider quebrado).
     _fb_idx = 0

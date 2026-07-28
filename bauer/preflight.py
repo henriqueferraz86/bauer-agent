@@ -46,8 +46,16 @@ def _resolve_context(
     info: ModelInfo | None,
     ram_available_mb: int,
     safety_margin_mb: int,
+    on_gpu: bool = False,
 ) -> tuple[int, str, list[str]]:
     """Aplica a regra: contexto_final = min(requested, modelfile, env, ram_seguro).
+
+    ``on_gpu`` desliga o teto de RAM: a fórmula do `contexto_seguro` assume
+    inferência na CPU (pesos + KV cache saindo da RAM do sistema). Com o modelo
+    residente na GPU quem paga a conta é a VRAM, e medir a RAM livre do host
+    passa a reprovar máquinas que estão rodando o modelo perfeitamente bem —
+    no Beelink (iGPU Arc com 46 GB de VRAM) isso dava `applied=0` e
+    `status=blocked` com o modelo carregado 100% em GPU.
 
     Retorna (applied, reason, notes).
     """
@@ -59,13 +67,20 @@ def _resolve_context(
     if env_num_ctx:
         candidatos["env_OLLAMA_CONTEXT_LENGTH"] = env_num_ctx
     if info is not None:
-        seguro = contexto_seguro(info, ram_available_mb, safety_margin_mb)
-        candidatos["ram_safe"] = seguro
-        if seguro == 0:
+        if on_gpu:
+            candidatos["gpu_max_context"] = info.max_context_safe
             notes.append(
-                f"Modelo não cabe na RAM disponível ({ram_available_mb} MB). "
-                f"Reduza requested_context, use modelo menor ou aumente RAM."
+                "Modelo residente na GPU — teto de RAM do sistema não se aplica "
+                f"(mantido o max_context_safe de {info.max_context_safe} tokens)."
             )
+        else:
+            seguro = contexto_seguro(info, ram_available_mb, safety_margin_mb)
+            candidatos["ram_safe"] = seguro
+            if seguro == 0:
+                notes.append(
+                    f"Modelo não cabe na RAM disponível ({ram_available_mb} MB). "
+                    f"Reduza requested_context, use modelo menor ou aumente RAM."
+                )
 
     applied = min(candidatos.values())
     # quem venceu?
@@ -165,6 +180,7 @@ def run_doctor(
 
     model_available = False
     modelfile_num_ctx: int | None = None
+    on_gpu = False
     if is_cloud:
         # Para providers cloud, assume modelo disponível
         model_available = True
@@ -173,6 +189,12 @@ def run_doctor(
         if client.has_model(model_name):
             model_available = True
             findings.append(f"Modelo '{model_name}' está disponível no Ollama.")
+            on_gpu = client.loaded_on_gpu(model_name)
+            if on_gpu:
+                findings.append(
+                    f"Modelo '{model_name}' residente em VRAM — o teto de contexto "
+                    f"por RAM do sistema não se aplica."
+                )
             try:
                 params = client.show_model(model_name)
                 modelfile_num_ctx = params.num_ctx
@@ -220,18 +242,30 @@ def run_doctor(
         info=info,
         ram_available_mb=ram_available,
         safety_margin_mb=config.runtime.safety_margin_mb,
+        on_gpu=on_gpu,
     )
     findings.extend(ctx_notes)
 
     # --- tool mode ---------------------------------------------------------------
+    # Esta linha precisa bater com o gate real do agent
+    # (`_client_supports_native_tools`), senão o doctor vira decoração: durante
+    # meses ele imprimiu "native" para modelos Ollama enquanto o runtime rodava
+    # sempre no bridge, e "bridge" para providers cloud que rodavam native.
     if is_cloud:
-        tool_mode = "bridge"
-        findings.append("Tool mode: bridge (provider cloud)")
+        # Todo provider OpenAI-compat aceita `tools=` (OpenAIClient.
+        # supports_native_tools é True incondicionalmente).
+        tool_mode = "native"
+        findings.append("Tool mode: native (provider OpenAI-compat)")
     elif info is not None and info.supports_tools is True:
         tool_mode = "native"
+        findings.append("Tool mode: native (modelo anuncia capability 'tools')")
     else:
-        tool_mode = "bridge"  # padrão conservador; Fase 4 implementa de fato
-        findings.append(f"Tool mode planejado: {tool_mode}")
+        tool_mode = "bridge"
+        findings.append(
+            "Tool mode: bridge — o modelo não declara suporte a tools nativas. "
+            "Modelos menores seguem mal o bridge por prompt em tarefas "
+            "multi-passo; prefira um modelo com capability 'tools'."
+        )
 
     # --- segurança do serve -------------------------------------------------------
     _serve_host = config.serve.host

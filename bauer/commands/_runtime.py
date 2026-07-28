@@ -628,7 +628,19 @@ _LOCAL_DEFAULT_ALLOWLIST = [
     "app_factory_init", "app_factory_status",
 ]
 # Abaixo deste contexto, expor todas as tools é arriscado em modelo local.
-_AUTO_SLIM_CONTEXT_THRESHOLD = 16384
+#
+# Era 16384, escolhido quando o modelo local SEMPRE usava o Tool Bridge — lá as
+# tools vão no system prompt (~6k tokens) e um contexto de 32k aguentava. Com
+# function calling nativo o array `tools=` soma ~11k tokens SOZINHO (83 tools,
+# medido), e o teto virou realidade: no Beelink, qwen3-coder:30b responde certo
+# com 75 tools / 12,5k tokens de prompt e devolve vazio (eval_count=1, zero
+# calls) com 80 tools / 13k. Um `bauer run` trivial nem completava — 7 min sem
+# uma unica tool, porque so o payload de schemas ja passava do que o modelo
+# aguenta.
+#
+# 65536 e o corte: abaixo disso, gastar 11k de janela declarando ferramentas que
+# a tarefa nao vai usar e mau negocio mesmo quando o modelo agenta.
+_AUTO_SLIM_CONTEXT_THRESHOLD = 65536
 
 
 def _effective_tool_allowlist(cfg) -> "list[str] | None":
@@ -652,8 +664,9 @@ def _effective_tool_allowlist(cfg) -> "list[str] | None":
     if provider == "ollama" and 0 < ctx < _AUTO_SLIM_CONTEXT_THRESHOLD:
         console.print(
             f"[dim]Modelo local + contexto {ctx}: limitando a {len(_LOCAL_DEFAULT_ALLOWLIST)} "
-            "tools essenciais para o prompt não truncar. Defina tools.tool_allowlist "
-            "ou tools.auto_tool_allowlist=false para mudar.[/dim]"
+            "tools essenciais (o schema das 80+ custa ~11k tokens de prompt). "
+            "Defina tools.tool_allowlist ou tools.auto_tool_allowlist=false "
+            "para mudar.[/dim]"
         )
         return list(_LOCAL_DEFAULT_ALLOWLIST)
     return None
