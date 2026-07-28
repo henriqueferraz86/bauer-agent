@@ -108,6 +108,39 @@ def test_custo_fixo_do_toolset_local_cabe_na_janela():
     )
 
 
+def test_router_recebe_a_secao_mcp_do_config():
+    """`mcp.servers` do config.yaml precisa chegar ao ROUTER, não só ao doctor.
+
+    O único lugar que atribuía `_mcp_config` era o probe do `bauer doctor`
+    (cli.py). Nos caminhos reais — serve, run, agent — o router nascia sem ele,
+    então servidor MCP configurado aparecia `ok` no diagnóstico e a tool
+    `mcp_list_servers` respondia "Nenhum servidor MCP configurado". Medido no
+    Beelink com 2 servidores configurados.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from bauer.commands._runtime import _build_router
+
+    servidor = SimpleNamespace(command=["toolbox", "--stdio"], url=None, env={},
+                               timeout=30, cwd=None, headers={})
+    cfg = SimpleNamespace(
+        model=SimpleNamespace(provider="ollama", name="m", requested_context=32768),
+        tools=SimpleNamespace(shell_enabled=False, web_enabled=False, max_tool_calls=500,
+                              tool_allowlist=[], auto_tool_allowlist=False, safe_mode=True,
+                              timeout_seconds=30, max_output_kb=64, extra_allowed_commands=[]),
+        web=None, auxiliary=None,
+        postiz=SimpleNamespace(api_key="", api_url=""),
+        mcp=SimpleNamespace(servers={"bauer_db": servidor}),
+    )
+
+    # llm_client=False evita construir client de verdade (None dispara o build).
+    router = _build_router(cfg, Path("x"), llm_client=False)
+
+    assert getattr(router, "_mcp_config", None) is not None, "router nasceu sem a config MCP"
+    assert "bauer_db" in (getattr(router._mcp_config, "servers", None) or {})
+
+
 def test_none_cfg_is_safe():
     assert _effective_tool_allowlist(None) is None
 

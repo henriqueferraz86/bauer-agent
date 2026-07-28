@@ -467,10 +467,19 @@ class ToolRouter(
         policy_root: str | Path = "memory/runtime",
         postiz_api_key: str = "",
         postiz_api_url: str = "",
+        mcp_config=None,
     ):
         self.workspace = Path(workspace).resolve()
         self._postiz_api_key = postiz_api_key
         self._postiz_api_url = postiz_api_url or "https://api.postiz.com"
+        # Seção `mcp` do config.yaml. Antes NÃO existia como parâmetro: o único
+        # lugar do código que atribuía `_mcp_config` era o probe do `bauer
+        # doctor` (cli.py). Ou seja, `mcp.servers` no config.yaml aparecia no
+        # diagnóstico e era INVISÍVEL para o agente em todos os caminhos reais
+        # (serve, run, agent) — só `MCP_SERVER_<NOME>` no ambiente funcionava.
+        # Medido no Beelink: com 2 servidores configurados e `ok` no doctor, a
+        # tool respondia "Nenhum servidor MCP configurado".
+        self._mcp_config = mcp_config
         # Modo "toolset enxuto": quando não-vazio, SÓ estas tools são expostas
         # (schema OpenAI, system prompt, parsing do bridge) e executáveis. Encolhe
         # o prompt drasticamente — essencial para modelos locais (Ollama/CPU) onde

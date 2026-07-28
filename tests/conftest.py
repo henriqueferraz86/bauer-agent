@@ -50,6 +50,14 @@ os.environ["BAUER_HOME"] = tempfile.mkdtemp(prefix="bauer-tests-home-")
 os.environ["BAUER_AGENTS_FILE"] = str(
     Path(tempfile.gettempdir()) / "bauer-tests-no-such-agents" / "agents.yaml"
 )
+# Mesma hermeticidade para MCP: `MCP_SERVER_<NOME>` no ambiente VENCE o
+# config.yaml na descoberta de servidores, então um dev com MCP configurado
+# via env via servidores a mais do que o teste montou.
+# test_mcp_discovery::test_lista_servidores_do_config falhava só na máquina do
+# dev ("3 servidor(es)" em vez de 2, por causa de MCP_SERVER_GITMCP) e passava
+# no CI — parecia flake de plataforma, era ambiente vazando para dentro do teste.
+for _k in [k for k in os.environ if k.startswith("MCP_SERVER_")]:
+    del os.environ[_k]
 
 
 @pytest.fixture(autouse=True)

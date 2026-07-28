@@ -748,6 +748,7 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
         tool_allowlist=_effective_tool_allowlist(cfg),
         postiz_api_key=postiz_api_key,
         postiz_api_url=postiz_api_url,
+        mcp_config=getattr(cfg, "mcp", None) if cfg is not None else None,
     )
 
 
