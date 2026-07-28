@@ -82,7 +82,7 @@ def run(
     cfg_path = config or _canonical_config()
     models_path = models or (get_bauer_home() / "models.yaml")
 
-    from ._runtime import _build_client, _build_router, _load_or_die
+    from ._runtime import _apply_ollama_runtime, _build_client, _build_router, _load_or_die
     try:
         cfg, _reg = _load_or_die(cfg_path, models_path)
     except typer.Exit:
@@ -112,6 +112,12 @@ def run(
     from ..agent import _build_system_prompt, run_one_turn_with_fallback
     from ..context_manager import ContextManager
     applied_context = int(getattr(cfg.model, "requested_context", 0) or 8192)
+    # O contexto aplicado precisa CHEGAR ao Ollama: sem `options.num_ctx` na
+    # requisição ele usa o próprio default (bem menor) e TRUNCA o prompt em
+    # silêncio — o `bauer run` calculava 32768, exibia 32768 e mandava nada.
+    # Sintoma: prompt grande volta com resposta vazia. Só `bauer chat` e
+    # `bauer agent` faziam essa atribuição; serve e run ficavam de fora.
+    _apply_ollama_runtime(client, cfg, applied_context)
     ctx = ContextManager(applied_context=applied_context,
                          system_prompt=_build_system_prompt(router, client=client))
 

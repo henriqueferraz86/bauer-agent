@@ -141,6 +141,61 @@ def test_router_recebe_a_secao_mcp_do_config():
     assert "bauer_db" in (getattr(router._mcp_config, "servers", None) or {})
 
 
+def test_contexto_aplicado_chega_ao_ollama():
+    """`applied_context` tem que virar `options.num_ctx` na requisição.
+
+    Sem isso o Ollama usa o PRÓPRIO default (bem menor) e trunca o prompt em
+    SILÊNCIO — o sintoma é resposta vazia, sem erro nenhum. `bauer chat` e
+    `bauer agent` faziam a atribuição (cópia colada em cada um); `bauer serve`
+    e `bauer run` calculavam o contexto, exibiam no boot e nunca o enviavam.
+    """
+    from types import SimpleNamespace
+
+    from bauer.commands._runtime import _apply_ollama_runtime
+    from bauer.ollama_client import OllamaClient
+
+    cfg = SimpleNamespace(model=SimpleNamespace(provider="ollama", think=None))
+    client = OllamaClient()
+    assert client.num_ctx is None
+
+    _apply_ollama_runtime(client, cfg, 32768)
+    assert client.num_ctx == 32768
+
+
+def test_apply_ollama_runtime_e_noop_para_cloud():
+    """Provider OpenAI-compat leva o contexto no modelo, não por parâmetro."""
+    from types import SimpleNamespace
+
+    from bauer.commands._runtime import _apply_ollama_runtime
+    from bauer.ollama_client import OllamaClient
+
+    client = OllamaClient()
+    _apply_ollama_runtime(client, SimpleNamespace(model=SimpleNamespace(provider="openrouter")), 32768)
+    assert client.num_ctx is None
+
+    _apply_ollama_runtime(client, None, 32768)  # cfg ausente não pode explodir
+    assert client.num_ctx is None
+
+
+def test_todos_os_entrypoints_aplicam_o_contexto():
+    """Guarda a classe do bug: `serve` e `run` foram esquecidos por serem cópias.
+
+    Qualquer entrypoint que construa um client Ollama e calcule contexto tem
+    que passar pelo helper — se voltar a existir atribuição solta de
+    `num_ctx`, é sinal de que a cópia renasceu.
+    """
+    from pathlib import Path
+
+    raiz = Path(__file__).parent.parent / "bauer"
+    entrypoints = ["cli.py", "commands/serve_cmd.py", "commands/run_cmd.py",
+                   "commands/agent_cmd.py"]
+    faltando = [
+        e for e in entrypoints
+        if "_apply_ollama_runtime" not in (raiz / e).read_text(encoding="utf-8")
+    ]
+    assert not faltando, f"entrypoints sem o helper de num_ctx: {faltando}"
+
+
 def test_none_cfg_is_safe():
     assert _effective_tool_allowlist(None) is None
 

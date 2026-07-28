@@ -212,6 +212,9 @@ class _Metrics:
         self.stream_requests_total: int = 0
         self.tool_calls_total: int = 0
         self.rate_limited_total: int = 0
+        #: Requisicoes que morreram porque o CLIENTE desconectou (SSE abandonado).
+        #: Nao e erro do servidor — por isso conta separado de requests_errors.
+        self.client_disconnects_total: int = 0
         self._start_time: float = time.time()
 
     def to_prometheus(self, model: str = "", provider: str = "", runtime: dict | None = None) -> str:
@@ -238,6 +241,10 @@ class _Metrics:
             "# HELP bauer_stream_requests_total Total de chamadas ao endpoint /stream",
             "# TYPE bauer_stream_requests_total counter",
             f'bauer_stream_requests_total {self.stream_requests_total}',
+            "",
+            "# HELP bauer_client_disconnects_total Requisicoes abandonadas pelo cliente (SSE)",
+            "# TYPE bauer_client_disconnects_total counter",
+            f'bauer_client_disconnects_total {self.client_disconnects_total}',
             "",
             "# HELP bauer_tool_calls_total Total de tool calls executadas",
             "# TYPE bauer_tool_calls_total counter",
@@ -1334,7 +1341,24 @@ def create_app(
                 )
 
         t0 = time.monotonic()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RuntimeError as exc:
+            # Cliente desconectou no meio da resposta (típico em SSE: aba
+            # fechada, Ctrl+C no curl). O BaseHTTPMiddleware do Starlette
+            # levanta "No response returned." nesse caso — não é erro do
+            # servidor, é o cliente que foi embora. Antes isso subia como
+            # exceção não tratada: traceback completo no log a CADA
+            # desconexão, e a métrica da requisição nunca era contabilizada.
+            if "No response returned" not in str(exc):
+                raise
+            _metrics.client_disconnects_total += 1
+            from .logging_config import log_suppressed
+            log_suppressed("server.client_disconnect", exc)
+            from starlette.responses import Response as _Resp
+            # 499 (nginx): cliente fechou a conexão. Nada é enviado — a
+            # conexão já morreu; o status existe só para o log/métrica.
+            return _Resp(status_code=499)
         if response.status_code >= 500:
             _metrics.requests_errors += 1
         if response.status_code == 429:
@@ -2021,8 +2045,34 @@ def create_app(
 
             yield _sse(sid, event="done")
 
+        def _event_stream_cancelavel():
+            """Desconexão do cliente CANCELA o run.
+
+            Quando o browser fecha a aba (ou o curl é interrompido), o Starlette
+            para de iterar e FECHA este gerador — o que levanta GeneratorExit
+            aqui dentro. Antes ninguém escutava isso: o turno seguia até o fim,
+            gerando na GPU para um cliente que não existe mais. Medido no
+            Beelink: um /stream abandonado continuou pedindo tools e rodando
+            `execute_code` por segundos depois do cliente sumir.
+
+            O laço do `_event_stream` já sabia parar quando o run vira
+            "cancelled" (era o caminho do POST /runs/{id}/cancel); só faltava
+            alguém marcar isso na desconexão.
+            """
+            interno = _event_stream()
+            try:
+                yield from interno
+            except GeneratorExit:
+                try:
+                    run_manager.cancel_run(run.id)
+                except Exception as exc:  # noqa: BLE001 — teardown nunca propaga
+                    from .logging_config import log_suppressed
+                    log_suppressed("server.stream_disconnect_cancel", exc)
+                interno.close()
+                raise
+
         return StreamingResponse(
-            _event_stream(),
+            _event_stream_cancelavel(),
             media_type="text/event-stream",
             headers={"X-Session-ID": sid, "X-Bauer-Run-ID": run.id},
         )

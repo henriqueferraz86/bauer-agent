@@ -20,7 +20,7 @@ import sys
 import typer
 
 from ._common import _COMPANIES_DIR, _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, _WORKSPACE_DIR, console
-from ._runtime import _build_client, _build_router, _get_or_run_state, _load_or_die, _pick_model, _resolve_model_with_ram_check, _start_gateway_thread_cli
+from ._runtime import _apply_ollama_runtime, _build_client, _build_router, _get_or_run_state, _load_or_die, _pick_model, _resolve_model_with_ram_check, _start_gateway_thread_cli
 
 agent_app = typer.Typer(
     invoke_without_command=True,
@@ -220,12 +220,7 @@ def agent(
 
     client = _build_client(cfg)
     applied_context = state["context"]["applied"]
-    # Propaga num_ctx ao OllamaClient — sem isso o Ollama usa o default do modelo (geralmente 2048)
-    if is_ollama_provider and hasattr(client, "num_ctx"):
-        client.num_ctx = applied_context
-    # Propaga think ao OllamaClient — usa valor de config.yaml (None → False no cliente)
-    if is_ollama_provider and hasattr(client, "think"):
-        client.think = cfg.model.think
+    _apply_ollama_runtime(client, cfg, applied_context)
 
     # Resolucao do modelo: --model > --pick > auto (com RAM check so para Ollama)
     import logging as _logging

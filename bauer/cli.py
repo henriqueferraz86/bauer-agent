@@ -30,6 +30,7 @@ from rich.table import Table
 
 # P4: paths canônicos movidos p/ bauer/commands/_common.py (compartilhados).
 from bauer.commands._common import _RUNTIME_STATE_DEFAULT  # noqa: E402
+from bauer.commands._runtime import _apply_ollama_runtime  # noqa: E402
 from .chat import run_chat_session
 from .config_loader import ConfigError, load_config
 from .logging_config import setup_logging
@@ -698,11 +699,7 @@ def chat(
 
     client = _build_client(cfg)
     applied_context = state["context"]["applied"]
-    is_ollama_chat = cfg.model.provider == "ollama"
-    if is_ollama_chat and hasattr(client, "num_ctx"):
-        client.num_ctx = applied_context
-    if is_ollama_chat and hasattr(client, "think"):
-        client.think = cfg.model.think
+    _apply_ollama_runtime(client, cfg, applied_context)
 
     if model:
         model_name = model

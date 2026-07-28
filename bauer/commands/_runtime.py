@@ -604,6 +604,30 @@ def _build_client(cfg):
     return OllamaClient(cfg.ollama.host, cfg.ollama.timeout_seconds, cfg.ollama.api_key)
 
 
+def _apply_ollama_runtime(client, cfg, applied_context: int) -> None:
+    """Aplica no client os parâmetros de runtime do Ollama (num_ctx, think).
+
+    Sem `options.num_ctx` na requisição o Ollama usa o PRÓPRIO default — bem
+    menor que o contexto que o doctor calcula — e trunca o prompt em silêncio.
+    O sintoma é enganoso: prompt grande volta com resposta VAZIA, sem erro.
+
+    Existe como helper porque a atribuição estava copiada em `bauer chat`
+    (cli.py) e `bauer agent` (agent_cmd.py) e simplesmente FALTAVA no `bauer
+    serve` e no `bauer run` — os dois calculavam o contexto aplicado, exibiam
+    no boot e nunca o enviavam. Quatro call sites, duas cópias, dois
+    esquecimentos: agora é um lugar só.
+
+    No-op para provider não-ollama (os clientes OpenAI-compat mandam o contexto
+    pelo modelo, não por parâmetro de requisição).
+    """
+    if cfg is None or getattr(getattr(cfg, "model", None), "provider", "") != "ollama":
+        return
+    if applied_context and hasattr(client, "num_ctx"):
+        client.num_ctx = applied_context
+    if hasattr(client, "think"):
+        client.think = getattr(cfg.model, "think", None)
+
+
 def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     """Cria ShellRunner se tools.shell_enabled=true na config."""
     if cfg is None or not cfg.tools.shell_enabled:
