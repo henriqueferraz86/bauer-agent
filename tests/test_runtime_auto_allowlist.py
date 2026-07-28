@@ -59,6 +59,55 @@ def test_auto_off_exposes_all():
     assert _effective_tool_allowlist(_cfg(provider="ollama", ctx=4096, auto=False)) is None
 
 
+def test_allowlist_so_tem_nomes_de_tools_reais():
+    """Nome errado na lista some em silêncio — o router ignora o desconhecido.
+
+    Um typo aqui tira uma ferramenta do agente sem erro nenhum, e a única
+    evidência seria o modelo "esquecendo" de usá-la.
+    """
+    from pathlib import Path
+
+    from bauer.shell_runner import ShellRunner
+    from bauer.tool_router import ToolRouter
+
+    # com shell_runner: sem ele `run_command` nem existe e o teste daria
+    # falso positivo de nome inválido.
+    router = ToolRouter(workspace="x", web_enabled=True,
+                        shell_runner=ShellRunner(workspace=Path("x")))
+    desconhecidos = sorted(set(_LOCAL_DEFAULT_ALLOWLIST) - set(router.available_tools()))
+    assert not desconhecidos, f"nomes que não são tools: {desconhecidos}"
+    assert len(_LOCAL_DEFAULT_ALLOWLIST) == len(set(_LOCAL_DEFAULT_ALLOWLIST)), "há duplicados"
+
+
+def test_custo_fixo_do_toolset_local_cabe_na_janela():
+    """Schemas + system prompt, ANTES de qualquer conversa, têm que caber.
+
+    Com as 84 tools esse custo fixo é ~14k tokens — acima do teto de ~12,5k
+    medido no qwen3-coder:30b, então toda requisição nascia estourada. Este
+    teto de 8k mantém folga real numa janela de 32k; se alguém engordar a
+    lista até passar disso, o modo native volta a devolver resposta vazia.
+    """
+    import json
+    from pathlib import Path
+
+    from bauer.agent import _build_system_prompt
+    from bauer.shell_runner import ShellRunner
+    from bauer.tool_router import ToolRouter
+
+    router = ToolRouter(workspace="x", web_enabled=True,
+                        shell_runner=ShellRunner(workspace=Path("x")),
+                        tool_allowlist=_LOCAL_DEFAULT_ALLOWLIST)
+    schemas_tokens = len(json.dumps(router.get_tool_schemas())) // 4
+    prompt_tokens = len(_build_system_prompt(router, tool_mode="native")) // 4
+    fixo = schemas_tokens + prompt_tokens
+
+    assert fixo < 8000, (
+        f"custo fixo do toolset local subiu para {fixo} tokens "
+        f"(schemas={schemas_tokens}, system_prompt={prompt_tokens}). "
+        "Acima de ~12,5k o qwen3-coder:30b devolve resposta vazia."
+    )
+
+
 def test_none_cfg_is_safe():
     assert _effective_tool_allowlist(None) is None
 
