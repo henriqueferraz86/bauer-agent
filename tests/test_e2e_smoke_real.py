@@ -78,13 +78,26 @@ class TestSmokeOpencode:
         """force_compress num histórico real seguido de chamada real."""
         from bauer.context_manager import ContextManager
 
+        from bauer.context_manager import TAIL_BUDGET_TOKENS
+
         client = _make_client()
         ctx = ContextManager(applied_context=65536, provider="opencode")
-        # Enche o histórico com lixo comprimível
-        for i in range(30):
+        # Enche o histórico com lixo comprimível.
+        #
+        # O volume tem que passar do TAIL_BUDGET_TOKENS: `force_compress` separa
+        # a cauda recente (que ela preserva) do resto (que ela resume), e se
+        # TUDO couber na cauda não há o que comprimir — `False` é a resposta
+        # correta, não um bug. O teste montava 30 pares (~3.9k tokens) contra
+        # um tail budget de 8192, então falhava por premissa envelhecida, não
+        # por regressão. Deriva do valor real para não envelhecer de novo.
+        alvo_tokens = TAIL_BUDGET_TOKENS * 3
+        i = 0
+        while ctx.used_tokens < alvo_tokens:
             ctx.messages.append({"role": "user", "content": f"dado {i}: " + "x" * 500})
             ctx.messages.append({"role": "assistant", "content": f"anotado {i}"})
+            i += 1
         before = ctx.used_tokens
+        assert before > TAIL_BUDGET_TOKENS, "histórico não excedeu a cauda; nada a comprimir"
         compressed = ctx.force_compress()
         assert compressed
         assert ctx.used_tokens < before

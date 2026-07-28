@@ -15,7 +15,7 @@ from ._common import (
     _loaded_config_path,
     console,
 )
-from ._runtime import _build_client, _build_router, _get_or_run_state, _load_or_die, _resolve_model_with_ram_check, _start_gateway_thread_cli, build_fallback_clients
+from ._runtime import _apply_ollama_runtime, _build_client, _build_router, _get_or_run_state, _load_or_die, _resolve_model_with_ram_check, _start_gateway_thread_cli, build_fallback_clients
 
 serve_app = typer.Typer(
     invoke_without_command=True,
@@ -94,6 +94,10 @@ def serve(
         raise typer.Exit(code=1)
 
     applied_context = state["context"]["applied"]
+    # Sem isto o serve calculava o contexto aplicado, imprimia no boot e nunca
+    # o enviava: o Ollama caía no próprio default e truncava o prompt em
+    # silêncio (sintoma: resposta vazia em prompt grande, sem erro nenhum).
+    _apply_ollama_runtime(_client, cfg, applied_context)
     router = _build_router(cfg, workspace)
 
     from ..agent import _build_system_prompt

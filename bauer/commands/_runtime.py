@@ -604,6 +604,30 @@ def _build_client(cfg):
     return OllamaClient(cfg.ollama.host, cfg.ollama.timeout_seconds, cfg.ollama.api_key)
 
 
+def _apply_ollama_runtime(client, cfg, applied_context: int) -> None:
+    """Aplica no client os parâmetros de runtime do Ollama (num_ctx, think).
+
+    Sem `options.num_ctx` na requisição o Ollama usa o PRÓPRIO default — bem
+    menor que o contexto que o doctor calcula — e trunca o prompt em silêncio.
+    O sintoma é enganoso: prompt grande volta com resposta VAZIA, sem erro.
+
+    Existe como helper porque a atribuição estava copiada em `bauer chat`
+    (cli.py) e `bauer agent` (agent_cmd.py) e simplesmente FALTAVA no `bauer
+    serve` e no `bauer run` — os dois calculavam o contexto aplicado, exibiam
+    no boot e nunca o enviavam. Quatro call sites, duas cópias, dois
+    esquecimentos: agora é um lugar só.
+
+    No-op para provider não-ollama (os clientes OpenAI-compat mandam o contexto
+    pelo modelo, não por parâmetro de requisição).
+    """
+    if cfg is None or getattr(getattr(cfg, "model", None), "provider", "") != "ollama":
+        return
+    if applied_context and hasattr(client, "num_ctx"):
+        client.num_ctx = applied_context
+    if hasattr(client, "think"):
+        client.think = getattr(cfg.model, "think", None)
+
+
 def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     """Cria ShellRunner se tools.shell_enabled=true na config."""
     if cfg is None or not cfg.tools.shell_enabled:
@@ -617,13 +641,36 @@ def _build_shell_runner(cfg, workspace: Path) -> ShellRunner | None:
     )
 
 
-# Toolset enxuto aplicado automaticamente a modelos locais com contexto pequeno
-# (as ~79 tools = ~14k tokens estouram e o Ollama trunca o prompt em silêncio).
-# Cobre arquivos, shell, web, busca em código e utilitários — os fluxos mais
-# comuns. O usuário sobrescreve com tools.tool_allowlist explícito.
+# Toolset enxuto aplicado automaticamente a modelos locais com contexto pequeno.
+#
+# O custo FIXO (schemas + system prompt, antes de qualquer conversa) medido com
+# 84 tools é 14.040 tokens — acima do teto de ~12.500 do qwen3-coder:30b no
+# Beelink. Numa janela de 32k o toolset completo não é só desperdício: TODA
+# requisição já nasce estourada. Este recorte custa ~6.700 fixos (20% de 32k) e
+# deixa ~26k livres. O usuário sobrescreve com tools.tool_allowlist explícito.
+#
+# O que entra e por quê — cada grupo aqui apareceu como necessário em uso real,
+# não por completude:
 _LOCAL_DEFAULT_ALLOWLIST = [
-    "read_file", "write_file", "list_dir", "run_command",
-    "web_search", "web_fetch", "search_text", "glob_files",
+    # Arquivos: ler, escrever e EDITAR. Sem `patch`, corrigir um arquivo grande
+    # exige reescrevê-lo inteiro de memória — origem clássica de regressão.
+    "read_file", "write_file", "patch", "append_file",
+    "create_dir", "delete_file", "move_file", "list_dir", "diff_files",
+    # Execução. `execute_code` não é redundante com `run_command`: é a rota de
+    # escape quando o binário não existe no PATH (no Beelink o modelo caiu nela
+    # sozinho porque só há `python3`, não `python`).
+    "run_command", "execute_code",
+    # Busca local e web.
+    "search_text", "glob_files", "web_search", "web_fetch", "http_request",
+    # MCP: sem estas, servidores configurados em config.yaml ficam INVISÍVEIS
+    # para o modelo local — o setup existe e não é alcançável.
+    "mcp_call", "mcp_list_tools", "mcp_list_servers",
+    # Kanban: o board do /task e o ledger que o /loop lê entre turnos.
+    "kanban_create", "kanban_list", "kanban_complete",
+    # `clarify` é o único jeito de o agente fazer uma pergunta ao usuário;
+    # `delegate_task` é a porta para os especialistas.
+    "clarify", "delegate_task",
+    # Utilitários e estado.
     "datetime_now", "calculate", "memory", "todo",
     "app_factory_init", "app_factory_status",
 ]
@@ -725,6 +772,7 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
         tool_allowlist=_effective_tool_allowlist(cfg),
         postiz_api_key=postiz_api_key,
         postiz_api_url=postiz_api_url,
+        mcp_config=getattr(cfg, "mcp", None) if cfg is not None else None,
     )
 
 

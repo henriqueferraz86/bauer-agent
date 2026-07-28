@@ -236,6 +236,59 @@ def test_auto_detect_deriva_supports_tools_das_capabilities():
     assert auto_detect_from_ollama(client, "bge-m3").supports_tools is False
 
 
+# ─── system prompt tem que combinar com o que o runtime faz ──────────────────
+
+
+def test_system_prompt_deriva_o_modo_do_client():
+    """O default era o literal "bridge" e 5 dos 7 call sites não passavam nada.
+
+    Resultado: o prompt mandava "responda SOMENTE com o JSON {...}" enquanto o
+    cliente executava tool calling NATIVO. Conflito direto — medido no Beelink,
+    o `bauer run` terminava com 0 tools. Para provider cloud (sempre native)
+    isso valia desde sempre.
+    """
+    from bauer.agent import _build_system_prompt
+    from bauer.tool_router import ToolRouter
+
+    router = ToolRouter(workspace="x", web_enabled=True)
+
+    derivado = _build_system_prompt(router, client=_client())
+    assert "SOMENTE com o JSON" not in derivado
+    assert "function calling nativo" in derivado
+
+    # sem client e sem tool_mode → "bridge", comportamento antigo preservado
+    antigo = _build_system_prompt(router)
+    assert "SOMENTE com o JSON" in antigo
+
+    # explícito continua vencendo a derivação
+    assert _build_system_prompt(router, "bridge", client=_client()) == antigo
+
+
+def test_call_sites_do_system_prompt_nao_ficam_no_default():
+    """Guarda a classe inteira do bug, não só o call site que eu achei.
+
+    Todo `_build_system_prompt(...)` no pacote precisa dizer o modo — via
+    `client=` (deriva) ou `tool_mode=` (explícito). Um call site novo que
+    esqueça volta a mandar instrução de bridge com execução native.
+    """
+    import re
+    from pathlib import Path
+
+    raiz = Path(__file__).parent.parent / "bauer"
+    omissos: list[str] = []
+    for py in raiz.rglob("*.py"):
+        for n, linha in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if "_build_system_prompt(" not in linha or "def _build_system_prompt" in linha:
+                continue
+            if not re.search(r"client=|tool_mode=", linha):
+                omissos.append(f"{py.relative_to(raiz)}:{n}")
+
+    assert not omissos, (
+        "call sites sem modo declarado (passe client= ou tool_mode=): "
+        + ", ".join(omissos)
+    )
+
+
 # ─── resposta vazia no caminho native ────────────────────────────────────────
 
 
