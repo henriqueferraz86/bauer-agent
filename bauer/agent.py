@@ -2020,7 +2020,17 @@ def run_one_turn(
             if result is not None and not str(result).strip():
                 if not _native_empty_recovered:
                     _native_empty_recovered = True
-                    recovered, diagnostico = _recover_empty_response(client, model_name, ctx)
+                    # A recuperação chama o provider de novo; se ELA falhar, o
+                    # turno vira "Erro de provider" e o usuário perde tudo que
+                    # as tools já fizeram nas rodadas anteriores. Falha de
+                    # recuperação é diagnóstico, não erro de transporte.
+                    try:
+                        recovered, diagnostico = _recover_empty_response(client, model_name, ctx)
+                    except Exception as _rec_exc:  # noqa: BLE001
+                        recovered, diagnostico = "", (
+                            f"[Modelo retornou resposta vazia e a recuperação também "
+                            f"falhou: {_rec_exc}]"
+                        )
                     if recovered.strip():
                         ctx.add_assistant(recovered)
                         return recovered, tool_log
