@@ -627,16 +627,43 @@ def guard_reinit(
 # ---------------------------------------------------------------------------
 
 
+#: Diretórios de DEPENDÊNCIA — o código deles não é do projeto. Sem excluir
+#: isto, um `.venv/` local entrega ~1300 arquivos `test_*.py` (pytest, urllib3,
+#: numpy…) e o Delivery Score dá o item `tests` de graça para um projeto com a
+#: pasta `tests/` VAZIA. Medido num projeto real: 1300 matches, 0 testes.
+_VENDOR_DIRS = frozenset({
+    ".venv", "venv", "env", ".env", "site-packages", "node_modules",
+    ".git", ".tox", ".nox", "__pycache__", "vendor", ".eggs", "build", "dist",
+})
+
+
+def _is_vendored(path: Path, root: Path) -> bool:
+    """True se `path` está dentro de algum diretório de dependência."""
+    try:
+        partes = path.relative_to(root).parts
+    except ValueError:
+        return True
+    return any(p in _VENDOR_DIRS for p in partes)
+
+
 def _has_tests(project_dir: Path | str) -> bool:
+    """O projeto tem teste ESCRITO POR ELE — não teste de dependência.
+
+    A varredura ampla é fallback para quem não usa `tests/` (ex.: teste ao lado
+    do módulo), mas ela precisa ignorar código de terceiros, senão o item vira
+    ruído: qualquer projeto Python com venv local passaria sem ter um só teste.
+    """
     root = Path(project_dir)
     tests_dir = root / "tests"
-    if tests_dir.is_dir() and any(tests_dir.rglob("test_*.py")):
+    if tests_dir.is_dir() and any(
+        not _is_vendored(p, root) for p in tests_dir.rglob("test_*.py")
+    ):
         return True
-    if any(root.rglob("test_*.py")):
+    if any(not _is_vendored(p, root) for p in root.rglob("test_*.py")):
         return True
     # JS/TS
     for pat in ("*.test.js", "*.test.ts", "*.spec.ts", "*.spec.js"):
-        if any(root.rglob(pat)):
+        if any(not _is_vendored(p, root) for p in root.rglob(pat)):
             return True
     return False
 
