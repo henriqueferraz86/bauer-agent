@@ -29,7 +29,7 @@ from rich.table import Table
 
 
 # P4: paths canônicos movidos p/ bauer/commands/_common.py (compartilhados).
-from bauer.commands._common import _RUNTIME_STATE_DEFAULT  # noqa: E402
+from bauer.commands._common import _RUNTIME_STATE_DEFAULT, _loaded_config_path  # noqa: E402
 from bauer.commands._runtime import _apply_ollama_runtime  # noqa: E402
 from .chat import run_chat_session
 from .config_loader import ConfigError, load_config
@@ -329,7 +329,7 @@ def doctor(
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_row("Status:", f"[{color}]{report.state.status}[/{color}]")
     table.add_row("Maquina:", report.state.machine_id)
-    table.add_row("Config:", str(config.resolve()))
+    table.add_row("Config:", str(_loaded_config_path(config)))
     table.add_row(
         "Ollama:",
         f"{'ativo' if report.state.ollama_alive else 'offline'} ({report.state.ollama_host})",

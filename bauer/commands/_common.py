@@ -27,6 +27,24 @@ _COMPANIES_DIR = get_bauer_home() / "workspace" / "companies"
 _MEMORY_DIR = memory_dir()
 _RUNTIME_STATE_DEFAULT = runtime_state_path()
 
+
+def _loaded_config_path(config: Path) -> Path:
+    """Caminho do config que SERÁ carregado — para exibir ao usuário.
+
+    Espelha o fallback do `load_config` em vez de imprimir o path pedido.
+    Sem isso, rodar de um diretório sem `config.yaml` anunciava
+    `<cwd>/config.yaml` (inexistente) enquanto lia o de `$BAUER_HOME`.
+    Degrada para o path pedido quando nenhum dos dois existe — quem reporta
+    o erro de verdade é o `load_config`, não a linha de display.
+    """
+    from ..config_loader import ConfigError, resolve_config_path
+
+    try:
+        return resolve_config_path(config).resolve()
+    except ConfigError:
+        return config.resolve()
+
+
 # Aliases curtos → nome de arquivo Markdown de memória.
 _FILE_ALIASES = {
     "memory": "MEMORY.md",
