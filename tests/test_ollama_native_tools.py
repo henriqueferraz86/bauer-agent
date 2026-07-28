@@ -289,9 +289,14 @@ def test_native_nao_duplica_a_assinatura_das_tools_no_system_prompt():
     assert len(native) < len(bridge) / 2, "modo native ainda repete os schemas"
     # os NOMES continuam, como índice barato
     assert "write_file" in native and "run_command" in native
-    # a assinatura detalhada, não
-    assert "write_file(path, content" not in native
-    assert "write_file(path, content" in bridge
+
+    # A listagem "nome(args) — descrição", uma linha por tool, é o que sai. Checa
+    # pela DESCRIÇÃO (que só existe naquele bloco), não pela assinatura — o
+    # prompt native cita `write_file(path, content)` de propósito, num exemplo
+    # de precedência ação-vence-explicação.
+    desc = router.tool_info("write_file")["description"]
+    assert desc in bridge
+    assert desc not in native
 
 
 # ─── teto de RAM x modelo na GPU ─────────────────────────────────────────────

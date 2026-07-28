@@ -240,7 +240,7 @@ class OllamaClient:
         - **não existe `tool_choice`.** O parâmetro é aceito e ignorado aqui,
           para manter a assinatura compatível com o OpenAIClient.
         """
-        self.last_usage: dict[str, Any] = {}
+        self.last_usage = {}
         think_flag = self.think if self.think is not None else False
         body: dict[str, Any] = {
             "model": model,
