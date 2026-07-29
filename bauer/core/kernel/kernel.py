@@ -442,8 +442,7 @@ class BauerKernel:
                 if switched:
                     continue
 
-                self.runs.fail_run(run.id, last_error)
-                trajectory.append("failed")
+                self._fail_se_nao_terminal(run.id, last_error, trajectory)
                 return self._result(run.id, session_id, trajectory, decision=decision,
                                     output=result.get("output"))
 
@@ -479,6 +478,24 @@ class BauerKernel:
                             output=result.get("output"))
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _fail_se_nao_terminal(self, run_id: str, error: str,
+                              trajectory: list[str]) -> None:
+        """fail_run que NÃO sobrescreve um desfecho já decidido.
+
+        ``RunManager.cancel_run`` protege terminais; ``fail_run`` não. Isso abre
+        uma corrida real: o usuário cancela (``/loop/{id}/stop``) enquanto o
+        executor está retornando falha — e o ``failed`` apagava o ``cancelled``.
+        Cancelamento é decisão de quem manda; falha é consequência. A decisão
+        vence.
+        """
+        from ..runtime.run_manager import TERMINAL_RUN_STATUSES
+        atual = self.runs.get_run(run_id)
+        if atual is not None and atual.status in TERMINAL_RUN_STATUSES:
+            trajectory.append(atual.status)
+            return
+        self.runs.fail_run(run_id, error)
+        trajectory.append("failed")
 
     def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
         current = self.runs.get_run(run.id).status

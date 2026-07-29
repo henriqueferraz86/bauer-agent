@@ -163,6 +163,9 @@ class AgentBackend:
         self._system_prompt: str = ""
         self._init_error: str = ""
         self._config_mtime: float = 0.0  # hot-reload: detecta `bauer model` etc.
+        # Kernel do canal (lazy, invalidado no hot-reload junto com o client).
+        self._kernel: Any = None
+        self._kernel_resolvido = False
         # Injetável (testes / embedding): callable(cfg) -> client.
         # Default None → usa bauer.cli._build_client (import tardio).
         self._client_builder: Any = None
@@ -305,6 +308,10 @@ class AgentBackend:
                     for ctx, _lock in self._sessions.values():
                         ctx.set_llm(new_client, self._model_name)
                 self._config_mtime = mtime
+                # o Kernel foi montado a partir do config ANTIGO (policy root,
+                # evaluator, flag) — invalida junto com o client
+                self._kernel_resolvido = False
+                self._kernel = None
                 logger.info(
                     "config.yaml mudou — gateway agora usa %s/%s",
                     self._provider, self._model_name,
@@ -527,6 +534,31 @@ class AgentBackend:
             lock.release()
         return response
 
+    def _resolver_kernel(self) -> Any:
+        """Kernel do canal (lazy). None = ``kernel.enabled`` desligado.
+
+        Canais (Telegram/Slack/Discord) recebem input de TERCEIROS — é o caminho
+        onde a policy mais importa, e era um dos que executavam turno sem Run,
+        sem policy_check e sem gates.
+        """
+        if self._kernel_resolvido:
+            return self._kernel
+        self._kernel_resolvido = True
+        from .config_loader import ConfigError, load_config
+        try:
+            cfg = load_config(self.config_path)
+        except (ConfigError, OSError):
+            # Sem config legível não há flag para ler — segue como antes.
+            # NÃO envolve o require_kernel: falha de WIRING com a flag ligada
+            # tem de estourar (KernelWiringError), não virar canal ingovernado.
+            self._kernel = None
+            return None
+        from .core.kernel import build_kernel, require_kernel
+        self._kernel = require_kernel(
+            cfg, lambda: build_kernel(cfg), label=f"canal:{getattr(self, 'name', None) or type(self).__name__}",
+        )
+        return self._kernel
+
     def _execute_turn(self, ctx: Any, key: str, client: Any, model: str,
                       text: str, on_delta: Any = None) -> str:
         """Um turno do agente com timeout DURO — nunca deixa o usuário sem resposta.
@@ -535,7 +567,50 @@ class AgentBackend:
         _TURN_TIMEOUT_SECONDS, levanta TurnTimeout (a órfã segue e morre sozinha).
         O sink de streaming é instalado DENTRO da thread do turno (ContextVar não
         cruza threads).
+
+        Governado (S8): o turno inteiro é o executor de ``kernel.execute()`` —
+        Run persistido, policy antes do LLM, gates antes de concluir. O timeout
+        continua sendo daqui: a thread órfã não pertence ao Kernel, e um turno
+        que estourou o teto é falha real do ponto de vista do sistema, mesmo que
+        a órfã ainda esteja viva.
         """
+        from .core.kernel import run_governed
+
+        canal = getattr(self, "name", None) or type(self).__name__.lower()
+        falha: list[BaseException] = []
+
+        def _executar(_payload):
+            try:
+                return {"output": self._turno_cru(ctx, key, client, model, text, on_delta)}
+            except BaseException as exc:  # noqa: BLE001
+                # A exceção precisa fechar o Run como failed E chegar ao
+                # process(), que é onde vive a tradução amigável de erro de
+                # provider ("HTTP 401" -> "rode bauer doctor") e o evict de
+                # sessão no TurnTimeout. Engolir aqui trocaria mensagem útil por
+                # erro genérico.
+                falha.append(exc)
+                return {"status": "failed", "error": str(exc)}
+
+        gov = run_governed(
+            self._resolver_kernel(), _executar,
+            agent_id=f"channel.{canal}", task=text, session_id=key,
+            input={"endpoint": f"canal:{canal}", "session": key},
+        )
+        if falha:
+            raise falha[0]
+        if gov.blocked_before_start:
+            return f"⛔ {gov.error or gov.policy_reason or 'bloqueado pela política'}"
+        texto = str(gov.output if gov.output is not None
+                    else (gov.result or {}).get("output") or "")
+        if not gov.ok and gov.governed:
+            # gate reprovou: o texto ainda vale mais que um erro genérico para
+            # quem está do outro lado do chat
+            return texto or f"⚠ {gov.error or 'não consegui concluir'}"
+        return texto
+
+    def _turno_cru(self, ctx: Any, key: str, client: Any, model: str,
+                   text: str, on_delta: Any = None) -> str:
+        """O turno em si (era o corpo de ``_execute_turn``)."""
         from .agent import run_one_turn_with_fallback
 
         result: dict[str, Any] = {}

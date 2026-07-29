@@ -1044,17 +1044,30 @@ def agent_run_one(
     messages.append({"role": "user", "content": task})
     try:
         adapter = get_runtime_adapter(config=cfg)
-        result = adapter.run_agent({
-            "client": client,
-            "model": model_name,
-            "messages": messages,
-            "agent_id": agent or "",
-            "agent_spec": agent_spec,
-            "source": "cli.agent.run_one",
-        })
-        if result.get("status") == "failed":
-            raise RuntimeError(str(result.get("error", "runtime adapter failed")))
-        console.print(str(result.get("output", "")))
+
+        def _executar(_payload):
+            # `client` e `adapter` são objetos vivos: ficam no closure, não no
+            # input do KernelRequest (que é persistido saneado no state store).
+            return adapter.run_agent({
+                "client": client,
+                "model": model_name,
+                "messages": messages,
+                "agent_id": agent or "",
+                "agent_spec": agent_spec,
+                "source": "cli.agent.run_one",
+            })
+
+        from ..core.kernel import build_kernel, require_kernel, run_governed
+        gov = run_governed(
+            require_kernel(cfg, lambda: build_kernel(cfg), label="bauer agent run-one"),
+            _executar, agent_id=agent or "cli.agent.run_one", task=task,
+            input={"endpoint": "bauer agent run-one", "model": model_name},
+        )
+        if gov.blocked_before_start:
+            raise RuntimeError(gov.error or gov.policy_reason or "bloqueado pela governança")
+        if not gov.ok:
+            raise RuntimeError(gov.error or "runtime adapter failed")
+        console.print(str(gov.output or (gov.result or {}).get("output") or ""))
     except Exception as exc:
         console.print(f"[red]run-one: {exc}[/red]", err=True)
         raise typer.Exit(code=1)

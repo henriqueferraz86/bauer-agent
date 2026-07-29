@@ -46,7 +46,65 @@ O primeiro é `bauer run` (autônomo, via `admit()`). O segundo é `/chat` (via
 
 ---
 
-## 2. Tabela dos caminhos
+## 1.5. Estado depois do S8 (2026-07-29, mesma sessão)
+
+A tabela da §2 é a **baseline** medida antes da migração. Depois do S8:
+
+| Caminho | Antes | Depois |
+|---|---|---|
+| `bauer run` / `/loop` CLI | `admit_only` | **`full`** — laço como executor de `execute()` |
+| `bauer agent` interativo | `full` | `full` |
+| `bauer agent run-one` | **`none`** | **`full`** |
+| `bauer kernel run` | `full` | `full` |
+| serve `/chat` | `full` | `full` |
+| serve `/loop` (web) | `admit_only` | **`full`** — `admit()` p/ o id + `continue_run()` p/ custódia |
+| `core/runtime/scheduler` | **`none`** | **`full`, sem flag** — ver §4.1 |
+| canais (Telegram/Slack/Discord) | **`none`** | **`full`** |
+| serve `/stream` (SSE) | `admit_only` | `admit_only` — §9.3(b), garantido por teste |
+| `/v1/chat/completions` | **`none`** | **`none`** — dívida conhecida |
+| `orchestrate run` | **`none`** | **`none`** — 3 modos, um atravessa processos |
+| `bauer benchmark`, `runtime test` | — | **fora do escopo** — diagnóstico (§4.2) |
+| `task_dispatcher`, `daemon`, `swarm`, `app_factory` | listados como `none` | **não são pontos de execução** (§4.3) |
+
+**Custódia: 20% → 62%** (8 de 13 pontos de execução reais). A garantia contra
+regressão é `tests/test_arquitetura_custodia_kernel.py`, que trava por arquivo
+quem pode fechar run por fora e exige justificativa escrita para cada exceção.
+
+### 4.1 Por que o scheduler perdeu a flag
+
+Ele já fazia à mão tudo o que o Kernel faz — criava o Run, rodava laço de retry
+com backoff, chamava `complete_run`/`fail_run`. Não havia "caminho legado
+intocado" a preservar; havia uma **segunda implementação do mesmo ciclo de
+vida**. Deixar a flag escolher entre as duas manteria os dois trilhos que o
+Kernel existe para eliminar. É o HARNESS-020 aplicado a um caminho só.
+
+### 4.2 O que fica fora do denominador, de propósito
+
+`bauer benchmark` e `bauer runtime test` são **diagnóstico**, não execução
+autônoma. Governá-los acoplaria a ferramenta de medição à policy que ela deveria
+ajudar a testar — e um smoke test de adapter que a policy pode negar deixa de ser
+smoke test. Registrado em `PERMITIDOS` no teste arquitetural.
+
+### 4.3 Correção ao inventário original
+
+Quatro entradas da tabela §2 **não são pontos de execução**:
+
+- `task_dispatcher.py` roda workers como **subprocesso** (`subprocess.Popen`,
+  `subprocess.run`) — a governança dele vem do processo filho, que agora é
+  governado. O dispatcher não executa turno de LLM.
+- `daemon.py` delega ao TaskDispatcher (`daemon.py:442`).
+- `swarm.py` e `app_factory.py` não chamam `run_agent` nem `run_one_turn`.
+- `serve_loop.py` é biblioteca: o turno é **injetado** (`turn_fn`). A entrada é
+  o `_loop_worker` do `server.py`, esse sim migrado.
+
+E `orchestrator.py:487` executa **passos** dentro de uma orquestração que já tem
+run próprio (`OrchestrationRun`). Governar cada passo criaria N runs por tarefa,
+contra a recomendação de §9.5 do plano (o run é a unidade de TAREFA). O certo é
+governar a entrada — `orchestrate run` —, que é a dívida registrada acima.
+
+---
+
+## 2. Tabela dos caminhos (baseline, antes do S8)
 
 `custody`: `full` = `execute()`/`stream()` · `admit_only` = `admit()` · `none` = fora do Kernel.
 

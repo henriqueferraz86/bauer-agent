@@ -132,6 +132,50 @@ def run_governed(
     )
 
 
+def continue_governed(
+    kernel: Any,
+    run_id: str,
+    executor: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    extra_input: "dict[str, Any] | None" = None,
+) -> GovernedResult:
+    """Custódia para trabalho ASSÍNCRONO já admitido — ``admit()`` + custódia.
+
+    O caso: endpoints que devolvem ``run_id`` na hora e seguem trabalhando numa
+    thread (o ``/loop`` da web). ``execute()`` não serve porque ele cria o run por
+    dentro, e o cliente HTTP precisa do id ANTES de o trabalho acabar. Então:
+
+        handler:  run, early = kernel.admit(req)   -> run_id devolvido ao cliente
+        worker:   continue_governed(kernel, run.id, executor)
+
+    ``continue_run`` roda o mesmo ``_run_to_completion`` de ``execute()`` — logo
+    os gates rodam, o replan vale e o Kernel é quem declara ``completed``. É a
+    diferença entre "governado na entrada" e "governado de ponta a ponta" num
+    caminho que não pode ser síncrono.
+
+    ``kernel=None`` roda direto, como ``run_governed``.
+    """
+    if kernel is None:
+        return _sem_kernel(executor, dict(extra_input or {}))
+
+    ultimo: dict[str, Any] = {}
+
+    def _wrapped(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            out = executor(payload) or {}
+        except KeyboardInterrupt:
+            out = {"status": CANCELLED, "error": "interrompido pelo usuário (Ctrl+C)"}
+        ultimo.clear()
+        ultimo.update(out)
+        return out
+
+    krun = kernel.continue_run(run_id, extra_input=extra_input, executor=_wrapped)
+    return GovernedResult(
+        status=krun.status, run_id=krun.run_id, output=krun.output,
+        error=krun.error, governed=True, result=dict(ultimo),
+    )
+
+
 def _sem_kernel(executor, payload_in: dict[str, Any]) -> GovernedResult:
     """Kernel desligado: executa direto e traduz o dict de retorno."""
     try:
