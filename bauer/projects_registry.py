@@ -28,7 +28,18 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_DEFAULT_REGISTRY = Path.home() / ".bauer" / "projects.json"
+#: Override EXPLÍCITO do caminho do registro. `None` = resolve de
+#: `$BAUER_HOME` em tempo de chamada (ver `_registry_path`).
+#:
+#: Era `Path.home() / ".bauer" / "projects.json"` avaliado no IMPORT, com
+#: `Path.home()` cru — o único módulo do Bauer que ignorava `$BAUER_HOME`.
+#: Duas consequências: quem usa BAUER_HOME (CI, múltiplos ambientes) escrevia
+#: no registro errado, e teste que não soubesse fazer monkeypatch DESTA
+#: constante contaminava o `~/.bauer/projects.json` real da máquina — 23
+#: entradas de `pytest-of-.../tmp` vazaram numa única execução até isto ser
+#: encontrado. Continua patchável: os testes que já faziam monkeypatch aqui
+#: seguem funcionando.
+_DEFAULT_REGISTRY: Optional[Path] = None
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +47,18 @@ _DEFAULT_REGISTRY = Path.home() / ".bauer" / "projects.json"
 # ---------------------------------------------------------------------------
 
 def _registry_path(registry_path: Optional[Path] = None) -> Path:
-    return registry_path or _DEFAULT_REGISTRY
+    """Caminho do projects.json. Resolvido em tempo de CHAMADA, não no import.
+
+    Precedência: argumento explícito → `_DEFAULT_REGISTRY` (override de teste)
+    → `$BAUER_HOME/projects.json`.
+    """
+    if registry_path:
+        return registry_path
+    if _DEFAULT_REGISTRY is not None:
+        return _DEFAULT_REGISTRY
+    from .paths import get_bauer_home
+
+    return get_bauer_home() / "projects.json"
 
 
 def project_id(path: str | Path) -> str:

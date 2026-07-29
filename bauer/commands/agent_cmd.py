@@ -112,6 +112,29 @@ def _resolve_cwd_project(*, interactive: bool, cwd: "Path | None" = None) -> "Pa
             f"[dim]📂 Projeto detectado: [cyan]{entry.get('name', proj_path.name)}"
             f"[/cyan] — {proj_path}[/dim]"
         )
+        # Sincroniza o ponteiro de projeto ATIVO com a pasta em que você está.
+        #
+        # Antes isto só resolvia o workspace DESTA sessão e deixava o `active`
+        # do projects.json onde estava — então a CLI trabalhava num projeto e o
+        # Desktop/serve mostravam outro, sem nada avisar. Confusão real
+        # reportada: "entrei na pasta e o agent reconheceu o projeto, por que o
+        # ativo continuou sendo o antigo?".
+        #
+        # A troca é anunciada porque é efeito colateral fora desta sessão: muda
+        # o que o Desktop abre depois.
+        _anterior = pr.get_active()
+        if _anterior != pid:
+            try:
+                if pr.set_active(pid):
+                    _ant = pr.get_project(_anterior) if _anterior else None
+                    _de = f" (antes: {_ant['name']})" if _ant and _ant.get("name") else ""
+                    console.print(
+                        f"[dim]   projeto ativo atualizado para "
+                        f"'{entry.get('name', proj_path.name)}'{_de}[/dim]"
+                    )
+            except Exception as exc:  # noqa: BLE001 — sincronizar nunca bloqueia o agent
+                from ..logging_config import log_suppressed
+                log_suppressed("agent.sync_projeto_ativo", exc)
         return proj_path
 
     if not interactive:
