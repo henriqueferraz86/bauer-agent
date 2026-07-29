@@ -41,6 +41,19 @@ class FailReason(enum.Enum):
 # ---------------------------------------------------------------------------
 
 _BILLING_PATTERNS = [
+    # PT-BR: o proprio Bauer TRADUZ o erro 402 do provider para portugues
+    # (openai_client.py, bloco `status == 402`) e depois classificava a
+    # traducao como UNKNOWN — should_fallback=False. Resultado: a cadeia
+    # `model.fallback_models` NUNCA disparava na falha mais provavel de todas,
+    # que e ficar sem saldo. Medido com OpenRouter zerado (35/35 consumidos).
+    "creditos insuficientes",
+    "créditos insuficientes",
+    "sem saldo",
+    "saldo insuficiente",
+    "requer saldo",
+    "pagamento necessario",
+    "pagamento necessário",
+    # EN
     "insufficient credits",
     "insufficient_quota",
     "insufficient balance",

@@ -44,7 +44,19 @@ def _safe_body(status: int, body: str) -> str:
 
 
 class OpenAIClientError(Exception):
-    pass
+    """Erro de provider. Carrega o `status_code` quando ele existe.
+
+    O atributo importa: `error_classifier._extract_status_code` le ATRIBUTOS da
+    cadeia de excecoes, nao o texto. Sem ele, a classificacao dependia so de
+    casar substring — e como o cliente TRADUZ o erro 402 para portugues
+    ("Creditos insuficientes"), nenhum padrao em ingles batia, o erro virava
+    UNKNOWN/should_fallback=False e a cadeia `model.fallback_models` nunca
+    disparava por falta de saldo. Numero de status nao se traduz.
+    """
+
+    def __init__(self, message: str, status_code: "int | None" = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class OpenAIClient:
@@ -458,7 +470,12 @@ class OpenAIClient:
                 )
             else:
                 _hint = f"HTTP {status}. {body}".strip()
-            raise OpenAIClientError(f"[Provedor] {_hint}") from _error_exc
+            # O status entra na mensagem SEMPRE. O texto do hint e traduzido
+            # (PT) e o error_classifier casa por substring — sem o codigo,
+            # "Creditos insuficientes" nao batia com nenhum padrao e virava
+            # UNKNOWN/should_fallback=False, matando a cadeia de fallback
+            # justamente no caso de ficar sem saldo. Numero nao se traduz.
+            raise OpenAIClientError(f"[Provedor HTTP {status}] {_hint}", status_code=status) from _error_exc
 
     def chat_with_retry(
         self,
