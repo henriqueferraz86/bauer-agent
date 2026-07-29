@@ -154,11 +154,12 @@ site está embrulhado em `try/except log_suppressed` justamente por ser opt-in.
 
 | Entry point | Passa pelo Kernel? | Onde |
 |---|---|---|
-| `bauer run` (= o `/loop`) | ⚠️ atrás da flag | `commands/run_cmd.py:127` |
-| `bauer agent` interativo | ⚠️ atrás da flag | `commands/agent_cmd.py:540` |
-| `bauer kernel *` | ✅ | `commands/kernel_cmd.py:36` |
-| serve `/chat` | ⚠️ atrás da flag | `server.py:786` |
-| serve `/stream` (SSE) | ⚠️ flag, via `admit()` — sem custódia | `server.py` |
+| `bauer run` (= o `/loop`) | ⚠️ flag, via `admit()` — **sem custódia** | `commands/run_cmd.py:155` |
+| `bauer agent` interativo | ⚠️ flag, custódia completa | `agent.py:5186` |
+| `bauer kernel *` | ✅ custódia completa | `commands/kernel_cmd.py:68` |
+| serve `/chat` | ⚠️ flag, custódia completa | `server.py:1558` |
+| serve `/stream` (SSE) | ⚠️ flag, via `admit()` — **sem custódia** | `server.py:1756` |
+| serve (2º endpoint) | ⚠️ flag, via `admit()` — **sem custódia** | `server.py:2148` |
 | `serve_loop.py` (loop na UI web) | ❌ | 0 refs |
 | `automation_scheduler.py` | ❌ | 0 refs |
 | `task_dispatcher.py` (993 l.) | ❌ | 0 refs |
@@ -168,16 +169,20 @@ site está embrulhado em `try/except log_suppressed` justamente por ser opt-in.
 | `app_factory.py` | ❌ | 0 refs |
 | `daemon.py` (782 l.) | ❌ | 0 refs |
 
-**Cobertura real: 0%** na configuração default; **~36%** (5 de 14) com
-`kernel.enabled: true`. O original dizia 40% — otimista, e omitia que o valor
-default é zero.
+**Cobertura real: 0%** na configuração default. Com `kernel.enabled: true`,
+**40%** (6 de 15) tocam o Kernel — mas só **20%** (3 de 15) têm custódia, isto é,
+o Kernel decidindo `completed`. O original dizia 40%: certo por coincidência,
+porque media contato e não custódia, e omitia que o default é zero.
+
+Inventário completo com medição real: **[EXECUTION_PATHS.md](EXECUTION_PATHS.md)**.
+Modos de falha: **[FAILURE_MODES.md](FAILURE_MODES.md)**.
 
 ### 5.2 Scorecard corrigido
 
 | Capacidade | Original dizia | **Medido** | Meta | Nota |
 |---|---|---|---|---|
 | Kernel e ciclo de vida | 85% | **85%** | 95% | confirmado — estados, retry, replan, recover, pause/resume, approvals |
-| Uso obrigatório do Kernel | 40% | **0% / 36%** | 100% | default off (§5.1) |
+| Uso obrigatório do Kernel | 40% | **0% / 40%** | 100% | default off; e só **20%** com custódia real (§5.1) |
 | Context Builder | 60% | **45%** | 90% | compressão ótima, mas 10 call sites independentes e zero proveniência |
 | Task Contract e Planner | 60% | **55%** | 85% | Planner completo; contrato sem escopo/aceite |
 | Validação determinística | 50% | **20%** | 90% | mecanismo pronto, 2 gates de texto; os validadores existem soltos |
@@ -404,20 +409,61 @@ tier capaz (`_TIER` em `model_router.py:128`), não pedir aprovação.
 
 ### 9.3 Validação no caminho sem custódia (HARNESS-031) — **bloqueante de S11**
 
-O critério 4 diz "somente o Validator pode autorizar `completed`". No `/stream`
-isso é **hoje inimplementável**: o run é admitido via `admit()` e o caller assume
-`start_run → complete/fail`. O Kernel não tem custódia, logo o Evaluator não roda.
+> **Corrigido em 2026-07-29 pela medição do S7.** A versão anterior desta seção
+> tratava isto como questão do `/stream`, e afirmava que o `bauer run` tinha
+> custódia via `execute()` — logo o Validator poderia ser entregue no caminho
+> autônomo sem depender desta decisão. **Errado.** `bauer run` usa `admit()`
+> (`commands/run_cmd.py:155`). Ver `EXECUTION_PATHS.md` §1 e `FAILURE_MODES.md` F2.
 
-Duas saídas, e a escolha é arquitetural — não pode ser deixada implícita:
+O critério 4 diz "somente o Validator pode autorizar `completed`". Em **3 dos 6**
+caminhos com Kernel isso é hoje inimplementável, porque eles entram por
+`admit()` — admissão sem custódia: o caller assume `start_run → complete/fail`,
+o Kernel não é dono do fim do run, e o Evaluator **não roda**.
 
-- **(a)** o `/stream` passa a usar `stream()` com custódia, e a thread órfã sai;
-- **(b)** o Validator vira uma etapa que o *caller* é obrigado a chamar antes de
-  `complete_run`, garantida por teste arquitetural.
+Prova, dois runs no mesmo store com `evaluator_enabled: true`:
+
+```
+bauer run  (admit)    ... running -> completed               # gate NAO rodou
+/chat      (execute)  ... running -> evaluating -> completed  # gate rodou
+```
+
+E o `bauer run` fecha o run com `kernel.runs.complete_run()`
+(`commands/run_cmd.py:271`) — o caller declarando sucesso, exatamente o que o
+critério 4 proíbe.
+
+**Isto não é rodapé do SSE: é o bloqueador da frente de validação inteira.** O
+gate de testes não tem onde rodar no caminho que mais importa até a custódia do
+`bauer run` ser resolvida.
+
+Duas saídas, e a escolha é arquitetural:
+
+- **(a)** os caminhos `admit_only` passam a usar `execute()`/`stream()` com
+  custódia. Direto para o `bauer run` (o laço de rodadas já é síncrono e cabe
+  como executor); custoso para o `/stream`, que teria de perder a thread órfã;
+- **(b)** o Validator vira etapa que o *caller* é obrigado a chamar antes de
+  `complete_run`, garantida por teste arquitetural que proíbe
+  `runs.complete_run()` fora do Kernel sem gate.
+
+Recomendação: **(a) para `bauer run`, (b) para `/stream`**. O laço autônomo é
+onde o gate importa e onde a custódia é barata; o SSE tem restrição real de
+arquitetura e sai com a garantia por teste.
 
 Agravante: **`/stream` deixou de emitir token a token no modo native** (regressão
 conhecida, task `task_bf38a37d`). Sem streaming incremental não existe
 "meio do stream" para cortar — o cenário 11 da Evaluation Suite ("cliente SSE
 desconecta") passaria **vacuamente**. Corrigir a regressão é pré-requisito de S14.
+
+### 9.5 Governança só na entrada, nunca por rodada (HARNESS-035)
+
+Achado do S7 que nenhuma sprint previa. Um `bauer run` real com 3 rodadas e 7
+tool calls produziu **1 run** e **1 `policy.evaluated`**, na admissão. O que a
+rodada 2 decide não é reavaliado pelo Kernel — sobra só o que vive no laço de
+turno (`_detect_loop`, `ToolCallGuardrailController`, gate G4), fora da auditoria
+do run.
+
+Recomendação: **manter um run por sessão** (unidade de tarefa na auditoria) e o
+Kernel expor reavaliação **entre rodadas** — `policy_check` + gates sem abrir run
+novo. Entra no S8, junto da decisão de §9.3.
 
 ### 9.4 O parser da policy é superfície de ataque (HARNESS-032)
 
