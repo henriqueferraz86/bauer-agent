@@ -177,7 +177,51 @@ porque media contato e não custódia, e omitia que o default é zero.
 Inventário completo com medição real: **[EXECUTION_PATHS.md](EXECUTION_PATHS.md)**.
 Modos de falha: **[FAILURE_MODES.md](FAILURE_MODES.md)**.
 
-### 5.2 Scorecard corrigido
+### 5.2b Onde está depois do S7+S8 (2026-07-29, PR #101 e #102 no master)
+
+| Capacidade | S7 medido | Agora | Meta |
+|---|---|---|---|
+| Kernel e ciclo de vida | 85% | **90%** | 95% |
+| Uso obrigatório do Kernel | 0% | **80%** | 100% |
+| Context Builder | 45% | 45% | 90% |
+| Task Contract e Planner | 55% | 55% | 85% |
+| Validação determinística | 20% | **30%** | 90% |
+| Isolamento | 25% | 25% | 85% |
+| Retry, fallback e recovery | 85% | **87%** | 90% |
+| Policy e aprovação | 70% | **78%** | 90% |
+| Controle de progresso | 60% | 60% | 85% |
+| Observabilidade | 70% | **73%** | 90% |
+| Avaliações de harness | 10% | **15%** | 85% |
+| **média** | **48%** | **58%** | **90%** |
+
+A média é aritmética simples — arbitrária como número absoluto, mas consistente
+entre antes e depois, que é o que interessa para medir progresso.
+
+**Indicadores da §15 atendidos: 6 de 20.** É a medida menos arbitrária, e é ela
+que define os 90%:
+
+✅ `kernel_coverage` · `cancel_support` · `recovery_support` ·
+`stuck_run_detection` · `anti_loop_detection` · `auditable_execution_paths`
+
+❌ `kernel_full_custody_coverage` (79%, teto estrutural 79%) ·
+`task_contract_coverage` · `context_builder_coverage` ·
+`code_task_validation_coverage` · `code_task_isolation_coverage` ·
+`runtime_capability_invariant` · `independent_approval_judge` ·
+`policy_parser_property_tests` · `harness_eval_scenarios` ·
+`critical_eval_pass_rate` · `overall_eval_pass_rate` · `false_success_rate` ·
+`orphaned_run_rate` · `suite_hermetic` (vale hoje, sem trava)
+
+**Leitura honesta:** o S8 valeu muito estrategicamente — era o pré-requisito de
+tudo — mas é **uma de sete frentes**. As três mais caras (validação, contexto,
+isolamento) estão intocadas, e a Evaluation Suite não existe. O `false_success_rate`,
+que é a métrica que de fato mede harness, ainda não é mensurável.
+
+Nota sobre `kernel_full_custody_coverage`: a meta de ≥90% é **inatingível** como
+escrita. O teto estrutural é 79% — `/stream`, `/v1` streaming e
+`orchestrate --background` não podem ceder a posse do run. A meta precisa ser
+reescrita como "100% dos caminhos com custódia POSSÍVEL", que já está atendida.
+
+### 5.2 Scorecard corrigido (medido no S7, antes da migração)
 
 | Capacidade | Original dizia | **Medido** | Meta | Nota |
 |---|---|---|---|---|
