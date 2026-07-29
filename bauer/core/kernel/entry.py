@@ -108,7 +108,9 @@ def run_governed(
 
     krun = kernel.execute(
         KernelRequest(
-            task=task, agent_id=agent_id, input=payload_in, session_id=session_id,
+            # KernelRequest usa "" como ausência (não None) — _open_run gera um
+            # session-<uuid> quando vem vazio
+            task=task, agent_id=agent_id, input=payload_in, session_id=session_id or "",
             operation=operation, max_retries=max_retries,
             retry_backoff_s=retry_backoff_s,
             fallback_adapters=list(fallback_adapters or []),
