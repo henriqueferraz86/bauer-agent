@@ -2474,20 +2474,44 @@ def create_app(
 
         _turn_client, active_model, _v1_route = _resolve_turn_model(last_user_message)
         completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
-        run = run_manager.create_run(
-            session_id=sid,
-            agent_id=request_agent_id,
-            runtime_adapter="bauer_native",
-            input={
-                "messages": [msg.model_dump() for msg in req.messages],
-                "stream": req.stream,
-                "endpoint": "/v1/chat/completions",
-                "message": last_user_message,
-                "selected_agent": resolved.get("agent_id") or "",
-                "selected_skill": getattr(resolved.get("skill"), "name", ""),
-            },
-            status="running",
-        )
+        _v1_input = {
+            "messages": [msg.model_dump() for msg in req.messages],
+            "stream": req.stream,
+            "endpoint": "/v1/chat/completions",
+            "message": last_user_message,
+            "selected_agent": resolved.get("agent_id") or "",
+            "selected_skill": getattr(resolved.get("skill"), "name", ""),
+        }
+        if _kernel is not None:
+            # Governança na entrada (kill-switch, policy, budget) ANTES do LLM.
+            # O run fica em `queued`; quem o leva ao fim depende do modo:
+            #   não-streaming -> continue_governed() abaixo, custódia completa
+            #   streaming     -> start_run aqui, admit-only (mesmo motivo do
+            #                    /stream: o gerador SSE é dono do run)
+            from .core.kernel import KernelRequest as _KReq
+            run, _early = _kernel.admit(_KReq(
+                task=last_user_message, session_id=sid, agent_id=request_agent_id,
+                input=_v1_input,
+            ))
+            if _early is not None:
+                if _early.status == "waiting_approval":
+                    raise HTTPException(
+                        status_code=202,
+                        detail=f"Aguardando aprovação ({_early.approval_id}): "
+                               f"{_early.policy_reason}",
+                    )
+                if _early.policy_action == "deny":
+                    raise HTTPException(status_code=403,
+                                        detail=_early.error or "Bloqueado pela politica.")
+                raise HTTPException(status_code=503,
+                                    detail=_early.error or "Execução bloqueada.")
+            if req.stream:
+                run_manager.start_run(run.id)
+        else:
+            run = run_manager.create_run(
+                session_id=sid, agent_id=request_agent_id,
+                runtime_adapter="bauer_native", input=_v1_input, status="running",
+            )
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
         _publish_route(run.id, sid, request_agent_id, _v1_route)
         resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
@@ -2593,27 +2617,52 @@ def create_app(
         _cost = _TurnCostRecorder(sid)
         _cost_token = cost_sink.set(_cost)
         _ids_token = set_runtime_ids(sid, run.id)
+        _turno: dict = {}
+
+        def _executar_v1(payload: dict) -> dict:
+            """O turno como executor do Kernel — quem conclui é o Kernel."""
+            feedback = (payload or {}).get("replan_feedback")
+            if feedback:
+                ctx.add_user(f"A validação reprovou a resposta anterior: {feedback}\n"
+                             f"Corrija e responda de novo.")
+            resposta, tl = run_one_turn(ctx, router, _turn_client, active_model)
+            _turno["response"] = _format_server_response(resposta)
+            _turno["tool_log"] = tl
+            return {"output": _turno["response"], "tool_calls_count": len(tl),
+                    "cost_estimate": round(_cost.total_usd, 6)}
+
         try:
-            response, tool_log = run_one_turn(ctx, router, _turn_client, active_model)
+            from .core.kernel import continue_governed
+            _gov = continue_governed(_kernel, run.id, _executar_v1)
         except Exception as exc:
             _log.exception("Erro interno em /v1/chat/completions: %s", exc)
-            run_manager.fail_run(run.id, str(exc))
+            if _kernel is None:
+                run_manager.fail_run(run.id, str(exc))
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
         finally:
             cost_sink.reset(_cost_token)
             reset_runtime_ids(_ids_token)
 
+        if not _gov.ok:
+            # executor falhou ou gate reprovou — o Kernel já fechou o run
+            _log.warning("/v1/chat/completions não concluiu: %s", _gov.error)
+            raise HTTPException(status_code=500,
+                                detail=_gov.error or "Erro interno — consulte os logs do servidor.")
+
+        response = _turno.get("response", "")
+        tool_log = _turno.get("tool_log", [])
         _metrics.tool_calls_total += len(tool_log)
         _record_turn_budget(_cost, run.id, request_agent_id)
-        response = _format_server_response(response)
         store.save(sid, ctx.messages)
         session_manager.touch_session(sid, state={"last_run_id": run.id})
-        run_manager.complete_run(
-            run.id,
-            output={"response": response},
-            tool_calls_count=len(tool_log),
-            cost_estimate=round(_cost.total_usd, 6),
-        )
+        if _kernel is None:
+            # governado, o Kernel já concluiu depois dos gates
+            run_manager.complete_run(
+                run.id,
+                output={"response": response},
+                tool_calls_count=len(tool_log),
+                cost_estimate=round(_cost.total_usd, 6),
+            )
 
         # Estima tokens (sem tokenizer real)
         prompt_tokens = sum(len(m.get("content", "")) // 4 for m in ctx.messages[:-1])

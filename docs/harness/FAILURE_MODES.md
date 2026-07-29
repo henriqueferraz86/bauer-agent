@@ -26,7 +26,7 @@ Testes: `tests/test_kernel_wiring_visivel.py`.
 
 ---
 
-## F2 — O caminho mais autônomo é o menos validado
+## F2 — O caminho mais autônomo é o menos validado · **CORRIGIDO no S8**
 
 **Evidência:** dois runs no mesmo store, mesma config com `evaluator_enabled: true`:
 
@@ -44,6 +44,28 @@ quality gate executa. `admit_only` cobre **3 dos 6** caminhos com Kernel, e o
 `bauer run` é um deles.
 
 **Bloqueia:** critério 4 do plano, e a frente de validação inteira (§9.3).
+
+**Corrigido no S8.** O laço de rodadas virou executor de `kernel.execute()`; o
+`/loop` da web usa `admit()` + `continue_run()`; scheduler, canais e one-shot
+migraram. Custódia 21% → 79%. Verificado no Beelink com run real:
+`created -> planning -> policy_check -> queued -> running -> evaluating -> completed`.
+
+Os três que sobram (`/stream`, `/v1` streaming, `orchestrate run --background`)
+não podem ter custódia: o gerador SSE é dono do run, e o background submete e
+retorna. Forçar produziria falso sucesso. A garantia neles é o teste
+arquitetural `tests/test_arquitetura_custodia_kernel.py`.
+
+---
+
+## F11 — `fail_run` sobrescrevia um run já cancelado · **CORRIGIDO no S8**
+
+`RunManager.cancel_run` protege terminais; `fail_run` não. Corrida real: o
+usuário chama `/loop/{id}/stop` enquanto o executor retorna falha — e o `failed`
+apagava o `cancelled`.
+
+Cancelamento é decisão de quem manda; falha é consequência. A decisão vence
+(`BauerKernel._fail_se_nao_terminal`). Encontrado pelo teste de stop entre
+rodadas durante a migração do `/loop` da web — não por inspeção.
 
 ---
 
@@ -181,9 +203,10 @@ do Definition of Done.
 | # | Modo de falha | Estado | Frente |
 |---|---|---|---|
 | F1 | Wiring falha em silêncio | ✅ corrigido | S7 |
-| F2 | Caminho autônomo sem gate | aberto — **bloqueia S11** | §9.3 |
-| F3 | Governança só na entrada | aberto | S8 |
-| F4 | 9 caminhos sem Kernel | aberto | S8 |
+| F2 | Caminho autônomo sem gate | ✅ corrigido — custódia 21% → **79%** | S8 |
+| F3 | Governança só na entrada | aberto | HARNESS-035 |
+| F4 | Caminhos sem Kernel | ✅ corrigido — contato **100%** | S8 |
+| F11 | `fail_run` sobrescrevia run cancelado | ✅ corrigido | S8 |
 | F5 | `admit()` devolvia estado obsoleto | ✅ corrigido | S7 |
 | F6 | Contexto em 10 lugares, sem proveniência | aberto | S9 |
 | F7 | Juiz de aprovação não independente | aberto | §9.2 |

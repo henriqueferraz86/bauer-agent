@@ -182,7 +182,7 @@ Modos de falha: **[FAILURE_MODES.md](FAILURE_MODES.md)**.
 | Capacidade | Original dizia | **Medido** | Meta | Nota |
 |---|---|---|---|---|
 | Kernel e ciclo de vida | 85% | **85%** | 95% | confirmado — estados, retry, replan, recover, pause/resume, approvals |
-| Uso obrigatório do Kernel | 40% | **0% / 40%** | 100% | default off; e só **20%** com custódia real (§5.1) |
+| Uso obrigatório do Kernel | 40% | **100% contato / 79% custódia** | 100% | S8 concluído — ver `EXECUTION_PATHS.md`. Os 3 sem custódia não podem tê-la (§9.3) |
 | Context Builder | 60% | **45%** | 90% | compressão ótima, mas 10 call sites independentes e zero proveniência |
 | Task Contract e Planner | 60% | **55%** | 85% | Planner completo; contrato sem escopo/aceite |
 | Validação determinística | 50% | **20%** | 90% | mecanismo pronto, 2 gates de texto; os validadores existem soltos |

@@ -60,15 +60,41 @@ A tabela da §2 é a **baseline** medida antes da migração. Depois do S8:
 | serve `/loop` (web) | `admit_only` | **`full`** — `admit()` p/ o id + `continue_run()` p/ custódia |
 | `core/runtime/scheduler` | **`none`** | **`full`, sem flag** — ver §4.1 |
 | canais (Telegram/Slack/Discord) | **`none`** | **`full`** |
+| `/v1/chat/completions` (batch) | **`none`** | **`full`** — `admit()` + `continue_run()` |
+| `/v1/chat/completions` (stream) | **`none`** | **`admit_only`** — o gerador SSE é dono do run |
 | serve `/stream` (SSE) | `admit_only` | `admit_only` — §9.3(b), garantido por teste |
-| `/v1/chat/completions` | **`none`** | **`none`** — dívida conhecida |
-| `orchestrate run` | **`none`** | **`none`** — 3 modos, um atravessa processos |
+| `orchestrate run` | **`none`** | **`admit_only`** — ver §4.4 |
 | `bauer benchmark`, `runtime test` | — | **fora do escopo** — diagnóstico (§4.2) |
 | `task_dispatcher`, `daemon`, `swarm`, `app_factory` | listados como `none` | **não são pontos de execução** (§4.3) |
 
-**Custódia: 20% → 62%** (8 de 13 pontos de execução reais). A garantia contra
-regressão é `tests/test_arquitetura_custodia_kernel.py`, que trava por arquivo
-quem pode fechar run por fora e exige justificativa escrita para cada exceção.
+### Números finais
+
+| | antes do S8 | depois |
+|---|---|---|
+| **contato** com o Kernel | 6/14 (43%) | **14/14 (100%)** |
+| **custódia** (o Kernel decide `completed`) | 3/14 (21%) | **11/14 (79%)** |
+
+Os três sem custódia são os que **não podem** tê-la, cada um por um motivo
+estrutural, não por falta de trabalho: `/stream` e `/v1` streaming (o gerador SSE
+é dono do run, e envolvê-lo disputaria a posse com a thread órfã) e
+`orchestrate run` (§4.4). Forçar custódia neles produziria falso sucesso — que é
+o defeito que o harness existe para impedir.
+
+A garantia contra regressão é `tests/test_arquitetura_custodia_kernel.py`, que
+trava **por arquivo** quem pode fechar run por fora, com contagem fixa e
+justificativa escrita. Caminho novo não entra em silêncio; e quando uma dívida é
+paga, o teste falha pedindo para travar o ganho.
+
+### 4.4 Por que `orchestrate run` fica em `admit_only`
+
+Três modos, e `--background` / `--mode durable` **submetem e retornam**: o
+trabalho segue depois, em outro processo, sob o `OrchestrationRun` — que é a
+unidade de ciclo de vida real ali. Um run síncrono do Kernel reportaria
+`completed` para trabalho que ainda não aconteceu.
+
+O que `admit()` entrega e vale: kill-switch central, policy e budget avaliados
+**antes de qualquer LLM**, com Run auditável. O desfecho substantivo fica com o
+`OrchestrationRun`.
 
 ### 4.1 Por que o scheduler perdeu a flag
 

@@ -46,6 +46,17 @@ PERMITIDOS: dict[str, tuple[int, str]] = {
         "diagnóstico o faria depender da policy que ele deveria ajudar a testar",
     ),
     # ── exceções que ainda são dívida, cada uma com o motivo ────────────────
+    "commands/orchestrate_cmd.py": (
+        2,
+        "orchestrate run entra por admit() de propósito: TRÊS modos, e "
+        "--background/--mode durable submetem e retornam — o trabalho segue "
+        "depois, em outro processo, sob o OrchestrationRun, que é a unidade de "
+        "ciclo de vida real ali. Um run síncrono do Kernel reportaria completed "
+        "para trabalho que não aconteceu: falso sucesso, o que o harness combate. "
+        "Sem custódia, quem admitiu fecha — senão o run fica preso em running "
+        "até o recover() de 15min. O que admit() entrega e vale: kill-switch, "
+        "policy e budget antes de qualquer LLM.",
+    ),
     "server.py": (
         13,
         "TRÊS grupos, todos rastreados em docs/harness/EXECUTION_PATHS.md:\n"
