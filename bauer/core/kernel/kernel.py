@@ -394,6 +394,16 @@ class BauerKernel:
                 try:
                     result = (executor(payload) if executor is not None
                               else adapter.run_agent(payload)) or {}
+                    if result.get("status") == "cancelled":
+                        # Interrupção deliberada no MEIO da execução (kill-switch
+                        # entre rodadas de um loop autônomo, Ctrl+C). Não é falha:
+                        # retry, fallback, gates e replan todos ficariam errados
+                        # aqui — ninguém pediu para insistir. Terminal na hora.
+                        self.runs.update_run(run.id, status="cancelled",
+                                             error=str(result.get("error") or "cancelado"))
+                        trajectory.append("cancelled")
+                        return self._result(run.id, session_id, trajectory,
+                                            decision=decision, output=result.get("output"))
                     if result.get("status") == "failed" or result.get("event") == "run.failed":
                         last_error = str(result.get("error") or "executor failed")
                     else:

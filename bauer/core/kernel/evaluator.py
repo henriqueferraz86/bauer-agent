@@ -15,6 +15,7 @@ problema do gate, não do resultado; conta como passed com ressalva no reason.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -56,16 +57,38 @@ class NonEmptyOutputGate:
 
 
 class NoTracebackGate:
-    """Stacktrace no output = executor 'completou' engolindo um erro."""
+    """O output É um stacktrace = executor 'completou' engolindo um erro.
+
+    ESCOPO DELIBERADAMENTE ESTREITO: só reprova quando o output **começa** com
+    a assinatura de crash (fora de code fence). A versão anterior reprovava
+    qualquer output que *contivesse* um traceback, e isso quebra o uso mais
+    comum de todos — o agente MOSTRANDO ao usuário o erro que acabou de
+    encontrar. Medido: reprovava 3 de 3 casos, incluindo dois legítimos
+    ("Encontrei a causa. O teste falha assim: <traceback>. O fix é ...").
+
+    Com o evaluator ligado isso não é cosmético: o gate reprovado consome o
+    orçamento de replan e depois derruba o run. Toda sessão de depuração
+    falharia.
+
+    Um traceback dentro de ``` é citação, nunca crash. Prosa antes dele é
+    narração. Crash de verdade abre o output e nada mais.
+
+    A checagem substantiva de "deu certo?" não é farejar texto — é o gate de
+    testes (S11, embrulhando app_verify). Este gate cobre só o caso gritante.
+    """
 
     name = "no_traceback"
-    _MARKERS = ("Traceback (most recent call last)", "\nSyntaxError:", "\nTypeError:")
+    _MARKERS = ("Traceback (most recent call last)", "SyntaxError:", "TypeError:")
+    _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
     def check(self, *, request: Any, result: dict[str, Any]) -> GateResult:
-        output = str(result.get("output") or "")
+        # fences fora: o que está citado num bloco de código é evidência que o
+        # agente está exibindo, não o output do processo
+        output = self._FENCE_RE.sub("", str(result.get("output") or "")).lstrip()
         for marker in self._MARKERS:
-            if marker in output:
-                return GateResult(self.name, False, f"output contém erro: {marker.strip()}")
+            if output.startswith(marker):
+                return GateResult(self.name, False,
+                                  f"output é um stacktrace, não uma resposta: {marker}")
         return GateResult(self.name, True)
 
 

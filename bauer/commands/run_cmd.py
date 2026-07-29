@@ -147,19 +147,9 @@ def run(
     )
 
     kill_control = None
-    admitted_run = None
     if kernel is not None:
-        from ..core.kernel import KernelRequest
         from ..core.runtime.resilience import RuntimeControl
         kill_control = RuntimeControl(store=kernel.runs.store)
-        admitted_run, early = kernel.admit(KernelRequest(
-            task=task, agent_id="cli.run", input={"endpoint": "bauer run", "workspace": str(ws)},
-        ))
-        if early is not None:
-            reason = early.error or early.policy_reason or early.status
-            console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {reason}")
-            raise typer.Exit(code=EXIT_INCOMPLETE)
-        kernel.runs.start_run(admitted_run.id)
 
     def _turn_fn():
         return run_one_turn_with_fallback(ctx, router, client, model_name, fallback_clients)
@@ -192,25 +182,82 @@ def run(
         _print_round(n, budget, tl)
 
     router._approval_callback = engine.make_approval_callback()
-    stop_reason = "completed"
+    # None = o executor ainda não rodou. Distingue "a governança barrou antes de
+    # começar" de "o laço rodou e terminou assim" — com execute(), um deny de
+    # policy devolve run terminal SEM chamar o executor.
+    stop_reason: str | None = None
     rounds = 0
-    last_text = ""
-    tool_log: list = []
+
+    def _rodar_loop(payload: dict | None = None) -> dict:
+        """O laço de rodadas como EXECUTOR do Kernel.
+
+        Com custódia (``kernel.execute``), quem decide ``completed`` é o Kernel,
+        depois dos gates — e não este código. Antes o ``bauer run`` admitia via
+        ``kernel.admit()`` e fechava o run com ``runs.complete_run()``: o caller
+        declarando sucesso, exatamente o que o harness precisa impedir. Medido:
+        o Evaluator NUNCA rodava no caminho mais autônomo do Bauer.
+
+        ``replan_feedback`` no payload é o motivo do gate reprovado — vira nudge
+        para o laço corrigir o rumo na próxima passada, dentro do orçamento que
+        sobrou (o ``budget`` é o mesmo objeto, então replan não ganha crédito
+        novo: se acabou, a passada seguinte encerra no topo).
+        """
+        nonlocal stop_reason, rounds
+        feedback = (payload or {}).get("replan_feedback")
+        if feedback:
+            ctx.add_user(f"A validação reprovou o resultado anterior: {feedback}\n"
+                         f"Corrija isso e conclua.")
+        last_text = ""
+        try:
+            stop_reason, rounds, last_text, _tool_log = run_loop_rounds(
+                goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
+                should_stop=_should_stop, on_round=_on_round,
+            )
+        except KeyboardInterrupt:
+            # KeyboardInterrupt é BaseException: o `except Exception` do Kernel
+            # NÃO o pega, e o run ficaria preso em `running` até o recover()
+            # (15 min). Traduzir aqui para cancelamento é o que fecha o run.
+            stop_reason = "interrupted"
+        snap = budget.snapshot()
+        out: dict = {"output": last_text, "tool_calls_count": snap.tool_calls,
+                     "cost_estimate": round(snap.cost_usd, 6)}
+        if stop_reason == "interrupted":
+            return {**out, "status": "cancelled", "error": "interrompido pelo usuário (Ctrl+C)"}
+        if stop_reason == "kill_switch":
+            # cancelamento, não falha — o Kernel trata terminal sem retry/replan
+            return {**out, "status": "cancelled", "error": "runtime kill switch ativo"}
+        if stop_reason != "completed":
+            return {**out, "status": "failed", "error": f"bauer run parou: {stop_reason}"}
+        return out
+
     try:
-        stop_reason, rounds, last_text, tool_log = run_loop_rounds(
-            goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
-            should_stop=_should_stop,
-            on_round=_on_round,
-        )
+        if kernel is None:
+            _rodar_loop()
+        else:
+            from ..core.kernel import KernelRequest
+            kout = kernel.execute(
+                KernelRequest(task=task, agent_id="cli.run",
+                              input={"endpoint": "bauer run", "workspace": str(ws)}),
+                executor=_rodar_loop,
+            )
+            if stop_reason is None:
+                # executor nunca chamado: kill-switch, policy deny ou ask no
+                # preflight — o mesmo bloqueio que o admit() reportava antes
+                motivo = kout.error or kout.policy_reason or kout.status
+                console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {motivo}")
+                stop_reason = "bloqueado"
+            elif kout.status != "completed" and stop_reason == "completed":
+                # o veredito do Kernel VENCE o do laço: gate reprovado derruba um
+                # "completed" que o laço achava que tinha conquistado
+                stop_reason = "validacao_reprovou"
+                console.print(f"[yellow]⚠ Validação reprovou:[/yellow] {kout.error or ''}")
     except KeyboardInterrupt:
         stop_reason = "interrupted"
     finally:
         cost_sink.reset(_cost_token)
         router._approval_callback = None
-        if admitted_run is not None:
-            _finalize_run(kernel, admitted_run.id, stop_reason, last_text, tool_log, budget)
 
-    _summary(stop_reason, rounds, budget)
+    _summary(stop_reason or "completed", rounds, budget)
 
     if stop_reason == "interrupted":
         raise typer.Exit(code=EXIT_INTERRUPTED)
@@ -252,6 +299,10 @@ def _summary(stop_reason: str, rounds: int, budget) -> None:
         "empty_response": "[yellow]Resposta vazia — parei[/yellow]",
         "max_rounds": "[yellow]Teto de rodadas atingido[/yellow]",
         "interrupted": "[red]■ Interrompido (Ctrl+C)[/red]",
+        # o laço achou que terminou; o gate do Kernel discordou
+        "validacao_reprovou": "[red]✗ Validação reprovou o resultado[/red]",
+        # governança barrou no preflight — o executor nunca rodou
+        "bloqueado": "[red]⛔ Bloqueado pela governança[/red]",
     }
     snap = budget.snapshot()
     console.print(
@@ -261,19 +312,8 @@ def _summary(stop_reason: str, rounds: int, budget) -> None:
     )
 
 
-def _finalize_run(kernel, run_id: str, stop_reason: str, last_text: str,
-                  tool_log: list, budget) -> None:
-    """Fecha o Run no Kernel conforme o desfecho (o admit deixou em running)."""
-    try:
-        snap = budget.snapshot()
-        cost = round(snap.cost_usd, 6)
-        if stop_reason == "completed":
-            kernel.runs.complete_run(run_id, output={"response": last_text},
-                                     tool_calls_count=snap.tool_calls, cost_estimate=cost)
-        elif stop_reason == "kill_switch":
-            kernel.runs.update_run(run_id, status="cancelled", error="runtime kill switch ativo")
-        else:
-            kernel.runs.fail_run(run_id, f"bauer run parou: {stop_reason}")
-    except Exception as exc:  # noqa: BLE001 — finalização best-effort
-        from ..logging_config import log_suppressed
-        log_suppressed("run_cmd.finalize", exc)
+# _finalize_run REMOVIDO: era o caller decidindo o desfecho do run
+# (complete_run/fail_run/cancelled à mão) porque o `bauer run` entrava por
+# kernel.admit(), sem custódia. Agora entra por kernel.execute() com o laço de
+# rodadas como executor — quem fecha o run é o Kernel, depois dos gates.
+# O executor só REPORTA o desfecho (status cancelled/failed no dict de retorno).

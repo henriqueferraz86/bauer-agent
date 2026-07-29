@@ -583,12 +583,35 @@ def test_empty_output_reproved():
 
 
 def test_traceback_in_output_reproved():
+    """O gate reprova output que É um stacktrace — não output que CONTÉM um.
+
+    Contrato ESTREITADO de propósito (ver tests/test_gate_traceback_falso_positivo.py).
+    A versão anterior deste teste exigia reprovar "fiz tudo!\\nTraceback...", e
+    ela tinha razão: é falso sucesso. O problema é que a regra que pega esse
+    caso ("contém traceback") também reprova o oposto semântico — o agente
+    MOSTRANDO ao usuário o erro que acabou de diagnosticar. Prosa seguida de
+    traceback descreve os dois casos; nenhum farejador de texto os separa.
+
+    Escolha: preferimos deixar passar um falso sucesso a reprovar toda sessão de
+    depuração. Um é raro e tem rede embaixo (o gate de testes do S11, que checa
+    execução em vez de texto); o outro é diário e derruba o run depois de gastar
+    o orçamento de replan.
+
+    CUSTO ACEITO: até o gate de testes existir, "fiz tudo!" + traceback passa.
+    """
     from bauer.core.kernel.evaluator import Evaluator
 
     v = Evaluator().evaluate(run_id="r", request=None, result={
-        "output": "fiz tudo!\nTraceback (most recent call last):\n  File ..."
+        "output": "Traceback (most recent call last):\n  File ..."
     })
     assert not v.passed and "no_traceback" in v.reason
+
+    # o caso que o contrato novo deixa passar, explicitado para não voltar
+    # como surpresa
+    v2 = Evaluator().evaluate(run_id="r", request=None, result={
+        "output": "fiz tudo!\nTraceback (most recent call last):\n  File ..."
+    })
+    assert v2.passed, "prosa + traceback passa; quem pega isso é o gate de testes (S11)"
 
 
 def test_callable_gate_with_reason():
