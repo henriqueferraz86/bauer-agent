@@ -165,7 +165,11 @@ class BauerKernel:
             request, _NO_EXECUTION,  # sentinela: sem resolução de adapter
         )
         _decision, early = self._preflight(request, run, session_id, trajectory)
-        return run, early
+        # _open_run devolve o snapshot de `created`; o preflight já transicionou
+        # até `queued` NO STORE. Devolver o objeto velho fazia `run.status` dizer
+        # "created" contra um estado persistido "queued" — a docstring acima
+        # promete queued, e um caller que confiasse nela leria errado.
+        return (self.runs.get_run(run.id) or run), early
 
     def stream(self, request: KernelRequest, *, executor: Any | None = None):
         """Generator: mesma máquina de estados de ``execute``, mas re-emite os
@@ -390,6 +394,16 @@ class BauerKernel:
                 try:
                     result = (executor(payload) if executor is not None
                               else adapter.run_agent(payload)) or {}
+                    if result.get("status") == "cancelled":
+                        # Interrupção deliberada no MEIO da execução (kill-switch
+                        # entre rodadas de um loop autônomo, Ctrl+C). Não é falha:
+                        # retry, fallback, gates e replan todos ficariam errados
+                        # aqui — ninguém pediu para insistir. Terminal na hora.
+                        self.runs.update_run(run.id, status="cancelled",
+                                             error=str(result.get("error") or "cancelado"))
+                        trajectory.append("cancelled")
+                        return self._result(run.id, session_id, trajectory,
+                                            decision=decision, output=result.get("output"))
                     if result.get("status") == "failed" or result.get("event") == "run.failed":
                         last_error = str(result.get("error") or "executor failed")
                     else:
@@ -428,8 +442,7 @@ class BauerKernel:
                 if switched:
                     continue
 
-                self.runs.fail_run(run.id, last_error)
-                trajectory.append("failed")
+                self._fail_se_nao_terminal(run.id, last_error, trajectory)
                 return self._result(run.id, session_id, trajectory, decision=decision,
                                     output=result.get("output"))
 
@@ -465,6 +478,24 @@ class BauerKernel:
                             output=result.get("output"))
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _fail_se_nao_terminal(self, run_id: str, error: str,
+                              trajectory: list[str]) -> None:
+        """fail_run que NÃO sobrescreve um desfecho já decidido.
+
+        ``RunManager.cancel_run`` protege terminais; ``fail_run`` não. Isso abre
+        uma corrida real: o usuário cancela (``/loop/{id}/stop``) enquanto o
+        executor está retornando falha — e o ``failed`` apagava o ``cancelled``.
+        Cancelamento é decisão de quem manda; falha é consequência. A decisão
+        vence.
+        """
+        from ..runtime.run_manager import TERMINAL_RUN_STATUSES
+        atual = self.runs.get_run(run_id)
+        if atual is not None and atual.status in TERMINAL_RUN_STATUSES:
+            trajectory.append(atual.status)
+            return
+        self.runs.fail_run(run_id, error)
+        trajectory.append("failed")
 
     def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
         current = self.runs.get_run(run.id).status
@@ -568,6 +599,41 @@ def kernel_enabled(cfg: Any) -> bool:
         return bool(getattr(getattr(cfg, "kernel", None), "enabled", False))
     except Exception:  # noqa: BLE001
         return False
+
+
+class KernelWiringError(RuntimeError):
+    """``kernel.enabled: true`` pedido, mas a composição do Kernel falhou.
+
+    Erro, não aviso: governança pedida e silenciosamente não entregue é o pior
+    resultado possível — o run roda ingovernado com a config afirmando o
+    contrário.
+    """
+
+
+def require_kernel(cfg: Any, build_fn: Any, *, label: str) -> "BauerKernel | None":
+    """Aplica a semântica da flag num só lugar.
+
+    - ``kernel.enabled`` desligado → ``None``, caminho legado intocado.
+    - ligado → ``build_fn()``; qualquer falha vira :class:`KernelWiringError`.
+
+    Existe porque os call sites embrulhavam ``build_kernel`` em
+    ``except Exception: log_suppressed(...)``. Com a flag LIGADA isso degradava
+    para execução ingovernada sem ninguém perceber — o log é gravado, mas o run
+    prossegue como se nada fosse. Medir cobertura do Kernel nessas condições é
+    impossível: o número mede o que o wiring conseguiu, não o que foi pedido.
+
+    ``label`` identifica o call site na mensagem de erro (ex.: ``"bauer run"``).
+    """
+    if not kernel_enabled(cfg):
+        return None
+    try:
+        return build_fn()  # type: ignore[no-any-return]
+    except Exception as exc:  # noqa: BLE001 — reembalado com contexto do call site
+        raise KernelWiringError(
+            f"kernel.enabled: true, mas a composição do Kernel falhou em {label}: "
+            f"{type(exc).__name__}: {exc}. Corrija a config ou desligue "
+            f"kernel.enabled — rodar ingovernado em silêncio não é opção."
+        ) from exc
 
 
 def evaluator_from_config(cfg: Any):

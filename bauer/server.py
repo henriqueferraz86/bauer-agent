@@ -772,35 +772,37 @@ def create_app(
     # approval_manager/budget_manager JÁ CONSTRUÍDOS acima — não duplica
     # estado. Desligado (default): /chat roda EXATAMENTE como antes, zero
     # kernel.execute() na hora, zero risco.
+    # Wiring quebrado com a flag LIGADA derruba o boot (KernelWiringError) em
+    # vez de subir um serve que afirma governar e não governa. Sem config_path
+    # não há flag para ler — segue desligado, como antes.
     _kernel = None
-    try:
-        if config_path is not None:
-            from .config_loader import load_config as _load_kernel_cfg
-            _kcfg = _load_kernel_cfg(config_path)
-            if bool(getattr(getattr(_kcfg, "kernel", None), "enabled", False)):
-                from .core.kernel import BauerKernel
-                from .core.kernel.kernel import evaluator_from_config
-                from .core.policy.engine import PolicyEngine
-                from .core.runtime.resilience import RuntimeControl
+    if config_path is not None:
+        from .config_loader import load_config as _load_kernel_cfg
+        from .core.kernel import require_kernel
+        _kcfg = _load_kernel_cfg(config_path)
 
-                _kernel = BauerKernel(
-                    runs=run_manager, bus=event_bus,
-                    policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
-                    control=RuntimeControl(store=event_bus.store),
-                    approvals=approval_manager,
-                    # budget=None DE PROPÓSITO: o executor do /chat já grava o
-                    # custo via _record_turn_budget; se o Kernel também gravasse
-                    # (_record_cost), cada turno contaria DOBRADO no orçamento
-                    # (_used_since soma todas as linhas de run_costs, sem dedup).
-                    # O gate pré-run continua funcionando: a PolicyEngine tem seu
-                    # próprio BudgetManager lendo o mesmo runtime_root.
-                    budget=None,
-                    evaluator=evaluator_from_config(_kcfg),
-                )
-    except Exception as exc:  # noqa: BLE001 — kernel é opt-in; falha de wiring nunca derruba o serve
-        from .logging_config import log_suppressed
-        log_suppressed("serve.kernel_wiring", exc)
-        _kernel = None
+        def _compose_serve_kernel():
+            from .core.kernel import BauerKernel
+            from .core.kernel.kernel import evaluator_from_config
+            from .core.policy.engine import PolicyEngine
+            from .core.runtime.resilience import RuntimeControl
+
+            return BauerKernel(
+                runs=run_manager, bus=event_bus,
+                policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
+                control=RuntimeControl(store=event_bus.store),
+                approvals=approval_manager,
+                # budget=None DE PROPÓSITO: o executor do /chat já grava o
+                # custo via _record_turn_budget; se o Kernel também gravasse
+                # (_record_cost), cada turno contaria DOBRADO no orçamento
+                # (_used_since soma todas as linhas de run_costs, sem dedup).
+                # O gate pré-run continua funcionando: a PolicyEngine tem seu
+                # próprio BudgetManager lendo o mesmo runtime_root.
+                budget=None,
+                evaluator=evaluator_from_config(_kcfg),
+            )
+
+        _kernel = require_kernel(_kcfg, _compose_serve_kernel, label="bauer serve")
 
     def _wire_router_to_serve(r) -> None:
         """Aponta o EventBus/policy_root de um ToolRouter para os DESTE serve.
@@ -2157,7 +2159,10 @@ def create_app(
                 if _early.policy_action == "deny":
                     raise HTTPException(status_code=403, detail=_early.error or "Bloqueado pela politica.")
                 raise HTTPException(status_code=503, detail=_early.error or "Execução bloqueada.")
-            run_manager.start_run(run.id)
+            # NÃO chama start_run aqui: o run fica em `queued` e o worker assume a
+            # custódia via kernel.continue_run() (core/kernel/entry.continue_governed).
+            # É o que faz os gates rodarem no /loop da web — com admit() sozinho o
+            # Evaluator nunca rodava, igual ao que o S7 mediu no `bauer run`.
         else:
             run = run_manager.create_run(
                 session_id=sid, agent_id=request_agent_id,
@@ -2257,11 +2262,44 @@ def create_app(
                     from .logging_config import log_suppressed
                     log_suppressed("serve.loop_round_event", exc)
 
-            try:
-                stop_reason, _rounds, last_text, all_tools = run_loop_rounds(
+            stop_reason, last_text, all_tools = "error", "", []
+
+            def _rodar_rodadas(payload: dict) -> dict:
+                """O laço como executor do Kernel — quem conclui é o Kernel."""
+                nonlocal stop_reason, last_text, all_tools
+                feedback = (payload or {}).get("replan_feedback")
+                if feedback:
+                    ctx.add_user(f"A validação reprovou o resultado anterior: {feedback}\n"
+                                 f"Corrija isso e conclua.")
+                stop_reason, _r, last_text, all_tools = run_loop_rounds(
                     goal=req.message, ctx=ctx, turn_fn=_turn, budget=budget,
                     should_stop=_should_stop, on_round=_on_round,
                 )
+                out = {"output": last_text, "tool_calls_count": len(all_tools),
+                       "cost_estimate": round(cost.total_usd, 6)}
+                if stop_reason in ("kill_switch", "cancelled"):
+                    # `cancelled` vem do _should_stop quando /loop/{id}/stop foi
+                    # chamado: é decisão do usuário, não falha. Mapear para failed
+                    # faria o Kernel sobrescrever o `cancelled` já persistido.
+                    return {**out, "status": "cancelled",
+                            "error": ("runtime kill switch ativo"
+                                      if stop_reason == "kill_switch"
+                                      else "cancelado pelo usuário")}
+                if stop_reason in ("completed", "budget_exhausted", "max_rounds"):
+                    # Bater um limite de segurança NÃO é falha — é o guardrail
+                    # funcionando, e o run continua `completed` (semântica que a
+                    # UI usa para dizer "limite atingido", não "falhou").
+                    return out
+                return {**out, "status": "failed", "error": f"loop parou: {stop_reason}"}
+
+            try:
+                from .core.kernel import continue_governed
+                _gov = continue_governed(_kernel, run.id, _rodar_rodadas)
+                if (_kernel is not None and not _gov.ok
+                        and stop_reason == "completed"):
+                    # gate reprovou o que o laço julgava concluído
+                    stop_reason = "validacao_reprovou"
+                    last_text = last_text or (_gov.error or "")
             except BaseException as exc:  # noqa: BLE001 — thread nunca morre muda
                 stop_reason, last_text, all_tools = "error", str(exc), []
             finally:
@@ -2279,21 +2317,28 @@ def create_app(
                 state_obj.cost_usd = round(cost.total_usd, 6)
                 state_obj.last_text = (last_text or state_obj.last_text)[-2000:]
                 state_obj.finished_at = _dt.now(_UTC).isoformat()
+                # Governado: o Kernel JÁ fechou o run (continue_governed). Aqui só
+                # se traduz o desfecho para o estado que a UI mostra — reescrever o
+                # run seria o caller decidindo de novo, que é o que a custódia
+                # existe para impedir.
+                _governado = _kernel is not None
                 current = run_manager.get_run(run.id)
                 if current is not None and current.status == "cancelled":
                     state_obj.state = "stopped"
                 elif stop_reason == "completed":
                     state_obj.state = "completed"
-                    run_manager.complete_run(
-                        run.id,
-                        output={"response": _format_server_response(last_text)},
-                        tool_calls_count=state_obj.tool_calls,
-                        cost_estimate=round(cost.total_usd, 6),
-                    )
+                    if not _governado:
+                        run_manager.complete_run(
+                            run.id,
+                            output={"response": _format_server_response(last_text)},
+                            tool_calls_count=state_obj.tool_calls,
+                            cost_estimate=round(cost.total_usd, 6),
+                        )
                 elif stop_reason == "kill_switch":
                     state_obj.state = "stopped"
-                    run_manager.update_run(run.id, status="cancelled",
-                                           error="runtime kill switch ativo")
+                    if not _governado:
+                        run_manager.update_run(run.id, status="cancelled",
+                                               error="runtime kill switch ativo")
                 elif stop_reason in ("budget_exhausted", "max_rounds"):
                     # Atingir um limite de segurança NÃO é falha — é o guardrail
                     # funcionando. Estado próprio ("limit") + qual limite estourou,
@@ -2301,15 +2346,20 @@ def create_app(
                     state_obj.state = "limit"
                     dim = budget.exhausted_dimension() if stop_reason == "budget_exhausted" else "nº de rodadas"
                     state_obj.stop_reason = f"limite de {dim} atingido" if dim else "limite atingido"
-                    run_manager.complete_run(
-                        run.id,
-                        output={"response": _format_server_response(last_text)},
-                        tool_calls_count=state_obj.tool_calls,
-                        cost_estimate=round(cost.total_usd, 6),
-                    )
+                    if not _governado:
+                        run_manager.complete_run(
+                            run.id,
+                            output={"response": _format_server_response(last_text)},
+                            tool_calls_count=state_obj.tool_calls,
+                            cost_estimate=round(cost.total_usd, 6),
+                        )
+                elif stop_reason == "validacao_reprovou":
+                    # o gate do Kernel derrubou um "completed" do laço
+                    state_obj.state = "failed"
                 else:
                     state_obj.state = "failed"
-                    run_manager.fail_run(run.id, f"loop parado: {stop_reason}")
+                    if not _governado:
+                        run_manager.fail_run(run.id, f"loop parado: {stop_reason}")
             except Exception:  # noqa: BLE001
                 _log.exception("Falha ao finalizar loop (run %s)", run.id)
 
@@ -2424,20 +2474,44 @@ def create_app(
 
         _turn_client, active_model, _v1_route = _resolve_turn_model(last_user_message)
         completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
-        run = run_manager.create_run(
-            session_id=sid,
-            agent_id=request_agent_id,
-            runtime_adapter="bauer_native",
-            input={
-                "messages": [msg.model_dump() for msg in req.messages],
-                "stream": req.stream,
-                "endpoint": "/v1/chat/completions",
-                "message": last_user_message,
-                "selected_agent": resolved.get("agent_id") or "",
-                "selected_skill": getattr(resolved.get("skill"), "name", ""),
-            },
-            status="running",
-        )
+        _v1_input = {
+            "messages": [msg.model_dump() for msg in req.messages],
+            "stream": req.stream,
+            "endpoint": "/v1/chat/completions",
+            "message": last_user_message,
+            "selected_agent": resolved.get("agent_id") or "",
+            "selected_skill": getattr(resolved.get("skill"), "name", ""),
+        }
+        if _kernel is not None:
+            # Governança na entrada (kill-switch, policy, budget) ANTES do LLM.
+            # O run fica em `queued`; quem o leva ao fim depende do modo:
+            #   não-streaming -> continue_governed() abaixo, custódia completa
+            #   streaming     -> start_run aqui, admit-only (mesmo motivo do
+            #                    /stream: o gerador SSE é dono do run)
+            from .core.kernel import KernelRequest as _KReq
+            run, _early = _kernel.admit(_KReq(
+                task=last_user_message, session_id=sid, agent_id=request_agent_id,
+                input=_v1_input,
+            ))
+            if _early is not None:
+                if _early.status == "waiting_approval":
+                    raise HTTPException(
+                        status_code=202,
+                        detail=f"Aguardando aprovação ({_early.approval_id}): "
+                               f"{_early.policy_reason}",
+                    )
+                if _early.policy_action == "deny":
+                    raise HTTPException(status_code=403,
+                                        detail=_early.error or "Bloqueado pela politica.")
+                raise HTTPException(status_code=503,
+                                    detail=_early.error or "Execução bloqueada.")
+            if req.stream:
+                run_manager.start_run(run.id)
+        else:
+            run = run_manager.create_run(
+                session_id=sid, agent_id=request_agent_id,
+                runtime_adapter="bauer_native", input=_v1_input, status="running",
+            )
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
         _publish_route(run.id, sid, request_agent_id, _v1_route)
         resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
@@ -2543,27 +2617,52 @@ def create_app(
         _cost = _TurnCostRecorder(sid)
         _cost_token = cost_sink.set(_cost)
         _ids_token = set_runtime_ids(sid, run.id)
+        _turno: dict = {}
+
+        def _executar_v1(payload: dict) -> dict:
+            """O turno como executor do Kernel — quem conclui é o Kernel."""
+            feedback = (payload or {}).get("replan_feedback")
+            if feedback:
+                ctx.add_user(f"A validação reprovou a resposta anterior: {feedback}\n"
+                             f"Corrija e responda de novo.")
+            resposta, tl = run_one_turn(ctx, router, _turn_client, active_model)
+            _turno["response"] = _format_server_response(resposta)
+            _turno["tool_log"] = tl
+            return {"output": _turno["response"], "tool_calls_count": len(tl),
+                    "cost_estimate": round(_cost.total_usd, 6)}
+
         try:
-            response, tool_log = run_one_turn(ctx, router, _turn_client, active_model)
+            from .core.kernel import continue_governed
+            _gov = continue_governed(_kernel, run.id, _executar_v1)
         except Exception as exc:
             _log.exception("Erro interno em /v1/chat/completions: %s", exc)
-            run_manager.fail_run(run.id, str(exc))
+            if _kernel is None:
+                run_manager.fail_run(run.id, str(exc))
             raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
         finally:
             cost_sink.reset(_cost_token)
             reset_runtime_ids(_ids_token)
 
+        if not _gov.ok:
+            # executor falhou ou gate reprovou — o Kernel já fechou o run
+            _log.warning("/v1/chat/completions não concluiu: %s", _gov.error)
+            raise HTTPException(status_code=500,
+                                detail=_gov.error or "Erro interno — consulte os logs do servidor.")
+
+        response = _turno.get("response", "")
+        tool_log = _turno.get("tool_log", [])
         _metrics.tool_calls_total += len(tool_log)
         _record_turn_budget(_cost, run.id, request_agent_id)
-        response = _format_server_response(response)
         store.save(sid, ctx.messages)
         session_manager.touch_session(sid, state={"last_run_id": run.id})
-        run_manager.complete_run(
-            run.id,
-            output={"response": response},
-            tool_calls_count=len(tool_log),
-            cost_estimate=round(_cost.total_usd, 6),
-        )
+        if _kernel is None:
+            # governado, o Kernel já concluiu depois dos gates
+            run_manager.complete_run(
+                run.id,
+                output={"response": response},
+                tool_calls_count=len(tool_log),
+                cost_estimate=round(_cost.total_usd, 6),
+            )
 
         # Estima tokens (sem tokenizer real)
         prompt_tokens = sum(len(m.get("content", "")) // 4 for m in ctx.messages[:-1])

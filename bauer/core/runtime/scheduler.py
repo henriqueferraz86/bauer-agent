@@ -48,6 +48,7 @@ class Scheduler:
         store: JsonlStateStore | None = None,
         event_bus: EventBus | None = None,
         adapter_factory: AdapterFactory | None = None,
+        config: Any = None,
     ) -> None:
         self.root = Path(root)
         self.store = store or JsonlStateStore(self.root)
@@ -58,6 +59,9 @@ class Scheduler:
         self.worker_registry = WorkerRegistry(store=self.store)
         self.budget_manager = BudgetManager(store=self.store, event_bus=self.event_bus)
         self.adapter_factory = adapter_factory or _default_adapter_factory
+        self._config = config
+        self._kernel: Any = None
+        self._kernel_resolvido = False
 
     def add_task(self, task: TaskDefinition | dict[str, Any]) -> TaskDefinition:
         definition = task if isinstance(task, TaskDefinition) else task_from_mapping(task)
@@ -170,21 +174,6 @@ class Scheduler:
             agent_id=task.agent_id,
             state={"task_id": task.id, "scheduler": "local"},
         )
-        run = self.run_manager.create_run(
-            session_id=session.id,
-            agent_id=task.agent_id,
-            runtime_adapter=task.runtime_adapter,
-            input={"task_id": task.id, **task.input},
-            status="running",
-        )
-        self.event_bus.publish(
-            "schedule.triggered",
-            run_id=run.id,
-            session_id=session.id,
-            agent_id=task.agent_id,
-            status="triggered",
-            data={"task_id": task.id, "manual": manual, "schedule": task.schedule},
-        )
 
         retry_count = max(0, int(task.policy.get("retry_count", 0) or 0))
         retry_backoff = max(0.0, float(task.policy.get("retry_backoff", 0) or 0))
@@ -194,78 +183,139 @@ class Scheduler:
             float(task.policy.get("max_runtime_s", profile.max_runtime_s_per_run) or 0),
         )
         max_tool_calls = int(task.policy.get("max_tool_calls", profile.max_tool_calls_per_run) or 0)
-        last_error = ""
-        for attempt in range(retry_count + 1):
-            if attempt > 0 and retry_backoff:
-                time.sleep(retry_backoff)
-            adapter = self.adapter_factory(task.runtime_adapter)
-            try:
-                # max_runtime_s é enforçado DURANTE a execução (deadline real
-                # por tentativa), não pós-fato. Cada retry ganha o teto cheio —
-                # antes 'started' era setado uma vez fora do loop, então retries
-                # com backoff comiam o orçamento e o limite disparava cedo demais.
-                request = {
-                    "run_id": run.id,
-                    "session_id": session.id,
-                    "agent_id": task.agent_id,
-                    "task": task.input.get("message") or task.input,
-                    "input": task.input,
-                    "policy": task.policy,
-                }
-                result = _run_with_deadline(
-                    lambda req=request: adapter.run_agent(req),
-                    float(max_runtime_s or 0),
-                )
-                if result.get("status") == "failed":
-                    raise RuntimeError(str(result.get("error") or "scheduled task failed"))
-                output = dict(result)
-                cost = float(output.get("cost_estimate") or output.get("cost_usd") or estimated_cost or 0)
-                tool_calls = int(output.get("tool_calls_count") or 0)
-                if max_tool_calls and tool_calls > max_tool_calls:
-                    raise RuntimeError(f"scheduled task exceeded max_tool_calls={max_tool_calls}")
-                self.run_manager.complete_run(
-                    run.id,
-                    output=output,
-                    cost_estimate=cost,
-                    tool_calls_count=tool_calls,
-                )
-                self.budget_manager.record_run_cost(
-                    run_id=run.id,
-                    agent_id=task.agent_id,
-                    company_id=company_id,
-                    cost_usd=cost,
-                    metadata={"task_id": task.id},
-                )
-                self._after_run(task, run.id)
-                return {
-                    "task_id": task.id,
-                    "run_id": run.id,
-                    "status": "completed",
-                    "attempts": attempt + 1,
-                    "result": result,
-                }
-            except Exception as exc:  # noqa: BLE001
-                last_error = str(exc)
-                if attempt < retry_count:
-                    continue
-                self.run_manager.fail_run(run.id, last_error)
+
+        tentativas = [0]
+
+        def _executar(payload: dict[str, Any]) -> dict[str, Any]:
+            """Uma tentativa. O Kernel cuida de retry/backoff e do estado do run.
+
+            O que fica aqui é o que é do SCHEDULER, não do ciclo de vida: o
+            deadline real por tentativa e o teto de tool calls da policy da task.
+            """
+            tentativas[0] += 1
+            run_id = payload.get("run_id")
+            if tentativas[0] == 1:
                 self.event_bus.publish(
-                    "schedule.failed",
-                    run_id=run.id,
-                    session_id=session.id,
-                    agent_id=task.agent_id,
-                    status="failed",
-                    message=last_error,
-                    data={"task_id": task.id, "attempts": attempt + 1},
+                    "schedule.triggered",
+                    run_id=run_id, session_id=session.id, agent_id=task.agent_id,
+                    status="triggered",
+                    data={"task_id": task.id, "manual": manual, "schedule": task.schedule},
                 )
-                self._after_run(task, run.id, error=last_error)
-                return {
-                    "task_id": task.id,
-                    "run_id": run.id,
-                    "status": "failed",
-                    "attempts": attempt + 1,
-                    "error": last_error,
-                }
+            adapter = self.adapter_factory(task.runtime_adapter)
+            # max_runtime_s é enforçado DURANTE a execução (deadline real por
+            # tentativa), não pós-fato. Cada retry ganha o teto cheio.
+            request = {
+                "run_id": run_id,
+                "session_id": session.id,
+                "agent_id": task.agent_id,
+                "task": task.input.get("message") or task.input,
+                "input": task.input,
+                "policy": task.policy,
+            }
+            result = _run_with_deadline(
+                lambda req=request: adapter.run_agent(req),
+                float(max_runtime_s or 0),
+            )
+            if result.get("status") == "failed":
+                return {"status": "failed",
+                        "error": str(result.get("error") or "scheduled task failed")}
+            tool_calls = int(result.get("tool_calls_count") or 0)
+            if max_tool_calls and tool_calls > max_tool_calls:
+                return {"status": "failed",
+                        "error": f"scheduled task exceeded max_tool_calls={max_tool_calls}"}
+            cost = float(result.get("cost_estimate") or result.get("cost_usd")
+                         or estimated_cost or 0)
+            return {**result, "output": result.get("output"),
+                    "tool_calls_count": tool_calls, "cost_estimate": cost,
+                    "_scheduler_result": result}
+
+        from ..kernel.entry import run_governed
+        gov = run_governed(
+            self._resolver_kernel(), _executar,
+            agent_id=task.agent_id, session_id=session.id,
+            task=task.input.get("message") or task.input,
+            input={"task_id": task.id, **task.input},
+            # retry/backoff passam a ser do Kernel (estado `retrying` auditável)
+            max_retries=retry_count, retry_backoff_s=retry_backoff,
+            metadata={"task_id": task.id, "scheduler": "local"},
+        )
+        run_id = gov.run_id or ""
+        resultado = gov.result.get("_scheduler_result", {}) if gov.result else {}
+        cost = float((gov.result or {}).get("cost_estimate") or 0)
+
+        if gov.blocked_before_start:
+            # governança do Kernel barrou (kill-switch central, policy, budget)
+            self.event_bus.publish(
+                "schedule.skipped",
+                run_id=run_id or None, session_id=session.id, agent_id=task.agent_id,
+                status="blocked", message=gov.error or gov.policy_reason or "",
+                data={"task_id": task.id, "reason": "policy"},
+            )
+            if not manual:
+                self._reschedule_skipped(task)
+            return {"task_id": task.id, "run_id": run_id, "status": "blocked",
+                    "reason": "policy", "error": gov.error}
+
+        if gov.ok:
+            if cost:
+                # o Kernel recebe budget=None (ver _resolver_kernel): a
+                # contabilidade fica aqui, com company_id e task_id que o Kernel
+                # não conhece — sem isso o custo contaria DOBRADO
+                self.budget_manager.record_run_cost(
+                    run_id=run_id, agent_id=task.agent_id, company_id=company_id,
+                    cost_usd=cost, metadata={"task_id": task.id},
+                )
+            self._after_run(task, run_id)
+            return {"task_id": task.id, "run_id": run_id, "status": "completed",
+                    "attempts": tentativas[0], "result": resultado or gov.result}
+
+        last_error = gov.error or f"scheduled task {gov.status}"
+        self.event_bus.publish(
+            "schedule.failed",
+            run_id=run_id or None, session_id=session.id, agent_id=task.agent_id,
+            status=gov.status, message=last_error,
+            data={"task_id": task.id, "attempts": tentativas[0]},
+        )
+        self._after_run(task, run_id, error=last_error)
+        return {"task_id": task.id, "run_id": run_id, "status": gov.status,
+                "attempts": tentativas[0], "error": last_error}
+
+    def _resolver_kernel(self) -> Any:
+        """Kernel do scheduler (lazy, uma vez). SEMPRE presente — sem flag.
+
+        Primeiro caminho a perder a alternativa legada (HARNESS-020 aplicado a um
+        caminho só), e por um motivo específico: o scheduler já fazia à mão tudo
+        o que o Kernel faz — criava o Run, rodava o laço de retry com backoff,
+        chamava complete_run/fail_run. Não havia "caminho legado intocado" a
+        preservar; havia uma segunda implementação do mesmo ciclo de vida. Deixar
+        a flag decidir entre as duas seria manter os dois trilhos que o Kernel
+        existe para eliminar.
+
+        O que o Kernel ACRESCENTA: `policy_check` antes de executar, estado
+        `retrying` auditável em vez de retry invisível, e os quality gates.
+
+        Reusa run_manager/event_bus/runtime_control JÁ construídos — não duplica
+        estado. ``budget=None`` de propósito: `run_task` grava o custo com
+        company_id e task_id, que o `_record_cost` do Kernel não tem; se ambos
+        gravassem, cada execução contaria DUAS vezes no orçamento (mesmo motivo
+        do /chat). O gate pré-run continua valendo — a PolicyEngine tem seu
+        próprio BudgetManager lendo o mesmo runtime_root.
+        """
+        if self._kernel_resolvido:
+            return self._kernel
+        self._kernel_resolvido = True
+        from ..kernel.kernel import BauerKernel, evaluator_from_config
+        from ..policy.engine import PolicyEngine
+
+        self._kernel = BauerKernel(
+            runs=self.run_manager, bus=self.event_bus,
+            policy=PolicyEngine(workspace="workspace", runtime_root=str(self.root)),
+            control=self.runtime_control,
+            adapter_factory=lambda name, config=None: self.adapter_factory(name),
+            config=self._config, budget=None,
+            evaluator=evaluator_from_config(self._config) if self._config else None,
+        )
+        return self._kernel
 
     def start_worker(
         self,

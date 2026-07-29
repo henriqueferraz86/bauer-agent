@@ -295,6 +295,37 @@ def orchestrate_run(
     if _active_specs:
         console.print(f"[dim]Specs ativos: {', '.join(s.id for s in _active_specs)}[/dim]")
 
+    # --- Governança de entrada (admissão SEM custódia) ---------------------
+    #
+    # `admit()` e não `execute()`, de propósito. A orquestração tem TRÊS modos e
+    # um deles (`--background`, e o `--mode durable`) submete e retorna: o
+    # trabalho continua depois, em outro processo, sob o `OrchestrationRun` —
+    # que é a unidade de ciclo de vida real ali. Envolver isso num run síncrono
+    # do Kernel faria ele reportar `completed` para trabalho que ainda não
+    # aconteceu: falso sucesso, exatamente o que o harness combate.
+    #
+    # O que `admit()` entrega e vale: kill-switch central, policy e budget
+    # avaliados ANTES de qualquer LLM, com Run auditável. O desfecho fica com o
+    # OrchestrationRun. Mesma exceção documentada do /stream — registrada em
+    # docs/harness/EXECUTION_PATHS.md.
+    from ..core.kernel import build_kernel, require_kernel
+    _orq_kernel = require_kernel(cfg, lambda: build_kernel(cfg, workspace=str(workspace)),
+                                 label="orchestrate run")
+    _orq_run = None
+    if _orq_kernel is not None:
+        from ..core.kernel import KernelRequest as _KReq
+        _orq_run, _orq_early = _orq_kernel.admit(_KReq(
+            task=task, agent_id="cli.orchestrate",
+            input={"endpoint": "bauer orchestrate run", "mode": mode or "sync",
+                   "workspace": str(workspace)},
+        ))
+        if _orq_early is not None:
+            motivo = _orq_early.error or _orq_early.policy_reason or _orq_early.status
+            console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {motivo}")
+            raise typer.Exit(code=1)
+        console.print(f"[dim]run governado:[/dim] {_orq_run.id}")
+        _orq_kernel.runs.start_run(_orq_run.id)
+
     # --- Execucao com tratamento de erros ---
     try:
 
@@ -533,6 +564,7 @@ def orchestrate_run(
         sys.stdout.write(final)
         sys.stdout.write("\n\n")
         sys.stdout.flush()
+        _fechar_run_orquestracao(_orq_kernel, _orq_run, final)
 
     except Exception as exc:
         from ..openai_client import OpenAIClientError as _OCE
@@ -540,11 +572,33 @@ def orchestrate_run(
         _err_type = "Ollama" if isinstance(exc, _OE) else "Provider" if isinstance(exc, _OCE) else "Erro"
         console.print(f"\n[red]{_err_type} no orquestrador:[/red] {exc}")
         console.print("[dim]Use --resume para retomar de onde parou.[/dim]")
+        _fechar_run_orquestracao(_orq_kernel, _orq_run, None, erro=str(exc))
 
     # Restaura system prompt original se foi patchado pelo agent
     if _agent_system_patch:
         _mod, _orig = _agent_system_patch
         _mod._build_system_prompt = _orig  # type: ignore[attr-defined]
+
+
+def _fechar_run_orquestracao(kernel, run, final: "str | None", *, erro: str = "") -> None:
+    """Fecha o Run admitido do ``orchestrate run``.
+
+    Este É um caller decidindo o desfecho — e é a exceção documentada de
+    ``admit()``: sem custódia, quem admitiu tem de fechar, senão o run fica preso
+    em ``running`` até o ``recover()`` de 15 min. O desfecho substantivo da
+    orquestração vive no ``OrchestrationRun``; este run registra a ADMISSÃO e o
+    encerramento do comando.
+    """
+    if kernel is None or run is None:
+        return
+    try:
+        if erro:
+            kernel.runs.fail_run(run.id, f"orchestrate: {erro}")
+        else:
+            kernel.runs.complete_run(run.id, output={"response": (final or "")[:4000]})
+    except Exception as exc:  # noqa: BLE001 — finalização best-effort
+        from ..logging_config import log_suppressed
+        log_suppressed("orchestrate.fechar_run", exc)
 
 
 @orchestrate_app.command("node-worker")
