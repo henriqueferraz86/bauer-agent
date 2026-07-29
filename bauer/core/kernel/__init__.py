@@ -7,6 +7,8 @@ __all__ = [
     "CallableGate",
     "Evaluator",
     "GateResult",
+    "GovernedResult",
+    "run_governed",
     "KernelRequest",
     "KernelRun",
     "KernelStateError",
@@ -34,6 +36,10 @@ def __getattr__(name: str):
         from .states import KernelStateError
 
         return KernelStateError
+    if name in {"GovernedResult", "run_governed"}:
+        from . import entry as _entry
+
+        return getattr(_entry, name)
     if name in {"CallableGate", "Evaluator", "GateResult", "Verdict"}:
         from .evaluator import CallableGate, Evaluator, GateResult, Verdict
 

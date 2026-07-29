@@ -182,6 +182,7 @@ def run(
         _print_round(n, budget, tl)
 
     router._approval_callback = engine.make_approval_callback()
+    from ..core.kernel.entry import CANCELLED, run_governed
     # None = o executor ainda não rodou. Distingue "a governança barrou antes de
     # começar" de "o laço rodou e terminou assim" — com execute(), um deny de
     # policy devolve run terminal SEM chamar o executor.
@@ -207,52 +208,34 @@ def run(
         if feedback:
             ctx.add_user(f"A validação reprovou o resultado anterior: {feedback}\n"
                          f"Corrija isso e conclua.")
-        last_text = ""
-        try:
-            stop_reason, rounds, last_text, _tool_log = run_loop_rounds(
-                goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
-                should_stop=_should_stop, on_round=_on_round,
-            )
-        except KeyboardInterrupt:
-            # KeyboardInterrupt é BaseException: o `except Exception` do Kernel
-            # NÃO o pega, e o run ficaria preso em `running` até o recover()
-            # (15 min). Traduzir aqui para cancelamento é o que fecha o run.
-            stop_reason = "interrupted"
+        stop_reason, rounds, last_text, _tool_log = run_loop_rounds(
+            goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
+            should_stop=_should_stop, on_round=_on_round,
+        )
         snap = budget.snapshot()
         out: dict = {"output": last_text, "tool_calls_count": snap.tool_calls,
                      "cost_estimate": round(snap.cost_usd, 6)}
-        if stop_reason == "interrupted":
-            return {**out, "status": "cancelled", "error": "interrompido pelo usuário (Ctrl+C)"}
         if stop_reason == "kill_switch":
             # cancelamento, não falha — o Kernel trata terminal sem retry/replan
-            return {**out, "status": "cancelled", "error": "runtime kill switch ativo"}
+            return {**out, "status": CANCELLED, "error": "runtime kill switch ativo"}
         if stop_reason != "completed":
             return {**out, "status": "failed", "error": f"bauer run parou: {stop_reason}"}
         return out
 
     try:
-        if kernel is None:
-            _rodar_loop()
-        else:
-            from ..core.kernel import KernelRequest
-            kout = kernel.execute(
-                KernelRequest(task=task, agent_id="cli.run",
-                              input={"endpoint": "bauer run", "workspace": str(ws)}),
-                executor=_rodar_loop,
-            )
-            if stop_reason is None:
-                # executor nunca chamado: kill-switch, policy deny ou ask no
-                # preflight — o mesmo bloqueio que o admit() reportava antes
-                motivo = kout.error or kout.policy_reason or kout.status
-                console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {motivo}")
-                stop_reason = "bloqueado"
-            elif kout.status != "completed" and stop_reason == "completed":
-                # o veredito do Kernel VENCE o do laço: gate reprovado derruba um
-                # "completed" que o laço achava que tinha conquistado
-                stop_reason = "validacao_reprovou"
-                console.print(f"[yellow]⚠ Validação reprovou:[/yellow] {kout.error or ''}")
-    except KeyboardInterrupt:
-        stop_reason = "interrupted"
+        gov = run_governed(kernel, _rodar_loop, agent_id="cli.run", task=task,
+                           input={"endpoint": "bauer run", "workspace": str(ws)})
+        if gov.blocked_before_start:
+            motivo = gov.error or gov.policy_reason or gov.status
+            console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {motivo}")
+            stop_reason = "bloqueado"
+        elif gov.status == CANCELLED and stop_reason == "completed":
+            stop_reason = "interrupted"
+        elif not gov.ok and gov.governed and stop_reason == "completed":
+            # o veredito do Kernel VENCE o do laço: gate reprovado derruba um
+            # "completed" que o laço achava que tinha conquistado
+            stop_reason = "validacao_reprovou"
+            console.print(f"[yellow]⚠ Validação reprovou:[/yellow] {gov.error or ''}")
     finally:
         cost_sink.reset(_cost_token)
         router._approval_callback = None
