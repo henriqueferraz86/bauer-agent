@@ -772,35 +772,37 @@ def create_app(
     # approval_manager/budget_manager JÁ CONSTRUÍDOS acima — não duplica
     # estado. Desligado (default): /chat roda EXATAMENTE como antes, zero
     # kernel.execute() na hora, zero risco.
+    # Wiring quebrado com a flag LIGADA derruba o boot (KernelWiringError) em
+    # vez de subir um serve que afirma governar e não governa. Sem config_path
+    # não há flag para ler — segue desligado, como antes.
     _kernel = None
-    try:
-        if config_path is not None:
-            from .config_loader import load_config as _load_kernel_cfg
-            _kcfg = _load_kernel_cfg(config_path)
-            if bool(getattr(getattr(_kcfg, "kernel", None), "enabled", False)):
-                from .core.kernel import BauerKernel
-                from .core.kernel.kernel import evaluator_from_config
-                from .core.policy.engine import PolicyEngine
-                from .core.runtime.resilience import RuntimeControl
+    if config_path is not None:
+        from .config_loader import load_config as _load_kernel_cfg
+        from .core.kernel import require_kernel
+        _kcfg = _load_kernel_cfg(config_path)
 
-                _kernel = BauerKernel(
-                    runs=run_manager, bus=event_bus,
-                    policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
-                    control=RuntimeControl(store=event_bus.store),
-                    approvals=approval_manager,
-                    # budget=None DE PROPÓSITO: o executor do /chat já grava o
-                    # custo via _record_turn_budget; se o Kernel também gravasse
-                    # (_record_cost), cada turno contaria DOBRADO no orçamento
-                    # (_used_since soma todas as linhas de run_costs, sem dedup).
-                    # O gate pré-run continua funcionando: a PolicyEngine tem seu
-                    # próprio BudgetManager lendo o mesmo runtime_root.
-                    budget=None,
-                    evaluator=evaluator_from_config(_kcfg),
-                )
-    except Exception as exc:  # noqa: BLE001 — kernel é opt-in; falha de wiring nunca derruba o serve
-        from .logging_config import log_suppressed
-        log_suppressed("serve.kernel_wiring", exc)
-        _kernel = None
+        def _compose_serve_kernel():
+            from .core.kernel import BauerKernel
+            from .core.kernel.kernel import evaluator_from_config
+            from .core.policy.engine import PolicyEngine
+            from .core.runtime.resilience import RuntimeControl
+
+            return BauerKernel(
+                runs=run_manager, bus=event_bus,
+                policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
+                control=RuntimeControl(store=event_bus.store),
+                approvals=approval_manager,
+                # budget=None DE PROPÓSITO: o executor do /chat já grava o
+                # custo via _record_turn_budget; se o Kernel também gravasse
+                # (_record_cost), cada turno contaria DOBRADO no orçamento
+                # (_used_since soma todas as linhas de run_costs, sem dedup).
+                # O gate pré-run continua funcionando: a PolicyEngine tem seu
+                # próprio BudgetManager lendo o mesmo runtime_root.
+                budget=None,
+                evaluator=evaluator_from_config(_kcfg),
+            )
+
+        _kernel = require_kernel(_kcfg, _compose_serve_kernel, label="bauer serve")
 
     def _wire_router_to_serve(r) -> None:
         """Aponta o EventBus/policy_root de um ToolRouter para os DESTE serve.

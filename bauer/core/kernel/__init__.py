@@ -10,18 +10,22 @@ __all__ = [
     "KernelRequest",
     "KernelRun",
     "KernelStateError",
+    "KernelWiringError",
     "Verdict",
     "build_kernel",
     "kernel_enabled",
+    "require_kernel",
 ]
+
+_KERNEL_EXPORTS = frozenset({"BauerKernel", "build_kernel", "kernel_enabled",
+                             "require_kernel", "KernelWiringError"})
 
 
 def __getattr__(name: str):
-    if name in {"BauerKernel", "build_kernel", "kernel_enabled"}:
-        from .kernel import BauerKernel, build_kernel, kernel_enabled
+    if name in _KERNEL_EXPORTS:
+        from . import kernel as _mod
 
-        return {"BauerKernel": BauerKernel, "build_kernel": build_kernel,
-                "kernel_enabled": kernel_enabled}[name]
+        return getattr(_mod, name)
     if name in {"KernelRequest", "KernelRun"}:
         from .schemas import KernelRequest, KernelRun
 

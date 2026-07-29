@@ -121,15 +121,12 @@ def run(
     ctx = ContextManager(applied_context=applied_context,
                          system_prompt=_build_system_prompt(router, client=client))
 
-    # Kernel: governa quando ligado no config (mesma admissão da web).
-    kernel = None
-    try:
-        from ..core.kernel import build_kernel, kernel_enabled
-        if kernel_enabled(cfg):
-            kernel = build_kernel(cfg, workspace=str(ws))
-    except Exception as exc:  # noqa: BLE001 — kernel é opt-in; nunca bloqueia o run
-        from ..logging_config import log_suppressed
-        log_suppressed("run_cmd.kernel_wiring", exc)
+    # Kernel: governa quando ligado no config (mesma admissão da web). Flag
+    # desligada = None; ligada e com wiring quebrado = KernelWiringError — o
+    # loop autônomo é o ÚLTIMO lugar onde rodar ingovernado em silêncio serve.
+    from ..core.kernel import build_kernel, require_kernel
+    kernel = require_kernel(cfg, lambda: build_kernel(cfg, workspace=str(ws)),
+                            label="bauer run")
 
     # Aprovação headless (o /loop nunca para pra perguntar; o modo controla o
     # que é auto-aprovado vs. auto-negado).

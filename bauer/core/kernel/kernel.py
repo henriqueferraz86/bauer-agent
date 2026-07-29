@@ -165,7 +165,11 @@ class BauerKernel:
             request, _NO_EXECUTION,  # sentinela: sem resolução de adapter
         )
         _decision, early = self._preflight(request, run, session_id, trajectory)
-        return run, early
+        # _open_run devolve o snapshot de `created`; o preflight já transicionou
+        # até `queued` NO STORE. Devolver o objeto velho fazia `run.status` dizer
+        # "created" contra um estado persistido "queued" — a docstring acima
+        # promete queued, e um caller que confiasse nela leria errado.
+        return (self.runs.get_run(run.id) or run), early
 
     def stream(self, request: KernelRequest, *, executor: Any | None = None):
         """Generator: mesma máquina de estados de ``execute``, mas re-emite os
@@ -568,6 +572,41 @@ def kernel_enabled(cfg: Any) -> bool:
         return bool(getattr(getattr(cfg, "kernel", None), "enabled", False))
     except Exception:  # noqa: BLE001
         return False
+
+
+class KernelWiringError(RuntimeError):
+    """``kernel.enabled: true`` pedido, mas a composição do Kernel falhou.
+
+    Erro, não aviso: governança pedida e silenciosamente não entregue é o pior
+    resultado possível — o run roda ingovernado com a config afirmando o
+    contrário.
+    """
+
+
+def require_kernel(cfg: Any, build_fn: Any, *, label: str) -> "BauerKernel | None":
+    """Aplica a semântica da flag num só lugar.
+
+    - ``kernel.enabled`` desligado → ``None``, caminho legado intocado.
+    - ligado → ``build_fn()``; qualquer falha vira :class:`KernelWiringError`.
+
+    Existe porque os call sites embrulhavam ``build_kernel`` em
+    ``except Exception: log_suppressed(...)``. Com a flag LIGADA isso degradava
+    para execução ingovernada sem ninguém perceber — o log é gravado, mas o run
+    prossegue como se nada fosse. Medir cobertura do Kernel nessas condições é
+    impossível: o número mede o que o wiring conseguiu, não o que foi pedido.
+
+    ``label`` identifica o call site na mensagem de erro (ex.: ``"bauer run"``).
+    """
+    if not kernel_enabled(cfg):
+        return None
+    try:
+        return build_fn()  # type: ignore[no-any-return]
+    except Exception as exc:  # noqa: BLE001 — reembalado com contexto do call site
+        raise KernelWiringError(
+            f"kernel.enabled: true, mas a composição do Kernel falhou em {label}: "
+            f"{type(exc).__name__}: {exc}. Corrija a config ou desligue "
+            f"kernel.enabled — rodar ingovernado em silêncio não é opção."
+        ) from exc
 
 
 def evaluator_from_config(cfg: Any):
