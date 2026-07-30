@@ -624,6 +624,11 @@ class KernelSection(_StrictSection):
     fallback_adapters: list[str] = []                  # executores alternativos, em ordem
     evaluator_enabled: bool = False                    # quality gates antes de concluir
     max_replans: int = Field(ge=0, default=1)          # loop evaluating→planning (budget)
+    # Gate de testes (S11): roda os testes do projeto antes de concluir um run
+    # que MUDOU arquivos. Opt-in porque custa tempo real — e porque num projeto
+    # com suíte lenta o teto abaixo é o que separa governança de refém.
+    tests_gate: bool = False
+    tests_gate_timeout_s: int = Field(ge=1, default=600)
 
 
 def _adapters_padrao() -> dict[str, dict[str, Any]]:

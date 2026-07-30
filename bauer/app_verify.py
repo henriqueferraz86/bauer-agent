@@ -316,6 +316,7 @@ def verify_project(
     smoke_check: Optional[SmokeCheck] = None,
     probe_ports: Optional[List[int]] = None,
     serve_timeout: int = DEFAULT_SERVE_TIMEOUT,
+    only: Optional[List[str]] = None,
 ) -> VerifyResult:
     """Verifica o projeto: detecta stack, roda build/test/smoke/serve, reporta.
 
@@ -324,6 +325,11 @@ def verify_project(
 
     P1.2: passo "serve" inicia o app e sonda uma porta para confirmar startup.
     `smoke_check` é injetável para testes; `probe_ports` customiza as portas sondadas.
+
+    ``only`` restringe quais passos rodam (ex.: ``["build", "test"]``). Existe
+    para o gate de testes do Kernel (S11): um quality gate não pode instalar
+    dependências nem subir o app a cada run — seria minutos por turno e efeito
+    colateral fora do escopo da tarefa. Sem ``only``, comportamento inalterado.
     """
     runner = runner or _default_runner
     _smoke = smoke_check or _default_smoke_check
@@ -341,6 +347,15 @@ def verify_project(
             "Stack não detectada — nenhum passo de build/test verificável. "
             "Adicione package.json/pyproject.toml/go.mod, ou verifique manualmente.",
         )
+
+    if only is not None:
+        _sel = {str(s).lower() for s in only}
+        plan = [(n, c) for n, c in plan if n.lower() in _sel]
+        if not plan:
+            return VerifyResult(
+                rel, stack, False, [],
+                f"Stack '{stack}' não tem nenhum dos passos pedidos: {sorted(_sel)}",
+            )
 
     steps: List[Step] = []
     ok = True

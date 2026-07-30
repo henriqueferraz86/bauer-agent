@@ -313,7 +313,8 @@ class Scheduler:
             control=self.runtime_control,
             adapter_factory=lambda name, config=None: self.adapter_factory(name),
             config=self._config, budget=None,
-            evaluator=evaluator_from_config(self._config) if self._config else None,
+            evaluator=(evaluator_from_config(self._config, workspace="workspace")
+                       if self._config else None),
         )
         return self._kernel
 

@@ -1,0 +1,272 @@
+"""S11 — o run só conclui se os testes passarem.
+
+O primeiro gate SUBSTANTIVO do harness: ele executa, não interpreta prosa. Toda
+a custódia do S8 (11 caminhos) existe para isto — até aqui rodavam dois gates,
+ambos farejando texto do output.
+
+Três propriedades decidem se o gate é usável ou um estorvo, e cada uma tem teste
+aqui: só dispara quando o run MUDOU arquivos; roda só o passo `test` (nada de
+install/serve); e reprova quando não consegue afirmar que passou.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from bauer.core.kernel.gates.tests import TestsGate, houve_mudanca
+
+
+class _Res:
+    """VerifyResult falso — o gate não pode depender de npm/pytest reais."""
+
+    def __init__(self, ok, stack="python", steps=(), summary=""):
+        self.ok, self.stack, self.steps, self.summary = ok, stack, list(steps), summary
+
+
+class _Step:
+    def __init__(self, name, cmd, ok, output="", skipped=False, reason=""):
+        self.name, self.cmd, self.ok = name, cmd, ok
+        self.output, self.skipped, self.reason = output, skipped, reason
+
+
+def _git(tmp_path: Path) -> Path:
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+    return repo
+
+
+# ─── quando o gate dispara ───────────────────────────────────────────────────
+
+
+def test_repo_limpo_nao_roda_testes(tmp_path):
+    """Turno de conversa não pode disparar a suíte."""
+    repo = _git(tmp_path)
+    chamou = []
+    g = TestsGate(repo, verify_fn=lambda *a, **k: chamou.append(1) or _Res(True))
+
+    r = g.check(request=None, result={})
+
+    assert r.passed and chamou == [], "sem mudança, o gate nem executa"
+    assert "nenhuma mudança" in r.reason
+
+
+def test_repo_sujo_roda_testes(tmp_path):
+    repo = _git(tmp_path)
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    chamou = []
+    g = TestsGate(repo, verify_fn=lambda *a, **k: chamou.append(1) or _Res(True))
+
+    assert g.check(request=None, result={}).passed
+    assert chamou == [1], "arquivo novo = mudança = testa"
+
+
+def test_fora_de_repo_usa_tools_mutantes(tmp_path):
+    """Sem git, a evidência vem das tools que o executor registrou."""
+    (tmp_path / "x.py").write_text("z = 1\n", encoding="utf-8")
+
+    assert houve_mudanca(tmp_path, {"tools_usadas": ["read_file", "grep"]}) is False
+    assert houve_mudanca(tmp_path, {"tools_usadas": ["read_file", "patch"]}) is True
+    assert houve_mudanca(tmp_path, {}) is False
+
+
+def test_lista_de_mutantes_vem_do_tool_dedup(tmp_path):
+    """Duas listas divergindo seria um bug silencioso — o gate deixaria passar
+    mudança feita por uma tool que o dedup já sabe ser mutante."""
+    from bauer.core.kernel.gates.tests import _tools_mutantes
+    from bauer.tool_dedup import MUTATING_TOOLS
+
+    assert _tools_mutantes() is MUTATING_TOOLS
+
+
+# ─── o que o gate roda ───────────────────────────────────────────────────────
+
+
+def test_so_o_passo_test_sem_install_nem_serve(tmp_path):
+    """Gate não instala dependência nem sobe o app: seriam minutos e efeito
+    colateral fora do escopo da tarefa."""
+    repo = _git(tmp_path)
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    visto = {}
+
+    def _fake(ws, **kw):
+        visto.update(kw)
+        return _Res(True)
+
+    TestsGate(repo, timeout_s=42, verify_fn=_fake).check(request=None, result={})
+
+    assert visto["only"] == ["test"]
+    assert visto["install"] is False
+    assert visto["timeout"] == 42, "o teto de tempo é do gate, não do app_verify"
+
+
+# ─── veredito ────────────────────────────────────────────────────────────────
+
+
+def test_teste_falhando_reprova_com_a_cauda_do_output(tmp_path):
+    """O motivo vira replan_feedback — precisa ser acionável, não 'falhou'."""
+    repo = _git(tmp_path)
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    res = _Res(False, "python", [
+        _Step("test", ["python", "-m", "pytest"], ok=False,
+              output="E   assert 1 == 2\nFAILED tests/test_x.py::test_soma"),
+    ])
+
+    r = TestsGate(repo, verify_fn=lambda *a, **k: res).check(request=None, result={})
+
+    assert not r.passed
+    assert "FAILED tests/test_x.py::test_soma" in r.reason
+    assert "python -m pytest" in r.reason, "o comando que falhou entra no motivo"
+
+
+def test_stack_nao_detectada_nao_reprova(tmp_path):
+    """Projeto de documentação não tem suíte — reprovar puniria trabalho válido."""
+    repo = _git(tmp_path)
+    (repo / "README.md").write_text("doc\n", encoding="utf-8")
+
+    r = TestsGate(repo, verify_fn=lambda *a, **k: _Res(False, "unknown")).check(
+        request=None, result={})
+
+    assert r.passed and "stack não detectada" in r.reason
+
+
+def test_gate_quebrado_nao_reprova_o_run(tmp_path):
+    """Infra do gate falhando é problema do gate — mesma regra do Evaluator."""
+    repo = _git(tmp_path)
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+
+    def _explode(*a, **k):
+        raise OSError("disco cheio")
+
+    r = TestsGate(repo, verify_fn=_explode).check(request=None, result={})
+
+    assert r.passed and "ignorado" in r.reason
+
+
+# ─── integração com o Evaluator e o config ───────────────────────────────────
+
+
+def test_evaluator_monta_o_gate_pelo_config(tmp_path):
+    from bauer.config_loader import BauerConfig, KernelSection, ModelSection
+    from bauer.core.kernel.kernel import evaluator_from_config
+
+    cfg = BauerConfig(
+        model=ModelSection(provider="ollama", name="x"),
+        kernel=KernelSection(enabled=True, evaluator_enabled=True,
+                             tests_gate=True, tests_gate_timeout_s=120),
+    )
+    ev = evaluator_from_config(cfg, workspace=str(tmp_path))
+    nomes = [g.name for g in ev.gates]
+
+    assert "tests" in nomes
+    gate = next(g for g in ev.gates if g.name == "tests")
+    assert gate.timeout_s == 120
+
+
+def test_gate_desligado_por_default(tmp_path):
+    """Custa tempo real — entra por escolha, não por herança."""
+    from bauer.config_loader import BauerConfig, KernelSection, ModelSection
+    from bauer.core.kernel.kernel import evaluator_from_config
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"),
+                      kernel=KernelSection(evaluator_enabled=True))
+    ev = evaluator_from_config(cfg, workspace=str(tmp_path))
+
+    assert "tests" not in [g.name for g in ev.gates]
+
+
+def test_sem_workspace_nao_monta_o_gate():
+    """Sem projeto não há onde rodar — e o gate não pode chutar um caminho."""
+    from bauer.config_loader import BauerConfig, KernelSection, ModelSection
+    from bauer.core.kernel.kernel import evaluator_from_config
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"),
+                      kernel=KernelSection(evaluator_enabled=True, tests_gate=True))
+    ev = evaluator_from_config(cfg)
+
+    assert "tests" not in [g.name for g in ev.gates]
+
+
+def test_reprovacao_vira_replan_feedback(tmp_path):
+    """O ciclo inteiro: gate reprova -> Kernel replaneja -> executor recebe o
+    motivo -> corrige. É o que troca 'o agente disse que terminou' por 'os
+    testes passaram'."""
+    from bauer.core.events.bus import EventBus
+    from bauer.core.kernel import BauerKernel, KernelRequest
+    from bauer.core.kernel.evaluator import Evaluator
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.core.runtime.state_store import JsonlStateStore
+
+    repo = _git(tmp_path)
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    tentativas = []
+
+    def _verify(*a, **k):
+        # 1ª passada: teste falha; 2ª: passa (o agente "corrigiu")
+        if len(tentativas) <= 1:
+            return _Res(False, "python", [
+                _Step("test", ["pytest"], ok=False, output="FAILED test_soma")])
+        return _Res(True, "python")
+
+    store = JsonlStateStore(str(tmp_path / "rt"))
+    bus = EventBus(store=store)
+    kernel = BauerKernel(
+        runs=RunManager(store=store, event_bus=bus), bus=bus,
+        evaluator=Evaluator([TestsGate(repo, verify_fn=_verify)], max_replans=1),
+    )
+
+    def _executor(payload):
+        tentativas.append(payload.get("replan_feedback"))
+        return {"output": "feito"}
+
+    out = kernel.execute(KernelRequest(agent_id="t", operation="runtime.execute",
+                                       input={}), executor=_executor)
+
+    assert out.status == "completed"
+    assert tentativas[0] is None
+    assert "FAILED test_soma" in (tentativas[1] or ""), \
+        "a segunda passada recebe a cauda do output de teste para corrigir"
+
+
+# ─── app_verify.only ─────────────────────────────────────────────────────────
+
+
+def test_only_filtra_o_plano(tmp_path):
+    from bauer.app_verify import verify_project
+
+    proj = tmp_path / "p"
+    (proj / "tests").mkdir(parents=True)   # sem isto o plano python não tem passo de teste
+    (proj / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (proj / "tests" / "test_x.py").write_text("def test_x(): pass\n", encoding="utf-8")
+    rodados = []
+
+    def _runner(cmd, cwd, timeout):
+        rodados.append(cmd[0])
+        return 0, "ok"
+
+    verify_project(proj, runner=_runner, which=lambda e: "/usr/bin/" + e,
+                   install=False, only=["test"])
+
+    assert rodados, "o passo de teste tem de rodar"
+    assert all(c != "pip" for c in rodados), "install NÃO roda com only=['test']"
+
+
+def test_only_vazio_reporta_em_vez_de_passar_calado(tmp_path):
+    from bauer.app_verify import verify_project
+
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+
+    res = verify_project(proj, runner=lambda *a: (0, ""), which=lambda e: e,
+                         only=["passo-que-nao-existe"])
+
+    assert not res.ok and "passo" in res.summary.lower()
