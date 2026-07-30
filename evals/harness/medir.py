@@ -106,31 +106,69 @@ def cap_context_builder() -> Capacidade:
     É a medição que me fez desfazer o "20/20": a fachada existe, mas coverage
     é sobre USO.
     """
-    usam_builder = _grep(r"from .*core\.context import|core\.context\.builder")
-    constroem_cru = _grep(r"ContextManager\(") - {"bauer/context_manager.py"}
-    migrados = sorted(usam_builder & constroem_cru)
-    pendentes = sorted(constroem_cru - usam_builder)
+    # Fora do denominador: o motor (`context_manager.py`) e a própria fachada.
+    # O builder instancia `ContextManager` porque DELEGA para ele — é o ponto do
+    # módulo. Contá-lo como não migrado seria exigir que a fachada usasse a si
+    # mesma, e deixava um item permanentemente em "falta".
+    MOTOR = {"bauer/context_manager.py", "bauer/core/context/builder.py"}
+
+    usam_builder = _grep(r"ContextBuilder\(") - MOTOR
+    constroem_cru = _grep(r"ContextManager\(") - MOTOR
+
+    # O universo é "quem monta contexto de turno", pelos DOIS caminhos. A versão
+    # anterior tirava do denominador o arquivo que parasse de chamar
+    # `ContextManager(` — ou seja, migrar um call site o fazia sumir da conta.
+    # Com todos migrados o denominador ia a zero e a capacidade dava 0/0, que
+    # não é 100% nem 0%: é uma medida que deixou de medir.
+    migrados = sorted(usam_builder - constroem_cru)
+    pendentes = sorted(constroem_cru)   # inclui quem migrou pela metade
     c = Capacidade("Context Builder", migrados, pendentes)
-    c.nota = "fachada pronta; conta = call sites migrados"
+    c.nota = "call sites pela fachada / total que monta contexto"
     return c
 
 
 def cap_validacao() -> Capacidade:
-    """Gates do plano §11 que existem de fato."""
-    gates = BAUER / "core" / "kernel" / "gates"
-    embutidos = _grep(r"class \w+Gate", onde=BAUER / "core" / "kernel")
-    tem, falta = [], []
-    for nome, marca in [("acceptance", "acceptance"), ("tests", "tests.py"),
-                        ("scope", "scope.py"), ("secrets", "secrets"),
-                        ("diff", "diff"), ("regression", "baseline.py"),
-                        ("non_empty_output", None), ("no_traceback", None)]:
-        if marca is None:
-            (tem if embutidos else falta).append(nome)
-        elif (gates / marca).exists() if marca.endswith(".py") else False:
-            tem.append(nome)
-        else:
-            falta.append(nome)
-    return Capacidade("Validacao deterministica", tem, falta)
+    """Gates do plano §11 que o Evaluator MONTA — não que existem no disco.
+
+    A versão anterior contava arquivo em `gates/`, e a condição estava escrita de
+    um jeito que `acceptance`, `secrets` e `diff` nunca podiam ser contados:
+    fazia `(gates / marca).exists() if marca.endswith(".py") else False`, e as
+    três marcas não terminavam em `.py`. Ficaram permanentemente em "falta".
+
+    Contar arquivo era o erro de fundo de qualquer forma — é o mesmo "existe vs.
+    está em uso" que já derrubou o 20/20 do Context Builder. Aqui a evidência é
+    o Evaluator montado de verdade, num workspace com contrato: o que aparece na
+    lista de gates é o que vai rodar antes de um run virar `completed`.
+    """
+    import tempfile
+    from types import SimpleNamespace
+
+    from bauer.core.kernel.kernel import evaluator_from_config
+
+    esperados = ["acceptance", "tests", "scope", "secrets", "diff",
+                 "regression", "non_empty_output", "no_traceback"]
+
+    cfg = SimpleNamespace(kernel=SimpleNamespace(
+        evaluator_enabled=True, tests_gate=True, tests_gate_timeout_s=600,
+        tests_gate_mode="regressao", max_replans=1))
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / ".bauer").mkdir()
+        (ws / ".bauer" / "task.yaml").write_text(
+            "objective: medicao\nscope:\n  allowed: ['src/']\n", encoding="utf-8")
+        ev = evaluator_from_config(cfg, workspace=str(ws))
+        montados = {getattr(g, "name", "") for g in getattr(ev, "gates", [])}
+
+    # `regression` não é gate próprio: é o MODO do de testes (ratchet de
+    # baseline). Conta pelo módulo, que é onde a lógica mora.
+    if (BAUER / "core" / "kernel" / "gates" / "baseline.py").exists():
+        montados.add("regression")
+
+    tem = [n for n in esperados if n in montados]
+    c = Capacidade("Validacao deterministica",
+                   tem, [n for n in esperados if n not in tem])
+    c.nota = "gates que o Evaluator monta com contrato — nao arquivos em disco"
+    return c
 
 
 def cap_isolamento() -> Capacidade:
@@ -153,7 +191,9 @@ def cap_progresso() -> Capacidade:
     """Os 9 sinais de estagnação do plano §13 — quais são detectados hoje."""
     fontes = "\n".join(
         (BAUER / n).read_text(encoding="utf-8", errors="replace")
-        for n in ("agent.py", "tool_guardrails.py", "tool_dedup.py", "iteration_budget.py")
+        for n in ("agent.py", "tool_guardrails.py", "tool_dedup.py",
+                  "iteration_budget.py", "progress_signals.py",
+                  "core/kernel/kernel.py")
         if (BAUER / n).exists())
     sinais = {
         "mesma tool com mesmos args": r"fingerprint|args_sig",
@@ -174,7 +214,17 @@ def cap_progresso() -> Capacidade:
 
 
 def cap_observabilidade() -> Capacidade:
-    """Os 17 eventos mínimos do plano §14 — quais são publicados."""
+    """Os 17 eventos mínimos do plano §14 — quais chegam ao EventBus.
+
+    DUAS condições, e a segunda foi aprendida errando: a string tem que aparecer
+    num fonte E o tipo tem que estar no ``EVENT_TYPES`` do schema. Só a primeira
+    dava 17/17 com `tool.denied` — que existia, mas era gravado no KanbanStore,
+    um sink que a auditoria de run não lê. Fora do schema, o evento nem chega a
+    ser publicável: ``Event.__post_init__`` recusa. É a diferença entre "alguém
+    escreveu esse nome" e "isso vira trilha".
+    """
+    from bauer.core.events.schema import EVENT_TYPES
+
     fontes = "\n".join(
         p.read_text(encoding="utf-8", errors="replace")
         for p in BAUER.rglob("*.py") if "__pycache__" not in p.parts)
@@ -186,8 +236,10 @@ def cap_observabilidade() -> Capacidade:
         "run.replanning", "run.completed", "run.failed", "run.cancelled",
         "run.workspace.cleaned",
     ]
-    tem = [e for e in eventos if f'"{e}"' in fontes]
-    return Capacidade("Observabilidade", tem, [e for e in eventos if e not in tem])
+    tem = [e for e in eventos if f'"{e}"' in fontes and e in EVENT_TYPES]
+    c = Capacidade("Observabilidade", tem, [e for e in eventos if e not in tem])
+    c.nota = "no schema E publicado — string solta em fonte nao conta"
+    return c
 
 
 def cap_evals() -> Capacidade:

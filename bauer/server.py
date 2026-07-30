@@ -899,11 +899,14 @@ def create_app(
         # modelo. `provider` tambem passa a ser informado — sem ele o
         # ContextManager caia no default "ollama" para escolher a janela de
         # fallback, o que so nao doia porque applied_context era truthy.
-        return ContextManager(
-            applied_context=int(_state["applied_context"]),
-            provider=str(_state["provider"] or "ollama"),
-            system_prompt=_current_system_prompt(),
-        )
+        from .core.context import ContextBuilder
+
+        ctx, _ = (
+            ContextBuilder(applied_context=int(_state["applied_context"]),
+                           provider=str(_state["provider"] or "ollama"))
+            .instrucao("seguranca", _current_system_prompt())
+            .montar())
+        return ctx
 
     def _active_project_hint(effective_workspace: Path) -> "str | None":
         """Bloco de contexto que direciona o turno para a pasta do projeto ativo.

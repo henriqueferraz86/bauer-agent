@@ -4013,6 +4013,7 @@ def _run_loop_mode(
     active_workspace,
     memprov,
     loop_skill: "LoopSkill | None" = None,
+    bus=None,
 ) -> None:
     """Roda o agente sozinho, turno após turno, sem confirmação humana a cada
     passo — até concluir a tarefa (sinal natural + nudge de confirmação),
@@ -4044,7 +4045,10 @@ def _run_loop_mode(
         max_wall_seconds=loop_cfg.max_minutes * 60,
         max_tool_calls=loop_cfg.max_tool_calls,
     )
-    guardrail = ToolCallGuardrailController()
+    # `bus` (o do Kernel, quando o turno é governado): os limiares de estagnação
+    # deixam de morrer no console e viram `run.progress.warning` auditável. Sem
+    # bus, o guardrail é idêntico ao de sempre.
+    guardrail = ToolCallGuardrailController(bus=bus, session_id=str(session_id or ""))
     engine = HeadlessApprovalEngine(
         HeadlessApprovalConfig(mode=loop_cfg.approval_mode, risk_threshold=loop_cfg.approval_risk_threshold)
     )
@@ -4488,13 +4492,17 @@ def run_agent_session(
     _provider = getattr(client, "_provider", None) or _detectar_provider_por_host(
         getattr(client, "host", "")
     )
-    ctx = ContextManager(
-        applied_context=applied_context,
-        system_prompt=system_prompt,
-        provider=_provider,
-    )
-    # Habilita compressão semântica via LLM quando o cliente está disponível
-    ctx.set_llm(client, model_name)
+    # Uma porta só para o que entra na janela (S9). O prompt do sistema é
+    # INSTRUÇÃO — e é a única coisa aqui que é; tudo que vier de arquivo, web ou
+    # tool entra por `conteudo()` e nunca vira ordem.
+    from .core.context import ContextBuilder
+
+    # `montar` já faz o set_llm — a compressão semântica via LLM continua ligada.
+    ctx, _ctx_pacote = (
+        ContextBuilder(applied_context=applied_context, provider=_provider,
+                       bus=getattr(kernel, "bus", None))
+        .instrucao("seguranca", system_prompt)
+        .montar(llm_client=client, llm_model=model_name))
 
     # MemoryProvider — inicializa e injeta bloco de contexto no system prompt
     _mem_workspace = getattr(router, "workspace", "workspace")
@@ -4869,6 +4877,7 @@ def run_agent_session(
                 session_id=session_id,
                 active_workspace=active_workspace,
                 memprov=_memprov,
+                bus=getattr(kernel, "bus", None),
             )
             client = _loop_state.client
             _native_session_ok = _loop_state.native_session_ok
@@ -4917,6 +4926,7 @@ def run_agent_session(
                         tool_timeout_s=tool_timeout_s, session_store=session_store,
                         session_id=session_id, active_workspace=active_workspace,
                         memprov=_memprov, loop_skill=_ls_skill,
+                        bus=getattr(kernel, "bus", None),
                     )
                     client = _ls_state.client
                     _native_session_ok = _ls_state.native_session_ok
@@ -5255,6 +5265,7 @@ def run_agent_session(
                 state=_cp_state, console=console, fallback_clients=fallback_clients,
                 stats=stats, tool_timeout_s=tool_timeout_s, session_store=session_store,
                 session_id=session_id, active_workspace=active_workspace, memprov=_memprov,
+                bus=getattr(kernel, "bus", None),
             )
             client = _cp_state.client
             _native_session_ok = _cp_state.native_session_ok

@@ -188,7 +188,6 @@ TASKS: list[BenchTask] = [
 
 def run_benchmark(client, model: str, provider: str = "?", tasks: list[BenchTask] | None = None) -> BenchmarkReport:
     """Roda as tasks contra o cliente/modelo dados. Cada task em workspace limpo."""
-    from .context_manager import ContextManager
     from .tool_router import ToolRouter
 
     report = BenchmarkReport(
@@ -201,8 +200,15 @@ def run_benchmark(client, model: str, provider: str = "?", tasks: list[BenchTask
         ws = Path(tempfile.mkdtemp(prefix=f"bauer_bench_{task.id}_"))
         if task.setup:
             task.setup(ws)
-        ctx = ContextManager(applied_context=32768, provider=provider)
-        ctx.add_user(task.prompt)
+        # O prompt da tarefa vem do CATÁLOGO de benchmark, não do Bauer: entra
+        # como conteúdo, não como instrução. Num benchmark isso é mais que
+        # higiene — uma tarefa que conseguisse virar system prompt mediria o
+        # próprio enunciado em vez de medir o modelo.
+        from .core.context import ContextBuilder
+
+        ctx, _ = (ContextBuilder(applied_context=32768, provider=provider)
+                  .conteudo("tarefa", task.prompt)
+                  .montar())
         router = ToolRouter(workspace=ws)
 
         start = time.monotonic()

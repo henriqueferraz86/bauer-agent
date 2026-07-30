@@ -44,8 +44,15 @@ class Isolamento:
         return self.worktree is not None
 
 
-def preparar(workspace: "str | Path", contrato: Any, *, run_id: str) -> Isolamento:
-    """Resolve o ambiente de trabalho a partir do contrato."""
+def preparar(workspace: "str | Path", contrato: Any, *, run_id: str,
+             bus: Any = None) -> Isolamento:
+    """Resolve o ambiente de trabalho a partir do contrato.
+
+    ``bus`` opcional: publica ``run.workspace.created`` quando o worktree nasce.
+    O evento é o único registro de que o trabalho NÃO aconteceu onde o usuário
+    está olhando — sem ele, um diff que "sumiu" do master é um mistério em vez
+    de uma linha de auditoria.
+    """
     ws = Path(workspace)
     nivel = str(getattr(contrato, "isolation", "none") or "none").lower()
     if contrato is None or nivel in ("", "none"):
@@ -59,28 +66,38 @@ def preparar(workspace: "str | Path", contrato: Any, *, run_id: str) -> Isolamen
         nivel = "worktree"
 
     if nivel != "worktree":
-        return Isolamento(workspace=ws, aviso=f"isolation '{nivel}' desconhecido — ignorado")
+        return _degradou(bus, run_id, ws, f"isolation '{nivel}' desconhecido — ignorado")
 
     from ...task_worktree import create_worktree, is_git_repo
 
     if not is_git_repo(ws):
-        return Isolamento(workspace=ws,
-                          aviso="isolation: worktree pedido, mas o workspace não é repo git")
+        return _degradou(bus, run_id, ws,
+                         "isolation: worktree pedido, mas o workspace não é repo git")
 
     wt = create_worktree(ws, _slug(run_id))
     if wt is None:
-        return Isolamento(workspace=ws, aviso="falha ao criar o worktree — rodando sem isolamento")
+        return _degradou(bus, run_id, ws,
+                         "falha ao criar o worktree — rodando sem isolamento")
 
     _copiar_contrato(ws, wt.path)
+    _emitir(bus, "run.workspace.created", run_id, status="worktree", message=aviso,
+            data={"branch": getattr(wt, "branch", ""), "path": str(wt.path),
+                  "origem": str(ws)})
     return Isolamento(workspace=wt.path, worktree=wt, aviso=aviso)
 
 
 def finalizar(iso: Isolamento, *, objetivo: str, sucesso: bool,
-              preservar_em_falha: bool = True) -> str:
+              preservar_em_falha: bool = True, bus: Any = None,
+              run_id: str = "") -> str:
     """Commita o trabalho e devolve a linha de artefato. "" quando não isolou.
 
     Falha PRESERVA o worktree por default: o diff parcial é a evidência de onde
     o agente parou, e jogá-lo fora custa mais que o disco que ocupa.
+
+    ``run.workspace.cleaned`` sai nos DOIS desfechos, com ``removido`` dizendo
+    qual foi. Emitir só na remoção faria o evento significar "worktree sumiu" em
+    vez de "o isolamento terminou" — e o caso que mais importa auditar é
+    justamente o worktree que FICOU, ocupando disco à espera de revisão.
     """
     if not iso.isolado:
         return ""
@@ -88,11 +105,46 @@ def finalizar(iso: Isolamento, *, objetivo: str, sucesso: bool,
 
     commit = commit_worktree(iso.worktree, f"bauer: {objetivo}"[:200])
     linha = summarize_artifact(commit)
-    if not commit.committed and (sucesso or not preservar_em_falha):
+    # `not committed` tem DOIS significados e tratá-los igual apagava trabalho:
+    # nada staged (worktree vazio, pode ir) e commit que FALHOU (o trabalho está
+    # lá, o git é que não o gravou). O segundo caso é rotineiro numa máquina sem
+    # `user.email` configurado — servidor recém-provisionado, container de CI —
+    # e o desfecho era remover o worktree com o diff dentro. `changed_files`
+    # separa os dois: só é vazio quando não havia mesmo o que commitar.
+    vazio = not commit.committed and not commit.changed_files
+    removido = vazio and (sucesso or not preservar_em_falha)
+    if removido:
         # nada mudou: worktree vazio só polui o repo
         remove_worktree(iso.worktree)
-        return ""
-    return linha
+    elif not commit.committed:
+        aviso = commit.message or "commit falhou"
+        iso.aviso = f"worktree PRESERVADO: {aviso}"
+    _emitir(bus, "run.workspace.cleaned", run_id,
+            status="removido" if removido else "preservado",
+            message=iso.aviso or None,
+            data={"branch": getattr(iso.worktree, "branch", ""),
+                  "path": str(iso.workspace), "removido": removido,
+                  "commitou": bool(commit.committed),
+                  "arquivos_alterados": len(commit.changed_files or []),
+                  "sucesso": sucesso})
+    return "" if removido else (linha or iso.aviso)
+
+
+def _degradou(bus: Any, run_id: str, ws: Path, aviso: str) -> Isolamento:
+    """Contrato pediu isolamento e não teve. Vira evento, não só texto no console.
+
+    O banner amarelo some com o scrollback; a promessa "o master não é tocado"
+    não pode depender de alguém ter lido a tela na hora.
+    """
+    _emitir(bus, "run.workspace.created", run_id, status="degradado", message=aviso,
+            data={"path": str(ws), "isolado": False})
+    return Isolamento(workspace=ws, aviso=aviso)
+
+
+def _emitir(bus: Any, tipo: str, run_id: str, **campos: Any) -> None:
+    from ..events.emit import emitir
+
+    emitir(bus, tipo, run_id=run_id or None, **campos)
 
 
 def _slug(run_id: str) -> str:

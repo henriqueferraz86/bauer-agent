@@ -98,10 +98,13 @@ class ContextBuilder:
     """
 
     def __init__(self, *, applied_context: int, provider: str = "ollama",
-                 orcamento_max_ratio: float = 1.0) -> None:
+                 orcamento_max_ratio: float = 1.0, bus: Any = None,
+                 run_id: str = "") -> None:
         self.applied_context = int(applied_context)
         self.provider = provider
         self.orcamento_max_ratio = orcamento_max_ratio
+        self.bus = bus
+        self.run_id = run_id
         self._itens: list[ItemContexto] = []
         self._descartados = 0
 
@@ -176,4 +179,15 @@ class ContextBuilder:
             ctx.set_llm(llm_client, llm_model)
         for item in pac.conteudo_informativo():
             ctx.add_user(item.conteudo)
+        # A proveniência só serve se sair daqui. `por_fonte()` responde "quem
+        # gastou a janela" — a pergunta que hoje só dá para responder relendo o
+        # prompt inteiro, quando ele ainda existe.
+        from ..events.emit import emitir
+
+        emitir(self.bus, "run.context.built", run_id=self.run_id or None,
+               status="ok", data={
+                   **pac.to_dict(), "provider": self.provider,
+                   "applied_context": self.applied_context,
+                   "instrucoes": len(pac.instrucoes()),
+                   "system_prompt_chars": len(sistema)})
         return ctx, pac

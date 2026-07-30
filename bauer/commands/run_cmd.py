@@ -108,8 +108,22 @@ def run(
     from ..core.workspace import preparar as _preparar_ambiente
     from ..core.workspace.isolation import contrato_do_workspace
     from uuid import uuid4 as _uuid4
+
+    # Estado de GOVERNANÇA fica no repo, não no worktree. O isolamento troca
+    # onde o TRABALHO acontece; runs, kill-switch, aprovações e orçamento não
+    # podem ir junto. Iam: `ws` era reatribuído para o worktree logo abaixo e o
+    # `root` do Kernel saía dali — o que significava (a) histórico de run
+    # destruído junto com o worktree descartável e, pior, (b) o kill-switch que
+    # o usuário liga no repo INVISÍVEL para o run isolado, que é exatamente o
+    # run que mais precisa poder ser parado.
+    _root_gov = str(ws / "memory" / "runtime")
+    from ..core.events.bus import EventBus
+    from ..core.runtime.state_store import JsonlStateStore
+    _bus = EventBus(store=JsonlStateStore(_root_gov))
+
+    _run_slug = f"run-{_uuid4().hex[:10]}"
     _contrato = contrato_do_workspace(ws)
-    _iso = _preparar_ambiente(ws, _contrato, run_id=f"run-{_uuid4().hex[:10]}")
+    _iso = _preparar_ambiente(ws, _contrato, run_id=_run_slug, bus=_bus)
     if _iso.aviso:
         console.print(f"[yellow]⚠ {_iso.aviso}[/yellow]")
     if _iso.isolado:
@@ -126,7 +140,6 @@ def run(
 
     # Contexto do turno (mesmo padrão do serve): system prompt do router.
     from ..agent import _build_system_prompt, run_one_turn_with_fallback
-    from ..context_manager import ContextManager
     applied_context = int(getattr(cfg.model, "requested_context", 0) or 8192)
     # O contexto aplicado precisa CHEGAR ao Ollama: sem `options.num_ctx` na
     # requisição ele usa o próprio default (bem menor) e TRUNCA o prompt em
@@ -134,8 +147,12 @@ def run(
     # Sintoma: prompt grande volta com resposta vazia. Só `bauer chat` e
     # `bauer agent` faziam essa atribuição; serve e run ficavam de fora.
     _apply_ollama_runtime(client, cfg, applied_context)
-    ctx = ContextManager(applied_context=applied_context,
-                         system_prompt=_build_system_prompt(router, client=client))
+    from ..core.context import ContextBuilder
+
+    ctx, _ = (ContextBuilder(applied_context=applied_context, bus=_bus,
+                             run_id=_run_slug)
+              .instrucao("seguranca", _build_system_prompt(router, client=client))
+              .montar())
 
     # Kernel: governa quando ligado no config (mesma admissão da web). Flag
     # desligada = None; ligada e com wiring quebrado = KernelWiringError — o
@@ -148,9 +165,12 @@ def run(
     # o que quebrou 4 testes ao ligar o Kernel por default: todos compartilhavam
     # o store do repo, acumulavam runs não-terminais e batiam em
     # "max parallel runs reached: 3/3".
+    # `root` é o do REPO (`_root_gov`) e `workspace` é onde o trabalho acontece
+    # — iguais sem isolamento, diferentes com worktree. É a separação que faz o
+    # kill-switch continuar valendo e os gates rodarem no lugar certo.
     kernel = require_kernel(
         cfg,
-        lambda: build_kernel(cfg, root=str(ws / "memory" / "runtime"), workspace=str(ws)),
+        lambda: build_kernel(cfg, root=_root_gov, workspace=str(ws), bus=_bus),
         label="bauer run",
     )
 
@@ -195,6 +215,12 @@ def run(
     _cost_token = cost_sink.set(_cost)
     _last_cost = 0.0
 
+    # Sinais de estagnação ENTRE rodadas (§13): reversão de alterações e janela
+    # crescendo sobre um disco que não muda. Os guardrails de chamada não pegam
+    # nenhum dos dois — cada chamada é legítima; o que está errado é a sequência.
+    from ..progress_signals import SinaisDeProgresso
+    _sinais = SinaisDeProgresso(ws, ctx=ctx, bus=_bus)
+
     def _on_round(n: int, text: str, tl: list) -> None:
         nonlocal _last_cost
         delta = _cost.total_usd - _last_cost
@@ -205,6 +231,12 @@ def run(
             except Exception as exc:  # esgotou: run_loop_rounds encerra no topo
                 from ..logging_config import log_suppressed
                 log_suppressed("run_cmd.consume_cost", exc)
+        for _aviso in _sinais.rodada(n, text, tl):
+            # Avisa, não interrompe: quem para o laço é o orçamento. Um detector
+            # heurístico com poder de matar a tarefa erraria contra refatoração
+            # grande, que passa por estados intermediários iguais a estes.
+            console.print(f"[yellow]⚠ {_aviso.message}[/yellow]")
+            ctx.add_user(_aviso.message)
         _print_round(n, budget, tl)
 
     router._approval_callback = engine.make_approval_callback()
@@ -268,7 +300,8 @@ def run(
         if _iso.isolado:
             from ..core.workspace import finalizar as _finalizar_ambiente
             _artefato = _finalizar_ambiente(
-                _iso, objetivo=task[:120], sucesso=(stop_reason == "completed"))
+                _iso, objetivo=task[:120], sucesso=(stop_reason == "completed"),
+                bus=_bus, run_id=_run_slug)
             if _artefato:
                 console.print(f"[dim]artefato:[/dim] {_artefato}")
 

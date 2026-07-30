@@ -661,17 +661,30 @@ def test_replan_fixes_on_second_execution(kit):
 
 
 def test_replan_budget_exhausted_fails(kit):
+    """Orçamento de replan esgotado reprova — com o executor MUDANDO a cada
+    passada.
+
+    Antes este teste usava um executor que devolvia sempre a mesma saída vazia e
+    afirmava `calls == 3` (1 + 2 replans). Isso passou a medir desperdício: o
+    sinal "plano sem mudança entre replans" (§13) agora corta no primeiro replan
+    estéril, porque gastar outro orçamento inteiro para receber byte a byte a
+    mesma coisa é o pior negócio que o Kernel pode fazer. O caso do executor
+    parado tem teste próprio em `test_sinais_de_progresso.py`; aqui o que
+    importa é o fim do ORÇAMENTO.
+    """
     from bauer.core.kernel.evaluator import Evaluator
 
     _, bus, runs = kit
     calls = {"n": 0}
 
-    def _always_empty(payload):
+    def _sempre_ruim(payload):
         calls["n"] += 1
-        return {"status": "completed", "output": ""}
+        # muda a cada passada (senão o corte por replan estéril entra antes),
+        # mas nunca fica boa — o gate de saída não-vazia continua reprovando
+        return {"status": "completed", "output": "   " * calls["n"]}
 
     kernel = BauerKernel(runs=runs, bus=bus, evaluator=Evaluator(max_replans=2))
-    out = kernel.execute(KernelRequest(task="x"), executor=_always_empty)
+    out = kernel.execute(KernelRequest(task="x"), executor=_sempre_ruim)
     assert out.status == "failed" and "quality gate" in (out.error or "")
     assert calls["n"] == 3  # 1 + 2 replans
 

@@ -84,7 +84,6 @@ def benchmark_report_cmd(
 def _build_executor(state_dir: Path, config: Path, models: Path):
     from ._runtime import _build_client, _load_or_die
     from ..agent import run_one_turn
-    from ..context_manager import ContextManager
     from ..core.events import EventBus
     from ..core.runtime import RunManager, SessionManager
     from ..tool_router import ToolRouter, reset_runtime_ids, set_runtime_ids
@@ -107,11 +106,14 @@ def _build_executor(state_dir: Path, config: Path, models: Path):
         router = ToolRouter(workspace=workspace)
         router._event_bus = bus
         router._policy_root = state_dir
-        context = ContextManager(
-            applied_context=int(getattr(cfg.model, "requested_context", 32768)),
-            provider=str(cfg.model.provider),
-        )
-        context.add_user(item.prompt)
+        # O enunciado vem do dataset de benchmark — conteúdo, nunca instrução.
+        from ..core.context import ContextBuilder
+
+        context, _ = (
+            ContextBuilder(applied_context=int(getattr(cfg.model, "requested_context", 32768)),
+                           provider=str(cfg.model.provider), bus=bus, run_id=run.id)
+            .conteudo("tarefa", item.prompt)
+            .montar())
         token = set_runtime_ids(session.id, run.id)
         try:
             response, tool_log = run_one_turn(context, router, client, cfg.model.name)
