@@ -132,17 +132,38 @@ def runtime_capability():
         "prompt do cliente nativo contém o protocolo de bridge"
 
 
-@cenario("22. juiz de aprovação não pode ser o próprio modelo principal")
-def juiz_independente():
-    from bauer.config_loader import BauerConfig, ModelSection
+@cenario("22. o gate G4 nunca roda com o modelo julgando a si mesmo",
+         critico=True, falso_sucesso=True)
+def juiz_nunca_e_o_reu():
+    """A propriedade não é "existe juiz configurado" — é "o G4 não autojulga".
 
-    cfg = BauerConfig(model=ModelSection(provider="ollama", name="qwen3-coder:30b"))
-    slot = getattr(cfg, "auxiliary", None)
-    aprovador = getattr(slot, "approval_model", None)
-    modelo_juiz = (getattr(aprovador, "model", "") or "").strip()
-    # sem juiz declarado, o G4 cai no modelo principal — é o gap conhecido (§9.2)
-    return bool(modelo_juiz), (
-        "approval_model vazio: o G4 julga a si mesmo (PLANO §9.2 / HARNESS-030)")
+    Sem `auxiliary.approval_model`, `_resolve_slot` cai no modelo PRINCIPAL e o
+    gate pede ao modelo que audite a tool que ele mesmo escolheu. O erro anda nos
+    dois sentidos: nega trabalho legítimo (observado em produção com
+    `docker compose logs`) e carimba o que ele próprio propôs.
+    """
+    from bauer.config_loader import (AuxiliarySection, AuxiliarySlot, BauerConfig,
+                                     ModelSection)
+    from bauer.llm_approval import juiz_independente, llm_evaluate_tool
+
+    principal = ModelSection(provider="ollama", name="qwen3-coder:30b")
+
+    sem_juiz = BauerConfig(model=principal)
+    igual = BauerConfig(model=principal, auxiliary=AuxiliarySection(
+        approval_model=AuxiliarySlot(provider="ollama", model="qwen3-coder:30b")))
+    distinto = BauerConfig(model=principal, auxiliary=AuxiliarySection(
+        approval_model=AuxiliarySlot(provider="openrouter", model="z-ai/glm-5.2")))
+
+    if juiz_independente(sem_juiz) or juiz_independente(igual):
+        return False, "config sem juiz (ou com o MESMO modelo) foi aceita como independente"
+    if not juiz_independente(distinto):
+        return False, "juiz de provider/modelo distintos foi recusado"
+
+    # e o gate tem de se DESLIGAR, não autojulgar
+    r = llm_evaluate_tool("run_command", {"command": "docker ps"},
+                          [{"role": "user", "content": "veja os containers"}],
+                          cfg=sem_juiz)
+    return "sem juiz independente" in (r.reason or ""),         f"G4 rodou sem juiz independente: {r.reason!r}"
 
 
 @cenario("23. prefixo de env não compartilha entrada de allowlist", critico=True)

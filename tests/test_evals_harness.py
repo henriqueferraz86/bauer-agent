@@ -22,10 +22,10 @@ META_ORFAOS = 0.01
 #: precisa de justificativa e do item de backlog que o fecha — a lista existe
 #: para encolher, e o teste abaixo falha se alguém a deixar frouxa.
 DIVIDA_CONHECIDA: dict[str, str] = {
-    "22. juiz de aprovação não pode ser o próprio modelo principal":
-        "HARNESS-030: `auxiliary.approval_model` vazio faz o gate G4 julgar a si "
-        "mesmo. Observado em produção: modelo local negando `docker compose logs` "
-        "com 'não há consentimento claro' quando o usuário havia pedido.",
+    # VAZIA — e o teste `test_divida_paga_sai_da_lista` mantem assim: entrada
+    # que volta a passar TEM de sair, senao a lista vira cemiterio e para de
+    # significar coisa alguma. A primeira ocupante foi o HARNESS-030 (juiz do G4
+    # julgando a si mesmo), quitada no mesmo PR que criou a suite.
 }
 
 

@@ -70,6 +70,13 @@ class TestParseResponse:
 
 # ─── llm_evaluate_tool ───────────────────────────────────────────────────────
 
+#: O G4 so roda com juiz INDEPENDENTE (HARNESS-030) — sem isso ele se desliga em
+#: vez de pedir ao modelo que audite a tool que ele mesmo escolheu. Os testes
+#: abaixo exercitam o PARSING da resposta do juiz, entao declaram que existe um.
+def _com_juiz():
+    return patch("bauer.llm_approval.juiz_independente", return_value=True)
+
+
 class TestLlmEvaluateTool:
     def test_safe_tool_auto_approved(self):
         result = llm_evaluate_tool("read_file", {"path": "foo.py"}, [])
@@ -83,7 +90,7 @@ class TestLlmEvaluateTool:
 
     def test_approved_when_client_returns_approved(self):
         good_json = '{"approved": true, "confidence": 0.95, "reason": "dev task", "suggestion": ""}'
-        with patch("bauer.llm_approval.call_aux_text", return_value=good_json):
+        with _com_juiz(), patch("bauer.llm_approval.call_aux_text", return_value=good_json):
             result = llm_evaluate_tool("delete_file", {"path": "tmp.txt"},
                                        [{"role": "user", "content": "delete the temp file"}])
         assert result.approved is True
@@ -91,7 +98,7 @@ class TestLlmEvaluateTool:
 
     def test_rejected_when_client_denies(self):
         bad_json = '{"approved": false, "confidence": 0.9, "reason": "suspicious", "suggestion": "check first"}'
-        with patch("bauer.llm_approval.call_aux_text", return_value=bad_json):
+        with _com_juiz(), patch("bauer.llm_approval.call_aux_text", return_value=bad_json):
             result = llm_evaluate_tool("run_command", {"command": "rm -rf /"},
                                        [{"role": "user", "content": "clean disk"}])
         assert result.approved is False
@@ -105,7 +112,7 @@ class TestLlmEvaluateTool:
     def test_recent_messages_trimmed_to_6(self):
         messages = [{"role": "user", "content": f"msg {i}"} for i in range(20)]
         good_json = '{"approved": true, "confidence": 0.8, "reason": "ok", "suggestion": ""}'
-        with patch("bauer.llm_approval.call_aux_text", return_value=good_json) as mock_aux:
+        with _com_juiz(), patch("bauer.llm_approval.call_aux_text", return_value=good_json) as mock_aux:
             llm_evaluate_tool("delete_file", {"path": "x"}, messages)
         # call_aux_text was called — the function ran
         mock_aux.assert_called_once()
@@ -137,7 +144,7 @@ class TestToolRouterApprovalIntegration:
         # um router sem LLM pula a checagem (fail-open). Passa um dummy.
         router = ToolRouter(workspace=tmp_path, audit_enabled=False, llm_client=object())
         deny_json = '{"approved": false, "confidence": 0.9, "reason": "risky", "suggestion": "backup first"}'
-        with patch("bauer.llm_approval.call_aux_text", return_value=deny_json):
+        with _com_juiz(), patch("bauer.llm_approval.call_aux_text", return_value=deny_json):
             result = router.execute('{"action": "delete_file", "args": {"path": "important.txt"}}')
         assert "LLM Approval Negado" in result
         assert "risky" in result
@@ -170,3 +177,60 @@ class TestToolRouterApprovalIntegration:
         with patch("bauer.llm_approval.call_aux_text") as mock_aux:
             router.execute('{"action": "list_dir", "args": {"path": "."}}')
         mock_aux.assert_not_called()
+
+
+class TestJuizIndependente:
+    """HARNESS-030 — o G4 não pode pedir ao modelo que audite a si mesmo.
+
+    `auxiliary.approval_model` vazio não significa "sem juiz": `_resolve_slot`
+    cai no modelo PRINCIPAL, e o gate passa a perguntar ao mesmo modelo se a tool
+    que ele acabou de escolher é segura. Observado em produção com modelo local:
+    negou `docker compose logs` com "não há consentimento claro" logo depois de o
+    usuário ter pedido exatamente isso. O erro anda nos dois sentidos — nega
+    trabalho legítimo e carimba o que ele próprio propôs.
+    """
+
+    @staticmethod
+    def _cfg(aux_provider="", aux_model=""):
+        from bauer.config_loader import (AuxiliarySection, AuxiliarySlot,
+                                         BauerConfig, ModelSection)
+        return BauerConfig(
+            model=ModelSection(provider="ollama", name="qwen3-coder:30b"),
+            auxiliary=AuxiliarySection(
+                approval_model=AuxiliarySlot(provider=aux_provider, model=aux_model)),
+        )
+
+    def test_sem_approval_model_nao_e_independente(self):
+        from bauer.llm_approval import juiz_independente
+        assert juiz_independente(self._cfg()) is False
+
+    def test_mesmo_modelo_nao_e_independente(self):
+        from bauer.llm_approval import juiz_independente
+        assert juiz_independente(self._cfg("ollama", "qwen3-coder:30b")) is False
+
+    def test_modelo_diferente_e_independente(self):
+        from bauer.llm_approval import juiz_independente
+        assert juiz_independente(self._cfg("ollama", "gpt-oss:20b")) is True
+
+    def test_provider_diferente_basta(self):
+        """Mesmo nome de modelo em dois provedores são instâncias distintas —
+        sem estado nem contexto compartilhado."""
+        from bauer.llm_approval import juiz_independente
+        assert juiz_independente(self._cfg("openrouter", "qwen3-coder:30b")) is True
+
+    def test_gate_se_desliga_em_vez_de_autojulgar(self):
+        """Melhor NENHUM gate de LLM que um autojulgado: as camadas
+        determinísticas (allowlist, limiar de risco, aprovação humana) seguem
+        valendo, e elas não têm conflito de interesse."""
+        from bauer.llm_approval import llm_evaluate_tool
+
+        chamou = []
+        with patch("bauer.llm_approval.call_aux_text",
+                   side_effect=lambda *a, **k: chamou.append(1) or ""):
+            r = llm_evaluate_tool("run_command", {"command": "docker ps"},
+                                  [{"role": "user", "content": "veja os containers"}],
+                                  cfg=self._cfg())
+
+        assert r.approved is True
+        assert "sem juiz independente" in r.reason
+        assert not chamou, "não pode nem chamar o modelo para se autojulgar"
