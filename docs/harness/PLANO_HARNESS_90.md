@@ -201,13 +201,13 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 | Kernel e ciclo de vida | **100%** ✅ | 12/12 | 95% | — |
 | Context Builder | **100%** ✅ | 9/9 | 90% | — |
 | Validacao deterministica | **100%** ✅ | 8/8 | 90% | — |
-| Isolamento | **50%** | 2/4 | 85% | `2-container`, `3-aprovacao-humana` |
+| Isolamento | **75%** | 3/4 | 85% | `2-container` |
 | Controle de progresso | **100%** ✅ | 9/9 | 85% | — |
 | Observabilidade | **100%** ✅ | 17/17 | 90% | — |
 | Capacidade do runtime | **100%** ✅ | 6/6 | 100% | — |
 | Retry, fallback e recovery | **100%** ✅ | 6/6 | 90% | — |
 | Avaliacoes de harness | **100%** ✅ | 23/23 | 85% | — |
-| **média (só o mensurável)** | **95%** | | **90%** | |
+| **média (só o mensurável)** | **98%** | | **90%** | |
 
 2 capacidades ficam **fora da média** por não serem contáveis — declaradas em vez de receberem um número inventado:
 
@@ -917,9 +917,12 @@ Independente dos indicadores, três itens do §17 seguem sem implementação:
 | HARNESS-010 | `requested_context: auto` | default fixo de 8192 em `config_loader` |
 | HARNESS-017 | `workspace_snapshot` / rollback | não existe; `core/workspace/` só tem `isolation.py` |
 
-E o **Isolamento fica em 50%** (medido): container (nível 2) e aprovação humana
-(nível 3). O container está declarado como P1 desde §12; a aprovação humana o
-Kernel já sabe fazer (`waiting_approval`), mas o contrato não a aciona.
+E o **Isolamento fica em 75%** (medido): falta só o container (nível 2), P1
+desde §12. A aprovação humana (nível 3) foi ligada em 2026-07-30 —
+`waiting_approval` e `TaskContract.requires_approval` existiam desde o Sprint 1
+e o S10, e o que faltava era o fio entre os dois: o campo estava declarado e
+**nunca era lido**. Note que 75% ainda fica abaixo da meta de 85% — só o
+container fecha a capacidade.
 
 ---
 
