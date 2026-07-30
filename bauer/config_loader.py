@@ -622,12 +622,20 @@ class KernelSection(_StrictSection):
     max_retries: int = Field(ge=0, default=0)          # re-tentativas por executor
     retry_backoff_s: float = Field(ge=0.0, default=1.0)  # espera linear entre tentativas
     fallback_adapters: list[str] = []                  # executores alternativos, em ordem
-    evaluator_enabled: bool = False                    # quality gates antes de concluir
+    # Quality gates antes de concluir. LIGADO por default: sem isto nenhum gate
+    # roda, e "o agente nao pode declarar sucesso sem validacao" (criterio 4 do
+    # plano) fica sendo aspiracao. Os gates default sao baratos — checagens de
+    # string no output — e o de testes so dispara quando o run MUDOU arquivos.
+    evaluator_enabled: bool = True
     max_replans: int = Field(ge=0, default=1)          # loop evaluating→planning (budget)
     # Gate de testes (S11): roda os testes do projeto antes de concluir um run
     # que MUDOU arquivos. Opt-in porque custa tempo real — e porque num projeto
     # com suíte lenta o teto abaixo é o que separa governança de refém.
-    tests_gate: bool = False
+    # Ligado por default junto do evaluator. Era opt-in enquanto podia reprovar
+    # projeto herdado vermelho; o modo regressao (ratchet) fechou esse buraco, e
+    # o gate NAO dispara em turno que nao mudou arquivo — quem nao mexe em codigo
+    # nao paga nada.
+    tests_gate: bool = True
     tests_gate_timeout_s: int = Field(ge=1, default=600)
     # "regressao" (default): reprova so falha NOVA em relacao ao baseline —
     # projeto herdado vermelho nao trava todo run autonomo. "estrito":

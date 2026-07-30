@@ -93,6 +93,25 @@ def llm_evaluate_tool(
     if tool_name in _SAFE_TOOLS:
         return LLMApprovalResult.allow("Safe read-only tool — auto-approved")
 
+    if not juiz_independente(cfg):
+        # Juiz que é o próprio réu não é juiz. Sem `auxiliary.approval_model`
+        # declarado, `_resolve_slot` cai no modelo PRINCIPAL — e o G4 passa a
+        # pedir ao modelo que ele mesmo audite a tool que acabou de escolher.
+        #
+        # Não é hipótese: observado em produção com modelo local, negando
+        # `docker compose logs` com "não há consentimento claro para rodar" logo
+        # depois de o usuário ter pedido exatamente isso. O erro anda nos dois
+        # sentidos — nega trabalho legítimo e carimba o que ele mesmo propôs.
+        #
+        # Melhor NENHUM gate de LLM que um gate autojulgado: as camadas
+        # determinísticas (allowlist, limiar de risco, aprovação humana)
+        # continuam valendo, e elas não têm conflito de interesse.
+        logger.info("llm_approval: sem juiz independente (auxiliary.approval_model "
+                    "vazio) — G4 desligado para %s; camadas determinísticas seguem",
+                    tool_name)
+        return LLMApprovalResult.allow(
+            "G4 desligado: sem juiz independente (configure auxiliary.approval_model)")
+
     try:
         context_lines = _format_context(recent_messages)
         user_msg = (
@@ -117,6 +136,37 @@ def llm_evaluate_tool(
     except Exception as exc:
         logger.info("llm_approval: error evaluating %s — approving: %s", tool_name, exc)
         return LLMApprovalResult.allow(f"Approval check failed ({exc!r}) — fail-open")
+
+
+def juiz_independente(cfg=None) -> bool:
+    """Existe um juiz do G4 DIFERENTE do modelo que está executando?
+
+    ``auxiliary.approval_model`` vazio não significa "sem juiz": significa que o
+    ``_resolve_slot`` cai no modelo principal, e o gate vira autoavaliação. Aqui
+    o critério é explícito — provider **ou** modelo têm de diferir do principal.
+
+    Provider diferente já basta: o mesmo nome de modelo servido por dois
+    provedores são instâncias distintas, sem estado nem contexto compartilhado.
+    """
+    if cfg is None:
+        from .auxiliary_client import _try_load_default_config
+        cfg = _try_load_default_config()
+    if cfg is None:
+        return False
+
+    aux = getattr(getattr(cfg, "auxiliary", None), "approval_model", None)
+    aux_provider = (getattr(aux, "provider", "") or "").strip().lower()
+    aux_model = (getattr(aux, "model", "") or "").strip().lower()
+    if not aux_provider and not aux_model:
+        return False
+
+    main = getattr(cfg, "model", None)
+    main_provider = (getattr(main, "provider", "") or "").strip().lower()
+    main_model = (getattr(main, "name", "") or "").strip().lower()
+
+    provider_efetivo = aux_provider or main_provider
+    modelo_efetivo = aux_model or main_model
+    return (provider_efetivo, modelo_efetivo) != (main_provider, main_model)
 
 
 def _format_context(messages: list[dict], max_messages: int = 6) -> str:

@@ -221,13 +221,30 @@ def test_evaluator_monta_o_gate_pelo_config(tmp_path):
     assert gate.timeout_s == 120
 
 
-def test_gate_desligado_por_default(tmp_path):
-    """Custa tempo real — entra por escolha, não por herança."""
+def test_gate_ligado_por_default(tmp_path):
+    """Era opt-in enquanto podia reprovar projeto herdado vermelho.
+
+    O modo regressão (ratchet) fechou esse buraco, e o gate NÃO dispara em turno
+    que não mudou arquivo — quem não mexe em código não paga nada. Com isso o
+    custo passou a ser cobrado exatamente quando há o que validar, e manter
+    desligado só deixaria o critério 4 do plano como aspiração.
+    """
     from bauer.config_loader import BauerConfig, KernelSection, ModelSection
     from bauer.core.kernel.kernel import evaluator_from_config
 
     cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"),
                       kernel=KernelSection(evaluator_enabled=True))
+    ev = evaluator_from_config(cfg, workspace=str(tmp_path))
+
+    assert "tests" in [g.name for g in ev.gates]
+
+
+def test_gate_pode_ser_desligado_explicitamente(tmp_path):
+    from bauer.config_loader import BauerConfig, KernelSection, ModelSection
+    from bauer.core.kernel.kernel import evaluator_from_config
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"),
+                      kernel=KernelSection(evaluator_enabled=True, tests_gate=False))
     ev = evaluator_from_config(cfg, workspace=str(tmp_path))
 
     assert "tests" not in [g.name for g in ev.gates]

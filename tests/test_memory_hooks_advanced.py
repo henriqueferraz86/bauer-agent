@@ -57,7 +57,7 @@ class TestMemoryProviderABCHooks:
         time.sleep(0.1)
         assert "prefetch" in p.prefetch_calls
 
-    def test_queue_prefetch_does_not_block(self):
+    def test_queue_prefetch_does_not_block(self, limite):
         """queue_prefetch should return immediately even if prefetch is slow."""
         from bauer.memory_provider import MemoryProvider
 
@@ -72,7 +72,7 @@ class TestMemoryProviderABCHooks:
         t0 = time.time()
         p.queue_prefetch()
         elapsed = time.time() - t0
-        assert elapsed < 0.5
+        assert elapsed < limite(0.5)
 
     def test_queue_prefetch_exception_in_prefetch_does_not_propagate(self):
         from bauer.memory_provider import MemoryProvider
@@ -247,14 +247,14 @@ class TestAgentOnTurnStartWiring:
         p.on_turn_start(0, [])
         p.on_turn_start(5, [{"role": "user", "content": "x"}])
 
-    def test_queue_prefetch_is_non_blocking(self):
+    def test_queue_prefetch_is_non_blocking(self, limite):
         from bauer.memory_provider import LocalMemoryProvider
 
         p = LocalMemoryProvider()
         t0 = time.time()
         p.queue_prefetch()
         elapsed = time.time() - t0
-        assert elapsed < 0.5  # retorna quase imediatamente
+        assert elapsed < limite(0.5)  # retorna quase imediatamente
 
     def test_safe_prefetch_swallows_exceptions(self):
         from bauer.memory_provider import MemoryProvider

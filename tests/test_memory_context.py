@@ -156,7 +156,7 @@ class TestSyncMemoryAfterTurn:
         records = dm.search("ok", top_k=10)
         assert len(records) == 0
 
-    def test_runs_in_background_does_not_block(self, tmp_path):
+    def test_runs_in_background_does_not_block(self, tmp_path, limite):
         start = time.monotonic()
         sync_memory_after_turn(
             "tarefa de longa duração simulada",
@@ -166,7 +166,7 @@ class TestSyncMemoryAfterTurn:
         )
         elapsed = time.monotonic() - start
         # Sync runs in a daemon thread — main thread should return fast
-        assert elapsed < 0.5
+        assert elapsed < limite(0.5)
 
 
 # ---------------------------------------------------------------------------

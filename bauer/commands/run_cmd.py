@@ -101,6 +101,22 @@ def run(
         console.print(f"[red]Limite inválido:[/red] {exc}")
         raise typer.Exit(code=1)
 
+    # Isolamento (S12 nível 1): quando o contrato pede `isolation: worktree`, o
+    # agente passa a trabalhar num branch dedicado e o master não é tocado. A
+    # regra vem do CONTRATO, não é geral — isolar todo run quebraria o fluxo de
+    # fix pequeno direto no master. Sem contrato, nada muda.
+    from ..core.workspace import preparar as _preparar_ambiente
+    from ..core.workspace.isolation import contrato_do_workspace
+    from uuid import uuid4 as _uuid4
+    _contrato = contrato_do_workspace(ws)
+    _iso = _preparar_ambiente(ws, _contrato, run_id=f"run-{_uuid4().hex[:10]}")
+    if _iso.aviso:
+        console.print(f"[yellow]⚠ {_iso.aviso}[/yellow]")
+    if _iso.isolado:
+        console.print(f"[dim]worktree:[/dim] {_iso.worktree.branch} "
+                      f"[dim]({_iso.workspace})[/dim]")
+        ws = _iso.workspace   # tudo abaixo — router, contexto, gates — usa o worktree
+
     model_name = (model or cfg.model.name).strip()
     client = _build_client(cfg)
     router = _build_router(cfg, ws, llm_client=client)
@@ -249,6 +265,12 @@ def run(
     finally:
         cost_sink.reset(_cost_token)
         router._approval_callback = None
+        if _iso.isolado:
+            from ..core.workspace import finalizar as _finalizar_ambiente
+            _artefato = _finalizar_ambiente(
+                _iso, objetivo=task[:120], sucesso=(stop_reason == "completed"))
+            if _artefato:
+                console.print(f"[dim]artefato:[/dim] {_artefato}")
 
     _summary(stop_reason or "completed", rounds, budget)
 

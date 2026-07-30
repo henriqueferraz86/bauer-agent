@@ -32,7 +32,12 @@ config.yaml
 .orchestrate_progress/
 .bauer_active_company
 logs/
-workspace/
+# ANCORADO: sem a barra inicial, `workspace/` casava com QUALQUER diretorio
+# desse nome em qualquer profundidade — inclusive `bauer/core/workspace/`, que
+# e codigo. O pacote existia no disco, nao entrava no git, e o wheel saia sem
+# ele: `ModuleNotFoundError: bauer.core.workspace` so no ambiente instalado.
+# A regra sempre quis dizer o sandbox da RAIZ do repo.
+/workspace/
 memory/
 specs/
 companies/
