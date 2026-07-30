@@ -125,8 +125,18 @@ def run(
     # desligada = None; ligada e com wiring quebrado = KernelWiringError — o
     # loop autônomo é o ÚLTIMO lugar onde rodar ingovernado em silêncio serve.
     from ..core.kernel import build_kernel, require_kernel
-    kernel = require_kernel(cfg, lambda: build_kernel(cfg, workspace=str(ws)),
-                            label="bauer run")
+    # root EXPLÍCITO, atado ao workspace. O default de build_kernel é
+    # "memory/runtime" RELATIVO ao cwd do processo — que por acaso coincide com
+    # o workspace no uso normal, mas é acidente, não contrato: basta o processo
+    # ter cwd diferente da pasta alvo para os runs irem parar noutro lugar. Foi
+    # o que quebrou 4 testes ao ligar o Kernel por default: todos compartilhavam
+    # o store do repo, acumulavam runs não-terminais e batiam em
+    # "max parallel runs reached: 3/3".
+    kernel = require_kernel(
+        cfg,
+        lambda: build_kernel(cfg, root=str(ws / "memory" / "runtime"), workspace=str(ws)),
+        label="bauer run",
+    )
 
     # Aprovação headless (o /loop nunca para pra perguntar; o modo controla o
     # que é auto-aprovado vs. auto-negado).

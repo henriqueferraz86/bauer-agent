@@ -933,10 +933,28 @@ def test_admitted_run_completes_by_caller(kit):
 # ─── flag de config ──────────────────────────────────────────────────────────
 
 
-def test_kernel_disabled_by_default():
+def test_kernel_ligado_por_default():
+    """HARNESS-020: config sem seção `kernel:` HERDA governança.
+
+    Era opt-in enquanto 9 caminhos não passavam pelo Kernel — ligar a flag
+    naquele estado a faria mentir. Depois do S8 todos passam, e o default virou
+    por um motivo concreto: `load_config` NÃO mescla o config do diretório com o
+    de $BAUER_HOME. Com default False, qualquer projeto com config.yaml próprio
+    e sem a seção desligava a governança inteira sem ninguém notar — medido,
+    `bauer agent run-one` numa pasta assim não criava Run nenhum.
+    """
     from bauer.config_loader import BauerConfig, ModelSection
 
     cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"))
+    assert kernel_enabled(cfg) is True
+
+
+def test_kernel_pode_ser_desligado_explicitamente():
+    """Desligar continua possível — mas agora exige dizer isso."""
+    from bauer.config_loader import BauerConfig, KernelSection, ModelSection
+
+    cfg = BauerConfig(model=ModelSection(provider="ollama", name="x"),
+                      kernel=KernelSection(enabled=False))
     assert kernel_enabled(cfg) is False
 
 
