@@ -247,25 +247,29 @@ def run_doctor(
     findings.extend(ctx_notes)
 
     # --- tool mode ---------------------------------------------------------------
-    # Esta linha precisa bater com o gate real do agent
-    # (`_client_supports_native_tools`), senão o doctor vira decoração: durante
-    # meses ele imprimiu "native" para modelos Ollama enquanto o runtime rodava
-    # sempre no bridge, e "bridge" para providers cloud que rodavam native.
-    if is_cloud:
-        # Todo provider OpenAI-compat aceita `tools=` (OpenAIClient.
-        # supports_native_tools é True incondicionalmente).
-        tool_mode = "native"
-        findings.append("Tool mode: native (provider OpenAI-compat)")
-    elif info is not None and info.supports_tools is True:
-        tool_mode = "native"
-        findings.append("Tool mode: native (modelo anuncia capability 'tools')")
+    # HARNESS-029. O comentário que estava aqui dizia que esta decisão "precisa
+    # bater com o gate real do agent (`_client_supports_native_tools`)" — e não
+    # batia: derivava do `models.yaml` enquanto o runtime deriva do CLIENTE. Como
+    # `OllamaClient.supports_native_tools` é True incondicionalmente, um modelo
+    # fora do catálogo fazia o doctor imprimir "bridge" com o runtime rodando
+    # native. Pior, o `bauer serve` LIA esse "bridge" do disco para montar o
+    # system prompt — prompt de bridge com execução nativa é o bug de julho
+    # inteiro, o que foi atribuído ao modelo três vezes.
+    #
+    # Agora a pergunta tem uma resposta só, e ela vem do cliente vivo.
+    from .runtime_capability import aviso_de_capacidade, modo_de_tool_calling, modo_por_provider
+
+    if client is not None and model_available:
+        tool_mode = modo_de_tool_calling(client)          # cliente vivo: descrição
+        origem = "cliente ativo"
     else:
-        tool_mode = "bridge"
-        findings.append(
-            "Tool mode: bridge — o modelo não declara suporte a tools nativas. "
-            "Modelos menores seguem mal o bridge por prompt em tarefas "
-            "multi-passo; prefira um modelo com capability 'tools'."
-        )
+        tool_mode = modo_por_provider(config.model.provider)   # sem cliente: previsão
+        origem = f"previsto para o provider '{config.model.provider}'"
+    findings.append(f"Tool mode: {tool_mode} ({origem})")
+
+    _aviso = aviso_de_capacidade(tool_mode, info)
+    if _aviso:
+        findings.append(_aviso)
 
     # --- segurança do serve -------------------------------------------------------
     _serve_host = config.serve.host

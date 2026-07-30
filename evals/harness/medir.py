@@ -213,6 +213,52 @@ def cap_progresso() -> Capacidade:
     return c
 
 
+def cap_capacidade_do_runtime() -> Capacidade:
+    """HARNESS-029 — quantos lugares perguntam ao runtime em vez de adivinhar.
+
+    Não conta arquivos nem testes: EXECUTA a invariante. Cada item é uma
+    afirmação que precisa valer agora, com o código carregado. Um scorecard que
+    dissesse "invariante: true" porque existe um arquivo de teste seria o mesmo
+    erro que fez `tool.denied` dar 17/17 estando no sink errado.
+    """
+    from bauer.agent import _client_supports_native_tools
+    from bauer.ollama_client import OllamaClient
+    from bauer.openai_client import OpenAIClient
+    from bauer.runtime_capability import (
+        BRIDGE, NATIVO, modo_de_tool_calling, modo_por_provider,
+    )
+
+    clientes = [OllamaClient("http://127.0.0.1:11434", 5),
+                object.__new__(OpenAIClient)]
+    checagens = {
+        "modo reportado == modo executado": all(
+            modo_de_tool_calling(c) == (NATIVO if _client_supports_native_tools(c)
+                                        else BRIDGE) for c in clientes),
+        "previsao por provider == cliente real": all(
+            modo_por_provider(n) == modo_de_tool_calling(c)
+            for n, c in zip(("ollama", "openai"), clientes)),
+        "sem cliente cai em bridge": modo_de_tool_calling(None) == BRIDGE,
+        "serve nao le o modo do disco": 'state.get("tool_mode"' not in
+            (BAUER / "commands" / "serve_cmd.py").read_text(encoding="utf-8"),
+        "preflight nao deriva do catalogo": "modo_de_tool_calling" in
+            (BAUER / "preflight.py").read_text(encoding="utf-8"),
+        "create_app sem default 'bridge'": _default_tool_mode() == "",
+    }
+    tem = [n for n, ok in checagens.items() if ok]
+    c = Capacidade("Capacidade do runtime", tem,
+                   [n for n, ok in checagens.items() if not ok], meta=100)
+    c.nota = "invariante HARNESS-029, executada — nao inferida de arquivo"
+    return c
+
+
+def _default_tool_mode() -> Any:
+    import inspect
+
+    from bauer.server import create_app
+
+    return inspect.signature(create_app).parameters["tool_mode"].default
+
+
 def cap_observabilidade() -> Capacidade:
     """Os 17 eventos mínimos do plano §14 — quais chegam ao EventBus.
 
@@ -271,7 +317,8 @@ def cap_resiliencia() -> Capacidade:
 
 CAPACIDADES: list[Callable[[], Capacidade]] = [
     cap_kernel_coverage, cap_ciclo_de_vida, cap_context_builder, cap_validacao,
-    cap_isolamento, cap_progresso, cap_observabilidade, cap_resiliencia, cap_evals,
+    cap_isolamento, cap_progresso, cap_observabilidade, cap_capacidade_do_runtime,
+    cap_resiliencia, cap_evals,
 ]
 
 #: Capacidades que NAO da para derivar de contagem honesta. Ficam declaradas

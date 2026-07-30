@@ -204,9 +204,10 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 | Isolamento | **50%** | 2/4 | 85% | `2-container`, `3-aprovacao-humana` |
 | Controle de progresso | **100%** ✅ | 9/9 | 85% | — |
 | Observabilidade | **100%** ✅ | 17/17 | 90% | — |
+| Capacidade do runtime | **100%** ✅ | 6/6 | 100% | — |
 | Retry, fallback e recovery | **100%** ✅ | 6/6 | 90% | — |
 | Avaliacoes de harness | **100%** ✅ | 23/23 | 85% | — |
-| **média (só o mensurável)** | **94%** | | **90%** | |
+| **média (só o mensurável)** | **95%** | | **90%** | |
 
 2 capacidades ficam **fora da média** por não serem contáveis — declaradas em vez de receberem um número inventado:
 
@@ -863,7 +864,7 @@ cancel_support: 100%
 recovery_support: 100%
 stuck_run_detection: true
 anti_loop_detection: true                # ATENDIDO — 9/9 sinais (PR #112)
-runtime_capability_invariant: true       # <-- EM ABERTO, ver nota (b)
+runtime_capability_invariant: true       # ATENDIDO — 6/6, executada no medir.py
 independent_approval_judge: true         # ADIÇÃO — §9.2 — ATENDIDO
 policy_parser_property_tests: true       # ADIÇÃO — §9.4 — ATENDIDO
 auditable_execution_paths: 100%          # ATENDIDO — 17/17 eventos (PR #112)
@@ -875,8 +876,8 @@ orphaned_run_rate: "<1%"                 # ATENDIDO: 0.0% medido
 suite_hermetic: true                     # ADIÇÃO — §12.3 — ATENDIDO
 ```
 
-**20 de 22 atendidos.** Os dois em aberto, e por que nenhum dos dois pode ser
-declarado por arredondamento:
+**21 de 22 atendidos.** O único em aberto, e por que não pode ser declarado por
+arredondamento:
 
 **(a) `task_contract_coverage`.** É o MESMO erro que derrubou o "20/20" do
 Context Builder e que travou `cap_validacao` em 62%: confundir "o mecanismo
@@ -887,24 +888,34 @@ qualquer é zero. Declarar 100% aqui seria dizer que o indicador mede o código
 quando ele mede o uso. Falta decidir o que conta como denominador (toda tarefa
 de código? só as autônomas?) — e é decisão de produto, não de implementação.
 
-**(b) `runtime_capability_invariant` (HARNESS-029).** A causa foi corrigida — o
-modo de tool calling vem do CLIENTE VIVO, nunca de default, e é o que o S9
-preservou. Mas o indicador pede a **invariante testada**: o que o `preflight`
-reporta é o que o runtime usa. Esse teste não existe. Sem ele, a próxima
-divergência entre relatório e execução volta a ser atribuída ao modelo — que
-foi exatamente o que aconteceu três vezes em julho/2026, até um A/B de
-temperatura dar 5/5 nas duas pontas e matar todas as hipóteses de modelo.
+**(b) `runtime_capability_invariant` (HARNESS-029) — FECHADO.** Escrever a
+invariante encontrou o bug de julho **ainda vivo em dois lugares**, o que é a
+melhor justificativa possível para o critério 11 existir:
+
+- `preflight` derivava o modo do `models.yaml` (`info.supports_tools`) enquanto
+  o runtime deriva do CLIENTE. Como `OllamaClient.supports_native_tools` é True
+  incondicionalmente, um modelo fora do catálogo fazia o doctor imprimir
+  `bridge` com o runtime rodando `native`.
+- `serve_cmd` montava o system prompt a partir do `.runtime_state.json` —
+  decisão de um `bauer doctor` de outro momento, possivelmente de outra máquina,
+  com default `"bridge"` quando o arquivo nem existia. Prompt de bridge com
+  execução nativa é literalmente o bug que foi atribuído ao modelo três vezes.
+
+`runtime_capability.py` passa a ser a única fonte, derivada do cliente vivo. O
+sinal do catálogo continua sendo dado, mas como **previsão sobre o modelo** ("vai
+cair para o bridge no primeiro HTTP 400"), não como descrição do runtime —
+escrito assim, ele não pode mais contradizer a execução. `cap_capacidade_do_runtime`
+no `medir.py` **executa** a invariante (6/6), não a infere de arquivo.
 
 ### Backlog P0 ainda aberto
 
-Independente dos indicadores, quatro itens do §17 seguem sem implementação:
+Independente dos indicadores, três itens do §17 seguem sem implementação:
 
 | ID | Item | Situação |
 |---|---|---|
 | HARNESS-008 | Planner persistir aceite | `autonomous_planner` não conhece `acceptance_criteria` |
 | HARNESS-010 | `requested_context: auto` | default fixo de 8192 em `config_loader` |
 | HARNESS-017 | `workspace_snapshot` / rollback | não existe; `core/workspace/` só tem `isolation.py` |
-| HARNESS-029 | Invariante de capacidade | ver nota (b) |
 
 E o **Isolamento fica em 50%** (medido): container (nível 2) e aprovação humana
 (nível 3). O container está declarado como P1 desde §12; a aprovação humana o

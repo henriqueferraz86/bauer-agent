@@ -101,8 +101,16 @@ def serve(
     router = _build_router(cfg, workspace)
 
     from ..agent import _build_system_prompt
-    _tmode = state.get("tool_mode", "bridge") if isinstance(state, dict) else getattr(state, "tool_mode", "bridge")
-    system_prompt = _build_system_prompt(router, tool_mode=_tmode)
+    # HARNESS-029: o modo vem do CLIENTE que este processo acabou de construir,
+    # não do `.runtime_state.json`. Ler de disco significava montar o prompt a
+    # partir do que um `bauer doctor` decidiu noutro momento — possivelmente
+    # noutra máquina, possivelmente com outro modelo, e com um default `"bridge"`
+    # quando o arquivo nem existia. O runtime, esse, sempre perguntou ao cliente.
+    # Prompt de bridge com execução nativa é o bug de julho: instrução em
+    # conflito direto, o modelo ora chama a tool, ora devolve o JSON como texto.
+    from ..runtime_capability import modo_de_tool_calling
+    _tmode = modo_de_tool_calling(_client)
+    system_prompt = _build_system_prompt(router, tool_mode=_tmode, client=_client)
 
     # Fallback de provider (429/5xx) — paridade com o CLI `bauer agent`.
     try:
