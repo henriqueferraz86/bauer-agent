@@ -199,18 +199,66 @@ def cap_evals() -> Capacidade:
                       [v.nome for v in rel.vereditos if not v.passou], meta=85)
 
 
+def cap_resiliencia() -> Capacidade:
+    """Itens da Sprint 4 do plano de consolidação — o circuit breaker era o
+    último e foi ligado em #110, então a capacidade virou contável."""
+    fonte = (BAUER / "core" / "kernel" / "kernel.py").read_text(
+        encoding="utf-8", errors="replace")
+    itens = {
+        "retry com backoff": r"max_retries|backoff_s",
+        "estado retrying auditavel": r'"retrying"',
+        "fallback de executor": r"fallback_adapters",
+        "circuit breaker": r"self\.breaker",
+        "recover pos-restart": r"recover_stuck_runs|def recover",
+        "cancelamento terminal": r'"cancelled"',
+    }
+    tem = [n for n, rx in itens.items() if re.search(rx, fonte)]
+    return Capacidade("Retry, fallback e recovery", tem,
+                      [n for n in itens if n not in tem], meta=90)
+
+
 CAPACIDADES: list[Callable[[], Capacidade]] = [
     cap_kernel_coverage, cap_ciclo_de_vida, cap_context_builder, cap_validacao,
-    cap_isolamento, cap_progresso, cap_observabilidade, cap_evals,
+    cap_isolamento, cap_progresso, cap_observabilidade, cap_resiliencia, cap_evals,
 ]
 
 #: Capacidades que NAO da para derivar de contagem honesta. Ficam declaradas
 #: como opiniao em vez de virar numero inventado — e o total diz quantas sao.
 NAO_MENSURAVEIS = {
     "Task Contract e Planner": "qualidade do plano gerado exige juizo",
-    "Retry, fallback e recovery": "coberto por cenarios 6/7/12, sem contagem propria",
     "Policy e aprovacao": "coberto por cenarios 8/9/22 + 31 property tests",
 }
+
+
+MARCA_INICIO = "<!-- SCORECARD:INICIO — gerado por `python -m evals.harness.medir --markdown` -->"
+MARCA_FIM = "<!-- SCORECARD:FIM -->"
+
+
+def markdown(caps: "list[Capacidade]") -> str:
+    """Tabela do plano, derivada da contagem.
+
+    Escrita à mão, ela envelhece em silêncio: o número fica no documento, o
+    código muda, e ninguém percebe. Gerada, ou está certa ou o teste falha.
+    """
+    linhas = [MARCA_INICIO, "",
+              "| Capacidade | % | itens | meta | o que falta |",
+              "|---|---|---|---|---|"]
+    for c in caps:
+        falta = ", ".join(f"`{f}`" for f in c.falta[:3]) or "—"
+        if len(c.falta) > 3:
+            falta += f" (+{len(c.falta) - 3})"
+        marca = " ✅" if c.atingiu else ""
+        linhas.append(f"| {c.nome} | **{c.pct}%**{marca} | {len(c.tem)}/{c.total} | "
+                      f"{c.meta}% | {falta} |")
+    media = round(sum(c.pct for c in caps) / len(caps))
+    linhas += [f"| **média (só o mensurável)** | **{media}%** | | **90%** | |", ""]
+    linhas.append(f"{len(NAO_MENSURAVEIS)} capacidades ficam **fora da média** por não serem "
+                  "contáveis — declaradas em vez de receberem um número inventado:")
+    linhas.append("")
+    for nome, motivo in NAO_MENSURAVEIS.items():
+        linhas.append(f"- **{nome}** — {motivo}")
+    linhas += ["", MARCA_FIM]
+    return "\n".join(linhas)
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -218,9 +266,14 @@ def main(argv: "list[str] | None" = None) -> int:
 
     ap = argparse.ArgumentParser(prog="python -m evals.harness.medir")
     ap.add_argument("--json", dest="json_out", default="")
+    ap.add_argument("--markdown", action="store_true",
+                    help="imprime a tabela do plano em vez do relatorio")
     args = ap.parse_args(argv)
 
     caps = [fn() for fn in CAPACIDADES]
+    if args.markdown:
+        print(markdown(caps))
+        return 0
     print(f"{'capacidade':30} {'%':>5}  {'itens':>7}  meta   pendentes")
     print("-" * 92)
     for c in caps:
