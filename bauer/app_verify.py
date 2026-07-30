@@ -188,31 +188,68 @@ def _read_json(p: Path) -> dict:
         return {}
 
 
-def python_exe(root: Path) -> str:
-    """Interpretador para rodar os passos Python do projeto.
+def _tem_modulo(exe: str, modulo: str) -> bool:
+    """O interpretador ``exe`` consegue importar ``modulo``?"""
+    try:
+        proc = subprocess.run([exe, "-c", f"import {modulo}"],
+                              capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
 
-    Hardcodar ``"python"`` quebra em Debian/Ubuntu, onde só existe ``python3`` —
-    medido no Beelink: o gate de testes reprovava com "'python' não encontrado no
-    PATH", falso negativo em toda a família Debian.
 
-    Ordem: venv do PROJETO (a única que garante as dependências dele), depois
-    ``sys.executable`` — que sempre existe e é caminho absoluto, então passa pelo
-    ``which`` do verify_project.
-
-    LIMITE CONHECIDO: projeto SEM venv cujos testes precisem de dependências que
-    o interpretador do Bauer não tem falha por ImportError. Não é silencioso — o
-    erro aparece inteiro no motivo do gate, acionável ("instale X") —, mas é
-    falha de ambiente, não de código. Instalar por conta própria seria pior:
-    minutos por run e efeito colateral fora do escopo da tarefa.
-    """
+def _candidatos_python(root: Path) -> List[str]:
+    """Interpretadores a considerar, do mais para o menos específico."""
+    cands: List[str] = []
     for rel in (Path(".venv") / "bin" / "python",
                 Path(".venv") / "Scripts" / "python.exe",
                 Path("venv") / "bin" / "python",
                 Path("venv") / "Scripts" / "python.exe"):
         cand = root / rel
         if cand.is_file():
-            return str(cand)
-    return sys.executable or "python3"
+            cands.append(str(cand))
+    # PATH ANTES de sys.executable: quando o Bauer roda via pipx, sys.executable
+    # é o venv ISOLADO do Bauer — que por definição não tem pytest nem as
+    # dependências de projeto nenhum.
+    for nome in ("python3", "python"):
+        achado = shutil.which(nome)
+        if achado:
+            cands.append(achado)
+    if sys.executable:
+        cands.append(sys.executable)
+    vistos: set[str] = set()
+    return [c for c in cands if not (c in vistos or vistos.add(c))]
+
+
+def python_exe(root: Path, *, precisa: Optional[str] = None) -> str:
+    """Interpretador para rodar os passos Python do projeto.
+
+    Hardcodar ``"python"`` quebra em Debian/Ubuntu, onde só existe ``python3`` —
+    medido no Beelink: o gate reprovava com "'python' não encontrado no PATH",
+    falso negativo em toda a família Debian.
+
+    ``precisa`` (ex.: ``"pytest"``) escolhe o primeiro candidato que consegue
+    IMPORTAR o módulo, em vez de só existir. Sem isso o gate de testes quebrava
+    sempre que o Bauer estava instalado por pipx: ``sys.executable`` é o venv
+    isolado do Bauer, que nunca terá pytest. Medido num run real:
+
+        $ /home/.../venvs/bauer-agent/bin/python -m pytest -q
+        No module named pytest
+
+    — o gate reprovava o trabalho do agente por ambiente, não por código.
+
+    Ordem: venv do PROJETO (a única que garante as dependências dele) → PATH →
+    ``sys.executable``. Nenhum candidato serve? Devolve o primeiro que existe,
+    e a falha aparece inteira no motivo do gate, acionável.
+    """
+    cands = _candidatos_python(root)
+    if not cands:
+        return "python3"
+    if precisa:
+        for c in cands:
+            if _tem_modulo(c, precisa):
+                return c
+    return cands[0]
 
 
 def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, List[str]]]]:
@@ -266,7 +303,7 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
             # projeto real: a verificação reprovava por erro de coleta, não pelo
             # código — falso negativo, e do tipo que faria o gate rejeitar todo
             # projeto Python de layout plano.
-            steps.append(("test", [python_exe(root), "-m", "pytest", "-q"]))
+            steps.append(("test", [python_exe(root, precisa="pytest"), "-m", "pytest", "-q"]))
         else:
             # smoke mínimo: compila tudo (pega SyntaxError sem rodar nada).
             steps.append(("smoke", [python_exe(root), "-m", "compileall", "-q", "."]))
