@@ -680,11 +680,23 @@ def create_app(
     enable_access_log: bool = False,
     config_path: Optional[Path] = None,
     fallback_clients: list | None = None,
-    tool_mode: str = "bridge",
+    tool_mode: str = "",
     workspace: Optional[Path] = None,
 ):
-    """Cria e retorna o app FastAPI configurado."""
+    """Cria e retorna o app FastAPI configurado.
+
+    ``tool_mode`` vazio (default) resolve a partir do ``client`` — HARNESS-029.
+    O default era o literal ``"bridge"``, então qualquer caller que esquecesse de
+    passar montava prompt de bridge com execução nativa: instrução em conflito
+    direto com o que o runtime faz. O default certo para uma capacidade do
+    runtime é PERGUNTAR, nunca chutar o valor mais conservador — o chute não é
+    seguro, é errado de um jeito silencioso.
+    """
     _require_fastapi()
+
+    from .runtime_capability import modo_de_tool_calling
+
+    tool_mode = tool_mode or modo_de_tool_calling(client)
 
     import json
     import logging
@@ -886,7 +898,14 @@ def create_app(
         try:
             from .agent import _build_system_prompt
 
-            prompt = _build_system_prompt(router, tool_mode=tool_mode)
+            # Do cliente VIVO, não do modo resolvido no boot: o modelo troca em
+            # runtime (`resolver_contexto_aplicado`, roteamento por tier) e pode
+            # trocar de provider junto. Um prompt montado com o modo do boot
+            # sobreviveria à troca e voltaria a contradizer a execução — a
+            # mesma falha do `.runtime_state.json`, só que com um cache em
+            # memória no lugar do arquivo.
+            _modo = modo_de_tool_calling(_state.get("client") or client)
+            prompt = _build_system_prompt(router, tool_mode=_modo)
             if workspace is not None:
                 from . import app_factory as _af
                 prompt += _af.system_prompt_section(workspace)
