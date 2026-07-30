@@ -105,16 +105,29 @@ def finalizar(iso: Isolamento, *, objetivo: str, sucesso: bool,
 
     commit = commit_worktree(iso.worktree, f"bauer: {objetivo}"[:200])
     linha = summarize_artifact(commit)
-    removido = not commit.committed and (sucesso or not preservar_em_falha)
+    # `not committed` tem DOIS significados e tratá-los igual apagava trabalho:
+    # nada staged (worktree vazio, pode ir) e commit que FALHOU (o trabalho está
+    # lá, o git é que não o gravou). O segundo caso é rotineiro numa máquina sem
+    # `user.email` configurado — servidor recém-provisionado, container de CI —
+    # e o desfecho era remover o worktree com o diff dentro. `changed_files`
+    # separa os dois: só é vazio quando não havia mesmo o que commitar.
+    vazio = not commit.committed and not commit.changed_files
+    removido = vazio and (sucesso or not preservar_em_falha)
     if removido:
         # nada mudou: worktree vazio só polui o repo
         remove_worktree(iso.worktree)
+    elif not commit.committed:
+        aviso = commit.message or "commit falhou"
+        iso.aviso = f"worktree PRESERVADO: {aviso}"
     _emitir(bus, "run.workspace.cleaned", run_id,
             status="removido" if removido else "preservado",
+            message=iso.aviso or None,
             data={"branch": getattr(iso.worktree, "branch", ""),
                   "path": str(iso.workspace), "removido": removido,
-                  "commitou": bool(commit.committed), "sucesso": sucesso})
-    return "" if removido else linha
+                  "commitou": bool(commit.committed),
+                  "arquivos_alterados": len(commit.changed_files or []),
+                  "sucesso": sucesso})
+    return "" if removido else (linha or iso.aviso)
 
 
 def _degradou(bus: Any, run_id: str, ws: Path, aviso: str) -> Isolamento:

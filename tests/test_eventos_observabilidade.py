@@ -283,13 +283,24 @@ def test_telemetria_quebrada_nao_derruba_o_turno():
 
 
 def _repo(tmp_path):
+    """Repo de teste com identidade LOCAL configurada.
+
+    O `-c user.email=...` só vale para o comando em que aparece. Aqui o código
+    sob teste (`commit_worktree`) roda `git commit` por conta própria, e numa
+    máquina sem identidade global — o CI — esse commit falha em silêncio:
+    `committed=False`, o worktree é tratado como vazio e removido. O teste
+    passava na minha máquina e reprovava no CI por uma diferença de ambiente que
+    não tem nada a ver com o que ele mede. `git config` local vale para o repo e
+    para os worktrees derivados dele.
+    """
     import subprocess
 
     ws = tmp_path / "repo"
     ws.mkdir()
     (ws / "a.txt").write_text("x", encoding="utf-8")
-    for cmd in (["init", "-q"], ["add", "-A"],
-                ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"]):
+    for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"], ["add", "-A"],
+                ["commit", "-qm", "i"]):
         r = subprocess.run(["git", *cmd], cwd=ws, capture_output=True)
         if r.returncode != 0:
             pytest.skip(f"git indisponível: {r.stderr!r}")
@@ -336,6 +347,44 @@ def test_worktree_preservado_tambem_publica(tmp_path, bus):
     assert limpo.data["removido"] is False
     assert limpo.data["commitou"] is True
     assert limpo.status == "preservado"
+
+
+def test_commit_que_falha_nao_apaga_o_trabalho(tmp_path, bus, monkeypatch):
+    """`not committed` tinha DOIS significados e tratá-los igual apagava código.
+
+    Nada staged (worktree vazio, pode ir) e commit que FALHOU (o trabalho está
+    lá; o git é que não o gravou) davam no mesmo `remove_worktree`. O segundo é
+    rotineiro numa máquina sem `user.email` — servidor recém-provisionado,
+    container de CI — e foi assim que este caso apareceu: o CI reprovou o teste
+    do worktree preservado, e o motivo não era o teste.
+    """
+    import bauer.task_worktree as tw
+    from bauer.core.workspace.isolation import Isolamento, finalizar
+
+    class _Worktree:
+        branch = "bauer/run-1"
+        path = tmp_path / "wt"
+
+    class _Falhou:
+        committed = False
+        changed_files = ["src/novo.py", "src/outro.py"]   # o trabalho existe
+        message = "Author identity unknown"
+        commit = ""
+
+    removidos: list = []
+    monkeypatch.setattr(tw, "commit_worktree", lambda *a, **k: _Falhou())
+    monkeypatch.setattr(tw, "summarize_artifact", lambda c: "")
+    monkeypatch.setattr(tw, "remove_worktree", lambda w: removidos.append(w) or True)
+
+    iso = Isolamento(workspace=tmp_path / "wt", worktree=_Worktree())
+    finalizar(iso, objetivo="x", sucesso=True, bus=bus, run_id="r")
+
+    assert removidos == [], "worktree com trabalho dentro foi apagado"
+    evt = next(e for e in bus.list_events() if e.event_type == "run.workspace.cleaned")
+    assert evt.status == "preservado"
+    assert evt.data["arquivos_alterados"] == 2
+    assert "Author identity unknown" in (evt.message or ""), (
+        "sem o motivo no evento, um worktree preservado vira mistério")
 
 
 def test_isolamento_que_degradou_nao_fica_so_no_banner(tmp_path, bus):
