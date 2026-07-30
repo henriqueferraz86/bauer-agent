@@ -994,7 +994,7 @@ def _kill_bridge_processes(*needles: str) -> int:
     return killed
 
 
-def heuristic_route_kit(cfg):
+def heuristic_route_kit(cfg, *, conjunto: str = "default"):
     """(profiles, client_factory) para o roteamento heurístico por turno na CLI.
 
     Espelho do bloco de routing do serve (server.py `_client_for_profile`):
@@ -1002,13 +1002,18 @@ def heuristic_route_kit(cfg):
     profiles resolvidos e uma factory ``(provider) -> client|None`` com cache
     por provider. ``(None, None)`` quando o routing está desligado — o caller
     segue o caminho de sempre sem nenhum custo extra.
+
+    ``conjunto="local"`` usa ``model.profiles_local``. É assim que o ``--local``
+    mantém o roteamento LIGADO e só troca para onde ele aponta: desligar o
+    router para rodar local jogaria fora a parte útil dele — escolher o modelo
+    certo para cada tipo de tarefa.
     """
     try:
         enabled = bool(getattr(cfg.model, "router_enabled", False))
         if not enabled:
             return None, None
         from ..model_router import profiles_from_config
-        profiles = profiles_from_config(cfg)
+        profiles = profiles_from_config(cfg, conjunto=conjunto)
         if not profiles:
             return None, None
     except Exception as exc:  # noqa: BLE001 — routing é opt-in; falha → off

@@ -24,6 +24,7 @@ from ._common import (
     _MEMORY_DIR,
     _RUNTIME_STATE_DEFAULT,
     _WORKSPACE_DIR,
+    _loaded_config_path,
     console,
     console_err,
 )
@@ -180,6 +181,11 @@ def agent(
     ),
     model: str = typer.Option("", "--model", help="Sobrescreve o modelo do config"),
     pick: bool = typer.Option(False, "--pick", help="Mostra lista de modelos para escolher"),
+    local: bool = typer.Option(
+        False, "--local",
+        help="Só modelos desta máquina: usa model.profiles_local e RECUSA "
+             "subir se algo (modelo padrão, fallback) apontar para a nuvem",
+    ),
     resume: bool = typer.Option(False, "--resume", "-r", help="Retoma a ultima sessao salva"),
     session_id_opt: str = typer.Option("", "--session-id", help="ID de sessao especifica para retomar"),
     sessions_dir: Path = typer.Option(Path("memory/sessions"), "--sessions-dir", help="Diretorio de sessoes"),
@@ -533,12 +539,35 @@ def agent(
     # Roteamento heurístico por turno (Fase 12) — mesmo comportamento do serve:
     # opt-in via model.router_enabled + model.profiles no config.yaml.
     from ._runtime import heuristic_route_kit
-    _route_profiles, _route_client_fn = heuristic_route_kit(cfg)
+    if local:
+        # `--local` é um PEDIDO EXPLÍCITO de que nada saia da máquina. Fechar só
+        # o roteamento faria a flag mentir: há três portas para a nuvem
+        # (profiles, model.name e fallback_models), e as duas últimas abrem em
+        # silêncio — um hiccup do Ollama manda o contexto para fora sem uma
+        # linha na tela. Por isso recusa em vez de avisar: "quase local" não é o
+        # que ninguém quer dizer ao digitar isto.
+        from ..model_router import validar_execucao_local
+        _problemas = validar_execucao_local(cfg, model_name)
+        if _problemas:
+            console.print(
+                f"[red]✗ --local recusado:[/red] {len(_problemas)} problema(s).")
+            console.print()
+            for _p in _problemas:
+                console.print(f"  [yellow]•[/yellow] {_p}")
+            console.print()
+            console.print(f"[dim]Config: {_loaded_config_path(config)}[/dim]")
+            console.print("[dim]Rode sem --local para usar a configuração atual.[/dim]")
+            raise typer.Exit(code=1)
+
+    _route_profiles, _route_client_fn = heuristic_route_kit(
+        cfg, conjunto="local" if local else "default")
     if _route_profiles:
         console.print(
-            f"[dim]Roteamento por turno ativo — tiers: "
+            f"[dim]Roteamento por turno ativo{' (LOCAL)' if local else ''} — tiers: "
             f"{', '.join(sorted(_route_profiles))}[/dim]"
         )
+    if local:
+        console.print("[green]◆ --local: nada sai desta máquina[/green]")
 
     # Bauer Kernel (Sprint 6c) — opt-in via kernel.enabled: cada turno vira um
     # Run auditável com kill-switch/policy/budget avaliados antes do LLM.

@@ -6,7 +6,7 @@ Classifica a pergunta do usuário e redireciona para o modelo mais adequado.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 RouteKind = Literal["direct", "code", "reasoning", "tool", "orchestrate"]
 
@@ -248,8 +248,77 @@ def _spec_field(spec, key: str) -> str:
     return str(getattr(spec, key, "") or "")
 
 
-def profiles_from_config(cfg) -> "dict[str, ModelProfile]":
-    """Lê `model.profiles` do config (best-effort). Vazio se ausente.
+#: Providers que rodam NA PRÓPRIA MÁQUINA. `custom` fica de fora da lista fixa
+#: porque depende do host: aponta para onde o usuário mandar, e pode ser uma API
+#: externa — ver `provider_e_local`.
+PROVIDERS_LOCAIS = frozenset({"ollama", "lmstudio"})
+
+#: Hosts que caracterizam "esta máquina" para o provider `custom`.
+_HOSTS_LOCAIS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")
+
+
+def provider_e_local(provider: str, cfg: Any = None) -> bool:
+    """O provider roda nesta máquina?
+
+    `ollama` e `lmstudio` sempre. `custom` só quando o host aponta para a
+    máquina local — tratá-lo como local por padrão transformaria `--local` numa
+    promessa que qualquer endpoint externo quebraria em silêncio.
+    """
+    p = (provider or "").strip().lower()
+    if p in PROVIDERS_LOCAIS:
+        return True
+    if p != "custom" or cfg is None:
+        return False
+    host = str(getattr(getattr(cfg, "custom", None), "host", "") or "").lower()
+    return any(h in host for h in _HOSTS_LOCAIS)
+
+
+def validar_execucao_local(cfg, model_name: str = "") -> "list[str]":
+    """Problemas que impedem `--local` de cumprir o que promete. [] = pode subir.
+
+    Fechar só o roteamento faria a flag MENTIR: existem três portas para a
+    nuvem, e um usuário que digita `--local` está pedindo que nenhuma abra.
+
+      1. `profiles_local`  — sem ele não há para onde rotear
+      2. `model.name`      — caminhos sem tier vão direto nele
+      3. `fallback_models` — se o local engasgar, é para onde o Bauer corre
+
+    A 2 e a 3 são as traiçoeiras: com elas apontando para fora, um hiccup do
+    Ollama manda o contexto para a nuvem sem uma linha na tela.
+
+    NÃO verifica se o modelo funciona — só se é local. São problemas diferentes
+    e misturá-los deixaria a mensagem confusa: o `bauer doctor` diz se o Ollama
+    está no ar; este diz se algo sairia da máquina.
+    """
+    problemas: list[str] = []
+    section = getattr(cfg, "model", None) or getattr(cfg, "models", None)
+
+    if not (getattr(section, "profiles_local", None) or {}):
+        problemas.append(
+            "`model.profiles_local` ausente no config — sem ele não há tiers "
+            "locais para rotear")
+
+    alvo = (model_name or str(getattr(section, "name", "") or "")).strip()
+    prov = str(getattr(section, "provider", "") or "")
+    if not provider_e_local(prov, cfg):
+        problemas.append(
+            f"`model.name` = {alvo or '(vazio)'} usa provider '{prov}', que não "
+            f"é local — caminhos sem roteamento por tier iriam para fora")
+
+    remotos = [f"{fb.provider}/{fb.name}" for fb in (getattr(section, "fallback_models", None) or [])
+               if not provider_e_local(getattr(fb, "provider", ""), cfg)]
+    if remotos:
+        problemas.append(
+            f"`model.fallback_models` tem {len(remotos)} destino(s) na nuvem "
+            f"({', '.join(remotos[:3])}) — uma falha do modelo local cairia lá")
+    return problemas
+
+
+def profiles_from_config(cfg, *, conjunto: str = "default") -> "dict[str, ModelProfile]":
+    """Lê os tiers do config (best-effort). Vazio se ausente.
+
+    ``conjunto="local"`` lê `model.profiles_local` em vez de `model.profiles` —
+    é como o `--local` mantém o roteamento ligado e só troca o destino.
 
     Formato esperado (config.yaml):
         model:
@@ -258,12 +327,16 @@ def profiles_from_config(cfg) -> "dict[str, ModelProfile]":
             balanced: {provider: openrouter, model: deepseek/deepseek-v3.2}
             coding:   {provider: openrouter, model: qwen/qwen3-coder-flash}
             heavy:    {provider: openrouter, model: deepseek/deepseek-r1}
+          profiles_local:
+            fast:     {provider: ollama, model: qwen2.5-coder:3b}
+            coding:   {provider: ollama, model: qwen3-coder:30b}
     """
+    campo = "profiles_local" if conjunto == "local" else "profiles"
     out: dict[str, ModelProfile] = {}
     try:
         # `model` (singular) é o campo real do schema; tolera `models` p/ callers de teste.
         section = getattr(cfg, "model", None) or getattr(cfg, "models", None)
-        raw = getattr(section, "profiles", None) or {}
+        raw = getattr(section, campo, None) or {}
         if isinstance(raw, dict):
             for name, spec in raw.items():
                 out[name] = ModelProfile(name=name, provider=_spec_field(spec, "provider"),

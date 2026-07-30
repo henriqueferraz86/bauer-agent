@@ -40,6 +40,11 @@ def serve(
     port: int = typer.Option(0, "--port", help="Porta (padrao: config serve.port)"),
     model: str = typer.Option("", "--model", help="Sobrescreve modelo do config"),
     api_key: str = typer.Option("", "--api-key", help="Sobrescreve serve.api_key do config"),
+    local: bool = typer.Option(
+        False, "--local",
+        help="So modelos desta maquina: usa model.profiles_local e RECUSA "
+             "subir se algo apontar para a nuvem",
+    ),
     sessions_dir: Path = typer.Option(Path("memory/sessions"), "--sessions-dir"),
     gateway_port: int = typer.Option(
         0, "--gateway-port", "-g",
@@ -100,6 +105,21 @@ def serve(
     _apply_ollama_runtime(_client, cfg, applied_context)
     router = _build_router(cfg, workspace)
 
+    if local:
+        # Mesma checagem do `bauer agent --local`. Sem isto o usuario
+        # resolveria o interativo e o SERVIDOR continuaria indo para a
+        # nuvem — e o serve e justamente o que fica no ar sem ninguem
+        # olhando.
+        from ..model_router import validar_execucao_local
+        _probs = validar_execucao_local(cfg, model_name)
+        if _probs:
+            console.print(f"[red]X --local recusado:[/red] {len(_probs)} problema(s).")
+            console.print()
+            for _p in _probs:
+                console.print(f"  [yellow]*[/yellow] {_p}")
+            raise typer.Exit(code=1)
+        console.print("[green]--local: nada sai desta maquina[/green]")
+
     from ..agent import _build_system_prompt
     # HARNESS-029: o modo vem do CLIENTE que este processo acabou de construir,
     # não do `.runtime_state.json`. Ler de disco significava montar o prompt a
@@ -138,6 +158,7 @@ def serve(
         enable_gzip=cfg.serve.enable_gzip,
         enable_access_log=cfg.serve.enable_access_log,
         config_path=config,
+        profile_set="local" if local else "default",
         fallback_clients=_fallback_clients,
         tool_mode=_tmode,
         workspace=workspace,

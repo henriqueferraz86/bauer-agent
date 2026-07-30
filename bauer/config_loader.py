@@ -552,6 +552,14 @@ class ModelSection(_StrictSection):
         default_factory=dict,
         description="Perfis de modelo por tier (fast/balanced/coding/heavy).",
     )
+    # Conjunto ALTERNATIVO de tiers, usado por `--local`. Existe porque desligar
+    # o roteamento para rodar local jogaria fora a parte útil dele — escolher o
+    # modelo certo para cada tipo de tarefa. Com dois conjuntos, o roteamento
+    # continua e só muda para ONDE aponta.
+    profiles_local: dict[str, ModelProfileSpec] = Field(
+        default_factory=dict,
+        description="Perfis por tier usados com --local (só providers locais).",
+    )
     # Liga o roteamento por-turno (usa `profiles`). Opt-in: enquanto False, todo
     # turno usa o modelo primário. Requer profiles configurados.
     router_enabled: bool = Field(
