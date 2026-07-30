@@ -629,6 +629,10 @@ class KernelSection(_StrictSection):
     # com suíte lenta o teto abaixo é o que separa governança de refém.
     tests_gate: bool = False
     tests_gate_timeout_s: int = Field(ge=1, default=600)
+    # "regressao" (default): reprova so falha NOVA em relacao ao baseline —
+    # projeto herdado vermelho nao trava todo run autonomo. "estrito":
+    # qualquer falha reprova; correto so onde a suite ja e verde.
+    tests_gate_mode: str = "regressao"
 
 
 def _adapters_padrao() -> dict[str, dict[str, Any]]:
