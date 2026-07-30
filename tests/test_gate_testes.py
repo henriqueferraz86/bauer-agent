@@ -167,7 +167,10 @@ def test_teste_falhando_reprova_com_a_cauda_do_output(tmp_path):
               output="E   assert 1 == 2\nFAILED tests/test_x.py::test_soma"),
     ])
 
-    r = TestsGate(repo, verify_fn=lambda *a, **k: res).check(request=None, result={})
+    # modo estrito: este teste é sobre o FORMATO do motivo, não sobre o
+    # ratchet (que só reprova falha nova — ver test_gate_regressao.py)
+    r = TestsGate(repo, modo="estrito",
+                  verify_fn=lambda *a, **k: res).check(request=None, result={})
 
     assert not r.passed
     assert "FAILED tests/test_x.py::test_soma" in r.reason
@@ -255,6 +258,10 @@ def test_reprovacao_vira_replan_feedback(tmp_path):
     repo = _git(tmp_path)
     (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
     tentativas = []
+
+    # baseline vazio gravado: a falha abaixo e NOVA, entao reprova de verdade
+    from bauer.core.kernel.gates.baseline import gravar_baseline
+    gravar_baseline(repo, falhas=set(), total=0)
 
     def _verify(*a, **k):
         # 1ª passada: teste falha; 2ª: passa (o agente "corrigiu")

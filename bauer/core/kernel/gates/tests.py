@@ -93,9 +93,13 @@ class TestsGate:
     name = "tests"
 
     def __init__(self, workspace: "str | Path", *, timeout_s: int = 600,
-                 verify_fn: Any = None) -> None:
+                 verify_fn: Any = None, modo: str = "regressao") -> None:
         self.workspace = Path(workspace)
         self.timeout_s = max(1, int(timeout_s))
+        # "regressao" (default): reprova só falha NOVA em relação ao baseline —
+        # projeto herdado vermelho não trava todo run autônomo.
+        # "estrito": qualquer falha reprova. Correto só onde a suíte já é verde.
+        self.modo = "estrito" if str(modo).lower() == "estrito" else "regressao"
         # injetável: os testes deste gate não podem depender de npm/pytest reais
         self._verify = verify_fn
 
@@ -117,7 +121,12 @@ class TestsGate:
             # Evaluator. Passa com ressalva em vez de reprovar por infra.
             return _GR(self.name, True, f"gate falhou ao rodar (ignorado): {exc}")
 
+        from .baseline import comparar, extrair_falhas, gravar_baseline, ler_baseline
+
         if getattr(res, "ok", False):
+            # Suíte verde: aperta o baseline. Dívida paga fica travada — quem
+            # consertou não quer o teste de volta amanhã.
+            gravar_baseline(self.workspace, falhas=set(), total=0)
             return _GR(self.name, True, getattr(res, "summary", "") or "testes passaram")
 
         stack = getattr(res, "stack", "unknown")
@@ -127,7 +136,21 @@ class TestsGate:
             # documentação, que é trabalho legítimo.
             return _GR(self.name, True, "stack não detectada — sem testes a rodar")
 
-        return _GR(self.name, False, _motivo(res))
+        if self.modo == "estrito":
+            return _GR(self.name, False, _motivo(res))
+
+        saida = "\n".join((getattr(s, "output", "") or "")
+                          for s in (getattr(res, "steps", None) or []))
+        falhas = extrair_falhas(saida)
+        base = ler_baseline(self.workspace)
+        regrediu, motivo = comparar(falhas, len(falhas), base)
+        if regrediu:
+            return _GR(self.name, False, f"{motivo}\n\n{_motivo(res)}")
+        # Não regrediu: registra o estado atual como novo baseline (encolheu ou
+        # ficou igual) e deixa passar com o aviso de que segue vermelho.
+        if base is None or falhas <= set(base.get("falhas") or []):
+            gravar_baseline(self.workspace, falhas=falhas, total=len(falhas))
+        return _GR(self.name, True, motivo)
 
 
 def _motivo(res: Any) -> str:

@@ -654,6 +654,7 @@ def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
         gates.append(TestsGate(
             workspace,
             timeout_s=int(getattr(ksec, "tests_gate_timeout_s", 600) or 600),
+            modo=str(getattr(ksec, "tests_gate_mode", "regressao") or "regressao"),
         ))
     return Evaluator(gates, max_replans=int(getattr(ksec, "max_replans", 1) or 0))
 
