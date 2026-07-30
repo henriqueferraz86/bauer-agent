@@ -58,6 +58,7 @@ class BauerKernel:
         approvals: Any | None = None,        # core.policy.approvals.ApprovalManager
         budget: Any | None = None,           # core.runtime.autonomy.BudgetManager
         recovery: Any | None = None,         # core.runtime.resilience.RuntimeRecovery
+        breaker: Any | None = None,          # bauer.circuit_breaker.CircuitBreaker
     ) -> None:
         self.runs = runs
         self.bus = bus or getattr(runs, "event_bus", None)
@@ -68,6 +69,9 @@ class BauerKernel:
         self.approvals = approvals
         self.budget = budget
         self.recovery = recovery
+        # None = sem circuito (comportamento anterior). Com breaker, executor
+        # que falha sistematicamente para de ser tentado a cada run.
+        self.breaker = breaker
         if adapter_factory is None:
             from ..runtime.adapters import get_runtime_adapter
             adapter_factory = get_runtime_adapter
@@ -391,26 +395,41 @@ class BauerKernel:
             attempt = 0
             last_error = ""
             while True:
-                try:
-                    result = (executor(payload) if executor is not None
-                              else adapter.run_agent(payload)) or {}
-                    if result.get("status") == "cancelled":
-                        # Interrupção deliberada no MEIO da execução (kill-switch
-                        # entre rodadas de um loop autônomo, Ctrl+C). Não é falha:
-                        # retry, fallback, gates e replan todos ficariam errados
-                        # aqui — ninguém pediu para insistir. Terminal na hora.
-                        self.runs.update_run(run.id, status="cancelled",
-                                             error=str(result.get("error") or "cancelado"))
-                        trajectory.append("cancelled")
-                        return self._result(run.id, session_id, trajectory,
-                                            decision=decision, output=result.get("output"))
-                    if result.get("status") == "failed" or result.get("event") == "run.failed":
-                        last_error = str(result.get("error") or "executor failed")
-                    else:
-                        break  # sucesso
-                except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
-                    last_error = str(exc)
+                alvo = self._nome_do_executor(executor, adapter)
+                if (self.breaker is not None and executor is None
+                        and self.breaker.is_open(alvo)):
+                    # Circuito ABERTO: este executor já falhou o suficiente em
+                    # runs ANTERIORES. Insistir custa o timeout inteiro para
+                    # redescobrir o que já se sabe — e provider fora do ar afeta
+                    # todos os runs, não só este. Vai direto ao fallback.
+                    last_error = f"circuito aberto para '{alvo}'"
                     result = {}
+                else:
+                    try:
+                        result = (executor(payload) if executor is not None
+                                  else adapter.run_agent(payload)) or {}
+                        if result.get("status") == "cancelled":
+                            # Interrupção deliberada no MEIO da execução
+                            # (kill-switch entre rodadas, Ctrl+C). NÃO é falha:
+                            # retry, fallback, gates e replan estariam todos
+                            # errados — ninguém pediu para insistir. E não conta
+                            # contra o circuito: o executor não falhou.
+                            self.runs.update_run(run.id, status="cancelled",
+                                                 error=str(result.get("error") or "cancelado"))
+                            trajectory.append("cancelled")
+                            return self._result(run.id, session_id, trajectory,
+                                                decision=decision, output=result.get("output"))
+                        if (result.get("status") == "failed"
+                                or result.get("event") == "run.failed"):
+                            last_error = str(result.get("error") or "executor failed")
+                            self._registrar_falha(alvo)
+                        else:
+                            self._registrar_sucesso(alvo)
+                            break  # sucesso
+                    except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+                        last_error = str(exc)
+                        result = {}
+                        self._registrar_falha(alvo, exc)
 
                 if attempt < max_retries:
                     attempt += 1
@@ -426,6 +445,17 @@ class BauerKernel:
                 switched = False
                 while fallbacks:
                     next_name = fallbacks.pop(0)
+                    if self.breaker is not None and self.breaker.is_open(next_name):
+                        # Circuito aberto: este executor já falhou o suficiente
+                        # nos runs ANTERIORES. Tentar de novo custa o timeout
+                        # inteiro para redescobrir o que já se sabe — e é o
+                        # cenário em que fallback mais importa (provider fora do
+                        # ar afeta todos os runs, não só este).
+                        last_error = f"{last_error}; fallback '{next_name}' com circuito aberto"
+                        self._publish("run.state.changed", run, status="running",
+                                      message=f"fallback '{next_name}' pulado: circuito aberto",
+                                      data={"circuit_open": next_name})
+                        continue
                     try:
                         adapter = self.adapter_factory(next_name, config=self.config)
                     except Exception as exc:  # noqa: BLE001 — tenta o próximo da lista
@@ -478,6 +508,23 @@ class BauerKernel:
                             output=result.get("output"))
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _nome_do_executor(executor: Any, adapter: Any) -> str:
+        """Chave do circuito. Só adapters entram: um ``executor`` injetado é o
+        motor in-process do próprio Bauer (o laço de turno), não um provider —
+        abrir circuito contra ele puniria o Bauer pelo erro do modelo."""
+        if executor is not None:
+            return ""
+        return str(getattr(adapter, "name", "") or "bauer_native")
+
+    def _registrar_sucesso(self, alvo: str) -> None:
+        if self.breaker is not None and alvo:
+            self.breaker.record_success(alvo)
+
+    def _registrar_falha(self, alvo: str, exc: "BaseException | None" = None) -> None:
+        if self.breaker is not None and alvo:
+            self.breaker.record_failure(alvo, exc)
 
     def _fail_se_nao_terminal(self, run_id: str, error: str,
                               trajectory: list[str]) -> None:
@@ -688,8 +735,14 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     if with_policy:
         from ..policy.engine import PolicyEngine
         policy = PolicyEngine(workspace=workspace, runtime_root=root)
+    from ...circuit_breaker import CircuitBreaker
+
     return BauerKernel(
         runs=runs, bus=bus, policy=policy, config=cfg,
+        # Um breaker POR Kernel, nao global: o estado do circuito acompanha o
+        # processo que executa. Threshold alto de proposito — abrir cedo demais
+        # transformaria uma indisponibilidade curta em fallback permanente.
+        breaker=CircuitBreaker(failure_threshold=5, reset_timeout=120.0),
         evaluator=evaluator_from_config(cfg, workspace=workspace),
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
