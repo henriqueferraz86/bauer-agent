@@ -16,6 +16,17 @@ from ..paths import get_bauer_home, memory_dir, runtime_state_path
 # Console único da CLI — mesma configuração que o cli.py usava.
 console = Console(highlight=False, legacy_windows=False)
 
+#: Console de ERRO. O Rich decide o destino na CONSTRUÇÃO (`stderr=True`), não
+#: por argumento de `print()` — quem aceita `err=True` por chamada é o
+#: `typer.echo`/`click.echo`. Misturar as duas APIs custou caro: um
+#: `console.print(..., err=True)` no tratador de erro do `bauer agent run-one`
+#: levantava `TypeError` DENTRO do `except`, soterrando a exceção original em
+#: "During handling of the above exception..." e impedindo o
+#: `raise typer.Exit(code=1)` da linha seguinte — o código de saída deixava de
+#: ser o combinado. Este objeto existe para não haver mais motivo de escrever
+#: aquele argumento.
+console_err = Console(highlight=False, legacy_windows=False, stderr=True)
+
 # Diretórios-padrão relativos ao CWD, usados como default em vários comandos.
 _PROJECT_WORKSPACE = Path("workspace")
 _SPECS_DIR = Path("specs")
