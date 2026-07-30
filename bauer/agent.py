@@ -4553,12 +4553,33 @@ def run_agent_session(
     routing = model_router is not None and model_router.config.enabled
     orch_enabled = orchestrator is not None and routing
 
+    #: modelo que serviu o ÚLTIMO turno — lido pela barra de status. Começa como
+    #: o configurado; passa a divergir assim que o roteamento manda um turno
+    #: para outro tier.
+    _modelo_do_turno = model_name
+
+    # Com roteamento ligado, `model_name` NÃO é o modelo que vai responder — ele
+    # só entra se o router cair nele. Anunciá-lo sem ressalva foi o que fez um
+    # `hf.co/...:Q5_K_M` local aparecer como "Modelo" enquanto todo turno ia
+    # para o `minimax` no OpenRouter, acumulando custo.
+    # Gate em `route_profiles` SOZINHO — é ele que liga o router heurístico no
+    # laço do turno. `routing` é o ModelRouter legado, outro caminho: usá-lo
+    # aqui deixaria o banner mudo justamente na configuração do usuário.
+    # E os perfis são `ModelProfile` (objetos), não dicts — `.get()` quebraria.
+    _linhas_extra: list[tuple[str, str]] = []
+    if route_profiles:
+        _tiers = ", ".join(f"{k}: {getattr(v, 'model', '?')}"
+                           for k, v in sorted(route_profiles.items()))
+        _linhas_extra.append(("Roteando", _tiers))
+
     from .ascii_intro import session_panel
     console.print(session_panel(
         "Bauer Agent",
-        model_name,
+        f"{model_name}  (padrão — o turno pode ir p/ outro tier)"
+        if route_profiles else model_name,
         applied_context,
         provider=_provider or None,
+        extra_rows=_linhas_extra,
         commands=[
             ("/model", "trocar"),
             ("/listen", "falar"),
@@ -4609,9 +4630,15 @@ def run_agent_session(
                     f"<style fg='#4b5563'>{'▱' * (_w - _fill)}</style>"
                     f" <style fg='{_pc}'>{_pct}%</style>"
                 )
+                # O modelo do ÚLTIMO TURNO, não o configurado. Com roteamento
+                # ligado os dois divergem, e a barra afirmava o configurado
+                # enquanto o custo subia no outro. Marca com `→` quando o turno
+                # não rodou no modelo que o usuário escolheu.
+                _m = _modelo_do_turno or model_name
+                _rotulo = str(_m) if _m == model_name else f"→ {_m}"
                 return HTML(
                     " <b><style fg='#00d4aa'>◆ BAUER</style></b>"
-                    f"  <style fg='#3b82f6'>{_html.escape(str(model_name))}</style>"
+                    f"  <style fg='#3b82f6'>{_html.escape(_rotulo)}</style>"
                     f"  ·  ctx {_gauge}"
                     f"  ·  <style fg='#a855f7'>{_html.escape(str(_cost))}</style>"
                     "  ·  <style fg='#6b7280'>/loop · /model · /exit</style> "
@@ -5214,9 +5241,18 @@ def run_agent_session(
         # Turno roteado (heurístico): o client do profile vale SÓ para este
         # turno — não adota na sessão, a menos que o fallback tenha trocado o
         # client no meio do turno (aí a troca é intencional e permanece).
+        # O modelo que DE FATO serviu este turno. A barra de status mostrava
+        # `model_name` — o configurado — mesmo quando o roteamento mandou o turno
+        # para outro provider. Medido em uso real: cabeçalho e rodapé diziam
+        # `hf.co/unsloth/Qwen3.6-27B-MTP-GGUF:Q5_K_M` / provider `ollama`
+        # enquanto o turno rodava em `minimax/minimax-m2.5` e acumulava custo no
+        # OpenRouter. É o mesmo defeito do `tool_mode`: o harness sabe e não
+        # conta.
+        _modelo_do_turno = active_model
         if not _hr_routed or _state.client is not _turn_client:
             client = _state.client
             active_model = _state.active_model
+            _modelo_do_turno = _state.active_model
             # Downgrade native→bridge só é adotado na sessão quando o turno
             # rodou no client da sessão — um provider roteado sem tools nativas
             # não deve rebaixar o provider principal.
