@@ -317,3 +317,65 @@ def test_only_vazio_reporta_em_vez_de_passar_calado(tmp_path):
                          only=["passo-que-nao-existe"])
 
     assert not res.ok and "passo" in res.summary.lower()
+
+
+# ─── escolha do interpretador (o falso negativo do pipx) ─────────────────────
+
+
+def test_prefere_venv_do_projeto(tmp_path):
+    from bauer.app_verify import _candidatos_python
+
+    venv = tmp_path / ".venv" / ("Scripts" if __import__("os").name == "nt" else "bin")
+    venv.mkdir(parents=True)
+    exe = venv / ("python.exe" if __import__("os").name == "nt" else "python")
+    exe.write_text("", encoding="utf-8")
+
+    assert _candidatos_python(tmp_path)[0] == str(exe), \
+        "o venv do projeto é a única fonte que garante as dependências dele"
+
+
+def test_path_vem_antes_de_sys_executable(tmp_path):
+    """Sob pipx, sys.executable é o venv ISOLADO do Bauer — nunca tem pytest.
+
+    Medido num run real: `.../venvs/bauer-agent/bin/python -m pytest` →
+    "No module named pytest". O gate reprovava o trabalho do agente por
+    ambiente, não por código.
+    """
+    import sys as _sys
+    from bauer.app_verify import _candidatos_python
+
+    cands = _candidatos_python(tmp_path)
+    if _sys.executable in cands and len(cands) > 1:
+        assert cands.index(_sys.executable) == len(cands) - 1, \
+            "sys.executable é o ÚLTIMO recurso"
+
+
+def test_escolhe_quem_tem_o_modulo(tmp_path):
+    from bauer import app_verify
+
+    orig = app_verify._tem_modulo
+    try:
+        app_verify._tem_modulo = lambda exe, mod: "bom" in exe
+        app_verify._candidatos_python = lambda root: ["/x/ruim", "/x/bom", "/x/outro"]
+        assert app_verify.python_exe(tmp_path, precisa="pytest") == "/x/bom"
+        # sem `precisa`, não paga o custo de sondar
+        assert app_verify.python_exe(tmp_path) == "/x/ruim"
+    finally:
+        app_verify._tem_modulo = orig
+        import importlib
+        importlib.reload(app_verify)
+
+
+def test_ninguem_tem_o_modulo_devolve_o_primeiro(tmp_path):
+    """Falhar é ok — mas com erro acionável no motivo, não com crash."""
+    from bauer import app_verify
+    import importlib
+
+    orig_t, orig_c = app_verify._tem_modulo, app_verify._candidatos_python
+    try:
+        app_verify._tem_modulo = lambda exe, mod: False
+        app_verify._candidatos_python = lambda root: ["/x/a", "/x/b"]
+        assert app_verify.python_exe(tmp_path, precisa="pytest") == "/x/a"
+    finally:
+        app_verify._tem_modulo, app_verify._candidatos_python = orig_t, orig_c
+        importlib.reload(app_verify)
