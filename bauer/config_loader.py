@@ -541,6 +541,14 @@ class ModelSection(_StrictSection):
         default_factory=list,
         description="Modelos alternativos (provider+name) quando o principal falha.",
     )
+    # Irmao de `fallback_models`, usado com `--local`. Existe pelo mesmo motivo
+    # do `profiles_local`: sem par, escolher rodar local obrigaria a trocar o
+    # socorro da NUVEM tambem — e ai o modo normal perderia a rede de seguranca
+    # grande para viabilizar o modo local. Com dois campos, nenhum modo perde.
+    fallback_models_local: list[FallbackModel] = Field(
+        default_factory=list,
+        description="Fallback usado com --local (so providers locais).",
+    )
     # Mantido para compatibilidade — ignorado se fallback_models estiver preenchido
     fallback_providers: list[str] = Field(
         default_factory=list,

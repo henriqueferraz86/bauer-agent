@@ -305,11 +305,16 @@ def validar_execucao_local(cfg, model_name: str = "") -> "list[str]":
             f"`model.name` = {alvo or '(vazio)'} usa provider '{prov}', que não "
             f"é local — caminhos sem roteamento por tier iriam para fora")
 
-    remotos = [f"{fb.provider}/{fb.name}" for fb in (getattr(section, "fallback_models", None) or [])
+    # A lista que importa com `--local` e a LOCAL — `fallback_models` continua
+    # valendo (e podendo apontar para a nuvem) no modo normal. Sem esse par, o
+    # usuario teria de escolher entre ter `--local` e ter socorro grande no modo
+    # de nuvem; com ele, nenhum modo perde nada.
+    remotos = [f"{fb.provider}/{fb.name}"
+               for fb in (getattr(section, "fallback_models_local", None) or [])
                if not provider_e_local(getattr(fb, "provider", ""), cfg)]
     if remotos:
         problemas.append(
-            f"`model.fallback_models` tem {len(remotos)} destino(s) na nuvem "
+            f"`model.fallback_models_local` tem {len(remotos)} destino(s) na nuvem "
             f"({', '.join(remotos[:3])}) — uma falha do modelo local cairia lá")
     return problemas
 

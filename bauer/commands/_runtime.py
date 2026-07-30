@@ -776,7 +776,7 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
     )
 
 
-def build_fallback_clients(cfg) -> list:
+def build_fallback_clients(cfg, *, conjunto: str = "default") -> list:
     """Constrói clientes de fallback de cfg.model.fallback_models (sem console).
 
     Versão compartilhada (gateway/serve) do que o CLI faz em
@@ -790,7 +790,9 @@ def build_fallback_clients(cfg) -> list:
     clients: list = []
     if cfg is None:
         return clients
-    fb_models = getattr(cfg.model, "fallback_models", []) or []
+    # `conjunto="local"` le `fallback_models_local` — ver o campo no schema.
+    campo = "fallback_models_local" if conjunto == "local" else "fallback_models"
+    fb_models = getattr(cfg.model, campo, []) or []
     seen: set = {(cfg.model.provider, cfg.model.name)}
     for fb in fb_models:
         prov = fb.provider if hasattr(fb, "provider") else (fb or {}).get("provider", "")

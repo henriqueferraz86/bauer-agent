@@ -36,7 +36,7 @@ agent_app = typer.Typer(
 )
 
 
-def _build_fallback_clients(cfg, *, console=None) -> list:
+def _build_fallback_clients(cfg, *, console=None, conjunto: str = "default") -> list:
     """Constrói clientes de fallback a partir de cfg.model.fallback_models.
 
     - Dedup: pula entradas iguais ao modelo principal ou repetidas (evita
@@ -49,7 +49,8 @@ def _build_fallback_clients(cfg, *, console=None) -> list:
     import logging as _logging
     _log = _logging.getLogger("bauer.fallback")
     clients: list = []
-    fb_models = getattr(cfg.model, "fallback_models", []) or []
+    campo = "fallback_models_local" if conjunto == "local" else "fallback_models"
+    fb_models = getattr(cfg.model, campo, []) or []
     primary = (cfg.model.provider, cfg.model.name)
     seen: set = {primary}
     skipped = 0
@@ -505,7 +506,8 @@ def agent(
             pass  # nunca bloqueia o startup por falha do tuner
 
     # Constrói clientes de fallback (dedup + observabilidade no helper)
-    _fallback_clients = _build_fallback_clients(cfg, console=console)
+    _fallback_clients = _build_fallback_clients(cfg, console=console,
+                                            conjunto="local" if local else "default")
 
     def _rebuild_client_chat():
         """Reconstrói client + model_name + fallbacks a partir do config.yaml atual.
