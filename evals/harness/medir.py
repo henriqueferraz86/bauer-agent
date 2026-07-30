@@ -179,7 +179,9 @@ def cap_progresso() -> Capacidade:
     """Os 9 sinais de estagnação do plano §13 — quais são detectados hoje."""
     fontes = "\n".join(
         (BAUER / n).read_text(encoding="utf-8", errors="replace")
-        for n in ("agent.py", "tool_guardrails.py", "tool_dedup.py", "iteration_budget.py")
+        for n in ("agent.py", "tool_guardrails.py", "tool_dedup.py",
+                  "iteration_budget.py", "progress_signals.py",
+                  "core/kernel/kernel.py")
         if (BAUER / n).exists())
     sinais = {
         "mesma tool com mesmos args": r"fingerprint|args_sig",

@@ -212,6 +212,12 @@ def run(
     _cost_token = cost_sink.set(_cost)
     _last_cost = 0.0
 
+    # Sinais de estagnação ENTRE rodadas (§13): reversão de alterações e janela
+    # crescendo sobre um disco que não muda. Os guardrails de chamada não pegam
+    # nenhum dos dois — cada chamada é legítima; o que está errado é a sequência.
+    from ..progress_signals import SinaisDeProgresso
+    _sinais = SinaisDeProgresso(ws, ctx=ctx, bus=_bus)
+
     def _on_round(n: int, text: str, tl: list) -> None:
         nonlocal _last_cost
         delta = _cost.total_usd - _last_cost
@@ -222,6 +228,12 @@ def run(
             except Exception as exc:  # esgotou: run_loop_rounds encerra no topo
                 from ..logging_config import log_suppressed
                 log_suppressed("run_cmd.consume_cost", exc)
+        for _aviso in _sinais.rodada(n, text, tl):
+            # Avisa, não interrompe: quem para o laço é o orçamento. Um detector
+            # heurístico com poder de matar a tarefa erraria contra refatoração
+            # grande, que passa por estados intermediários iguais a estes.
+            console.print(f"[yellow]⚠ {_aviso.message}[/yellow]")
+            ctx.add_user(_aviso.message)
         _print_round(n, budget, tl)
 
     router._approval_callback = engine.make_approval_callback()

@@ -382,6 +382,10 @@ class BauerKernel:
         max_replans = (max(0, int(getattr(self.evaluator, "max_replans", 0) or 0))
                        if self.evaluator is not None else 0)
         replans_used = 0
+        #: assinatura da saída da passada anterior — §13, "plano sem mudança
+        #: entre replans". Replanar custa um orçamento inteiro de novo; gastá-lo
+        #: para produzir exatamente a mesma coisa é o pior negócio do Kernel.
+        assinatura_anterior: "str | None" = None
 
         # Laço de replan (Sprint 5): executa → avalia; gate reprovado com
         # orçamento volta a planning e re-executa com feedback. Uma volta só
@@ -484,11 +488,32 @@ class BauerKernel:
             if getattr(verdict, "passed", True):
                 break
             reason = getattr(verdict, "reason", "")
-            if replans_used >= max_replans:
-                self.runs.fail_run(run.id, f"quality gate: {reason}")
+
+            # §13: plano sem mudança entre replans. O replan anterior recebeu o
+            # feedback do gate e devolveu byte a byte a mesma coisa — o executor
+            # não incorporou nada. Insistir gasta outro orçamento inteiro para
+            # chegar ao mesmo lugar, e o usuário paga a espera em tempo real.
+            assinatura = _assinatura(result)
+            esteril = bool(replans_used) and assinatura == assinatura_anterior
+            if esteril:
+                self._publish(
+                    "run.progress.warning", run, status="evaluating",
+                    message=("replan não mudou nada: mesma saída depois do "
+                             "feedback do gate"),
+                    data={"code": "plano_sem_mudanca", "replans": replans_used})
+
+            # Um único ponto de desfecho para os dois motivos de desistir. Duas
+            # chamadas a `fail_run` seriam duas formas de fechar um run dentro
+            # do mesmo laço — exatamente o que o ratchet de custódia existe para
+            # não deixar crescer.
+            if esteril or replans_used >= max_replans:
+                extra = (f" (replan {replans_used} devolveu a mesma saída — o "
+                         f"feedback não foi incorporado)" if esteril else "")
+                self.runs.fail_run(run.id, f"quality gate: {reason}{extra}")
                 trajectory.append("failed")
                 return self._result(run.id, session_id, trajectory, decision=decision,
                                     output=result.get("output"))
+            assinatura_anterior = assinatura
             # replan: evaluating → planning → policy_check → queued → running,
             # com o motivo do gate no payload p/ o executor corrigir o rumo.
             replans_used += 1
@@ -760,6 +785,19 @@ def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
                 modo=str(getattr(ksec, "tests_gate_mode", "regressao") or "regressao"),
             ))
     return Evaluator(gates, max_replans=int(getattr(ksec, "max_replans", 1) or 0))
+
+
+def _assinatura(result: dict[str, Any]) -> str:
+    """Digest da saída de uma passada — a base do sinal "replan não mudou nada".
+
+    Só o texto e a contagem de tools: custo e duração variam entre execuções
+    idênticas, e incluí-los faria toda passada parecer diferente, que é
+    exatamente o oposto do que o sinal precisa detectar.
+    """
+    import hashlib
+
+    bruto = f"{result.get('output') or ''}\0{result.get('tool_calls_count') or 0}"
+    return hashlib.sha256(bruto.encode("utf-8", "replace")).hexdigest()
 
 
 def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
