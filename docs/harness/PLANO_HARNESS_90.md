@@ -177,7 +177,45 @@ porque media contato e não custódia, e omitia que o default é zero.
 Inventário completo com medição real: **[EXECUTION_PATHS.md](EXECUTION_PATHS.md)**.
 Modos de falha: **[FAILURE_MODES.md](FAILURE_MODES.md)**.
 
-### 5.2a Estado final da sessão (2026-07-30) — S7 a S14
+### 5.2a Scorecard MEDIDO (gerado — não escrever à mão)
+
+Metade desta tabela era minha avaliação. "Observabilidade 70%" era um número
+que eu escrevi olhando o código: defensável, mas não verificável — e portanto
+impossível de comparar entre versões sem eu no meio.
+
+Agora cada linha é uma **contagem** sobre o repositório e o runtime, com os
+itens que faltam nomeados. Regenerar:
+
+```bash
+python -m evals.harness.medir --markdown
+```
+
+`tests/test_scorecard_gerado.py` falha se a tabela abaixo divergir da medição —
+tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
+
+<!-- SCORECARD:INICIO — gerado por `python -m evals.harness.medir --markdown` -->
+
+| Capacidade | % | itens | meta | o que falta |
+|---|---|---|---|---|
+| Uso obrigatorio do Kernel | **100%** ✅ | 12/12 | 100% | — |
+| Kernel e ciclo de vida | **100%** ✅ | 12/12 | 95% | — |
+| Context Builder | **0%** | 0/9 | 90% | `bauer/agent.py`, `bauer/benchmark.py`, `bauer/channel_base.py` (+6) |
+| Validacao deterministica | **62%** | 5/8 | 90% | `acceptance`, `secrets`, `diff` |
+| Isolamento | **50%** | 2/4 | 85% | `2-container`, `3-aprovacao-humana` |
+| Controle de progresso | **67%** | 6/9 | 85% | `plano sem mudanca entre replans`, `alteracoes revertidas`, `tokens crescendo sem progresso` |
+| Observabilidade | **53%** | 9/17 | 90% | `run.planning.started`, `run.context.built`, `run.workspace.created` (+5) |
+| Retry, fallback e recovery | **100%** ✅ | 6/6 | 90% | — |
+| Avaliacoes de harness | **100%** ✅ | 23/23 | 85% | — |
+| **média (só o mensurável)** | **70%** | | **90%** | |
+
+2 capacidades ficam **fora da média** por não serem contáveis — declaradas em vez de receberem um número inventado:
+
+- **Task Contract e Planner** — qualidade do plano gerado exige juizo
+- **Policy e aprovacao** — coberto por cenarios 8/9/22 + 31 property tests
+
+<!-- SCORECARD:FIM -->
+
+### 5.2a-bis Estado final da sessão (2026-07-30) — S7 a S14
 
 | Capacidade | S7 medido | Agora | Meta |
 |---|---|---|---|
