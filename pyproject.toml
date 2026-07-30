@@ -29,6 +29,10 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-asyncio>=0.23",
+    # -n auto no addopts: a suite serial leva 349s, paralela ~75s. O gate de
+    # testes do Kernel roda `python -m pytest` no projeto e herda o addopts —
+    # sem isto, cada run autonomo aqui dentro pagaria ~6min de verificacao.
+    "pytest-xdist>=3.5",
     "mypy>=1.11",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
@@ -83,7 +87,7 @@ bauer = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -n auto"
 asyncio_mode = "auto"
 
 [tool.ruff.lint]
