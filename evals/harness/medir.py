@@ -172,19 +172,60 @@ def cap_validacao() -> Capacidade:
 
 
 def cap_isolamento() -> Capacidade:
-    """Níveis do plano §12: 0 leitura, 1 worktree, 2 container, 3 humano."""
+    """Níveis do plano §12: 0 leitura, 1 worktree, 2 container, 3 humano.
+
+    O nível 3 é EXECUTADO, não procurado no texto. A versão anterior fazia
+
+        if "waiting_approval" in _grep(r"waiting_approval").__str__():
+
+    e `_grep` devolve CAMINHOS DE ARQUIVO — a string testada era
+    ``{'bauer/core/kernel/kernel.py'}``, que nunca contém "waiting_approval".
+    A condição jamais era verdadeira. O resultado saía certo por acidente (o
+    nível 3 de fato não estava ligado), e teria continuado "certo" depois de
+    ligado. Medida que não pode mudar não mede.
+    """
     iso = BAUER / "core" / "workspace" / "isolation.py"
     txt = iso.read_text(encoding="utf-8") if iso.exists() else ""
     tem, falta = [], []
     for nivel, marca in [("0-somente-leitura", "none"), ("1-worktree", "worktree"),
-                         ("2-container", "container_real"),
-                         ("3-aprovacao-humana", "waiting_approval")]:
+                         ("2-container", "container_real")]:
         (tem if marca in txt else falta).append(nivel)
-    if "waiting_approval" in _grep(r"waiting_approval").__str__():
-        if "3-aprovacao-humana" in falta:
-            falta.remove("3-aprovacao-humana")
-            tem.append("3-aprovacao-humana")
+    (tem if _aprovacao_humana_ligada() else falta).append("3-aprovacao-humana")
     return Capacidade("Isolamento", sorted(tem), sorted(falta), meta=85)
+
+
+def _aprovacao_humana_ligada() -> bool:
+    """O contrato pede aprovação e o Kernel PARA? Roda para descobrir.
+
+    `waiting_approval` existia desde o Sprint 1 e `TaskContract.requires_approval`
+    desde o S10 — o que faltava era o fio. Procurar qualquer um dos dois no
+    texto teria dado "pronto" durante meses de não estar.
+    """
+    import tempfile
+
+    from bauer.core.events.bus import EventBus
+    from bauer.core.kernel import BauerKernel, KernelRequest
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.core.runtime.state_store import JsonlStateStore
+    from bauer.core.task import TaskContract
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonlStateStore(str(Path(tmp) / "rt"))
+            bus = EventBus(store=store)
+            k = BauerKernel(
+                runs=RunManager(store=store, event_bus=bus), bus=bus,
+                contract=TaskContract.from_mapping(
+                    {"objective": "x", "requires_approval": True}),
+            )
+            rodou = []
+            out = k.execute(
+                KernelRequest(agent_id="m", operation="runtime.execute", input={}),
+                executor=lambda p: rodou.append(1) or {"output": "ok"})
+            # parou E não executou — as duas coisas, senão é notificação
+            return out.status == "waiting_approval" and not rodou
+    except Exception:  # noqa: BLE001 — não conseguiu medir = não conta como pronto
+        return False
 
 
 def cap_progresso() -> Capacidade:

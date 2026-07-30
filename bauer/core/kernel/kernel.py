@@ -59,8 +59,15 @@ class BauerKernel:
         budget: Any | None = None,           # core.runtime.autonomy.BudgetManager
         recovery: Any | None = None,         # core.runtime.resilience.RuntimeRecovery
         breaker: Any | None = None,          # bauer.circuit_breaker.CircuitBreaker
+        contract: Any | None = None,         # core.task.TaskContract (S12 nível 3)
     ) -> None:
         self.runs = runs
+        # Contrato da tarefa, lido do workspace ANTES do run. Só o nível 3 do
+        # isolamento (aprovação humana) depende dele aqui; escopo, aceite e diff
+        # já chegam pelos gates do Evaluator. Snapshot pela mesma razão do
+        # AcceptanceGate: reler do disco deixaria o agente desligar a própria
+        # exigência de aprovação no meio da execução.
+        self.contract = contract
         self.bus = bus or getattr(runs, "event_bus", None)
         self.policy = policy
         self.config = config
@@ -133,6 +140,19 @@ class BauerKernel:
             approval_id = self._request_approval(request, run, decision)
             return decision, self._result(run.id, session_id, trajectory, decision=decision,
                                           approval_id=approval_id)
+
+        # S12 nível 3 — aprovação humana pedida pelo CONTRATO da tarefa.
+        # `waiting_approval` já existia completo (transição, approve, deny,
+        # resume) e `TaskContract.requires_approval` já existia no schema; o que
+        # não existia era o fio entre os dois. Medido: o campo estava declarado
+        # e NUNCA era lido — quem escrevesse `requires_approval: true` num
+        # contrato ganharia a falsa certeza de que a tarefa pararia para pedir.
+        motivo = _exige_aprovacao(self.contract)
+        if motivo:
+            self._transition(run, "waiting_approval", trajectory)
+            approval_id = self._pedir_aprovacao_do_contrato(request, run, motivo)
+            return decision, self._result(run.id, session_id, trajectory,
+                                          decision=decision, approval_id=approval_id)
 
         self._transition(run, "queued", trajectory)
         return decision, None
@@ -618,6 +638,30 @@ class BauerKernel:
         )
         return decision
 
+    def _pedir_aprovacao_do_contrato(self, request: KernelRequest, run: Any,
+                                     motivo: str) -> "str | None":
+        """Aprovação exigida pelo CONTRATO, não pela policy.
+
+        Reusa o mesmo ApprovalManager e o mesmo `bauer kernel approve/deny`: um
+        segundo mecanismo de aprovação em paralelo seria a fragmentação que o
+        Kernel existe para eliminar. O que muda é a ORIGEM, e ela vai no
+        payload — quem audita precisa distinguir "a policy pediu" de "a tarefa
+        se declarou arriscada".
+        """
+        if self.approvals is not None:
+            record = self.approvals.request(
+                operation=request.operation, tool_name="kernel",
+                reason=motivo, risk_level=str(
+                    getattr(self.contract, "risk_level", "") or "medium"),
+                payload={"agent_id": request.agent_id, "origem": "task_contract",
+                         **request.metadata},
+                run_id=run.id, session_id=run.session_id,
+            )
+            return record.id
+        self._publish("approval.requested", run, message=motivo,
+                      data={"operation": request.operation, "origem": "task_contract"})
+        return None
+
     def _request_approval(self, request: KernelRequest, run: Any, decision: Any) -> str | None:
         """ApprovalRecord real quando há manager (ele publica approval.requested);
         senão só o evento — o run fica waiting_approval de qualquer forma."""
@@ -787,6 +831,29 @@ def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
     return Evaluator(gates, max_replans=int(getattr(ksec, "max_replans", 1) or 0))
 
 
+#: Níveis de risco que, sozinhos, param a tarefa para um humano decidir.
+#: `high` e `critical` só; `medium` é o DEFAULT do contrato e parar em tudo que
+#: não declarou risco transformaria o Kernel num pedido de confirmação por run.
+_RISCO_QUE_PEDE_HUMANO = {"high", "critical"}
+
+
+def _exige_aprovacao(contrato: Any) -> str:
+    """Motivo da parada, ou "" para seguir. Duas portas independentes.
+
+    `requires_approval: true` é a explícita — quem escreveu quer que pare.
+    `risk_level: high|critical` é a implícita: declarar risco alto e não parar
+    faria o campo ser decoração, que é exatamente o que ele era antes disto.
+    """
+    if contrato is None:
+        return ""
+    if bool(getattr(contrato, "requires_approval", False)):
+        return "o contrato da tarefa exige aprovação humana (requires_approval)"
+    risco = str(getattr(contrato, "risk_level", "") or "").lower()
+    if risco in _RISCO_QUE_PEDE_HUMANO:
+        return f"o contrato declara risk_level '{risco}'"
+    return ""
+
+
 def _assinatura(result: dict[str, Any]) -> str:
     """Digest da saída de uma passada — a base do sinal "replan não mudou nada".
 
@@ -827,9 +894,16 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
         from ..policy.engine import PolicyEngine
         policy = PolicyEngine(workspace=workspace, runtime_root=root)
     from ...circuit_breaker import CircuitBreaker
+    from ..task import TaskContract
+
+    # Lido UMA vez, aqui, e passado adiante. O `evaluator_from_config` já fazia
+    # a mesma leitura por dentro; agora o contrato também alimenta o nível 3 do
+    # isolamento (aprovação humana), e ler duas vezes abriria a janela para os
+    # dois enxergarem contratos diferentes.
+    contrato = TaskContract.descobrir(workspace) if workspace else None
 
     return BauerKernel(
-        runs=runs, bus=bus, policy=policy, config=cfg,
+        runs=runs, bus=bus, policy=policy, config=cfg, contract=contrato,
         # Um breaker POR Kernel, nao global: o estado do circuito acompanha o
         # processo que executa. Threshold alto de proposito — abrir cedo demais
         # transformaria uma indisponibilidade curta em fallback permanente.
