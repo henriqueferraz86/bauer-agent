@@ -20,6 +20,7 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -163,7 +164,7 @@ def _detect_serve_cmd(root: Path, stack: str, scripts: dict) -> Optional[List[st
             content = ep.read_text(encoding="utf-8", errors="replace").lower()
             # Só sugere serve se o arquivo parece iniciar um servidor
             if any(kw in content for kw in ("flask", "fastapi", "uvicorn", "aiohttp", "tornado", "starlette", "app.run")):
-                return ["python", entry]
+                return [python_exe(root), entry]
         # Detecta uvicorn/gunicorn nas dependências
         for dep_file in ("requirements.txt", "pyproject.toml"):
             dep_path = root / dep_file
@@ -185,6 +186,27 @@ def _read_json(p: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def python_exe(root: Path) -> str:
+    """Interpretador para rodar os passos Python do projeto.
+
+    Hardcodar ``"python"`` quebra em Debian/Ubuntu, onde só existe ``python3`` —
+    medido no Beelink: o gate de testes reprovava com "'python' não encontrado no
+    PATH", falso negativo em toda a família Debian.
+
+    Ordem: venv do PROJETO (a única que garante as dependências dele), depois
+    ``sys.executable`` — que sempre existe e é caminho absoluto, então passa pelo
+    ``which`` do verify_project.
+    """
+    for rel in (Path(".venv") / "bin" / "python",
+                Path(".venv") / "Scripts" / "python.exe",
+                Path("venv") / "bin" / "python",
+                Path("venv") / "Scripts" / "python.exe"):
+        cand = root / rel
+        if cand.is_file():
+            return str(cand)
+    return sys.executable or "python3"
 
 
 def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, List[str]]]]:
@@ -238,10 +260,10 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
             # projeto real: a verificação reprovava por erro de coleta, não pelo
             # código — falso negativo, e do tipo que faria o gate rejeitar todo
             # projeto Python de layout plano.
-            steps.append(("test", ["python", "-m", "pytest", "-q"]))
+            steps.append(("test", [python_exe(root), "-m", "pytest", "-q"]))
         else:
             # smoke mínimo: compila tudo (pega SyntaxError sem rodar nada).
-            steps.append(("smoke", ["python", "-m", "compileall", "-q", "."]))
+            steps.append(("smoke", [python_exe(root), "-m", "compileall", "-q", "."]))
         # P1.2: smoke de runtime se detectar servidor
         serve_cmd = _detect_serve_cmd(root, "python", scripts)
         if serve_cmd:

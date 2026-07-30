@@ -112,7 +112,8 @@ def test_plano_python_usa_python_m_pytest():
     _stack, plano = plan_verification(raiz)
     cmd = next(c for n, c in plano if n == "test")
 
-    assert cmd[:3] == ["python", "-m", "pytest"]
+    assert cmd[1:3] == ["-m", "pytest"], "roda via -m, nao pelo executavel pytest"
+    assert Path(cmd[0]).name.lower().startswith("python"), cmd[0]
 
 
 def test_fora_de_repo_usa_tools_mutantes(tmp_path):
