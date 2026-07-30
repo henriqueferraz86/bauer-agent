@@ -649,13 +649,25 @@ def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
     from .evaluator import DEFAULT_GATES, Evaluator
 
     gates = list(DEFAULT_GATES)
-    if workspace and bool(getattr(ksec, "tests_gate", False)):
-        from .gates import TestsGate
-        gates.append(TestsGate(
-            workspace,
-            timeout_s=int(getattr(ksec, "tests_gate_timeout_s", 600) or 600),
-            modo=str(getattr(ksec, "tests_gate_mode", "regressao") or "regressao"),
-        ))
+    if workspace:
+        from ..task import TaskContract
+        contrato = TaskContract.descobrir(workspace)
+        # ScopeGate entra sozinho quando HÁ contrato com escopo: quem escreveu o
+        # perímetro quer que ele valha, sem precisar ligar uma segunda flag.
+        if contrato is not None and contrato.tem_escopo:
+            from .gates import ScopeGate
+            gates.append(ScopeGate(workspace, contrato))
+        if bool(getattr(ksec, "tests_gate", False)):
+            from .gates import TestsGate
+            # o contrato manda no teto de tempo — é ele que conhece a tarefa;
+            # o config é o default de quem não declarou contrato
+            timeout = int(getattr(ksec, "tests_gate_timeout_s", 600) or 600)
+            if contrato is not None:
+                timeout = int(contrato.validation.timeout_seconds or timeout)
+            gates.append(TestsGate(
+                workspace, timeout_s=timeout,
+                modo=str(getattr(ksec, "tests_gate_mode", "regressao") or "regressao"),
+            ))
     return Evaluator(gates, max_replans=int(getattr(ksec, "max_replans", 1) or 0))
 
 

@@ -13,7 +13,7 @@ executam: testes, escopo, segredos, diff.
 
 from __future__ import annotations
 
-__all__ = ["TestsGate"]
+__all__ = ["ScopeGate", "TestsGate"]
 
 
 def __getattr__(name: str):
@@ -21,4 +21,8 @@ def __getattr__(name: str):
         from .tests import TestsGate
 
         return TestsGate
+    if name == "ScopeGate":
+        from .scope import ScopeGate
+
+        return ScopeGate
     raise AttributeError(name)
