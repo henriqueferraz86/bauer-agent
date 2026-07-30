@@ -124,10 +124,15 @@ def commit_worktree(wt: WorktreeInfo, message: str,
     """
     padroes = EXCLUIR_PADRAO if excluir is None else excluir
     try:
-        # `:(exclude)x` e NÃO `:!x`: na forma curta o git lê os caracteres
-        # seguintes ao `!` como magic de pathspec, então `:!__pycache__` morre
-        # com "Unimplemented pathspec magic '_'". A forma longa é inequívoca.
-        _git(["add", "-A", "--", ".", *(f":(exclude){p}" for p in padroes)], wt.path)
+        # Duas armadilhas de pathspec, ambas medidas contra o git real:
+        #  1. `:(exclude)x` e NÃO `:!x` — na forma curta o git lê os caracteres
+        #     após o `!` como magic, então `:!__pycache__` morre com
+        #     "Unimplemented pathspec magic '_'".
+        #  2. `**/x/**` e não só `x` — sem o glob, a exclusão só vale na RAIZ:
+        #     `tests/__pycache__/*.pyc` continuava entrando no artefato. O `**/`
+        #     casa zero ou mais diretórios, então cobre topo E aninhado.
+        _git(["add", "-A", "--", ".",
+              *(f":(exclude,glob)**/{p}/**" for p in padroes)], wt.path)
         # Há algo staged?
         diff = _git(["diff", "--cached", "--name-only"], wt.path)
         changed = [ln.strip() for ln in diff.stdout.splitlines() if ln.strip()]

@@ -192,11 +192,17 @@ def test_commit_deixa_de_fora_o_rastro_do_bauer(tmp_path):
     (ws / "__pycache__" / "m.cpython-311.pyc").write_bytes(b"\x00")
     (ws / "memory" / "runtime").mkdir(parents=True)
     (ws / "memory" / "runtime" / "runs.jsonl").write_text("{}\n", encoding="utf-8")
+    # ANINHADO: sem glob no pathspec a exclusão só valia na RAIZ, e
+    # `tests/__pycache__/*.pyc` continuava entrando no artefato — medido num run
+    # real. O código ao lado dele (tests/test_algo.py) TEM de entrar.
+    (ws / "tests" / "__pycache__").mkdir(parents=True)
+    (ws / "tests" / "__pycache__" / "t.pyc").write_bytes(b"\x00")
+    (ws / "tests" / "test_algo.py").write_text("def test_a(): pass\n", encoding="utf-8")
 
     commit = commit_worktree(iso.worktree, "teste")
 
     assert commit.committed
-    assert commit.changed_files == ["feito.py"], commit.changed_files
+    assert sorted(commit.changed_files) == ["feito.py", "tests/test_algo.py"], commit.changed_files
 
 
 def test_excluir_vazio_commita_tudo(tmp_path):
