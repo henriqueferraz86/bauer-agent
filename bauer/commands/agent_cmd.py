@@ -19,7 +19,14 @@ from ..logging_config import setup_logging
 import sys
 import typer
 
-from ._common import _COMPANIES_DIR, _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, _WORKSPACE_DIR, console
+from ._common import (
+    _COMPANIES_DIR,
+    _MEMORY_DIR,
+    _RUNTIME_STATE_DEFAULT,
+    _WORKSPACE_DIR,
+    console,
+    console_err,
+)
 from ._runtime import _apply_ollama_runtime, _build_client, _build_router, _get_or_run_state, _load_or_die, _pick_model, _resolve_model_with_ram_check, _start_gateway_thread_cli
 
 agent_app = typer.Typer(
@@ -1069,7 +1076,15 @@ def agent_run_one(
             raise RuntimeError(gov.error or "runtime adapter failed")
         console.print(str(gov.output or (gov.result or {}).get("output") or ""))
     except Exception as exc:
-        console.print(f"[red]run-one: {exc}[/red]", err=True)
+        # `console_err` em vez de `console.print(..., err=True)`: o Rich não
+        # aceita `err=` por chamada, então a linha antiga levantava TypeError
+        # aqui dentro — o único lugar do código que PRECISA funcionar quando
+        # todo o resto já falhou. Efeito medido: a causa real (`HTTP 500 em
+        # /api/chat para modelo ...`) virava um "During handling of the above
+        # exception" entre dois tracebacks, e o `typer.Exit(code=1)` abaixo
+        # nunca executava — quem chama o Bauer de script perdia o código de
+        # saída combinado.
+        console_err.print(f"[red]run-one: {exc}[/red]")
         raise typer.Exit(code=1)
 
 
