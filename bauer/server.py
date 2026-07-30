@@ -799,7 +799,7 @@ def create_app(
                 # O gate pré-run continua funcionando: a PolicyEngine tem seu
                 # próprio BudgetManager lendo o mesmo runtime_root.
                 budget=None,
-                evaluator=evaluator_from_config(_kcfg),
+                evaluator=evaluator_from_config(_kcfg, workspace=str(router.workspace)),
             )
 
         _kernel = require_kernel(_kcfg, _compose_serve_kernel, label="bauer serve")

@@ -20,6 +20,7 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -163,7 +164,7 @@ def _detect_serve_cmd(root: Path, stack: str, scripts: dict) -> Optional[List[st
             content = ep.read_text(encoding="utf-8", errors="replace").lower()
             # Só sugere serve se o arquivo parece iniciar um servidor
             if any(kw in content for kw in ("flask", "fastapi", "uvicorn", "aiohttp", "tornado", "starlette", "app.run")):
-                return ["python", entry]
+                return [python_exe(root), entry]
         # Detecta uvicorn/gunicorn nas dependências
         for dep_file in ("requirements.txt", "pyproject.toml"):
             dep_path = root / dep_file
@@ -185,6 +186,33 @@ def _read_json(p: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def python_exe(root: Path) -> str:
+    """Interpretador para rodar os passos Python do projeto.
+
+    Hardcodar ``"python"`` quebra em Debian/Ubuntu, onde só existe ``python3`` —
+    medido no Beelink: o gate de testes reprovava com "'python' não encontrado no
+    PATH", falso negativo em toda a família Debian.
+
+    Ordem: venv do PROJETO (a única que garante as dependências dele), depois
+    ``sys.executable`` — que sempre existe e é caminho absoluto, então passa pelo
+    ``which`` do verify_project.
+
+    LIMITE CONHECIDO: projeto SEM venv cujos testes precisem de dependências que
+    o interpretador do Bauer não tem falha por ImportError. Não é silencioso — o
+    erro aparece inteiro no motivo do gate, acionável ("instale X") —, mas é
+    falha de ambiente, não de código. Instalar por conta própria seria pior:
+    minutos por run e efeito colateral fora do escopo da tarefa.
+    """
+    for rel in (Path(".venv") / "bin" / "python",
+                Path(".venv") / "Scripts" / "python.exe",
+                Path("venv") / "bin" / "python",
+                Path("venv") / "Scripts" / "python.exe"):
+        cand = root / rel
+        if cand.is_file():
+            return str(cand)
+    return sys.executable or "python3"
 
 
 def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, List[str]]]]:
@@ -231,10 +259,17 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
             or any(root.glob("*/test_*.py"))
         )
         if has_tests:
-            steps.append(("test", ["pytest", "-q"]))
+            # `python -m pytest`, NÃO `pytest`: o `-m` insere o cwd em sys.path,
+            # o executável direto não. Num projeto de layout plano (módulo na
+            # raiz, teste importando ele) `pytest -q` morre com ImportError
+            # enquanto `python -m pytest` passa. Medido no gate do S11 contra um
+            # projeto real: a verificação reprovava por erro de coleta, não pelo
+            # código — falso negativo, e do tipo que faria o gate rejeitar todo
+            # projeto Python de layout plano.
+            steps.append(("test", [python_exe(root), "-m", "pytest", "-q"]))
         else:
             # smoke mínimo: compila tudo (pega SyntaxError sem rodar nada).
-            steps.append(("smoke", ["python", "-m", "compileall", "-q", "."]))
+            steps.append(("smoke", [python_exe(root), "-m", "compileall", "-q", "."]))
         # P1.2: smoke de runtime se detectar servidor
         serve_cmd = _detect_serve_cmd(root, "python", scripts)
         if serve_cmd:
@@ -316,6 +351,7 @@ def verify_project(
     smoke_check: Optional[SmokeCheck] = None,
     probe_ports: Optional[List[int]] = None,
     serve_timeout: int = DEFAULT_SERVE_TIMEOUT,
+    only: Optional[List[str]] = None,
 ) -> VerifyResult:
     """Verifica o projeto: detecta stack, roda build/test/smoke/serve, reporta.
 
@@ -324,6 +360,11 @@ def verify_project(
 
     P1.2: passo "serve" inicia o app e sonda uma porta para confirmar startup.
     `smoke_check` é injetável para testes; `probe_ports` customiza as portas sondadas.
+
+    ``only`` restringe quais passos rodam (ex.: ``["build", "test"]``). Existe
+    para o gate de testes do Kernel (S11): um quality gate não pode instalar
+    dependências nem subir o app a cada run — seria minutos por turno e efeito
+    colateral fora do escopo da tarefa. Sem ``only``, comportamento inalterado.
     """
     runner = runner or _default_runner
     _smoke = smoke_check or _default_smoke_check
@@ -341,6 +382,15 @@ def verify_project(
             "Stack não detectada — nenhum passo de build/test verificável. "
             "Adicione package.json/pyproject.toml/go.mod, ou verifique manualmente.",
         )
+
+    if only is not None:
+        _sel = {str(s).lower() for s in only}
+        plan = [(n, c) for n, c in plan if n.lower() in _sel]
+        if not plan:
+            return VerifyResult(
+                rel, stack, False, [],
+                f"Stack '{stack}' não tem nenhum dos passos pedidos: {sorted(_sel)}",
+            )
 
     steps: List[Step] = []
     ok = True

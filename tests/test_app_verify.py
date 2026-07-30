@@ -49,7 +49,9 @@ class TestPlan:
         assert stack == "python"
         assert names == ["install", "test"]
         assert steps[0][1] == ["pip", "install", "-e", "."]
-        assert steps[1][1] == ["pytest", "-q"]
+        # `python -m pytest`, não `pytest`: o `-m` põe o cwd em sys.path, o
+        # executável direto não — layout plano quebrava com ImportError.
+        assert steps[1][1][1:] == ["-m", "pytest", "-q"]
 
     def test_python_requirements_sem_tests_usa_smoke(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")

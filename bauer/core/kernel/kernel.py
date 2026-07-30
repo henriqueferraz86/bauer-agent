@@ -636,14 +636,26 @@ def require_kernel(cfg: Any, build_fn: Any, *, label: str) -> "BauerKernel | Non
         ) from exc
 
 
-def evaluator_from_config(cfg: Any):
-    """Evaluator montado a partir de ``kernel.evaluator_enabled``/``max_replans``
-    do config; None quando desligado. Aceita o config inteiro ou só a seção."""
+def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
+    """Evaluator montado a partir do config; None quando desligado.
+
+    Aceita o config inteiro ou só a seção. ``workspace`` habilita os gates que
+    precisam olhar o projeto — hoje o de testes (S11), que sem ele não teria
+    onde rodar.
+    """
     ksec = getattr(cfg, "kernel", cfg)
     if not bool(getattr(ksec, "evaluator_enabled", False)):
         return None
-    from .evaluator import Evaluator
-    return Evaluator(max_replans=int(getattr(ksec, "max_replans", 1) or 0))
+    from .evaluator import DEFAULT_GATES, Evaluator
+
+    gates = list(DEFAULT_GATES)
+    if workspace and bool(getattr(ksec, "tests_gate", False)):
+        from .gates import TestsGate
+        gates.append(TestsGate(
+            workspace,
+            timeout_s=int(getattr(ksec, "tests_gate_timeout_s", 600) or 600),
+        ))
+    return Evaluator(gates, max_replans=int(getattr(ksec, "max_replans", 1) or 0))
 
 
 def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
@@ -665,7 +677,7 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
         policy = PolicyEngine(workspace=workspace, runtime_root=root)
     return BauerKernel(
         runs=runs, bus=bus, policy=policy, config=cfg,
-        evaluator=evaluator_from_config(cfg),
+        evaluator=evaluator_from_config(cfg, workspace=workspace),
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
         budget=BudgetManager(root=root),
