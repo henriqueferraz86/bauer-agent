@@ -64,6 +64,7 @@ def run_governed(
     retry_backoff_s: float = 0.0,
     fallback_adapters: "list[str] | None" = None,
     metadata: "dict[str, Any] | None" = None,
+    autonomous: bool = False,
 ) -> GovernedResult:
     """Roda ``executor`` sob custódia do Kernel — ou direto, se não houver Kernel.
 
@@ -115,6 +116,9 @@ def run_governed(
             retry_backoff_s=retry_backoff_s,
             fallback_adapters=list(fallback_adapters or []),
             metadata=dict(metadata or {}),
+            # Declarado por quem CHAMA: só o caller sabe se vai haver humano
+            # entre os turnos. Ver KernelRequest.autonomous.
+            autonomous=autonomous,
         ),
         executor=_wrapped,
     )

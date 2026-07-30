@@ -238,6 +238,8 @@ class Scheduler:
             # retry/backoff passam a ser do Kernel (estado `retrying` auditável)
             max_retries=retry_count, retry_backoff_s=retry_backoff,
             metadata={"task_id": task.id, "scheduler": "local"},
+            # Agendado: dispara sem ninguém pedir e roda até acabar.
+            autonomous=True,
         )
         run_id = gov.run_id or ""
         resultado = gov.result.get("_scheduler_result", {}) if gov.result else {}

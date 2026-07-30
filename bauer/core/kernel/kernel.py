@@ -99,6 +99,12 @@ class BauerKernel:
         stored_input = _persistable(
             {**request.input, "task": request.task} if request.task else dict(request.input)
         )
+        # Persistido no run: sem isso, "quantos runs autônomos tinham contrato?"
+        # só daria para responder olhando o código, e a resposta mudaria a cada
+        # refactor. Gravado, vira contagem sobre o histórico real.
+        if request.autonomous:
+            stored_input["autonomous"] = True
+            stored_input["task_contract"] = self.contract is not None
         run = self.runs.create_run(
             session_id=session_id,
             agent_id=request.agent_id,

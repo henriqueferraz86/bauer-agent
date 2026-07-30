@@ -63,13 +63,35 @@ def test_medicao_nao_inventa_numero():
         assert len(motivo) > 25, f"{nome}: motivo curto demais para ser útil"
 
 
-def test_toda_capacidade_tem_itens():
-    """% sobre denominador zero seria 0% sem significar nada."""
+def test_toda_capacidade_AVALIADA_tem_itens():
+    """% sobre denominador zero seria 0% sem significar nada.
+
+    A regra vale para capacidade que AVALIA. Uma `informativa` sem dado é o
+    estado honesto — "ainda não há run autônomo registrado" não é 0% nem 100%,
+    e forçá-la a inventar um item para satisfazer o ratchet seria exatamente o
+    número fabricado que este arquivo existe para impedir. Ela já está fora da
+    média (ver `test_informativa_fica_fora_da_media`), então não contamina nada.
+    """
     from evals.harness.medir import CAPACIDADES
 
     for fn in CAPACIDADES:
         c = fn()
+        if c.informativa:
+            continue
         assert c.total > 0, f"{c.nome} não tem itens — a contagem seria vazia"
+
+
+def test_informativa_nao_finge_que_avalia():
+    """Contrapeso: `informativa` não pode virar rota de fuga para capacidade que
+    deveria ser cobrada. Quem reporta tem meta 0 e fica fora da média — as duas
+    coisas, senão é avaliação disfarçada."""
+    from evals.harness.medir import CAPACIDADES
+
+    for fn in CAPACIDADES:
+        c = fn()
+        if not c.informativa:
+            continue
+        assert c.meta == 0, f"{c.nome}: informativa com meta {c.meta} cobra sem dizer"
 
 
 def test_o_que_falta_e_acionavel():

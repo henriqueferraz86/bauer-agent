@@ -201,6 +201,7 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 | Kernel e ciclo de vida | **100%** ✅ | 12/12 | 95% | — |
 | Context Builder | **100%** ✅ | 9/9 | 90% | — |
 | Validacao deterministica | **100%** ✅ | 8/8 | 90% | — |
+| Contrato de tarefa | **0%** ✅ | 0/0 | 0% | — |
 | Isolamento | **75%** | 3/4 | 85% | `2-container` |
 | Controle de progresso | **100%** ✅ | 9/9 | 85% | — |
 | Observabilidade | **100%** ✅ | 17/17 | 90% | — |
@@ -856,7 +857,7 @@ kernel_coverage: 100%                    # ATENDIDO — 12/12 medido
 # REFORMULADO: ">=90%" era inatingível — o teto estrutural é 79%. /stream,
 # /v1 streaming e orchestrate --background não podem ceder a posse do run.
 kernel_full_custody_coverage: "100% dos caminhos com custódia POSSÍVEL"   # ATENDIDO
-task_contract_coverage: 100%             # <-- EM ABERTO, ver nota (a)
+task_contract_coverage: 100%             # DENOMINADOR DECIDIDO — ver nota (a)
 context_builder_coverage: 100%           # ATENDIDO — 9/9 call sites (PR #112)
 code_task_validation_coverage: 100% dos runs que MUDAM arquivos   # ATENDIDO
 code_task_isolation_coverage: "100% das tarefas cujo contrato pede"  # ATENDIDO
@@ -876,17 +877,35 @@ orphaned_run_rate: "<1%"                 # ATENDIDO: 0.0% medido
 suite_hermetic: true                     # ADIÇÃO — §12.3 — ATENDIDO
 ```
 
-**21 de 22 atendidos.** O único em aberto, e por que não pode ser declarado por
-arredondamento:
+**21 de 22 atendidos + 1 com denominador decidido e em medição.** As notas:
 
-**(a) `task_contract_coverage`.** É o MESMO erro que derrubou o "20/20" do
-Context Builder e que travou `cap_validacao` em 62%: confundir "o mecanismo
-existe" com "está em uso". `TaskContract` está completo e ligado — os gates de
-aceite, escopo e diff nascem dele, e o isolamento também. Mas contrato é
-OPCIONAL: sem `.bauer/task.yaml` no workspace, a cobertura de uma tarefa
-qualquer é zero. Declarar 100% aqui seria dizer que o indicador mede o código
-quando ele mede o uso. Falta decidir o que conta como denominador (toda tarefa
-de código? só as autônomas?) — e é decisão de produto, não de implementação.
+**(a) `task_contract_coverage` — DENOMINADOR DECIDIDO, medindo sem cobrar.**
+
+O impasse não era técnico: `TaskContract` está completo e ligado (aceite,
+escopo, diff e isolamento nascem dele). A pergunta era **de quantas execuções
+estamos falando**.
+
+"Toda execução" foi descartado, e a razão é concreta: incluiria conversa e turno
+interativo, onde contrato é atrito puro. O resultado previsível seria contrato
+genérico em todo projeto — e contrato genérico é PIOR que nenhum, porque
+`scope.allowed: ["."]` significa "sem restrição" (o `_casa()` trata `.` como
+tudo) e `commands: []` faz o gate de aceite passar. Daria 100% de cobertura com
+zero proteção, e com a agravante de passar a acreditar que está protegido.
+
+**Denominador escolhido: run AUTÔNOMO** — ninguém entre os turnos. É onde o
+falso-sucesso custa uma hora de trabalho errado.
+
+A marcação é DECLARADA na origem (`KernelRequest.autonomous`), não inferida do
+endpoint: inferir de `input["endpoint"]` erraria justamente o `/loop` disparado
+de dentro do `bauer agent` interativo, que é autônomo e nasce pelo caminho
+interativo. Marcados hoje: `bauer run`, scheduler e `/loop` da web.
+
+**Não bloqueia.** A capacidade nasce `informativa` no `medir.py`: reporta a
+fração e fica FORA da média, até haver histórico suficiente para a decisão de
+exigir ser tomada com evidência em vez de com definição. Aplicar bloqueio agora
+— um `bauer run` que recusa a rodar por falta de contrato — é o atrito que faz
+desligar a governança inteira, e esse filme já passou com o `kernel.enabled`
+opt-in por meses.
 
 **(b) `runtime_capability_invariant` (HARNESS-029) — FECHADO.** Escrever a
 invariante encontrou o bug de julho **ainda vivo em dois lugares**, o que é a
