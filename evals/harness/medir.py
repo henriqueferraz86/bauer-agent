@@ -174,7 +174,17 @@ def cap_progresso() -> Capacidade:
 
 
 def cap_observabilidade() -> Capacidade:
-    """Os 17 eventos mínimos do plano §14 — quais são publicados."""
+    """Os 17 eventos mínimos do plano §14 — quais chegam ao EventBus.
+
+    DUAS condições, e a segunda foi aprendida errando: a string tem que aparecer
+    num fonte E o tipo tem que estar no ``EVENT_TYPES`` do schema. Só a primeira
+    dava 17/17 com `tool.denied` — que existia, mas era gravado no KanbanStore,
+    um sink que a auditoria de run não lê. Fora do schema, o evento nem chega a
+    ser publicável: ``Event.__post_init__`` recusa. É a diferença entre "alguém
+    escreveu esse nome" e "isso vira trilha".
+    """
+    from bauer.core.events.schema import EVENT_TYPES
+
     fontes = "\n".join(
         p.read_text(encoding="utf-8", errors="replace")
         for p in BAUER.rglob("*.py") if "__pycache__" not in p.parts)
@@ -186,8 +196,10 @@ def cap_observabilidade() -> Capacidade:
         "run.replanning", "run.completed", "run.failed", "run.cancelled",
         "run.workspace.cleaned",
     ]
-    tem = [e for e in eventos if f'"{e}"' in fontes]
-    return Capacidade("Observabilidade", tem, [e for e in eventos if e not in tem])
+    tem = [e for e in eventos if f'"{e}"' in fontes and e in EVENT_TYPES]
+    c = Capacidade("Observabilidade", tem, [e for e in eventos if e not in tem])
+    c.nota = "no schema E publicado — string solta em fonte nao conta"
+    return c
 
 
 def cap_evals() -> Capacidade:

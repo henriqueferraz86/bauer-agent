@@ -118,6 +118,8 @@ class BauerKernel:
 
         # planning — hook do Planner (no-op no Sprint 1; Sprint 5 usa p/ replan)
         self._transition(run, "planning", trajectory)
+        self._publish("run.planning.started", run, status="planning",
+                      data={"operation": request.operation, "replan": False})
         # policy_check — governança ANTES de executar (inclui gate de orçamento
         # do BudgetManager via operation runtime.execute)
         self._transition(run, "policy_check", trajectory)
@@ -250,8 +252,7 @@ class BauerKernel:
                                                  if k not in {"event", "status", "run_id", "runtime_adapter"}}}
 
         if self.evaluator is not None:
-            self._transition(run, "evaluating", trajectory)
-            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+            verdict = self._avaliar(run, request, result, trajectory)
             if not getattr(verdict, "passed", True):
                 self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
                 trajectory.append("failed")
@@ -479,8 +480,7 @@ class BauerKernel:
             # evaluating — quality gate antes de concluir (Sprint 5; None = pula)
             if self.evaluator is None:
                 break
-            self._transition(run, "evaluating", trajectory)
-            verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+            verdict = self._avaliar(run, request, result, trajectory)
             if getattr(verdict, "passed", True):
                 break
             reason = getattr(verdict, "reason", "")
@@ -492,7 +492,12 @@ class BauerKernel:
             # replan: evaluating → planning → policy_check → queued → running,
             # com o motivo do gate no payload p/ o executor corrigir o rumo.
             replans_used += 1
+            self._publish("run.replanning", run, status="evaluating", message=reason,
+                          data={"attempt": replans_used, "max_replans": max_replans})
             self._transition(run, "planning", trajectory)
+            self._publish("run.planning.started", run, status="planning",
+                          data={"operation": request.operation, "replan": True,
+                                "attempt": replans_used})
             self._transition(run, "policy_check", trajectory)
             self._transition(run, "queued", trajectory)
             payload = {**payload, "replan_feedback": reason,
@@ -525,6 +530,29 @@ class BauerKernel:
     def _registrar_falha(self, alvo: str, exc: "BaseException | None" = None) -> None:
         if self.breaker is not None and alvo:
             self.breaker.record_failure(alvo, exc)
+
+    def _avaliar(self, run: Any, request: Any, result: dict, trajectory: list[str]) -> Any:
+        """`evaluating` + os dois eventos de validação, num lugar só.
+
+        Estava duplicado entre ``execute`` e ``stream``, e a duplicata é
+        exatamente como a validação de um dos dois ficaria muda sem ninguém
+        notar — o gate continuaria reprovando, mas a auditoria não saberia por
+        quê. Publica QUAIS gates rodaram: sem isso, "validation.failed" diz que
+        reprovou e esconde onde.
+        """
+        self._transition(run, "evaluating", trajectory)
+        nomes = [getattr(g, "name", "gate") for g in getattr(self.evaluator, "gates", [])]
+        self._publish("run.validation.started", run, status="evaluating",
+                      data={"gates": nomes})
+        verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+        if not getattr(verdict, "passed", True):
+            self._publish(
+                "run.validation.failed", run, status="evaluating",
+                message=getattr(verdict, "reason", ""),
+                data={"reprovados": [g.gate for g in getattr(verdict, "gates", [])
+                                     if not g.passed]},
+            )
+        return verdict
 
     def _fail_se_nao_terminal(self, run_id: str, error: str,
                               trajectory: list[str]) -> None:
@@ -719,8 +747,17 @@ def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
 
 
 def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
-                 workspace: str = "workspace", with_policy: bool = True) -> BauerKernel:
-    """Composição padrão do Kernel com os componentes existentes (produção)."""
+                 workspace: str = "workspace", with_policy: bool = True,
+                 bus: Any = None) -> BauerKernel:
+    """Composição padrão do Kernel com os componentes existentes (produção).
+
+    ``bus`` opcional: reaproveita um EventBus já criado pelo caller. Serve a
+    quem precisa publicar ANTES do Kernel existir — o ``bauer run`` cria o
+    worktree (e emite ``run.workspace.created``) antes de saber qual será o
+    workspace do Kernel. Dois buses sobre o mesmo arquivo funcionariam, mas
+    partiriam os subscribers em dois: quem assinasse no Kernel não veria os
+    eventos do caller.
+    """
     from ..events.bus import EventBus
     from ..policy.approvals import ApprovalManager
     from ..runtime.autonomy import BudgetManager
@@ -728,8 +765,8 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     from ..runtime.run_manager import RunManager
     from ..runtime.state_store import JsonlStateStore
 
-    store = JsonlStateStore(root)
-    bus = EventBus(store=store)
+    store = getattr(bus, "store", None) or JsonlStateStore(root)
+    bus = bus or EventBus(store=store)
     runs = RunManager(store=store, event_bus=bus)
     policy = None
     if with_policy:

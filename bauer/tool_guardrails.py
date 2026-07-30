@@ -180,8 +180,17 @@ class ToolCallGuardrailController:
     `before_call`, `after_call`, and `reset`.
     """
 
-    def __init__(self, config: GuardrailConfig | None = None):
+    def __init__(self, config: GuardrailConfig | None = None, *,
+                 bus: Any = None, run_id: str = "", session_id: str = ""):
         self.config = config or GuardrailConfig()
+        # `bus` opcional: publica `run.progress.warning` quando um limiar de
+        # estagnação é cruzado. O detector já existia e sempre soube o que
+        # estava acontecendo — só contava para o console, que some com o
+        # scrollback. O sinal de "o agente está girando em falso" é exatamente
+        # o que se quer procurar DEPOIS, no run que gastou uma hora à toa.
+        self.bus = bus
+        self.run_id = run_id
+        self.session_id = session_id
         # Per-signature failure counts (same tool + same args).
         self._failed_signatures: Counter[ToolCallSignature] = Counter()
         # Per-tool-name failure counts (any args).
@@ -213,6 +222,18 @@ class ToolCallGuardrailController:
         — warnings are emitted from `after_call`, not here, since they
         depend on the result of this very call.
         """
+        decision = self._before_call(tool_name, args)
+        # Sim, o mesmo contador já gerou um evento no `after_call` que cruzou o
+        # limiar. Isto NÃO é o mesmo fato: ali o agente foi avisado, aqui ele
+        # tentou de novo assim mesmo e foi barrado. A insistência é o sinal.
+        self._avisar_progresso(decision)
+        return decision
+
+    def _before_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any],
+    ) -> ToolCallGuardrailDecision:
         sig = self._signature(tool_name, args)
 
         # Hard stop dominates everything else.
@@ -280,6 +301,17 @@ class ToolCallGuardrailController:
         read-only tools. The returned decision lets the caller emit a warning
         message or stop the turn if a threshold was just crossed.
         """
+        decision = self._after_call(tool_name, args, result, failed)
+        self._avisar_progresso(decision)
+        return decision
+
+    def _after_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any],
+        result: str,
+        failed: bool,
+    ) -> ToolCallGuardrailDecision:
         sig = self._signature(tool_name, args)
 
         if failed:
@@ -361,6 +393,22 @@ class ToolCallGuardrailController:
         return _allow(tool_name, sig)
 
     # ----- Helpers -------------------------------------------------------
+
+    def _avisar_progresso(self, decision: ToolCallGuardrailDecision) -> None:
+        """`run.progress.warning` — o §14 do plano, emitido de um lugar só.
+
+        Só decisões não-`allow` viram evento: publicar cada chamada normal
+        afogaria o log de auditoria no ruído e o sinal deixaria de ser sinal.
+        """
+        if decision.action == "allow":
+            return
+        from .core.events.emit import emitir
+
+        emitir(self.bus, "run.progress.warning",
+               run_id=self.run_id or None, session_id=self.session_id or None,
+               tool_name=decision.tool_name or None, status=decision.action,
+               message=decision.message,
+               data={"code": decision.code, "count": decision.count})
 
     def _signature(
         self, tool_name: str, args: Mapping[str, Any]

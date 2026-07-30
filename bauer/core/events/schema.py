@@ -4,19 +4,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from uuid import uuid4
 
 EventType = Literal[
     "run.created",
+    "run.planning.started",
+    "run.context.built",
+    "run.workspace.created",
     "run.started",
+    "run.progress.warning",
+    "run.validation.started",
+    "run.validation.failed",
+    "run.replanning",
     "run.completed",
     "run.failed",
     "run.cancelled",
+    "run.workspace.cleaned",
     "run.state.changed",
     "tool.call.requested",
     "tool.call.completed",
     "tool.call.failed",
+    "tool.denied",
     "skill.selected",
     "skill.executed",
     "policy.evaluated",
@@ -39,37 +48,12 @@ EventType = Literal[
     "memory.expired",
 ]
 
-EVENT_TYPES: tuple[str, ...] = (
-    "run.created",
-    "run.started",
-    "run.completed",
-    "run.failed",
-    "run.cancelled",
-    "run.state.changed",
-    "tool.call.requested",
-    "tool.call.completed",
-    "tool.call.failed",
-    "skill.selected",
-    "skill.executed",
-    "policy.evaluated",
-    "approval.requested",
-    "approval.accepted",
-    "approval.denied",
-    "schedule.triggered",
-    "schedule.skipped",
-    "schedule.failed",
-    "budget.warning",
-    "budget.exceeded",
-    "autonomy.changed",
-    "model.route.selected",
-    "loop.round.completed",
-    "delegation.requested",
-    "delegation.accepted",
-    "delegation.denied",
-    "memory.written",
-    "memory.revised",
-    "memory.expired",
-)
+#: DERIVADO do Literal acima, não uma segunda lista escrita à mão. As duas
+#: existiam em paralelo e já estavam a um esquecimento de divergir: quem
+#: acrescentasse um tipo só no `Literal` passaria no type checker e tomaria
+#: `ValueError` em runtime no `__post_init__` — telemetria que morre justamente
+#: no evento novo.
+EVENT_TYPES: tuple[str, ...] = get_args(EventType)
 
 
 @dataclass

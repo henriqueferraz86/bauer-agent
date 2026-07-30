@@ -108,8 +108,22 @@ def run(
     from ..core.workspace import preparar as _preparar_ambiente
     from ..core.workspace.isolation import contrato_do_workspace
     from uuid import uuid4 as _uuid4
+
+    # Estado de GOVERNANÇA fica no repo, não no worktree. O isolamento troca
+    # onde o TRABALHO acontece; runs, kill-switch, aprovações e orçamento não
+    # podem ir junto. Iam: `ws` era reatribuído para o worktree logo abaixo e o
+    # `root` do Kernel saía dali — o que significava (a) histórico de run
+    # destruído junto com o worktree descartável e, pior, (b) o kill-switch que
+    # o usuário liga no repo INVISÍVEL para o run isolado, que é exatamente o
+    # run que mais precisa poder ser parado.
+    _root_gov = str(ws / "memory" / "runtime")
+    from ..core.events.bus import EventBus
+    from ..core.runtime.state_store import JsonlStateStore
+    _bus = EventBus(store=JsonlStateStore(_root_gov))
+
+    _run_slug = f"run-{_uuid4().hex[:10]}"
     _contrato = contrato_do_workspace(ws)
-    _iso = _preparar_ambiente(ws, _contrato, run_id=f"run-{_uuid4().hex[:10]}")
+    _iso = _preparar_ambiente(ws, _contrato, run_id=_run_slug, bus=_bus)
     if _iso.aviso:
         console.print(f"[yellow]⚠ {_iso.aviso}[/yellow]")
     if _iso.isolado:
@@ -148,9 +162,12 @@ def run(
     # o que quebrou 4 testes ao ligar o Kernel por default: todos compartilhavam
     # o store do repo, acumulavam runs não-terminais e batiam em
     # "max parallel runs reached: 3/3".
+    # `root` é o do REPO (`_root_gov`) e `workspace` é onde o trabalho acontece
+    # — iguais sem isolamento, diferentes com worktree. É a separação que faz o
+    # kill-switch continuar valendo e os gates rodarem no lugar certo.
     kernel = require_kernel(
         cfg,
-        lambda: build_kernel(cfg, root=str(ws / "memory" / "runtime"), workspace=str(ws)),
+        lambda: build_kernel(cfg, root=_root_gov, workspace=str(ws), bus=_bus),
         label="bauer run",
     )
 
@@ -268,7 +285,8 @@ def run(
         if _iso.isolado:
             from ..core.workspace import finalizar as _finalizar_ambiente
             _artefato = _finalizar_ambiente(
-                _iso, objetivo=task[:120], sucesso=(stop_reason == "completed"))
+                _iso, objetivo=task[:120], sucesso=(stop_reason == "completed"),
+                bus=_bus, run_id=_run_slug)
             if _artefato:
                 console.print(f"[dim]artefato:[/dim] {_artefato}")
 

@@ -203,10 +203,10 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 | Validacao deterministica | **62%** | 5/8 | 90% | `acceptance`, `secrets`, `diff` |
 | Isolamento | **50%** | 2/4 | 85% | `2-container`, `3-aprovacao-humana` |
 | Controle de progresso | **67%** | 6/9 | 85% | `plano sem mudanca entre replans`, `alteracoes revertidas`, `tokens crescendo sem progresso` |
-| Observabilidade | **53%** | 9/17 | 90% | `run.planning.started`, `run.context.built`, `run.workspace.created` (+5) |
+| Observabilidade | **100%** ✅ | 17/17 | 90% | — |
 | Retry, fallback e recovery | **100%** ✅ | 6/6 | 90% | — |
 | Avaliacoes de harness | **100%** ✅ | 23/23 | 85% | — |
-| **média (só o mensurável)** | **70%** | | **90%** | |
+| **média (só o mensurável)** | **75%** | | **90%** | |
 
 2 capacidades ficam **fora da média** por não serem contáveis — declaradas em vez de receberem um número inventado:
 

@@ -1462,6 +1462,19 @@ class ToolRouter(
         return self._tool_policy.allowed_contexts(name)
 
     def _record_tool_denied(self, name: str, args: dict) -> None:
+        # O deny ia SÓ para o KanbanStore. Informação preservada, sink errado:
+        # quem audita um run lê o EventBus (é dele que saem AuditLog e
+        # RunTraceStore), e ali a recusa simplesmente não existia. Justamente o
+        # evento que mais importa numa auditoria — o que o agente tentou e não
+        # pôde — era o único fora da trilha.
+        from .core.events.emit import emitir
+
+        emitir(self._event_bus, "tool.denied", tool_name=name, status="denied",
+               run_id=os.environ.get("BAUER_KANBAN_RUN_ID") or None,
+               message=f"tool '{name}' negada no contexto '{self.tool_context}'",
+               data={"context": self.tool_context,
+                     "arg_keys": sorted(str(k) for k in args.keys())})
+
         task_id = (
             os.environ.get("BAUER_KANBAN_TASK")
             or str(args.get("task_id") or args.get("id") or "000")
