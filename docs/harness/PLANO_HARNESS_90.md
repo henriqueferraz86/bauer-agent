@@ -847,32 +847,68 @@ trajetória; runs presos detectados; taxa de falso sucesso medida.
 
 ## 15. Indicadores para declarar 90%
 
-Lista do original mantida, com quatro adições e uma correção de contagem:
+Lista do original mantida, com quatro adições e uma correção de contagem.
+Status conferido em 2026-07-30, depois do PR #112.
 
 ```yaml
-kernel_coverage: 100%
+kernel_coverage: 100%                    # ATENDIDO — 12/12 medido
 # REFORMULADO: ">=90%" era inatingível — o teto estrutural é 79%. /stream,
 # /v1 streaming e orchestrate --background não podem ceder a posse do run.
 kernel_full_custody_coverage: "100% dos caminhos com custódia POSSÍVEL"   # ATENDIDO
-task_contract_coverage: 100%
-context_builder_coverage: 100%           # <-- UNICO EM ABERTO (S9)
+task_contract_coverage: 100%             # <-- EM ABERTO, ver nota (a)
+context_builder_coverage: 100%           # ATENDIDO — 9/9 call sites (PR #112)
 code_task_validation_coverage: 100% dos runs que MUDAM arquivos   # ATENDIDO
 code_task_isolation_coverage: "100% das tarefas cujo contrato pede"  # ATENDIDO
 cancel_support: 100%
 recovery_support: 100%
 stuck_run_detection: true
-anti_loop_detection: true
-runtime_capability_invariant: true       # ADIÇÃO — §9.1
-independent_approval_judge: true         # ADIÇÃO — §9.2
-policy_parser_property_tests: true       # ADIÇÃO — §9.4
-auditable_execution_paths: 100%
+anti_loop_detection: true                # ATENDIDO — 9/9 sinais (PR #112)
+runtime_capability_invariant: true       # <-- EM ABERTO, ver nota (b)
+independent_approval_judge: true         # ADIÇÃO — §9.2 — ATENDIDO
+policy_parser_property_tests: true       # ADIÇÃO — §9.4 — ATENDIDO
+auditable_execution_paths: 100%          # ATENDIDO — 17/17 eventos (PR #112)
 harness_eval_scenarios: ">=23"           # ATENDIDO: 23/23
 critical_eval_pass_rate: 100%
-overall_eval_pass_rate: ">=90%"
+overall_eval_pass_rate: ">=90%"          # ATENDIDO: 100%
 false_success_rate: "<2%"                # ATENDIDO: 0.0% medido
 orphaned_run_rate: "<1%"                 # ATENDIDO: 0.0% medido
-suite_hermetic: true                     # ADIÇÃO — §12.3
+suite_hermetic: true                     # ADIÇÃO — §12.3 — ATENDIDO
 ```
+
+**20 de 22 atendidos.** Os dois em aberto, e por que nenhum dos dois pode ser
+declarado por arredondamento:
+
+**(a) `task_contract_coverage`.** É o MESMO erro que derrubou o "20/20" do
+Context Builder e que travou `cap_validacao` em 62%: confundir "o mecanismo
+existe" com "está em uso". `TaskContract` está completo e ligado — os gates de
+aceite, escopo e diff nascem dele, e o isolamento também. Mas contrato é
+OPCIONAL: sem `.bauer/task.yaml` no workspace, a cobertura de uma tarefa
+qualquer é zero. Declarar 100% aqui seria dizer que o indicador mede o código
+quando ele mede o uso. Falta decidir o que conta como denominador (toda tarefa
+de código? só as autônomas?) — e é decisão de produto, não de implementação.
+
+**(b) `runtime_capability_invariant` (HARNESS-029).** A causa foi corrigida — o
+modo de tool calling vem do CLIENTE VIVO, nunca de default, e é o que o S9
+preservou. Mas o indicador pede a **invariante testada**: o que o `preflight`
+reporta é o que o runtime usa. Esse teste não existe. Sem ele, a próxima
+divergência entre relatório e execução volta a ser atribuída ao modelo — que
+foi exatamente o que aconteceu três vezes em julho/2026, até um A/B de
+temperatura dar 5/5 nas duas pontas e matar todas as hipóteses de modelo.
+
+### Backlog P0 ainda aberto
+
+Independente dos indicadores, quatro itens do §17 seguem sem implementação:
+
+| ID | Item | Situação |
+|---|---|---|
+| HARNESS-008 | Planner persistir aceite | `autonomous_planner` não conhece `acceptance_criteria` |
+| HARNESS-010 | `requested_context: auto` | default fixo de 8192 em `config_loader` |
+| HARNESS-017 | `workspace_snapshot` / rollback | não existe; `core/workspace/` só tem `isolation.py` |
+| HARNESS-029 | Invariante de capacidade | ver nota (b) |
+
+E o **Isolamento fica em 50%** (medido): container (nível 2) e aprovação humana
+(nível 3). O container está declarado como P1 desde §12; a aprovação humana o
+Kernel já sabe fazer (`waiting_approval`), mas o contrato não a aciona.
 
 ---
 
