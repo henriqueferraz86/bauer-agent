@@ -682,6 +682,7 @@ def create_app(
     fallback_clients: list | None = None,
     tool_mode: str = "",
     workspace: Optional[Path] = None,
+    profile_set: str = "default",
 ):
     """Cria e retorna o app FastAPI configurado.
 
@@ -1204,7 +1205,10 @@ def create_app(
             from .model_router import profiles_from_config
             _router_cfg = _load_cfg(config_path)
             _router_enabled = bool(getattr(_router_cfg.model, "router_enabled", False))
-            _router_profiles = profiles_from_config(_router_cfg)
+            # `profile_set='local'` lê `model.profiles_local` — é como o
+            # `--local` do serve mantém o roteamento e só troca o destino.
+            _router_profiles = profiles_from_config(_router_cfg,
+                                                    conjunto=profile_set)
     except Exception as exc:  # noqa: BLE001
         _log.debug("router config load failed: %s", exc)
     _profile_clients: dict = {}  # provider → client (cache)
