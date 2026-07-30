@@ -45,15 +45,23 @@ class BudgetExceededError(RuntimeError):
 
 
 class BudgetManager:
+    #: Depois disso, um run não-terminal é TRAVADO, não concorrente — e para de
+    #: contar contra `max_parallel_runs`. Mesmo limiar default de
+    #: ``RuntimeRecovery.recover_stuck_runs``, que é quem de fato o marca failed.
+    stale_run_after_s: int = 900
+
     def __init__(
         self,
         *,
         root: str | Path = "memory/runtime",
         store: JsonlStateStore | None = None,
         event_bus: EventBus | None = None,
+        stale_run_after_s: int | None = None,
     ) -> None:
         self.store = store or JsonlStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
+        if stale_run_after_s is not None:
+            self.stale_run_after_s = max(0, int(stale_run_after_s))
 
     def get_profile(self) -> AutonomyProfile:
         record = self.store.latest("autonomy", "profile")
@@ -106,11 +114,36 @@ class BudgetManager:
         # Também limita o overshoot do TOCTOU de budget a no máx. N× enquanto a
         # reserva de custo por-run (a outra metade do #11) não é wired.
         if profile.max_parallel_runs and profile.max_parallel_runs > 0:
+            # "Paralelo" é o que está VIVO agora, não o que ficou não-terminal em
+            # algum momento da história. Sem o corte por idade, três Ctrl+C (ou
+            # três crashes, ou três threads órfãs de SSE) travavam TODA execução
+            # permanentemente com "max parallel runs reached: 3/3" — e só saía
+            # disso se alguém chamasse recover() à mão. Medido ao ligar o Kernel
+            # por default (HARNESS-020): o bloqueio pegou 4 testes de `bauer run`.
+            #
+            # Mesmo limiar do RuntimeRecovery.recover_stuck_runs: passou disso,
+            # é run travado (que o recover vai marcar failed), não concorrente.
+            from datetime import UTC, datetime, timedelta
+
+            from .resilience import _parse_datetime
             from .run_manager import TERMINAL_RUN_STATUSES
-            active = sum(
-                1 for r in self.store.list_latest("runs")
-                if r.get("status") not in TERMINAL_RUN_STATUSES
-            )
+
+            cutoff = datetime.now(UTC) - timedelta(seconds=self.stale_run_after_s)
+            active = 0
+            for r in self.store.list_latest("runs"):
+                if r.get("status") in TERMINAL_RUN_STATUSES:
+                    continue
+                marker = r.get("updated_at") or r.get("started_at") or r.get("created_at")
+                if marker:
+                    try:
+                        if _parse_datetime(str(marker)) <= cutoff:
+                            continue  # travado, não paralelo
+                    except (ValueError, TypeError) as exc:
+                        # timestamp ilegível: não dá para provar que está travado,
+                        # então conta como paralelo — o lado seguro é barrar
+                        from ...logging_config import log_suppressed
+                        log_suppressed("autonomy.parallel_runs.timestamp", exc)
+                active += 1
             if active >= profile.max_parallel_runs:
                 message = f"max parallel runs reached: {active}/{profile.max_parallel_runs}"
                 self.event_bus.publish(

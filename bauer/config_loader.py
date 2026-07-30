@@ -600,12 +600,25 @@ class ServeSection(_StrictSection):
 class KernelSection(_StrictSection):
     """Bauer Kernel (core/kernel) — fachada de orquestração do ciclo de vida.
 
-    Opt-in: com ``enabled: true`` os front-ends migrados passam a executar via
-    ``BauerKernel.execute()`` (estados persistidos + policy + eventos). Default
-    False = caminhos de execução atuais, intocados.
+    **Ligado por default (HARNESS-020).** Toda execução passa por
+    ``BauerKernel``: estados persistidos, ``policy_check`` antes do LLM,
+    kill-switch central, eventos e — com ``evaluator_enabled`` — quality gates
+    antes de concluir.
+
+    Era opt-in enquanto 9 caminhos de execução não passavam pelo Kernel: ligar
+    a flag naquele estado a faria mentir. Depois do S8 todos passam (contato
+    100%, custódia 79% — o teto estrutural), então o default virou.
+
+    Motivo concreto para virar, e não só simetria: ``load_config`` NÃO mescla o
+    config do diretório com o de ``$BAUER_HOME`` — o primeiro que existir vence.
+    Com default ``False``, qualquer projeto com ``config.yaml`` próprio e sem
+    seção ``kernel:`` desligava a governança inteira sem ninguém notar. Medido:
+    ``bauer agent run-one`` numa pasta assim não criava Run nenhum. Com default
+    ``True``, herdar governança é o comportamento normal e desligar exige
+    escrever ``enabled: false``.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     max_retries: int = Field(ge=0, default=0)          # re-tentativas por executor
     retry_backoff_s: float = Field(ge=0.0, default=1.0)  # espera linear entre tentativas
     fallback_adapters: list[str] = []                  # executores alternativos, em ordem
