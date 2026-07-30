@@ -28,7 +28,6 @@ from pathlib import Path
 from rich.console import Console
 
 from .agent import _build_system_prompt, run_one_turn
-from .context_manager import ContextManager
 from .indicators import show_header, show_step, spinning
 from .model_router import ModelRouter
 from .ollama_client import OllamaClient
@@ -482,16 +481,14 @@ class AgentOrchestrator:
                 system_prompt = base_system + f"\n\n# ESPECIALIZACAO DO AGENT '{agent_name}'\n{agent_system}"
             else:
                 system_prompt = base_system
-            ctx = ContextManager(applied_context=STEP_CONTEXT, system_prompt=system_prompt)
-            ctx.add_user(goal + "\n\n" + context_text)
+            ctx, _ = self._contexto_do_passo(system_prompt, goal, context_text)
             response, tool_log = run_one_turn(ctx, self.router, self.client, model_name)
         else:
             if agent_system:
                 system_prompt = agent_system
             else:
                 system_prompt = "Voce e um assistente util. Responda em portugues, em texto normal."
-            ctx = ContextManager(applied_context=STEP_CONTEXT, system_prompt=system_prompt)
-            ctx.add_user(goal + "\n\n" + context_text)
+            ctx, _ = self._contexto_do_passo(system_prompt, goal, context_text)
             if self.console:
                 self.console.print(f"[dim]{stream_prefix}[/dim] ", end="")
             response = self._call_model(model_name, ctx.get_payload(), stream_prefix=stream_prefix)
@@ -504,6 +501,24 @@ class AgentOrchestrator:
             response=response,
             tool_log=tool_log,
         )
+
+    def _contexto_do_passo(self, system_prompt: str, goal: str, context_text: str):
+        """Contexto de um passo, com as três fontes SEPARADAS.
+
+        Antes era `goal + "\\n\\n" + context_text` num blob só. A distinção
+        importa aqui mais que em qualquer outro call site: `context_text` é a
+        saída ACUMULADA dos passos anteriores, e passo anterior pode ter lido
+        arquivo, buscado na web ou rodado tool. Fundido com o objetivo, esse
+        texto ficava indistinguível de instrução do Bauer — que é exatamente o
+        caminho pelo qual conteúdo de fora vira ordem.
+        """
+        from .core.context import ContextBuilder
+
+        return (ContextBuilder(applied_context=STEP_CONTEXT)
+                .instrucao("seguranca", system_prompt)
+                .conteudo("objetivo", goal, prioridade=2)
+                .conteudo("passos_anteriores", context_text, prioridade=6)
+                .montar())
 
     # ------------------------------------------------------------------
     # retry por passo

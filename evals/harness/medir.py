@@ -106,12 +106,24 @@ def cap_context_builder() -> Capacidade:
     É a medição que me fez desfazer o "20/20": a fachada existe, mas coverage
     é sobre USO.
     """
-    usam_builder = _grep(r"from .*core\.context import|core\.context\.builder")
-    constroem_cru = _grep(r"ContextManager\(") - {"bauer/context_manager.py"}
-    migrados = sorted(usam_builder & constroem_cru)
-    pendentes = sorted(constroem_cru - usam_builder)
+    # Fora do denominador: o motor (`context_manager.py`) e a própria fachada.
+    # O builder instancia `ContextManager` porque DELEGA para ele — é o ponto do
+    # módulo. Contá-lo como não migrado seria exigir que a fachada usasse a si
+    # mesma, e deixava um item permanentemente em "falta".
+    MOTOR = {"bauer/context_manager.py", "bauer/core/context/builder.py"}
+
+    usam_builder = _grep(r"ContextBuilder\(") - MOTOR
+    constroem_cru = _grep(r"ContextManager\(") - MOTOR
+
+    # O universo é "quem monta contexto de turno", pelos DOIS caminhos. A versão
+    # anterior tirava do denominador o arquivo que parasse de chamar
+    # `ContextManager(` — ou seja, migrar um call site o fazia sumir da conta.
+    # Com todos migrados o denominador ia a zero e a capacidade dava 0/0, que
+    # não é 100% nem 0%: é uma medida que deixou de medir.
+    migrados = sorted(usam_builder - constroem_cru)
+    pendentes = sorted(constroem_cru)   # inclui quem migrou pela metade
     c = Capacidade("Context Builder", migrados, pendentes)
-    c.nota = "fachada pronta; conta = call sites migrados"
+    c.nota = "call sites pela fachada / total que monta contexto"
     return c
 
 

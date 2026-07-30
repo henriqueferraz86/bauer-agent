@@ -199,14 +199,14 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 |---|---|---|---|---|
 | Uso obrigatorio do Kernel | **100%** ✅ | 12/12 | 100% | — |
 | Kernel e ciclo de vida | **100%** ✅ | 12/12 | 95% | — |
-| Context Builder | **0%** | 0/9 | 90% | `bauer/agent.py`, `bauer/benchmark.py`, `bauer/channel_base.py` (+6) |
+| Context Builder | **100%** ✅ | 9/9 | 90% | — |
 | Validacao deterministica | **100%** ✅ | 8/8 | 90% | — |
 | Isolamento | **50%** | 2/4 | 85% | `2-container`, `3-aprovacao-humana` |
 | Controle de progresso | **100%** ✅ | 9/9 | 85% | — |
 | Observabilidade | **100%** ✅ | 17/17 | 90% | — |
 | Retry, fallback e recovery | **100%** ✅ | 6/6 | 90% | — |
 | Avaliacoes de harness | **100%** ✅ | 23/23 | 85% | — |
-| **média (só o mensurável)** | **83%** | | **90%** | |
+| **média (só o mensurável)** | **94%** | | **90%** | |
 
 2 capacidades ficam **fora da média** por não serem contáveis — declaradas em vez de receberem um número inventado:
 

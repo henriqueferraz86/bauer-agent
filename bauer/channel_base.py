@@ -324,18 +324,18 @@ class AgentBackend:
 
     def _get_session(self, key: str) -> tuple[Any, threading.Lock]:
         """ContextManager + lock da sessão; carrega histórico do SQLite."""
-        from .context_manager import ContextManager
 
         with self._sessions_lock:
             if key in self._sessions:
                 self._sessions.move_to_end(key)
                 return self._sessions[key]
-            ctx = ContextManager(
-                applied_context=self._applied_context,
-                system_prompt=self._system_prompt,
-                provider=self._provider,
-            )
-            ctx.set_llm(self._client, self._model_name)
+            from .core.context import ContextBuilder
+
+            ctx, _ = (
+                ContextBuilder(applied_context=self._applied_context,
+                               provider=self._provider)
+                .instrucao("seguranca", self._system_prompt)
+                .montar(llm_client=self._client, llm_model=self._model_name))
             saved = self._store.load(key)
             if saved:
                 ctx.messages = saved

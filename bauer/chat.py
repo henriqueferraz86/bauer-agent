@@ -16,7 +16,6 @@ import sys
 from rich.console import Console
 from .indicators import spinning
 
-from .context_manager import ContextManager
 from .ollama_client import OllamaClient, OllamaError
 
 _SYSTEM_PROMPT = (
@@ -36,7 +35,11 @@ def run_chat_session(
     console: Console,
 ) -> None:
     """Loop REPL de chat. Encerra com /exit, /quit ou Ctrl-C."""
-    ctx = ContextManager(applied_context=applied_context, system_prompt=_SYSTEM_PROMPT)
+    from .core.context import ContextBuilder
+
+    ctx, _ = (ContextBuilder(applied_context=applied_context)
+              .instrucao("seguranca", _SYSTEM_PROMPT)
+              .montar())
 
     from .ascii_intro import play_intro, session_panel
     play_intro(console)

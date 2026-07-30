@@ -4492,13 +4492,17 @@ def run_agent_session(
     _provider = getattr(client, "_provider", None) or _detectar_provider_por_host(
         getattr(client, "host", "")
     )
-    ctx = ContextManager(
-        applied_context=applied_context,
-        system_prompt=system_prompt,
-        provider=_provider,
-    )
-    # Habilita compressão semântica via LLM quando o cliente está disponível
-    ctx.set_llm(client, model_name)
+    # Uma porta só para o que entra na janela (S9). O prompt do sistema é
+    # INSTRUÇÃO — e é a única coisa aqui que é; tudo que vier de arquivo, web ou
+    # tool entra por `conteudo()` e nunca vira ordem.
+    from .core.context import ContextBuilder
+
+    # `montar` já faz o set_llm — a compressão semântica via LLM continua ligada.
+    ctx, _ctx_pacote = (
+        ContextBuilder(applied_context=applied_context, provider=_provider,
+                       bus=getattr(kernel, "bus", None))
+        .instrucao("seguranca", system_prompt)
+        .montar(llm_client=client, llm_model=model_name))
 
     # MemoryProvider — inicializa e injeta bloco de contexto no system prompt
     _mem_workspace = getattr(router, "workspace", "workspace")

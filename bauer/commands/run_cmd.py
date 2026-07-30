@@ -140,7 +140,6 @@ def run(
 
     # Contexto do turno (mesmo padrão do serve): system prompt do router.
     from ..agent import _build_system_prompt, run_one_turn_with_fallback
-    from ..context_manager import ContextManager
     applied_context = int(getattr(cfg.model, "requested_context", 0) or 8192)
     # O contexto aplicado precisa CHEGAR ao Ollama: sem `options.num_ctx` na
     # requisição ele usa o próprio default (bem menor) e TRUNCA o prompt em
@@ -148,8 +147,12 @@ def run(
     # Sintoma: prompt grande volta com resposta vazia. Só `bauer chat` e
     # `bauer agent` faziam essa atribuição; serve e run ficavam de fora.
     _apply_ollama_runtime(client, cfg, applied_context)
-    ctx = ContextManager(applied_context=applied_context,
-                         system_prompt=_build_system_prompt(router, client=client))
+    from ..core.context import ContextBuilder
+
+    ctx, _ = (ContextBuilder(applied_context=applied_context, bus=_bus,
+                             run_id=_run_slug)
+              .instrucao("seguranca", _build_system_prompt(router, client=client))
+              .montar())
 
     # Kernel: governa quando ligado no config (mesma admissão da web). Flag
     # desligada = None; ligada e com wiring quebrado = KernelWiringError — o
