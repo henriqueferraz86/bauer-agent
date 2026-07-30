@@ -183,7 +183,7 @@ Modos de falha: **[FAILURE_MODES.md](FAILURE_MODES.md)**.
 |---|---|---|---|
 | Kernel e ciclo de vida | 85% | **92%** | 95% |
 | Uso obrigatório do Kernel | 0% | **95%** | 100% |
-| Context Builder | 45% | 45% | 90% |
+| Context Builder | 45% | **60%** | 90% | fachada pronta; 10 call sites por migrar |
 | Task Contract e Planner | 55% | **80%** | 85% |
 | Validação determinística | 20% | **85%** | 90% |
 | Isolamento | 25% | **70%** | 85% |
@@ -192,9 +192,18 @@ Modos de falha: **[FAILURE_MODES.md](FAILURE_MODES.md)**.
 | Controle de progresso | 60% | 60% | 85% |
 | Observabilidade | 70% | **75%** | 90% |
 | Avaliações de harness | 10% | **85%** | 85% |
-| **média** | **48%** | **78%** | **90%** |
+| **média** | **48%** | **79%** | **90%** |
 
 **Indicadores da §15: 19 de 20.**
+
+> **Nota sobre `context_builder_coverage`.** A fachada existe (S9) com
+> proveniência e a separação instrução/conteúdo, e o cenário 15 exercita a
+> garantia estrutural. Mas o indicador diz *coverage* — "todo modo com tools usa
+> o mesmo builder" — e isso **não** é verdade: os 10 call sites de
+> `ContextManager` medidos no S7 seguem construindo contexto por conta própria.
+> Contar como atendido seria trocar "existe" por "está em uso", que é exatamente
+> o erro que este plano corrigiu no Kernel (construído 85%, governando 0%).
+> **Fica em aberto até a migração dos call sites.**
 
 ```
 cenarios ............. 23/23
@@ -231,7 +240,7 @@ não afrouxados, corrigidos:
 |---|---|---|---|
 | Kernel e ciclo de vida | 85% | **90%** | 95% |
 | Uso obrigatório do Kernel | 0% | **80%** | 100% |
-| Context Builder | 45% | 45% | 90% |
+| Context Builder | 45% | **60%** | 90% | fachada pronta; 10 call sites por migrar |
 | Task Contract e Planner | 55% | 55% | 85% |
 | Validação determinística | 20% | **30%** | 90% |
 | Isolamento | 25% | 25% | 85% |
