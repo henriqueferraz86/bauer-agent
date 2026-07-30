@@ -37,6 +37,11 @@ class Capacidade:
     falta: list[str] = field(default_factory=list)
     meta: int = 90
     nota: str = ""
+    #: True = REPORTA, nao avalia. Fica fora da media e nao ganha "OK".
+    #: Existe porque uma capacidade sem denominador ainda nao e 0% nem 100%
+    #: — e exibir qualquer um dos dois seria inventar o numero que o resto
+    #: deste arquivo existe para nao inventar.
+    informativa: bool = False
 
     @property
     def total(self) -> int:
@@ -169,6 +174,73 @@ def cap_validacao() -> Capacidade:
                    tem, [n for n in esperados if n not in tem])
     c.nota = "gates que o Evaluator monta com contrato — nao arquivos em disco"
     return c
+
+
+def cap_task_contract() -> Capacidade:
+    """Runs AUTÔNOMOS que tinham contrato de tarefa. Só reporta — não bloqueia.
+
+    O denominador foi a decisão: "toda execução" incluiria conversa e turno
+    interativo, onde contrato é atrito puro e o resultado previsível seria um
+    contrato genérico (`scope.allowed: ["."]` = sem restrição, `commands: []` =
+    aceite vazio) — 100% de cobertura com ZERO proteção, e a agravante de
+    passar a acreditar que está protegido.
+
+    Aqui o denominador é **run autônomo**: ninguém entre os turnos. É onde o
+    falso-sucesso custa uma hora de trabalho errado, e é declarado na origem
+    (``KernelRequest.autonomous``), não inferido do endpoint — inferir erraria
+    justamente o `/loop` disparado de dentro do agente interativo.
+
+    Enquanto não houver run autônomo registrado, a capacidade fica NÃO
+    MENSURÁVEL em vez de 0% ou 100%: sem denominador não há fração, e inventar
+    um dos dois seria pior que admitir a ausência.
+    """
+    runs = _runs_autonomos()
+    if not runs:
+        c = Capacidade("Contrato de tarefa", [], [], meta=0, informativa=True)
+        c.nota = ("sem run autonomo registrado ainda — o campo `autonomous` foi "
+                  "ligado em bauer run, scheduler e /loop; a fracao aparece "
+                  "quando houver historico")
+        return c
+    com = [r for r in runs if r.get("input", {}).get("task_contract")]
+    sem = [r for r in runs if not r.get("input", {}).get("task_contract")]
+    c = Capacidade("Contrato de tarefa",
+                   [f"{r.get('id', '?')[:18]}" for r in com],
+                   [f"{r.get('id', '?')[:18]} ({r.get('agent_id', '?')})" for r in sem],
+                   meta=0, informativa=True)   # MEDE, nao cobra
+    c.nota = f"{len(com)}/{len(runs)} runs autonomos com contrato (so reporta)"
+    return c
+
+
+def _runs_autonomos() -> list[dict]:
+    """Runs marcados como autônomos no histórico local. [] quando não há store.
+
+    Lê o mesmo JSONL que o Kernel grava. Não cria store nem diretório: medir não
+    pode ter efeito colateral, senão a primeira medição altera o que mede.
+    """
+    from pathlib import Path as _P
+
+    candidatos = [RAIZ / "memory" / "runtime", _P.home() / ".bauer" / "memory" / "runtime"]
+    for root in candidatos:
+        arq = root / "runs.jsonl"
+        if not arq.is_file():
+            continue
+        try:
+            linhas = arq.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        vistos: dict[str, dict] = {}
+        for linha in linhas:
+            try:
+                r = json.loads(linha)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("id"):
+                vistos[r["id"]] = r      # última versão de cada run vence
+        autonomos = [r for r in vistos.values()
+                     if (r.get("input") or {}).get("autonomous")]
+        if autonomos:
+            return autonomos
+    return []
 
 
 def cap_isolamento() -> Capacidade:
@@ -358,7 +430,8 @@ def cap_resiliencia() -> Capacidade:
 
 CAPACIDADES: list[Callable[[], Capacidade]] = [
     cap_kernel_coverage, cap_ciclo_de_vida, cap_context_builder, cap_validacao,
-    cap_isolamento, cap_progresso, cap_observabilidade, cap_capacidade_do_runtime,
+    cap_task_contract, cap_isolamento, cap_progresso, cap_observabilidade,
+    cap_capacidade_do_runtime,
     cap_resiliencia, cap_evals,
 ]
 
@@ -390,7 +463,8 @@ def markdown(caps: "list[Capacidade]") -> str:
         marca = " ✅" if c.atingiu else ""
         linhas.append(f"| {c.nome} | **{c.pct}%**{marca} | {len(c.tem)}/{c.total} | "
                       f"{c.meta}% | {falta} |")
-    media = round(sum(c.pct for c in caps) / len(caps))
+    avaliadas = [c for c in caps if not c.informativa]
+    media = round(sum(c.pct for c in avaliadas) / len(avaliadas)) if avaliadas else 0
     linhas += [f"| **média (só o mensurável)** | **{media}%** | | **90%** | |", ""]
     linhas.append(f"{len(NAO_MENSURAVEIS)} capacidades ficam **fora da média** por não serem "
                   "contáveis — declaradas em vez de receberem um número inventado:")
@@ -417,10 +491,15 @@ def main(argv: "list[str] | None" = None) -> int:
     print(f"{'capacidade':30} {'%':>5}  {'itens':>7}  meta   pendentes")
     print("-" * 92)
     for c in caps:
-        marca = "OK" if c.atingiu else "  "
         pend = ", ".join(c.falta[:3]) + ("…" if len(c.falta) > 3 else "")
+        if c.informativa:
+            valor = f"{c.pct:4}%" if c.total else "   —"
+            print(f"{c.nome:30} {valor} {len(c.tem):3}/{c.total:<3}  info   {c.nota[:44]}")
+            continue
+        marca = "OK" if c.atingiu else "  "
         print(f"{c.nome:30} {c.pct:4}% {len(c.tem):3}/{c.total:<3} {c.meta:4}% {marca}  {pend}")
-    media = round(sum(c.pct for c in caps) / len(caps))
+    avaliadas = [c for c in caps if not c.informativa]
+    media = round(sum(c.pct for c in avaliadas) / len(avaliadas)) if avaliadas else 0
     print("-" * 92)
     print(f"{'MEDIA (so o mensuravel)':30} {media:4}%")
     print(f"\n  {len(NAO_MENSURAVEIS)} capacidades ficam FORA por nao serem contaveis:")

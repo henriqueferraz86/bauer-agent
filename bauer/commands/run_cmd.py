@@ -282,7 +282,10 @@ def run(
 
     try:
         gov = run_governed(kernel, _rodar_loop, agent_id="cli.run", task=task,
-                           input={"endpoint": "bauer run", "workspace": str(ws)})
+                           input={"endpoint": "bauer run", "workspace": str(ws)},
+                           # Laço sem supervisão: ninguém entre os turnos.
+                           # Ver KernelRequest.autonomous.
+                           autonomous=True)
         if gov.blocked_before_start:
             motivo = gov.error or gov.policy_reason or gov.status
             console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {motivo}")

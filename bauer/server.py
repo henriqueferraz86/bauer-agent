@@ -2170,6 +2170,9 @@ def create_app(
             run, _early = _kernel.admit(_KReq(
                 task=req.message, session_id=sid, agent_id=request_agent_id,
                 input=run_input,
+                # /loop da web: o usuário dispara e sai. Ver
+                # KernelRequest.autonomous.
+                autonomous=True,
             ))
             if _early is not None:
                 if _early.status == "waiting_approval":

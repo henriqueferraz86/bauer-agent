@@ -27,6 +27,17 @@ class KernelRequest:
     max_retries: int = 0               # re-tentativas no MESMO executor (estado retrying)
     retry_backoff_s: float = 0.0       # espera entre tentativas (linear: n * backoff)
     fallback_adapters: list[str] = field(default_factory=list)  # executores alternativos, em ordem
+    #: True quando NINGUEM está entre os turnos — laço que roda até acabar
+    #: sozinho (`bauer run`, `/loop`, scheduler, dispatcher). É o eixo que
+    #: separa "o usuário vê cada passo" de "o agente decide sozinho por uma
+    #: hora", e por isso o único que faz sentido para exigir contrato de tarefa.
+    #:
+    #: DECLARADO na origem, não inferido do endpoint. Derivar de
+    #: `input["endpoint"]` erraria justamente o caso que mais importa: o `/loop`
+    #: disparado de dentro do `bauer agent` interativo é autônomo e nasce pelo
+    #: caminho interativo. Quem inicia um laço sem supervisão sabe disso; a
+    #: string do endpoint, não.
+    autonomous: bool = False
 
 
 @dataclass
