@@ -198,6 +198,12 @@ def python_exe(root: Path) -> str:
     Ordem: venv do PROJETO (a única que garante as dependências dele), depois
     ``sys.executable`` — que sempre existe e é caminho absoluto, então passa pelo
     ``which`` do verify_project.
+
+    LIMITE CONHECIDO: projeto SEM venv cujos testes precisem de dependências que
+    o interpretador do Bauer não tem falha por ImportError. Não é silencioso — o
+    erro aparece inteiro no motivo do gate, acionável ("instale X") —, mas é
+    falha de ambiente, não de código. Instalar por conta própria seria pior:
+    minutos por run e efeito colateral fora do escopo da tarefa.
     """
     for rel in (Path(".venv") / "bin" / "python",
                 Path(".venv") / "Scripts" / "python.exe",
