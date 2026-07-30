@@ -39,6 +39,18 @@ def _tools_mutantes() -> frozenset[str]:
     return MUTATING_TOOLS
 
 
+#: Artefatos que o PRÓPRIO Bauer (ou o Python) cria dentro do workspace. Sem
+#: ignorá-los, `git status` fica sujo já na primeira execução — o Kernel grava
+#: `memory/runtime/*.jsonl` ali — e o gate passaria a disparar em TODO run,
+#: inclusive turno de conversa. Medido: `?? memory/` num projeto recém-criado.
+_RUIDO = ("memory/", "__pycache__/", ".pytest_cache/", ".bauer/")
+
+
+def _e_ruido(caminho: str) -> bool:
+    c = caminho.replace("\\", "/").lstrip("./")
+    return any(p.rstrip("/") == c or c.startswith(p) or f"/{p}" in c for p in _RUIDO)
+
+
 def _git_sujo(workspace: Path) -> "bool | None":
     """True/False se for repo git; None quando não dá para saber por git."""
     try:
@@ -50,7 +62,11 @@ def _git_sujo(workspace: Path) -> "bool | None":
         return None
     if proc.returncode != 0:
         return None  # não é repo git (ou git ausente)
-    return bool(proc.stdout.strip())
+    for linha in proc.stdout.splitlines():
+        alvo = linha[3:].strip() if len(linha) > 3 else ""
+        if alvo and not _e_ruido(alvo):
+            return True
+    return False
 
 
 def houve_mudanca(workspace: Path, result: dict[str, Any]) -> bool:

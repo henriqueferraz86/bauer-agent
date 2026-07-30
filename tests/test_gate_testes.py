@@ -69,6 +69,52 @@ def test_repo_sujo_roda_testes(tmp_path):
     assert chamou == [1], "arquivo novo = mudança = testa"
 
 
+def test_artefatos_do_proprio_bauer_nao_contam_como_mudanca(tmp_path):
+    """O Kernel grava memory/runtime/*.jsonl DENTRO do workspace.
+
+    Sem ignorar isso, `git status` fica sujo já na primeira execução e o gate
+    dispararia em TODO run — inclusive turno de conversa, que é justamente o que
+    a regra "só quando mudou arquivo" existe para evitar. Medido num projeto
+    recém-criado: `?? memory/`.
+    """
+    repo = _git(tmp_path)
+    (repo / "memory" / "runtime").mkdir(parents=True)
+    (repo / "memory" / "runtime" / "runs.jsonl").write_text("{}\n", encoding="utf-8")
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "a.pyc").write_bytes(b"x")
+
+    chamou = []
+    g = TestsGate(repo, verify_fn=lambda *a, **k: chamou.append(1) or _Res(True))
+    r = g.check(request=None, result={})
+
+    assert r.passed and chamou == [], "só ruído do Bauer não é mudança de código"
+
+    # e uma mudança DE VERDADE junto do ruído continua contando
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    assert houve_mudanca(repo, {}) is True
+
+
+def test_plano_python_usa_python_m_pytest():
+    """`pytest` puro NÃO põe o cwd em sys.path; `python -m pytest` põe.
+
+    Num projeto de layout plano (módulo na raiz, teste importando ele) o
+    primeiro morre com ImportError na coleta. Medido contra projeto real: o gate
+    reprovava por erro de coleta, não pelo código — falso negativo que atingiria
+    todo projeto Python de layout plano.
+    """
+    import tempfile
+    from bauer.app_verify import plan_verification
+
+    raiz = Path(tempfile.mkdtemp())
+    (raiz / "tests").mkdir()
+    (raiz / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+
+    _stack, plano = plan_verification(raiz)
+    cmd = next(c for n, c in plano if n == "test")
+
+    assert cmd[:3] == ["python", "-m", "pytest"]
+
+
 def test_fora_de_repo_usa_tools_mutantes(tmp_path):
     """Sem git, a evidência vem das tools que o executor registrou."""
     (tmp_path / "x.py").write_text("z = 1\n", encoding="utf-8")

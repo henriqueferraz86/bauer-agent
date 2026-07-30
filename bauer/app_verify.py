@@ -231,7 +231,14 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
             or any(root.glob("*/test_*.py"))
         )
         if has_tests:
-            steps.append(("test", ["pytest", "-q"]))
+            # `python -m pytest`, NÃO `pytest`: o `-m` insere o cwd em sys.path,
+            # o executável direto não. Num projeto de layout plano (módulo na
+            # raiz, teste importando ele) `pytest -q` morre com ImportError
+            # enquanto `python -m pytest` passa. Medido no gate do S11 contra um
+            # projeto real: a verificação reprovava por erro de coleta, não pelo
+            # código — falso negativo, e do tipo que faria o gate rejeitar todo
+            # projeto Python de layout plano.
+            steps.append(("test", ["python", "-m", "pytest", "-q"]))
         else:
             # smoke mínimo: compila tudo (pega SyntaxError sem rodar nada).
             steps.append(("smoke", ["python", "-m", "compileall", "-q", "."]))
