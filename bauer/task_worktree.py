@@ -104,13 +104,30 @@ def create_worktree(workspace: str | Path, task_id: str) -> WorktreeInfo | None:
         return None
 
 
-def commit_worktree(wt: WorktreeInfo, message: str) -> CommitResult:
-    """Commita TODAS as mudanças do worktree. Sem mudanças → committed=False.
+#: Rastro do próprio Bauer dentro do workspace. Fora do commit por default: o
+#: artefato da tarefa é um diff para alguém REVISAR, e um diff onde 6 de 10
+#: arquivos são `.pyc` e `memory/runtime/*.jsonl` não se revisa — foi o que
+#: saiu do primeiro run isolado de verdade.
+EXCLUIR_PADRAO: tuple[str, ...] = (
+    "memory", "__pycache__", ".pytest_cache", ".bauer_worktrees", ".venv",
+)
+
+
+def commit_worktree(wt: WorktreeInfo, message: str,
+                    excluir: "tuple[str, ...] | None" = None) -> CommitResult:
+    """Commita as mudanças do worktree. Sem mudanças → committed=False.
 
     Retorna os arquivos alterados para o handoff da task (artefato = diff).
+
+    ``excluir`` são pathspecs mantidos FORA do commit (default:
+    :data:`EXCLUIR_PADRAO`). Passe ``()`` para commitar tudo.
     """
+    padroes = EXCLUIR_PADRAO if excluir is None else excluir
     try:
-        _git(["add", "-A"], wt.path)
+        # `:(exclude)x` e NÃO `:!x`: na forma curta o git lê os caracteres
+        # seguintes ao `!` como magic de pathspec, então `:!__pycache__` morre
+        # com "Unimplemented pathspec magic '_'". A forma longa é inequívoca.
+        _git(["add", "-A", "--", ".", *(f":(exclude){p}" for p in padroes)], wt.path)
         # Há algo staged?
         diff = _git(["diff", "--cached", "--name-only"], wt.path)
         changed = [ln.strip() for ln in diff.stdout.splitlines() if ln.strip()]

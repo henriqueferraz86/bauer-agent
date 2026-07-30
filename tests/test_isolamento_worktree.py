@@ -172,3 +172,42 @@ def test_run_id_sujo_nao_quebra_o_branch(tmp_path, run_id):
     repo = _repo(tmp_path)
     iso = preparar(repo, _contrato(isolation="worktree"), run_id=run_id)
     assert iso.isolado and " " not in iso.worktree.branch
+
+
+# ─── o artefato precisa ser revisável ────────────────────────────────────────
+
+
+def test_commit_deixa_de_fora_o_rastro_do_bauer(tmp_path):
+    """Saída do primeiro run isolado de verdade: 10 arquivos no artefato, 6
+    deles `.pyc` e `memory/runtime/*.jsonl`. Um diff assim não se revisa — e o
+    artefato da tarefa existe justamente para alguém revisar.
+    """
+    from bauer.task_worktree import commit_worktree
+
+    repo = _repo(tmp_path)
+    iso = preparar(repo, _contrato(isolation="worktree"), run_id="r1")
+    ws = iso.workspace
+    (ws / "feito.py").write_text("ok = 1\n", encoding="utf-8")
+    (ws / "__pycache__").mkdir()
+    (ws / "__pycache__" / "m.cpython-311.pyc").write_bytes(b"\x00")
+    (ws / "memory" / "runtime").mkdir(parents=True)
+    (ws / "memory" / "runtime" / "runs.jsonl").write_text("{}\n", encoding="utf-8")
+
+    commit = commit_worktree(iso.worktree, "teste")
+
+    assert commit.committed
+    assert commit.changed_files == ["feito.py"], commit.changed_files
+
+
+def test_excluir_vazio_commita_tudo(tmp_path):
+    """A exclusão é default, não imposição — o dispatcher pode querer tudo."""
+    from bauer.task_worktree import commit_worktree
+
+    repo = _repo(tmp_path)
+    iso = preparar(repo, _contrato(isolation="worktree"), run_id="r1")
+    (iso.workspace / "__pycache__").mkdir()
+    (iso.workspace / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+
+    commit = commit_worktree(iso.worktree, "tudo", excluir=())
+
+    assert commit.committed and any("pycache" in f for f in commit.changed_files)
