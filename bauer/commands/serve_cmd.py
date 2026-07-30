@@ -134,7 +134,7 @@ def serve(
 
     # Fallback de provider (429/5xx) — paridade com o CLI `bauer agent`.
     try:
-        _fallback_clients = build_fallback_clients(cfg)
+        _fallback_clients = build_fallback_clients(cfg, conjunto="local" if local else "default")
     except Exception:  # noqa: BLE001 — best-effort, nunca impede o serve de subir
         _fallback_clients = []
 

@@ -36,7 +36,7 @@ from bauer.model_router import (
 
 def _cfg(**kw):
     base = dict(provider="ollama", name="qwen3:14b", profiles={},
-                profiles_local={}, fallback_models=[])
+                profiles_local={}, fallback_models=[], fallback_models_local=[])
     base.update(kw)
     return N(model=N(**base))
 
@@ -96,18 +96,30 @@ def test_porta_2_modelo_padrao_na_nuvem():
     assert any("model.name" in x and "openrouter" in x for x in p)
 
 
-def test_porta_3_fallback_na_nuvem():
+def test_porta_3_fallback_LOCAL_na_nuvem():
     """A traiçoeira nº2, e a pior: um hiccup do Ollama manda o contexto para
     fora SEM uma linha na tela. O usuário nunca saberia."""
     cfg = _cfg(profiles_local={"fast": {"provider": "ollama", "model": "x"}},
-               fallback_models=[_fb("openrouter", "moonshotai/kimi-k3")])
+               fallback_models_local=[_fb("openrouter", "moonshotai/kimi-k3")])
     p = validar_execucao_local(cfg)
-    assert any("fallback" in x and "kimi-k3" in x for x in p)
+    assert any("fallback_models_local" in x and "kimi-k3" in x for x in p)
 
 
-def test_fallback_local_nao_reclama():
+def test_fallback_de_NUVEM_nao_bloqueia_o_local():
+    """O par existe para isto: `fallback_models` continua podendo apontar para
+    fora, porque no modo `--local` ele nem e lido. Sem o par, o usuario teria de
+    escolher entre ter `--local` e ter socorro grande no modo de nuvem."""
     cfg = _cfg(profiles_local={"fast": {"provider": "ollama", "model": "x"}},
-               fallback_models=[_fb("ollama", "qwen3:14b")])
+               fallback_models=[_fb("openrouter", "moonshotai/kimi-k3")],
+               fallback_models_local=[_fb("ollama", "qwen2.5:7b")])
+    assert validar_execucao_local(cfg) == []
+
+
+def test_sem_fallback_local_e_seguro():
+    """Lista local vazia = sem socorro nenhum no modo local. Seguro por
+    construcao: nao ha para onde vazar."""
+    cfg = _cfg(profiles_local={"fast": {"provider": "ollama", "model": "x"}},
+               fallback_models=[_fb("openrouter", "kimi")])
     assert validar_execucao_local(cfg) == []
 
 
@@ -115,7 +127,7 @@ def test_reporta_TODOS_os_problemas_de_uma_vez():
     """Um por vez faria o usuário rodar, corrigir, rodar, corrigir. A mensagem
     tem de dizer tudo que falta na primeira tentativa."""
     cfg = _cfg(provider="openrouter", name="glm",
-               fallback_models=[_fb("openrouter", "kimi")])
+               fallback_models_local=[_fb("openrouter", "kimi")])
     assert len(validar_execucao_local(cfg)) == 3
 
 
@@ -130,7 +142,8 @@ def test_config_real_do_usuario():
     # o `--local` responde "sai da máquina?", não "funciona?".
     assert not any("model.name" in x for x in p)
     assert any("profiles_local" in x for x in p)
-    assert any("fallback" in x for x in p)
+    # o fallback de NUVEM nao entra: no modo local ele nem e lido
+    assert not any("fallback" in x for x in p)
 
 
 def test_nao_verifica_se_o_modelo_FUNCIONA():
@@ -199,3 +212,39 @@ def test_serve_passa_o_conjunto_ao_app():
     fonte = inspect.getsource(
         __import__("bauer.commands.serve_cmd", fromlist=["x"]))
     assert 'profile_set="local" if local else "default"' in fonte
+
+
+# ─── o par de fallback: cada modo com o seu ──────────────────────────────────
+
+
+def test_construtor_le_a_lista_certa():
+    """`build_fallback_clients(conjunto="local")` tem de ler `fallback_models_local`.
+    Se lesse a de nuvem, a validacao passaria e o socorro sairia da maquina
+    assim mesmo — a flag mentiria no unico momento em que importa."""
+    import inspect
+
+    from bauer.commands._runtime import build_fallback_clients
+    from bauer.commands.agent_cmd import _build_fallback_clients
+
+    for fn in (build_fallback_clients, _build_fallback_clients):
+        assert "conjunto" in inspect.signature(fn).parameters
+        assert "fallback_models_local" in inspect.getsource(fn)
+
+
+def test_call_sites_passam_o_conjunto():
+    """Ter o parametro e nao passa-lo seria pior que nao ter: daria a impressao
+    de estar coberto."""
+    import inspect
+
+    for mod in ("agent_cmd", "serve_cmd"):
+        fonte = inspect.getsource(__import__(f"bauer.commands.{mod}", fromlist=["x"]))
+        assert 'conjunto="local" if local else "default"' in fonte, mod
+
+
+def test_schema_aceita_o_campo():
+    """`extra="forbid"`: sem o campo no schema, acrescenta-lo ao config.yaml
+    quebra o boot com ValidationError. Foi o que aconteceu ao adicionar
+    `profiles_local` antes de atualizar o Bauer da maquina."""
+    from bauer.config_loader import ModelSection
+
+    assert "fallback_models_local" in ModelSection.model_fields
