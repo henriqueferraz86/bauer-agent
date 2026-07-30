@@ -13,16 +13,23 @@ executam: testes, escopo, segredos, diff.
 
 from __future__ import annotations
 
-__all__ = ["ScopeGate", "TestsGate"]
+__all__ = ["AcceptanceGate", "DiffGate", "ScopeGate", "SecretsGate", "TestsGate"]
+
+#: import preguiçoso: um gate que não entra na composição não paga import.
+#: `secrets` puxa o scanner inteiro; `tests` puxa o app_verify.
+_MODULOS = {
+    "AcceptanceGate": "acceptance",
+    "DiffGate": "diff",
+    "ScopeGate": "scope",
+    "SecretsGate": "secrets",
+    "TestsGate": "tests",
+}
 
 
 def __getattr__(name: str):
-    if name == "TestsGate":
-        from .tests import TestsGate
+    modulo = _MODULOS.get(name)
+    if modulo is None:
+        raise AttributeError(name)
+    import importlib
 
-        return TestsGate
-    if name == "ScopeGate":
-        from .scope import ScopeGate
-
-        return ScopeGate
-    raise AttributeError(name)
+    return getattr(importlib.import_module(f".{modulo}", __name__), name)

@@ -732,6 +732,22 @@ def evaluator_from_config(cfg: Any, *, workspace: "str | None" = None):
         if contrato is not None and contrato.tem_escopo:
             from .gates import ScopeGate
             gates.append(ScopeGate(workspace, contrato))
+        if contrato is not None:
+            # Os dois que só fazem sentido com contrato — e por isso não
+            # precisam de flag: escrever um contrato de tarefa JÁ é o opt-in.
+            # O contrato é passado como SNAPSHOT (lido aqui, antes do run):
+            # reler do disco depois deixaria o agente reescrever o próprio
+            # critério de aprovação.
+            from .gates import AcceptanceGate, DiffGate
+            gates.append(DiffGate(workspace, contrato))
+            gates.append(AcceptanceGate(
+                contrato, workspace,
+                timeout_s=int(contrato.validation.timeout_seconds or 600)))
+        # SecretsGate vale SEMPRE que há workspace: segredo no diff não depende
+        # de a tarefa ter contrato, e é o único gate cujo custo de falso-negativo
+        # (credencial commitada) não tem desfazer.
+        from .gates import SecretsGate
+        gates.append(SecretsGate(workspace))
         if bool(getattr(ksec, "tests_gate", False)):
             from .gates import TestsGate
             # o contrato manda no teto de tempo — é ele que conhece a tarefa;

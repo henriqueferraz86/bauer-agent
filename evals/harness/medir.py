@@ -116,21 +116,47 @@ def cap_context_builder() -> Capacidade:
 
 
 def cap_validacao() -> Capacidade:
-    """Gates do plano §11 que existem de fato."""
-    gates = BAUER / "core" / "kernel" / "gates"
-    embutidos = _grep(r"class \w+Gate", onde=BAUER / "core" / "kernel")
-    tem, falta = [], []
-    for nome, marca in [("acceptance", "acceptance"), ("tests", "tests.py"),
-                        ("scope", "scope.py"), ("secrets", "secrets"),
-                        ("diff", "diff"), ("regression", "baseline.py"),
-                        ("non_empty_output", None), ("no_traceback", None)]:
-        if marca is None:
-            (tem if embutidos else falta).append(nome)
-        elif (gates / marca).exists() if marca.endswith(".py") else False:
-            tem.append(nome)
-        else:
-            falta.append(nome)
-    return Capacidade("Validacao deterministica", tem, falta)
+    """Gates do plano §11 que o Evaluator MONTA — não que existem no disco.
+
+    A versão anterior contava arquivo em `gates/`, e a condição estava escrita de
+    um jeito que `acceptance`, `secrets` e `diff` nunca podiam ser contados:
+    fazia `(gates / marca).exists() if marca.endswith(".py") else False`, e as
+    três marcas não terminavam em `.py`. Ficaram permanentemente em "falta".
+
+    Contar arquivo era o erro de fundo de qualquer forma — é o mesmo "existe vs.
+    está em uso" que já derrubou o 20/20 do Context Builder. Aqui a evidência é
+    o Evaluator montado de verdade, num workspace com contrato: o que aparece na
+    lista de gates é o que vai rodar antes de um run virar `completed`.
+    """
+    import tempfile
+    from types import SimpleNamespace
+
+    from bauer.core.kernel.kernel import evaluator_from_config
+
+    esperados = ["acceptance", "tests", "scope", "secrets", "diff",
+                 "regression", "non_empty_output", "no_traceback"]
+
+    cfg = SimpleNamespace(kernel=SimpleNamespace(
+        evaluator_enabled=True, tests_gate=True, tests_gate_timeout_s=600,
+        tests_gate_mode="regressao", max_replans=1))
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / ".bauer").mkdir()
+        (ws / ".bauer" / "task.yaml").write_text(
+            "objective: medicao\nscope:\n  allowed: ['src/']\n", encoding="utf-8")
+        ev = evaluator_from_config(cfg, workspace=str(ws))
+        montados = {getattr(g, "name", "") for g in getattr(ev, "gates", [])}
+
+    # `regression` não é gate próprio: é o MODO do de testes (ratchet de
+    # baseline). Conta pelo módulo, que é onde a lógica mora.
+    if (BAUER / "core" / "kernel" / "gates" / "baseline.py").exists():
+        montados.add("regression")
+
+    tem = [n for n in esperados if n in montados]
+    c = Capacidade("Validacao deterministica",
+                   tem, [n for n in esperados if n not in tem])
+    c.nota = "gates que o Evaluator monta com contrato — nao arquivos em disco"
+    return c
 
 
 def cap_isolamento() -> Capacidade:
