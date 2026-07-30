@@ -17,6 +17,7 @@ escritas, não os casos: o que precisa valer para qualquer entrada.
 
 from __future__ import annotations
 
+import os
 import shlex
 
 import pytest
@@ -81,6 +82,11 @@ def test_so_atribuicoes_nao_produz_comando():
 # ─── P3: caminho com espaço não pode virar entrada permissiva ────────────────
 
 
+@pytest.mark.skipif(os.name != "nt", reason=(
+    "Propriedade específica de Windows. O parser usa `Path`, que é NATIVA da "
+    "plataforma: no Linux `C:\\Program Files\\...` não é caminho — é um nome de "
+    "arquivo só, e `.stem` não separa por barra invertida. Rodar aqui mediria o "
+    "pathlib do Linux, não a propriedade. Caminho Windows só ocorre no Windows."))
 def test_caminho_com_espaco_nao_vira_entrada_generica(tmp_path):
     """O bug #2: `C:\\Program Files\\Python\\python.exe` sem aspas era partido no
     espaço e virava `program` — uma entrada que libera QUALQUER exe sob
