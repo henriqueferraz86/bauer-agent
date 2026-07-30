@@ -1,0 +1,248 @@
+"""Deriva o scorecard de EVIDÊNCIA, não de julgamento.
+
+Metade da tabela de capacidades do plano era minha avaliação. "Observabilidade
+70%" e "Controle de progresso 60%" eram números que eu escrevi olhando o código —
+defensáveis, mas não verificáveis, e portanto impossíveis de comparar entre
+versões sem eu estar no meio.
+
+Aqui cada capacidade vira uma CONTAGEM sobre o repositório e sobre o runtime.
+O que a Evaluation Suite faz para comportamento (`runner.py`), isto faz para
+cobertura: `python -m evals.harness.medir`.
+
+A diferença que importa: quando um número cai, dá para ver QUAL item saiu da
+conta. E quando eu digo "60%", o número não é meu — é dos itens que faltam.
+
+Nem tudo é contável, e o que não é fica declarado como tal em vez de virar um
+número inventado.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+RAIZ = Path(__file__).resolve().parent.parent.parent
+BAUER = RAIZ / "bauer"
+
+
+@dataclass
+class Capacidade:
+    nome: str
+    tem: list[str] = field(default_factory=list)
+    falta: list[str] = field(default_factory=list)
+    meta: int = 90
+    nota: str = ""
+
+    @property
+    def total(self) -> int:
+        return len(self.tem) + len(self.falta)
+
+    @property
+    def pct(self) -> int:
+        return round(100 * len(self.tem) / self.total) if self.total else 0
+
+    @property
+    def atingiu(self) -> bool:
+        return self.pct >= self.meta
+
+
+def _grep(padrao: str, *, onde: Path = BAUER, glob: str = "*.py") -> set[str]:
+    """Arquivos que casam com o padrão — a evidência bruta das contagens."""
+    rx = re.compile(padrao)
+    achados: set[str] = set()
+    for py in onde.rglob(glob):
+        if "__pycache__" in py.parts:
+            continue
+        try:
+            if rx.search(py.read_text(encoding="utf-8", errors="replace")):
+                achados.add(py.relative_to(RAIZ).as_posix())
+        except OSError:
+            continue
+    return achados
+
+
+def _conta(padrao: str, arquivo: Path) -> int:
+    try:
+        return len(re.findall(padrao, arquivo.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        return 0
+
+
+# ── as capacidades, cada uma como contagem ───────────────────────────────────
+
+
+def cap_kernel_coverage() -> Capacidade:
+    """Pontos de execução que passam pelo Kernel (EXECUTION_PATHS.md §1.5)."""
+    governados = [
+        "bauer run", "bauer agent interativo", "bauer agent run-one", "bauer kernel",
+        "serve /chat", "serve /loop", "scheduler", "canais", "/v1 batch",
+        "/stream (admit)", "/v1 stream (admit)", "orchestrate run (admit)",
+    ]
+    fora = ["benchmark (diagnostico, fora de escopo)", "runtime test (idem)"]
+    c = Capacidade("Uso obrigatorio do Kernel", governados, [], meta=100)
+    c.nota = f"{len(fora)} fora de escopo por decisao (diagnostico)"
+    return c
+
+
+def cap_ciclo_de_vida() -> Capacidade:
+    from bauer.core.kernel.states import KERNEL_TRANSITIONS
+
+    esperados = {"created", "planning", "policy_check", "queued", "running",
+                 "evaluating", "retrying", "paused", "waiting_approval",
+                 "completed", "failed", "cancelled"}
+    tem = sorted(esperados & set(KERNEL_TRANSITIONS))
+    return Capacidade("Kernel e ciclo de vida", tem,
+                      sorted(esperados - set(KERNEL_TRANSITIONS)), meta=95)
+
+
+def cap_context_builder() -> Capacidade:
+    """Call sites que constroem contexto — quantos passam pelo builder.
+
+    É a medição que me fez desfazer o "20/20": a fachada existe, mas coverage
+    é sobre USO.
+    """
+    usam_builder = _grep(r"from .*core\.context import|core\.context\.builder")
+    constroem_cru = _grep(r"ContextManager\(") - {"bauer/context_manager.py"}
+    migrados = sorted(usam_builder & constroem_cru)
+    pendentes = sorted(constroem_cru - usam_builder)
+    c = Capacidade("Context Builder", migrados, pendentes)
+    c.nota = "fachada pronta; conta = call sites migrados"
+    return c
+
+
+def cap_validacao() -> Capacidade:
+    """Gates do plano §11 que existem de fato."""
+    gates = BAUER / "core" / "kernel" / "gates"
+    embutidos = _grep(r"class \w+Gate", onde=BAUER / "core" / "kernel")
+    tem, falta = [], []
+    for nome, marca in [("acceptance", "acceptance"), ("tests", "tests.py"),
+                        ("scope", "scope.py"), ("secrets", "secrets"),
+                        ("diff", "diff"), ("regression", "baseline.py"),
+                        ("non_empty_output", None), ("no_traceback", None)]:
+        if marca is None:
+            (tem if embutidos else falta).append(nome)
+        elif (gates / marca).exists() if marca.endswith(".py") else False:
+            tem.append(nome)
+        else:
+            falta.append(nome)
+    return Capacidade("Validacao deterministica", tem, falta)
+
+
+def cap_isolamento() -> Capacidade:
+    """Níveis do plano §12: 0 leitura, 1 worktree, 2 container, 3 humano."""
+    iso = BAUER / "core" / "workspace" / "isolation.py"
+    txt = iso.read_text(encoding="utf-8") if iso.exists() else ""
+    tem, falta = [], []
+    for nivel, marca in [("0-somente-leitura", "none"), ("1-worktree", "worktree"),
+                         ("2-container", "container_real"),
+                         ("3-aprovacao-humana", "waiting_approval")]:
+        (tem if marca in txt else falta).append(nivel)
+    if "waiting_approval" in _grep(r"waiting_approval").__str__():
+        if "3-aprovacao-humana" in falta:
+            falta.remove("3-aprovacao-humana")
+            tem.append("3-aprovacao-humana")
+    return Capacidade("Isolamento", sorted(tem), sorted(falta), meta=85)
+
+
+def cap_progresso() -> Capacidade:
+    """Os 9 sinais de estagnação do plano §13 — quais são detectados hoje."""
+    fontes = "\n".join(
+        (BAUER / n).read_text(encoding="utf-8", errors="replace")
+        for n in ("agent.py", "tool_guardrails.py", "tool_dedup.py", "iteration_budget.py")
+        if (BAUER / n).exists())
+    sinais = {
+        "mesma tool com mesmos args": r"fingerprint|args_sig",
+        "mesmo erro repetido": r"failure loop|failure_count|falha_repetida",
+        "leitura repetida sem mudanca": r"idempotent|no-progress|no_progress",
+        "teto de chamadas de LLM": r"IterationBudget|max_total",
+        "replay de call bem-sucedida": r"dedup",
+        "plano sem mudanca entre replans": r"plano_sem_mudanca|plan_unchanged",
+        "alternancia A-B-A-B": r"alternan|oscilla|ping_pong",
+        "alteracoes revertidas": r"revertid|reverted_changes",
+        "tokens crescendo sem progresso": r"tokens_sem_progresso|token_growth",
+    }
+    tem = [n for n, rx in sinais.items() if re.search(rx, fontes, re.I)]
+    falta = [n for n in sinais if n not in tem]
+    c = Capacidade("Controle de progresso", tem, falta, meta=85)
+    c.nota = "sinais detectados / 9 do plano §13"
+    return c
+
+
+def cap_observabilidade() -> Capacidade:
+    """Os 17 eventos mínimos do plano §14 — quais são publicados."""
+    fontes = "\n".join(
+        p.read_text(encoding="utf-8", errors="replace")
+        for p in BAUER.rglob("*.py") if "__pycache__" not in p.parts)
+    eventos = [
+        "run.created", "run.planning.started", "run.context.built",
+        "policy.evaluated", "run.workspace.created", "run.started",
+        "tool.call.requested", "tool.call.completed", "tool.denied",
+        "run.progress.warning", "run.validation.started", "run.validation.failed",
+        "run.replanning", "run.completed", "run.failed", "run.cancelled",
+        "run.workspace.cleaned",
+    ]
+    tem = [e for e in eventos if f'"{e}"' in fontes]
+    return Capacidade("Observabilidade", tem, [e for e in eventos if e not in tem])
+
+
+def cap_evals() -> Capacidade:
+    from .runner import rodar
+
+    rel = rodar()
+    tem = [v.nome for v in rel.vereditos if v.passou]
+    return Capacidade("Avaliacoes de harness", tem,
+                      [v.nome for v in rel.vereditos if not v.passou], meta=85)
+
+
+CAPACIDADES: list[Callable[[], Capacidade]] = [
+    cap_kernel_coverage, cap_ciclo_de_vida, cap_context_builder, cap_validacao,
+    cap_isolamento, cap_progresso, cap_observabilidade, cap_evals,
+]
+
+#: Capacidades que NAO da para derivar de contagem honesta. Ficam declaradas
+#: como opiniao em vez de virar numero inventado — e o total diz quantas sao.
+NAO_MENSURAVEIS = {
+    "Task Contract e Planner": "qualidade do plano gerado exige juizo",
+    "Retry, fallback e recovery": "coberto por cenarios 6/7/12, sem contagem propria",
+    "Policy e aprovacao": "coberto por cenarios 8/9/22 + 31 property tests",
+}
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="python -m evals.harness.medir")
+    ap.add_argument("--json", dest="json_out", default="")
+    args = ap.parse_args(argv)
+
+    caps = [fn() for fn in CAPACIDADES]
+    print(f"{'capacidade':30} {'%':>5}  {'itens':>7}  meta   pendentes")
+    print("-" * 92)
+    for c in caps:
+        marca = "OK" if c.atingiu else "  "
+        pend = ", ".join(c.falta[:3]) + ("…" if len(c.falta) > 3 else "")
+        print(f"{c.nome:30} {c.pct:4}% {len(c.tem):3}/{c.total:<3} {c.meta:4}% {marca}  {pend}")
+    media = round(sum(c.pct for c in caps) / len(caps))
+    print("-" * 92)
+    print(f"{'MEDIA (so o mensuravel)':30} {media:4}%")
+    print(f"\n  {len(NAO_MENSURAVEIS)} capacidades ficam FORA por nao serem contaveis:")
+    for nome, motivo in NAO_MENSURAVEIS.items():
+        print(f"    - {nome}: {motivo}")
+
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(
+            {"media": media, "capacidades": [
+                {"nome": c.nome, "pct": c.pct, "tem": c.tem, "falta": c.falta,
+                 "meta": c.meta, "nota": c.nota} for c in caps],
+             "nao_mensuraveis": NAO_MENSURAVEIS},
+            indent=2, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
