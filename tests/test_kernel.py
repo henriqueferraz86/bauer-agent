@@ -685,8 +685,16 @@ def test_build_kernel_wires_evaluator_from_config(tmp_path):
     kernel = build_kernel(cfg, root=str(tmp_path / "rt"), workspace=str(tmp_path / "ws"))
     assert kernel.evaluator is not None and kernel.evaluator.max_replans == 3
 
-    cfg_off = BauerConfig(model=ModelSection(provider="ollama", name="x"))
-    kernel_off = build_kernel(cfg_off, root=str(tmp_path / "rt2"),
+    # Default LIGADO: sem gates, "o agente nao pode declarar sucesso sem
+    # validacao" (criterio 4) seria aspiracao. Desligar exige dizer.
+    cfg_default = BauerConfig(model=ModelSection(provider="ollama", name="x"))
+    kernel_default = build_kernel(cfg_default, root=str(tmp_path / "rt2"),
+                                  workspace=str(tmp_path / "ws"))
+    assert kernel_default.evaluator is not None
+
+    cfg_off = BauerConfig(model=ModelSection(provider="ollama", name="x"),
+                          kernel=KernelSection(evaluator_enabled=False))
+    kernel_off = build_kernel(cfg_off, root=str(tmp_path / "rt3"),
                               workspace=str(tmp_path / "ws"))
     assert kernel_off.evaluator is None
 
