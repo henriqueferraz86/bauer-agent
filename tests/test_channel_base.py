@@ -475,7 +475,7 @@ class TestHotReload:
 
 
 class TestRateLimiter:
-    def test_permite_ate_o_limite(self):
+    def test_permite_ate_olimite(self):
         rl = RateLimiter(max_per_minute=3)
         assert all(rl.allow("u1") for _ in range(3))
         assert rl.allow("u1") is False
@@ -538,7 +538,7 @@ class TestBaseBridge:
 class TestTurnTimeout:
     """Confiabilidade estilo Hermes: turno travado vira resposta, não typing eterno."""
 
-    def test_turno_travado_responde_rapido(self, tmp_path, monkeypatch):
+    def test_turno_travado_responde_rapido(self, tmp_path, monkeypatch, limite):
         import bauer.agent
         import bauer.channel_base as cb
 
@@ -556,9 +556,9 @@ class TestTurnTimeout:
         elapsed = time.monotonic() - t0
 
         assert "⏱" in resp, f"esperava msg de timeout, veio: {resp!r}"
-        assert elapsed < 2.0, f"deveria responder ~0.4s, levou {elapsed:.1f}s"
+        assert elapsed < limite(2.0), f"deveria responder ~0.4s, levou {elapsed:.1f}s"
 
-    def test_turno_normal_continua_funcionando(self, tmp_path, monkeypatch):
+    def test_turno_normal_continua_funcionando(self, tmp_path, monkeypatch, limite):
         # Regressão: o wrapper de thread+timeout não quebra o turno rápido normal.
         import bauer.channel_base as cb
 

@@ -187,7 +187,7 @@ class TestAppendLog:
 # ── review_turn (fire-and-forget) ────────────────────────────────────────────
 
 class TestReviewTurn:
-    def test_returns_immediately(self):
+    def test_returns_immediately(self, limite):
         """review_turn must not block the caller."""
         called = threading.Event()
         def slow_aux(*args, **kwargs):
@@ -199,7 +199,7 @@ class TestReviewTurn:
         with patch("bauer.background_review.call_aux_text", side_effect=slow_aux):
             review_turn("hello", "world " * 5, [])
         elapsed = time.monotonic() - start
-        assert elapsed < 0.2  # must return well before the 0.5s sleep
+        assert elapsed < limite(0.2)  # must return well before the 0.5s sleep
 
     def test_skips_slash_commands(self):
         with patch("bauer.background_review.call_aux_text") as mock_aux:

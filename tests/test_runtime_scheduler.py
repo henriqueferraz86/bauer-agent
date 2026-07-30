@@ -230,11 +230,23 @@ def test_max_runtime_interrupts_stuck_adapter(tmp_path: Path):
 
     root = tmp_path / "runtime"
 
+    import threading
+
+    # A propriedade a provar é "o tick voltou ENQUANTO o adapter ainda estava
+    # rodando" — não "voltou em menos de N segundos". A versão anterior media
+    # relógio (`elapsed < 2.0`) e virou flaky quando a suíte passou a rodar em
+    # paralelo (-n auto): num runner carregado o worker é desescalonado e os
+    # 200ms de deadline viraram 3.97s de wall clock, com o deadline funcionando
+    # perfeitamente. Eventos tornam a asserção determinística.
+    liberar = threading.Event()
+    adapter_terminou = threading.Event()
+
     class SlowAdapter:
         name = "fake"
 
         def run_agent(self, request):
-            _time.sleep(5)  # bem além do max_runtime_s do teste
+            liberar.wait(30)  # teto de segurança; o teste libera no finally
+            adapter_terminou.set()
             return {"status": "completed", "run_id": request["run_id"]}
 
     now = datetime(2026, 7, 8, 9, 0, tzinfo=UTC)
@@ -244,15 +256,19 @@ def test_max_runtime_interrupts_stuck_adapter(tmp_path: Path):
         "policy": {"max_runtime_s": 0.2},  # 200ms
     })
 
-    t0 = _time.monotonic()
-    result = scheduler.tick(now=now)[0]
-    elapsed = _time.monotonic() - t0
+    try:
+        result = scheduler.tick(now=now)[0]
 
-    assert result["status"] == "failed"
-    assert "max_runtime_s" in result["error"]
-    # não esperou os 5s do adapter — cortou perto do deadline
-    assert elapsed < 2.0
-    assert RunManager(root=root).list_runs()[0].status == "failed"
+        assert result["status"] == "failed"
+        assert "max_runtime_s" in result["error"]
+        assert not adapter_terminou.is_set(), (
+            "o tick voltou com o adapter AINDA bloqueado — é isso que prova que "
+            "o deadline cortou, em vez de esperar o adapter"
+        )
+        assert RunManager(root=root).list_runs()[0].status == "failed"
+    finally:
+        # sem isto a thread daemon do adapter fica 30s viva à toa
+        liberar.set()
 
 
 def test_fast_adapter_within_deadline_completes(tmp_path: Path):

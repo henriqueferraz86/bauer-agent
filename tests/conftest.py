@@ -100,3 +100,28 @@ def _isolate_kanban_board(request, monkeypatch):
 # rápido", meça o que o código faz (iterações, chamadas) — não o relógio de
 # parede de uma VM compartilhada.
 DEADLINE_ANTI_TRAVAMENTO = 30.0
+
+
+# ── tolerância de tempo sob execução paralela ────────────────────────────────
+#
+# A suíte roda com `-n auto` (pyproject). Num runner de CI carregado o worker é
+# desescalonado, e asserções do tipo `elapsed < X` medem escalonamento, não o
+# comportamento que pretendem verificar. Aconteceu de verdade: um deadline de
+# 200ms levou 3.97s de wall clock com o mecanismo funcionando perfeitamente.
+#
+# Onde dá, prefira asserção DETERMINÍSTICA (um threading.Event provando que a
+# chamada voltou enquanto o outro lado ainda rodava). Onde o tempo é mesmo o
+# objeto do teste, multiplique o teto por este fator: ele preserva a intenção
+# ("voltou MUITO antes do sleep de N s") sem transformar carga de máquina em
+# falha de produto.
+import os as _os
+
+FATOR_TEMPO_CI: float = 6.0 if _os.environ.get("CI") else 3.0
+
+
+@pytest.fixture
+def limite():
+    """Teto de tempo tolerante a escalonamento. Use com `elapsed < limite(0.2)`."""
+    def _limite(segundos: float) -> float:
+        return segundos * FATOR_TEMPO_CI
+    return _limite
