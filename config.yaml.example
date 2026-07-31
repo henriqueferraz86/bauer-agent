@@ -77,11 +77,55 @@ model:
   # think: false
 
   # Providers alternativos para fallback automático em caso de erro.
-  # Tentados em ordem quando o provider principal retorna 5xx, 429, ou timeout.
-  # Exemplo: se openai falha, tenta groq, depois ollama.
+  # [DEPRECADO] Use fallback_models — ignorado se aquele estiver preenchido.
   # fallback_providers:
   #   - groq
   #   - ollama
+
+  # Modelos alternativos, tentados EM ORDEM quando o principal retorna
+  # 5xx, 429 ou timeout. Atenção ao nome do campo: `name`, não `model`.
+  # fallback_models:
+  #   - { provider: groq,   name: llama-3.3-70b-versatile }
+  #   - { provider: ollama, name: qwen3-coder:30b }
+
+  # ---------------------------------------------------------------------------
+  # ROTEAMENTO POR TIER — escolhe o modelo conforme o tipo/complexidade do turno
+  # ---------------------------------------------------------------------------
+
+  # Liga o roteamento por turno. Opt-in: enquanto false, TODO turno usa
+  # model.name acima. Requer `profiles` preenchido.
+  # router_enabled: false
+
+  # Quatro tiers. Conversa curta vai para `fast`; tarefa de código para
+  # `coding`; raciocínio longo para `heavy`.
+  # profiles:
+  #   fast:     { provider: groq,       model: llama-3.1-8b-instant }
+  #   balanced: { provider: openrouter, model: meta-llama/llama-3.3-70b-instruct }
+  #   coding:   { provider: openrouter, model: qwen/qwen-2.5-coder-32b-instruct }
+  #   heavy:    { provider: anthropic,  model: claude-sonnet-4-5 }
+
+  # ---------------------------------------------------------------------------
+  # MODO LOCAL (`bauer agent --local` / `bauer serve --local`)
+  # ---------------------------------------------------------------------------
+  # Conjunto ALTERNATIVO, usado só com a flag --local. Existe separado de
+  # propósito: sem o par local, escolher rodar offline obrigaria a trocar
+  # também o roteamento e o fallback do modo normal. Com dois, nenhum perde.
+  #
+  # A flag RECUSA subir se qualquer coisa apontar para a nuvem — profiles_local
+  # ausente, model.provider não-local, ou fallback de nuvem. Não é "prefira o
+  # local": é garantia verificada na entrada.
+  #
+  # ⚠️ Nem todo modelo local chama ferramenta. Medido em 2026-07-30:
+  #    qwen2.5-coder:3b e :14b respondem TEXTO em vez de emitir tool_calls —
+  #    inúteis como tier de agente. qwen3-coder:30b e gpt-oss:20b funcionam.
+  #
+  # profiles_local:
+  #   fast:     { provider: ollama, model: qwen3-coder:30b }
+  #   balanced: { provider: ollama, model: qwen3-coder:30b }
+  #   coding:   { provider: ollama, model: qwen3-coder:30b }
+  #   heavy:    { provider: ollama, model: gpt-oss:20b }
+  # fallback_models_local:
+  #   - { provider: ollama, name: gpt-oss:20b }
 
 
 # =============================================================================
@@ -509,6 +553,46 @@ alibaba:
 
 
 # =============================================================================
+# KERNEL — execução governada (LIGADO POR PADRÃO)
+# =============================================================================
+# Toda execução passa pelo BauerKernel: estados persistidos, policy_check antes
+# de chamar o LLM, kill-switch central, eventos auditáveis e quality gates antes
+# de declarar `completed`.
+#
+# O default virou `true` porque `load_config` NÃO mescla o config do diretório
+# com o de $BAUER_HOME — o primeiro que existir vence. Com default `false`,
+# qualquer projeto com config.yaml próprio e sem seção `kernel:` desligava a
+# governança inteira sem ninguém notar.
+#
+# Esta seção inteira é opcional: omitir = usar os defaults abaixo.
+
+# kernel:
+#   # Desligar exige escrever isto explicitamente.
+#   enabled: true
+#
+#   # Roda os quality gates antes de concluir o run. Sem isso o Kernel governa
+#   # a ENTRADA (policy, budget, kill-switch) mas não julga o RESULTADO.
+#   evaluator_enabled: true
+#
+#   # Quantas vezes o veredito de um gate pode virar replan antes de desistir.
+#   max_replans: 1
+#
+#   # Gate de testes: só dispara quando o run mudou arquivo, e só o passo
+#   # `test` (nada de install/serve). Estourou o timeout, REPROVA — não dá
+#   # para afirmar que passou o que não terminou.
+#   tests_gate: true
+#   tests_gate_timeout_s: 600
+#   # regressao → reprova só falha NOVA (ratchet; dívida herdada é reportada)
+#   # estrito   → qualquer falha reprova
+#   tests_gate_mode: regressao
+#
+#   # Retry do executor e adapters alternativos.
+#   max_retries: 0
+#   retry_backoff_s: 1.0
+#   fallback_adapters: []
+
+
+# =============================================================================
 # RUNTIME — limites de recursos do processo
 # =============================================================================
 
@@ -649,7 +733,10 @@ web:
 # =============================================================================
 
 mcp:
-  servers:
+  # Mapa vazio, não `null`: `servers:` sem nada embaixo vira None e o boot
+  # falha com "Input should be a valid dictionary". Descomente um exemplo ou
+  # mantenha as chaves.
+  servers: {}
     # Exemplo: servidor MCP de filesystem
     # filesystem:
     #   command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]

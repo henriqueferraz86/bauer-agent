@@ -45,7 +45,8 @@ Roteiro de demo fechado: [docs/BETA_CLOSED.md](docs/BETA_CLOSED.md).
 
 - [⚡ Instalação](#instalação)
 - [⚙️ Configuração](#configuração)
-- [🧠 Modos de uso](#modos-de-uso) — chat · agent · App Factory · /loop · especialistas · skills
+- [🧠 Modos de uso](#modos-de-uso) — chat · agent · `--local` · App Factory · /loop · especialistas · skills
+- [🛡️ Governança da execução](#governança-da-execução) — Kernel · gates · `.bauer/task.yaml` · isolamento
 - [🌐 bauer serve](#bauer-serve)
 - [💬 bauer gateway — canais de chat](#bauer-gateway--canais-de-chat-telegram-discord-slack)
 - [🔌 bauer gateway-ws (Claw3D)](#bauer-gateway-ws-claw3d)
@@ -134,9 +135,14 @@ ESTIMADO** (`loop.max_cost_usd`, US$2). Sobrescreva por execução com
 `--max-minutes` / `--max-tool-calls` / `--max-cost`.
 
 > ⚠️ O **custo é uma estimativa** (depende dos dados de uso do provider e da
-> tabela de preços; modelos desconhecidos usam preço genérico). **Tempo e nº de
-> ferramentas são os guardrails confiáveis** — não trate o custo como teto de
-> fatura.
+> tabela de preços; modelos de nuvem desconhecidos usam preço genérico). **Tempo
+> e nº de ferramentas são os guardrails confiáveis** — não trate o custo como
+> teto de fatura. Quando o provider devolve o custo real (OpenRouter, por
+> exemplo), é ele que vale.
+>
+> **Provider local (Ollama, LM Studio) custa exatamente US$ 0** — nunca o preço
+> genérico. Antes disso, um laço 100% local acumulava custo fantasma e o
+> `--max-cost` abortava trabalho que não tinha gastado um centavo.
 
 Não confunda com os outros limites do config, que têm escopos diferentes:
 
@@ -248,7 +254,62 @@ bauer chat --no-intro                  # pula a tela de introdução
 bauer agent                  # inicia com o model do config.yaml
 bauer agent --resume         # retoma última sessão
 bauer agent --model gpt-4o   # força modelo específico
+bauer agent --local          # só modelos desta máquina (ver abaixo)
 ```
+
+### 🔒 `--local` — nada sai desta máquina
+
+`bauer agent --local` e `bauer serve --local` roteiam por tier usando
+**`model.profiles_local`** e **`model.fallback_models_local`** — e **recusam
+subir** se qualquer coisa (modelo padrão, fallback, um perfil) apontar para a
+nuvem, dizendo exatamente qual campo está errado.
+
+Não é "prefira o local". É uma garantia verificada na entrada: *quase local* não
+é o que ninguém quer dizer ao digitar `--local`.
+
+```yaml
+model:
+  provider: ollama            # o próprio model.name precisa ser local
+  name: qwen3-coder:30b       # senão --local recusa
+
+  router_enabled: true        # necessário para o roteamento por tier
+
+  # usados no modo normal (podem ser de nuvem)
+  profiles:
+    fast:     { provider: openrouter, model: ... }
+  fallback_models:
+    - { provider: openrouter, name: ... }
+
+  # usados com --local (obrigatoriamente ollama/lmstudio)
+  profiles_local:
+    fast:     { provider: ollama, model: qwen3-coder:30b }
+    balanced: { provider: ollama, model: qwen3-coder:30b }
+    coding:   { provider: ollama, model: qwen3-coder:30b }
+    heavy:    { provider: ollama, model: gpt-oss:20b }
+  fallback_models_local:
+    - { provider: ollama, name: gpt-oss:20b }   # atenção: `name`, não `model`
+```
+
+São **dois conjuntos separados** de propósito: sem o par local, escolher rodar
+offline obrigaria a trocar também a rede de segurança do modo normal. Com dois,
+nenhum modo perde.
+
+O que `--local` verifica antes de subir — as **três portas** para a nuvem:
+
+| Porta | Por que importa |
+|---|---|
+| `model.profiles_local` | sem ele não há tier local para rotear |
+| `model.name` / `model.provider` | caminhos sem roteamento por tier vão direto nele |
+| fallbacks | um hiccup do Ollama mandaria o contexto para fora **sem uma linha na tela** |
+
+> `router_enabled: false` não impede o `--local` de funcionar — a validação
+> continua valendo e nada sai da máquina. O que se perde é o roteamento por
+> tier: todo turno usa `model.name`.
+
+> ⚠️ **Nem todo modelo local chama ferramenta.** Medido em 2026-07-30:
+> `qwen2.5-coder:3b` e `qwen2.5-coder:14b` respondem *texto* em vez de emitir
+> `tool_calls` — inúteis como tier de agente. `qwen3-coder:30b` e `gpt-oss:20b`
+> funcionam. Teste o tier antes de confiar nele.
 
 ### 🎯 bauer agent run — agent especializado
 
@@ -423,6 +484,132 @@ Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
 | `/dispatch` · `/ops` | 🧩 Despacho de tarefas do kanban / operações |
 | `/thumbsup` · `/thumbsdown` | 👍👎 Avalia a última resposta (vira sinal de qualidade na memória) |
 | `/exit` | 👋 Encerra a sessão |
+
+---
+
+## 🛡️ Governança da execução
+
+Um agente autônomo entrega testes verdes e um sistema que não sobe. Já
+aconteceu aqui: um projeto gerado de ponta a ponta pelo Bauer passou em **32
+testes** carregando um stub literal (`for f in files: pass`), um worker em crash
+loop desde o primeiro segundo e um frontend devolvendo 502 em todo o `/api/`.
+Os três têm a mesma forma — **o código passa, o sistema não sobe** — e teste de
+unidade não vê nenhum deles.
+
+A camada de governança existe para isso: **o agente não pode declarar sucesso
+sem validação**.
+
+### O Kernel — ligado por padrão
+
+Toda execução passa pelo `BauerKernel`: estados persistidos, `policy_check`
+antes de qualquer chamada ao LLM, kill-switch central, eventos auditáveis e —
+com `evaluator_enabled` — quality gates antes de concluir.
+
+```yaml
+kernel:
+  enabled: true            # default; desligar exige escrever false
+  evaluator_enabled: true  # roda os gates antes de declarar completed
+```
+
+Estados de um run: `created → planning → policy_check → queued → running →
+evaluating → completed`. Se um gate reprova, o Kernel devolve o veredito como
+feedback e replaneja em vez de fechar o run — até `kernel.max_replans` vezes
+(default 1); esgotado, o run falha com o motivo do gate.
+
+```bash
+bauer runs list                 # runs recentes e seus estados
+bauer runs show <run_id>        # o run inteiro
+bauer runs events <run_id>      # a trilha de eventos
+bauer approvals list            # o que está esperando você
+```
+
+### Os gates
+
+| Gate | Reprova quando |
+|---|---|
+| `NonEmptyOutput` | o run termina sem produzir nada |
+| `NoTraceback` | a saída final carrega um traceback não tratado |
+| `Tests` | a suíte do projeto falha — **só dispara se o run mudou arquivo**, e só o passo `test`, com timeout obrigatório |
+| `Baseline` | apareceu falha **nova**; teste que já estava vermelho é reportado, não bloqueia (ratchet — quando o conjunto encolhe, aperta sozinho) |
+| `Scope` | o run alterou arquivo fora de `scope.allowed` / dentro de `scope.forbidden` |
+| `Secrets` | um segredo entrou nas linhas **adicionadas** do diff (reporta nome e 8 primeiros chars, nunca o valor) |
+| `Diff` | havia contrato de tarefa e **nada mudou** — o falso-sucesso mais barato de produzir |
+| `Acceptance` | os `validation.commands` do contrato não passam |
+
+Dois deles merecem destaque:
+
+- **`Acceptance`** é o que pegaria os três defeitos do começo desta seção: ele
+  roda comandos de verdade (`docker compose up`, `curl /api/health`), não
+  asserts.
+- **`Diff`** ataca o caso que nenhum outro gate vê: o agente escreve *"pronto,
+  implementei"* e o repositório está idêntico. O de testes não roda (não houve
+  mudança), o de escopo passa (não violou nada), e os gates de texto olham
+  justamente a resposta que mentiu.
+
+Quando um gate reprova, o motivo vira **`replan_feedback`**: o laço recebe a
+cauda do output e tenta corrigir. É o ciclo que transforma *"o agente disse que
+terminou"* em *"os testes passaram"*.
+
+### `.bauer/task.yaml` — o contrato da tarefa
+
+Opcional. Sem contrato, tudo funciona como antes; com contrato, o run ganha
+perímetro e critério de pronto.
+
+```yaml
+objective: "corrigir o cálculo de tamanho dos arquivos"
+
+scope:
+  allowed:   ["backend/app/services/", "tests/"]
+  forbidden: [".bauer/", ".github/"]
+
+acceptance_criteria:
+  - "a tela mostra o tamanho real, não 0 GB"
+
+validation:
+  commands:
+    - "docker compose up -d && sleep 20"
+    - "curl -fsS http://localhost:3000/api/health"
+    - "pytest tests/ -q"
+  timeout_seconds: 600
+  selection: related     # related | full
+
+isolation: worktree      # none | worktree | container
+risk_level: high         # low | medium | high | critical
+requires_approval: true  # o Kernel PARA e espera você
+```
+
+Dois detalhes que não são acidentais:
+
+- O `AcceptanceGate` usa o **snapshot** lido antes do run e nunca relê do disco.
+  Um agente que edita o próprio `task.yaml` no meio do caminho não escreve o
+  critério que vai julgá-lo. `scope.forbidden` incluir `.bauer/` é defesa em
+  profundidade, não a defesa principal.
+- `risk_level: high` ou `critical` faz o Kernel entrar em `waiting_approval` e
+  **parar**, esperando `bauer approvals approve`.
+
+### Isolamento — o que está e o que não está contido
+
+| Nível | Estado |
+|---|---|
+| `none` | trabalha na pasta atual |
+| `worktree` | ✅ git worktree por run — o trabalho é publicado no fim, ou preservado se falhar |
+| `container` | ❌ **não implementado** |
+| aprovação humana | ✅ `requires_approval` para o run antes de agir |
+
+> ⚠️ **O worktree protege o histórico do git, não a máquina.** O executor de
+> shell é allowlist **por binário**, não por caminho — e `python` precisa estar
+> liberado para o agente rodar testes. Medido: `python -c "open('/tmp/x','w')"`
+> escreve fora do workspace e `curl` sai para a rede. Se você vai deixar um run
+> autônomo solto numa máquina que importa, isso é o que você precisa saber.
+
+### Medindo
+
+```bash
+python -m evals.harness.medir     # scorecard das 11 capacidades
+```
+
+Estado em 2026-07-31: **98%**, 21 dos 22 indicadores. Detalhes, o que falta e as
+lições da campanha em [`docs/harness/`](docs/harness/README.md).
 
 ---
 

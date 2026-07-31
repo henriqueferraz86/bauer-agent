@@ -5,6 +5,63 @@ Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](htt
 
 ## [Unreleased]
 
+### Harness — execução autônoma governada (S7–S14)
+
+Campanha de 2026-07-29 a 07-31. Objetivo: o agente não pode declarar sucesso sem
+validação. Scorecard medido (`python -m evals.harness.medir`): **98%**, 21 dos 22
+indicadores. Detalhes em [docs/harness/](docs/harness/README.md).
+
+#### Mudança de comportamento
+- **`kernel.enabled` agora é `true` por default.** Toda execução passa pelo
+  `BauerKernel`. Motivo: `load_config` não mescla o config do diretório com o de
+  `$BAUER_HOME` — com default `false`, qualquer projeto com `config.yaml` próprio
+  e sem seção `kernel:` desligava a governança sem ninguém notar. Desligar agora
+  exige escrever `enabled: false`.
+- **Provider local (Ollama, LM Studio) custa US$ 0.** Antes caía no preço genérico
+  de nuvem ($1/$4 por 1M) e um laço 100% local abortava no `--max-cost` em ~94
+  rodadas sem ter gastado nada.
+
+#### Adicionado
+- **Gates de validação**: `Tests`, `Baseline` (ratchet — só falha nova reprova),
+  `Scope`, `Secrets` (só linhas adicionadas do diff), `Diff` (contrato sem
+  mudança = falso sucesso), `Acceptance` (roda `validation.commands` de verdade).
+  Reprovação vira `replan_feedback` e o laço tenta corrigir.
+- **`.bauer/task.yaml`** (`core/task/contract.py`): escopo, critérios de aceite,
+  comandos de validação, nível de isolamento, `risk_level` e `requires_approval`.
+  O `AcceptanceGate` usa o snapshot lido antes do run — agente que edita o próprio
+  contrato não escreve o critério que vai julgá-lo.
+- **Aprovação humana por contrato**: `risk_level` `high`/`critical` põe o run em
+  `waiting_approval` e o Kernel para.
+- **Isolamento por worktree** (`core/workspace/isolation.py`) — git worktree por
+  run, publicado no fim ou preservado em falha.
+- **`--local`** em `bauer agent` e `bauer serve`: rotea por `model.profiles_local`
+  / `model.fallback_models_local` e **recusa subir** se algo apontar para a nuvem,
+  nomeando o campo errado.
+- **Invariante de capacidade do runtime** (`runtime_capability.py`): modo de tool
+  calling (nativo × bridge) por provider, executado como invariante testada em vez
+  de inferido em vários pontos.
+- **Sinais de progresso** (`progress_signals.py`): estagnação detectada pelo hash
+  do patch, não pela lista de arquivos.
+- **Observabilidade**: 9 tipos de evento novos, `EVENT_TYPES` derivado do
+  `EventType` (acabou a lista duplicada escrita à mão) e `emitir()` tolerante a
+  bus ausente.
+- **Suíte de avaliações** (`evals/harness/`): `medir.py` (scorecard) + runner com
+  cenários de governança e resiliência.
+- **Catraca de custódia** (`tests/test_arquitetura_custodia_kernel.py`): mapa de
+  quem pode fechar run fora do Kernel, com contagem e motivo. Caminho novo falha;
+  quando a contagem cai, o teste também falha pedindo para travar o ganho.
+
+#### Corrigido
+- **Perda de trabalho no worktree**: `not commit.committed` confundia "nada em
+  stage" com "commit falhou", e o segundo caso APAGAVA o worktree com trabalho
+  dentro. Agora considera `changed_files`.
+- **Corrida no `/stream`**: o `fail_run` de timeout sobrescrevia um run que a
+  thread órfã já tinha concluído — o desfecho dependia de quem ganhasse a corrida.
+  `fail_run_se_nao_terminal()` respeita estado terminal.
+- **`bauer agent run-one`**: o tratador de erro quebrava ao reportar o erro
+  (`console.print(err=True)`); passou a usar um `Console` de stderr.
+- Barra de status e banner passaram a mostrar o modelo que de fato respondeu.
+
 ### Bauer OS (Sprint 24 — alpha)
 - Home unificada: rota `/` do desktop agrega agentes ativos, aprovações pendentes, tarefas agendadas com falha, budget do dia e últimas execuções (`GET /api/os/home`).
 - Command Palette com roteador de intenções por LLM: comandos livres ("abre o navegador e pesquisa docs do Agno") viram skill + inputs via slot `auxiliary.intent_router`, executados pelo SkillExecutor (policy → approval → eventos). Fallback determinístico preservado quando o LLM está indisponível.
