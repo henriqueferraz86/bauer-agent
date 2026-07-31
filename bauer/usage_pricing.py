@@ -87,12 +87,31 @@ _ANTHROPIC_CACHE_READ_RATIO = 0.10
 _ANTHROPIC_CACHE_CREATE_RATIO = 1.25
 
 
+#: Providers que rodam NA PRÓPRIA MÁQUINA e portanto não faturam nada. O
+#: fallback conservador de preço existe para modelo de nuvem fora da tabela —
+#: aplicá-lo a inferência local INVENTA dinheiro que ninguém gastou.
+_PROVIDERS_SEM_CUSTO = frozenset({"ollama", "lmstudio"})
+
+
 def get_price(provider: str, model: str) -> tuple[float, float]:
     """Return (input_per_1M, output_per_1M) USD for a provider/model pair.
 
-    Falls back to conservative defaults if the pair is not in the table.
-    Model name matching is case-sensitive and exact (not prefix).
+    Local providers are FREE — never the conservative fallback. Falls back to
+    conservative defaults only for cloud pairs missing from the table. Model
+    name matching is case-sensitive and exact (not prefix).
+
+    O zero para local não é cosmético. Medido em 2026-07-30, com o `--local`
+    recém-ligado: `ollama/qwen2.5:7b` caía no fallback ($1/$4 por 1M) e um turno
+    de 7k tokens "custava" $0.007. Duas consequências:
+
+    1. `--local` promete "nada sai desta máquina" e exibia um valor em dólar —
+       contradição que impede distinguir vazamento real de ruído de display.
+    2. Pior: `bauer run` PARA no `--max-cost`. Com custo fantasma, um laço
+       autônomo 100% local abortava por estouro de orçamento em ~94 rodadas sem
+       ter gastado um centavo. Guardrail disparando contra dinheiro imaginário.
     """
+    if provider.lower() in _PROVIDERS_SEM_CUSTO:
+        return (0.0, 0.0)
     return _PRICING.get(
         (provider.lower(), model),
         (_FALLBACK_INPUT_PER_1M, _FALLBACK_OUTPUT_PER_1M),
