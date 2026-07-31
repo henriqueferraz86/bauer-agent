@@ -182,6 +182,29 @@ class RunManager:
     def fail_run(self, run_id: str, error: str) -> Run:
         return self.update_run(run_id, status="failed", error=error)
 
+    def fail_run_se_nao_terminal(self, run_id: str, error: str) -> Run:
+        """`fail_run` que NÃO sobrescreve um desfecho já decidido.
+
+        `cancel_run` protege terminais desde sempre; `fail_run` não — e isso é
+        uma corrida real, não hipótese. No `/stream`, dois escritores mexem no
+        mesmo run: o gerador SSE falha por timeout e a thread órfã do turno
+        completa quando o trabalho de verdade acaba. Se a thread termina
+        PRIMEIRO, o timeout chega depois e apaga o `completed`.
+
+        Medido no CI (2026-07-30): o run acabou `failed` com o trabalho
+        concluído, e o mesmo teste passa na máquina local — porque ali a thread
+        perde a corrida. Desfecho decidido por escalonamento não é desfecho.
+
+        A regra: quem chega primeiro ao terminal decide. Falha que chega depois
+        de um resultado é ruído sobre um fato já estabelecido.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            raise KeyError(f"Run not found: {run_id}")
+        if run.status in TERMINAL_RUN_STATUSES:
+            return run
+        return self.update_run(run_id, status="failed", error=error)
+
     def cancel_run(self, run_id: str) -> Run:
         run = self.get_run(run_id)
         if run is None:

@@ -1987,7 +1987,11 @@ def create_app(
                         )
                         store.save(sid, ctx.messages)
                         session_manager.touch_session(sid, state={"last_run_id": run.id})
-                        run_manager.fail_run(run.id, "stream turn timeout")
+                        # NÃO sobrescreve terminal: a thread órfã do turno
+                        # pode ter completado o run antes deste timeout
+                        # chegar aqui. Ver fail_run_se_nao_terminal.
+                        run_manager.fail_run_se_nao_terminal(
+                            run.id, "stream turn timeout")
                         yield _sse(sid, event="done")
                         return
                     continue
@@ -2037,7 +2041,9 @@ def create_app(
                     )
                     store.save(sid, ctx.messages)
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
-                    run_manager.fail_run(run.id, "stream turn timeout")
+                    # idem: quem chegou primeiro ao terminal decide
+                    run_manager.fail_run_se_nao_terminal(
+                        run.id, "stream turn timeout")
                     yield _sse(sid, event="done")
                     return
 
