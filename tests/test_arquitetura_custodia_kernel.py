@@ -58,7 +58,12 @@ PERMITIDOS: dict[str, tuple[int, str]] = {
         "policy e budget antes de qualquer LLM.",
     ),
     "server.py": (
-        13,
+        # 13 -> 11 em 2026-07-30: os dois `fail_run` de timeout do /stream
+        # viraram `fail_run_se_nao_terminal`. Não é só renomear — o cru
+        # sobrescrevia um run que a thread órfã já tinha concluído, e o desfecho
+        # passava a depender de quem ganhasse a corrida. Apareceu como falha de
+        # CI que passava na máquina local.
+        11,
         "TRÊS grupos, todos rastreados em docs/harness/EXECUTION_PATHS.md:\n"
         " (a) ramos LEGADOS de /chat e /loop, usados só quando kernel.enabled "
         "     está desligado — o contrato da flag é o caminho antigo intocado;\n"
