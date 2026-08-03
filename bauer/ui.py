@@ -16,10 +16,26 @@ from rich.table import Table
 from rich.text import Text
 
 from . import theme
-from .theme import ACCENT, ACCENT_TEXT, BAD, DIM, FAINT, OK, WARN, WHITE  # noqa: F401
 
-#: Gradiente da MARCA (logo/boot). Conteúdo nunca usa.
-GRADIENT = theme.BRAND_GRADIENT
+#: Nomes de cor que este módulo reexporta. NÃO são importados por valor: o
+#: acento é trocável em tempo de execução (`theme.set_accent`, Ctrl+0), e
+#: `from .theme import ACCENT` congelaria a cor do import — foi exatamente
+#: assim que a `bottom_toolbar` e o `_PT_STYLE` ficaram para trás no F0.
+#: As funções abaixo leem `theme.X` na hora do render; este `__getattr__`
+#: (PEP 562) mantém `ui.ACCENT` vivo para quem lê de fora.
+_REEXPORTA = frozenset(
+    {"ACCENT", "ACCENT_TEXT", "ACCENT_DEEP", "BAD", "DIM", "FAINT", "OK", "WARN",
+     "WHITE", "CLOUD", "VOID", "SURFACE", "LINE"}
+)
+
+
+def __getattr__(name: str):
+    if name in _REEXPORTA:
+        return getattr(theme, name)
+    if name == "GRADIENT":
+        #: Gradiente da MARCA (logo/boot). Conteúdo nunca usa.
+        return theme.BRAND_GRADIENT
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # ── Glifos ──────────────────────────────────────────────────────────────────
 # Constantes mantidas para compatibilidade de import; os componentes resolvem
@@ -60,7 +76,11 @@ def _lerp(c1: str, c2: str, t: float) -> str:
     return f"#{round(r1+(r2-r1)*t):02x}{round(g1+(g2-g1)*t):02x}{round(b1+(b2-b1)*t):02x}"
 
 
-def grad_color(frac: float, stops: list[str] = GRADIENT) -> str:
+def grad_color(frac: float, stops: "list[str] | None" = None) -> str:
+    # `stops=GRADIENT` como default seria avaliado no IMPORT e congelaria o
+    # gradiente do acento inicial — com a troca em tempo de execução, o logo
+    # ficaria na cor antiga. None resolve na chamada.
+    stops = stops if stops is not None else theme.BRAND_GRADIENT
     if frac <= 0:
         return stops[0]
     if frac >= 1:
@@ -81,11 +101,11 @@ def response_header(model: str = "", cost: str = "", elapsed: str = "") -> Rende
     grid.add_column(justify="left")
     grid.add_column(justify="right")
     left = Text()
-    left.append(f"{_ACTIVE.bot} ", style=f"bold {ACCENT}")
+    left.append(f"{_ACTIVE.bot} ", style=f"bold {theme.ACCENT}")
     # ACCENT_TEXT no nome: 4.95:1 do acento puro é apertado para palavra em
     # corpo de texto; o glifo (não-texto) fica no acento cheio.
-    left.append("bauer", style=f"bold {ACCENT_TEXT}")
-    right = Text(" · ".join(meta_parts), style=DIM) if meta_parts else Text()
+    left.append("bauer", style=f"bold {theme.ACCENT_TEXT}")
+    right = Text(" · ".join(meta_parts), style=theme.DIM) if meta_parts else Text()
     grid.add_row(left, right)
     return grid
 
@@ -113,21 +133,21 @@ def tool_line(
     args e tempo esmaecidos. Calma e escaneável de cima a baixo.
     """
     glyph, gstyle = {
-        "ok": (_ACTIVE.ok, OK),
-        "fail": (_ACTIVE.fail, BAD),
-    }.get(status, (GLYPH_RUNNING, DIM))
+        "ok": (_ACTIVE.ok, theme.OK),
+        "fail": (_ACTIVE.fail, theme.BAD),
+    }.get(status, (GLYPH_RUNNING, theme.DIM))
 
     t = Text("  ")
-    t.append("[", style=FAINT)
+    t.append("[", style=theme.FAINT)
     t.append(glyph, style=gstyle)
-    t.append("] ", style=FAINT)
-    t.append(name.ljust(_NAME_COL), style=WHITE)
+    t.append("] ", style=theme.FAINT)
+    t.append(name.ljust(_NAME_COL), style=theme.WHITE)
     if arg_summary:
         t.append(" ")
-        t.append(arg_summary, style=DIM)
+        t.append(arg_summary, style=theme.DIM)
     el = _fmt_elapsed(elapsed_ms)
     if el:
-        t.append(f"  {el}", style=FAINT)
+        t.append(f"  {el}", style=theme.FAINT)
     return t
 
 
@@ -176,9 +196,9 @@ def approval_card(titulo: str, corpo: RenderableType) -> RenderableType:
 
     return Panel(
         corpo,
-        title=Text(titulo, style=f"bold {WARN}"),
+        title=Text(titulo, style=f"bold {theme.WARN}"),
         title_align="left",
-        border_style=FAINT,
+        border_style=theme.FAINT,
         box=box.ROUNDED,
         padding=(0, 1),
     )
@@ -195,18 +215,45 @@ def approval_options() -> Text:
         ("n", "negar", False),
     )):
         if i:
-            t.append(" · ", style=FAINT)
-        t.append(tecla, style=f"bold {ACCENT_TEXT if ensina else WHITE}")
-        t.append(f" {rotulo}", style=DIM if ensina else FAINT)
+            t.append(" · ", style=theme.FAINT)
+        t.append(tecla, style=f"bold {theme.ACCENT_TEXT if ensina else theme.WHITE}")
+        t.append(f" {rotulo}", style=theme.DIM if ensina else theme.FAINT)
     return t
+
+
+def accent_swatches(destaque: str = "") -> RenderableType:
+    """Catálogo de acentos, cada nome pintado NA PRÓPRIA COR.
+
+    Amostra em vez de lista: nome de cor não diz nada ("papaia" é o quê?), e o
+    ponto de existirem 17 acentos é escolher olhando.
+    """
+    g = active_glyphs()
+    grid = Table.grid(padding=(0, 2))
+    for _ in range(4):
+        grid.add_column()
+
+    celulas: list[Text] = []
+    for nome, cor in theme.PALETAS.items():
+        t = Text()
+        atual = nome == destaque
+        t.append(f"{g.seal_local if atual else ' '} ", style=cor)
+        t.append(f"{g.gauge_full * 3} ", style=cor)
+        t.append(nome, style=f"bold {cor}" if atual else theme.DIM)
+        celulas.append(t)
+
+    for i in range(0, len(celulas), 4):
+        linha = celulas[i:i + 4]
+        linha += [Text("")] * (4 - len(linha))
+        grid.add_row(*linha)
+    return grid
 
 
 def skill_line(name: str, score_pct: int) -> Text:
     """`  ↳ skill 'X' (80%)` — nota discreta de skill aplicada."""
     t = Text("  ")
-    t.append(f"{_ACTIVE.skill} ", style=ACCENT)
-    t.append(f"skill '{name}'", style=DIM)
-    t.append(f" ({score_pct}%)", style=FAINT)
+    t.append(f"{_ACTIVE.skill} ", style=theme.ACCENT)
+    t.append(f"skill '{name}'", style=theme.DIM)
+    t.append(f" ({score_pct}%)", style=theme.FAINT)
     return t
 
 
@@ -217,11 +264,11 @@ def context_gauge(pct: float, width: int = 10) -> Text:
     pct = max(0.0, min(1.0, pct))
     filled = round(pct * width)
     danger = pct > 0.85
-    fill_style = BAD if danger else ACCENT
-    pct_style = BAD if danger else DIM
+    fill_style = theme.BAD if danger else theme.ACCENT
+    pct_style = theme.BAD if danger else theme.DIM
     t = Text()
     t.append(_ACTIVE.gauge_full * filled, style=fill_style)
-    t.append(_ACTIVE.gauge_empty * (width - filled), style=FAINT)
+    t.append(_ACTIVE.gauge_empty * (width - filled), style=theme.FAINT)
     t.append(f" {int(pct*100)}%", style=pct_style)
     return t
 

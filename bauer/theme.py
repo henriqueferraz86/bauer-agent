@@ -10,18 +10,28 @@ daqui, e o CSS do SPA é GERADO daqui por `export_css_vars()` (com teste de
 divergência). Sem a geração, a divergência volta — foi exatamente assim que
 ela apareceu.
 
-Acento: **violeta elétrico** #a855f7. Contraste medido sobre o fundo #0a0c10:
+Acento padrão: **violeta elétrico** #a855f7 — mas TROCÁVEL em tempo de execução
+(`set_accent`, Ctrl+0 / `/theme`). As variantes de cada acento não são
+escolhidas à mão: `ACCENT_TEXT` é derivado clareando até cruzar 7:1 de
+contraste, e `ACCENT_DEEP` escurecendo. Assim adicionar um acento novo é uma
+linha, e o invariante de legibilidade vale para todos por construção — não por
+alguém ter conferido na hora de escrever.
 
-    ACCENT      #a855f7   4.95:1  → AA sem folga  · glifos, barras, molduras
-    ACCENT_TEXT #c084fc   7.41:1  → AAA           · palavra legível em acento
+Dois tons por causa da MARGEM, não da aprovação: o violeta puro passa em AA
+(4.95 contra piso 4.5) por 0.45 de sobra, e qualquer ajuste de fundo o derruba.
+Onde o acento carrega TEXTO que se lê, use ACCENT_TEXT.
 
-Existem dois tons por causa da margem, não da aprovação: o acento puro passa
-em AA (piso 4.5) por 0.45 de sobra — qualquer ajuste de fundo o derruba. Onde
-o acento carrega TEXTO que se lê, use ACCENT_TEXT, que tem folga de AAA.
+**Acento nunca invade cor de sinal.** OK/WARN/BAD significam resultado; se o
+acento ficar perto de um deles, o usuário deixa de distinguir "isto está vivo"
+de "isto deu errado". O piso é ΔE (CIE76) ≥ 25 contra cada sinal, garantido por
+teste. Consequência medida: **não cabe um âmbar/laranja saturado** — essa faixa
+de matiz é do WARN e do BAD (âmbar #f0a02a fica a ΔE 7.8 do WARN). Só versões
+claras da família quente entram (papaia, salmão).
 """
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -31,10 +41,6 @@ VOID = "#0a0c10"      # fundo do terminal/app
 SURFACE = "#12151b"   # painel elevado
 LINE = "#1e232c"      # moldura/divisor
 
-# ── Acento (violeta elétrico) ────────────────────────────────────────────────
-ACCENT = "#a855f7"       # o único neon — marca o que está VIVO
-ACCENT_TEXT = "#c084fc"  # variante legível p/ texto pequeno em acento
-ACCENT_DEEP = "#7c3aed"  # preenchimento/sombra do acento
 CLOUD = "#7aa2f7"        # turno saiu da máquina (troca o acento no selo)
 
 # ── Texto ────────────────────────────────────────────────────────────────────
@@ -47,9 +53,183 @@ OK = "#22c55e"
 WARN = "#f59e0b"
 BAD = "#ef4444"
 
-#: Gradiente EXCLUSIVO da marca (logo e boot). Nunca em conteúdo.
-BRAND_GRADIENT = [ACCENT_DEEP, ACCENT, "#e879f9"]
 
+# ── Contraste (a régua da paleta, não um palpite) ────────────────────────────
+# Definido ANTES das paletas: a derivação de ACCENT_TEXT roda no import e
+# precisa medir contraste para saber quando parar de clarear.
+def _rgb(hex_color: str) -> "tuple[int, int, int]":
+    h = hex_color.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _canal_linear(v: int) -> float:
+    """Canal sRGB (0-255) → linear, para luminância e Lab."""
+    c = v / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(hex_color: str) -> float:
+    r, g, b = _rgb(hex_color)
+    return (
+        0.2126 * _canal_linear(r)
+        + 0.7152 * _canal_linear(g)
+        + 0.0722 * _canal_linear(b)
+    )
+
+
+def contrast_ratio(fg: str, bg: str = VOID) -> float:
+    """Razão de contraste WCAG entre duas cores hex."""
+    a, b = _luminance(fg), _luminance(bg)
+    lighter, darker = max(a, b), min(a, b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+# ── Manipulação de cor (base da derivação) ──────────────────────────────────
+
+
+def _hex(r: float, g: float, b: float) -> str:
+    def _c(v: float) -> int:
+        return max(0, min(255, round(v)))
+
+    return f"#{_c(r):02x}{_c(g):02x}{_c(b):02x}"
+
+
+def _misturar(c1: str, c2: str, t: float) -> str:
+    """Interpola c1→c2 em `t` (0..1), em sRGB simples."""
+    r1, g1, b1 = _rgb(c1)
+    r2, g2, b2 = _rgb(c2)
+    return _hex(r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t)
+
+
+def _para_texto(accent: str, *, alvo: float = 7.0, fundo: str = VOID) -> str:
+    """Clareia o acento até cruzar `alvo` de contraste (AAA por padrão).
+
+    Busca em passos pequenos em vez de fórmula fechada: contraste WCAG não é
+    linear na mistura, e a busca é barata (roda uma vez por acento).
+    """
+    if contrast_ratio(accent, fundo) >= alvo:
+        return accent
+    for passo in range(1, 21):
+        candidato = _misturar(accent, "#ffffff", passo * 0.05)
+        if contrast_ratio(candidato, fundo) >= alvo:
+            return candidato
+    return "#ffffff"
+
+
+def _profundo(accent: str, *, fator: float = 0.35, fundo: str = VOID) -> str:
+    """Escurece o acento na direção do fundo (preenchimento/sombra)."""
+    return _misturar(accent, fundo, fator)
+
+
+# ── Distância perceptual (a régua que protege as cores de sinal) ────────────
+def _lab(hex_color: str) -> "tuple[float, float, float]":
+    r, g, b = (_canal_linear(v) for v in _rgb(hex_color))
+    x = r * 0.4124 + g * 0.3576 + b * 0.1805
+    y = r * 0.2126 + g * 0.7152 + b * 0.0722
+    z = r * 0.0193 + g * 0.1192 + b * 0.9505
+
+    def _f(t: float) -> float:
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+
+    fx, fy, fz = _f(x / 0.95047), _f(y / 1.0), _f(z / 1.08883)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def delta_e(c1: str, c2: str) -> float:
+    """Distância perceptual CIE76 entre duas cores.
+
+    Serve para uma pergunta só: este acento é confundível com uma cor de
+    sinal? Abaixo de ~25 o usuário deixa de distinguir "vivo" de "deu errado".
+    """
+    l1, a1, b1 = _lab(c1)
+    l2, a2, b2 = _lab(c2)
+    return math.sqrt((l1 - l2) ** 2 + (a1 - a2) ** 2 + (b1 - b2) ** 2)
+
+
+#: Piso de distância entre acento e QUALQUER cor de sinal. Medido: âmbar
+#: #f0a02a fica a 7.8 do WARN — indistinguível na prática.
+DELTA_E_MINIMO = 25.0
+
+#: Acentos disponíveis. Adicionar um é uma linha: nome → hex. As variantes
+#: (texto/profundo) são derivadas, e o teste garante contraste e distância dos
+#: sinais — um acento que não passa REPROVA a suíte em vez de virar bug visual.
+PALETAS: "dict[str, str]" = {
+    "violeta":   "#a855f7",   # padrão
+    "lavanda":   "#c4b5fd",
+    "indigo":    "#818cf8",
+    "azul":      "#60a5fa",
+    "ceu":       "#38bdf8",
+    "ciano":     "#22d3ee",
+    "turquesa":  "#2dd4bf",
+    "teal":      "#00d4aa",   # o Bauer clássico, antes do plano 028
+    "menta":     "#6ee7b7",
+    "lima":      "#b8ff2f",
+    "ouro":      "#fde047",
+    "papaia":    "#ffab70",
+    "salmao":    "#ff8a65",
+    "pessego":   "#fca5a5",
+    "rosa":      "#f472b6",
+    "magenta":   "#e879f9",
+    "fucsia":    "#d946ef",
+}
+
+#: Acento em uso. Trocado por `set_accent`; lido por todo mundo como
+#: `theme.ACCENT` (atributo de módulo, resolvido na hora do render) — por isso
+#: a troca vale na tela inteira sem ninguém precisar se re-registrar.
+ACCENT_NAME = "violeta"
+ACCENT = PALETAS[ACCENT_NAME]
+ACCENT_TEXT = _para_texto(ACCENT)
+ACCENT_DEEP = _profundo(ACCENT)
+
+
+def _gradiente_da_marca(accent: str) -> "list[str]":
+    """Gradiente do logo/boot, derivado do acento — profundo → acento → claro.
+
+    Derivado e não fixo: um gradiente violeta com o acento em lima faria o
+    logo brigar com o resto da tela.
+    """
+    return [_profundo(accent, fator=0.45), accent, _para_texto(accent, alvo=9.0)]
+
+
+BRAND_GRADIENT = _gradiente_da_marca(ACCENT)
+
+
+def accent_names() -> "list[str]":
+    """Nomes dos acentos, na ordem em que o ciclo (Ctrl+0) percorre."""
+    return list(PALETAS)
+
+
+def set_accent(nome: str) -> str:
+    """Troca o acento da sessão inteira. Devolve o nome aplicado.
+
+    Reatribui os ATRIBUTOS DO MÓDULO: quem lê `theme.ACCENT` na hora do render
+    (a maioria do kit) muda de cor sem se re-registrar em nada. Quem capturou o
+    valor no import não muda — por isso os consumidores foram convertidos para
+    leitura tardia junto com esta função (ver plano 028; foi assim que a
+    `bottom_toolbar` e o `_PT_STYLE` ficaram para trás no F0).
+
+    Levanta KeyError se o nome não existe — errar o nome em silêncio deixaria o
+    usuário achando que a tecla não funciona.
+    """
+    global ACCENT_NAME, ACCENT, ACCENT_TEXT, ACCENT_DEEP, BRAND_GRADIENT
+
+    if nome not in PALETAS:
+        raise KeyError(
+            f"acento desconhecido: {nome!r}. Disponíveis: {', '.join(PALETAS)}"
+        )
+    ACCENT_NAME = nome
+    ACCENT = PALETAS[nome]
+    ACCENT_TEXT = _para_texto(ACCENT)
+    ACCENT_DEEP = _profundo(ACCENT)
+    BRAND_GRADIENT = _gradiente_da_marca(ACCENT)
+    _sincronizar_tokens()
+    return nome
+
+
+def next_accent() -> str:
+    """Avança para o próximo acento do ciclo. Devolve o nome aplicado."""
+    nomes = accent_names()
+    return set_accent(nomes[(nomes.index(ACCENT_NAME) + 1) % len(nomes)])
 
 # ── Glifos (com queda para ASCII) ────────────────────────────────────────────
 @dataclass(frozen=True)
@@ -123,41 +303,40 @@ def glyphs(env: "dict[str, str] | None" = None, *, stream=None) -> Glyphs:
     return UNICODE if unicode_enabled(env, stream=stream) else ASCII
 
 
-# ── Contraste (a régua da paleta, não um palpite) ────────────────────────────
-def _luminance(hex_color: str) -> float:
-    def _chan(v: int) -> float:
-        c = v / 255.0
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return 0.2126 * _chan(r) + 0.7152 * _chan(g) + 0.0722 * _chan(b)
-
-
-def contrast_ratio(fg: str, bg: str = VOID) -> float:
-    """Razão de contraste WCAG entre duas cores hex."""
-    a, b = _luminance(fg), _luminance(bg)
-    lighter, darker = max(a, b), min(a, b)
-    return (lighter + 0.05) / (darker + 0.05)
-
-
 # ── Ponte para o SPA ─────────────────────────────────────────────────────────
-#: Nome do token → valor. Ordem preservada é a ordem do CSS gerado.
-TOKENS: "dict[str, str]" = {
-    "bauer-void": VOID,
-    "bauer-surface": SURFACE,
-    "bauer-line": LINE,
-    "bauer-accent": ACCENT,
-    "bauer-accent-text": ACCENT_TEXT,
-    "bauer-accent-deep": ACCENT_DEEP,
-    "bauer-cloud": CLOUD,
-    "bauer-text": WHITE,
-    "bauer-dim": DIM,
-    "bauer-faint": FAINT,
-    "bauer-ok": OK,
-    "bauer-warn": WARN,
-    "bauer-bad": BAD,
-}
+def _montar_tokens() -> "dict[str, str]":
+    """Nome do token → valor. Ordem preservada é a ordem do CSS gerado."""
+    return {
+        "bauer-void": VOID,
+        "bauer-surface": SURFACE,
+        "bauer-line": LINE,
+        "bauer-accent": ACCENT,
+        "bauer-accent-text": ACCENT_TEXT,
+        "bauer-accent-deep": ACCENT_DEEP,
+        "bauer-cloud": CLOUD,
+        "bauer-text": WHITE,
+        "bauer-dim": DIM,
+        "bauer-faint": FAINT,
+        "bauer-ok": OK,
+        "bauer-warn": WARN,
+        "bauer-bad": BAD,
+    }
+
+
+#: Tokens do acento em uso. Recalculado por `set_accent` — o CSS gerado é
+#: sempre do acento ATUAL (o arquivo commitado é o do padrão, ver o teste de
+#: divergência, que fixa o acento antes de comparar).
+TOKENS: "dict[str, str]" = _montar_tokens()
+
+
+def _sincronizar_tokens() -> None:
+    """Reconstrói TOKENS no lugar após uma troca de acento.
+
+    Muta o dict existente em vez de rebindar o nome: código que fez
+    `from .theme import TOKENS` continua vendo os valores novos.
+    """
+    TOKENS.clear()
+    TOKENS.update(_montar_tokens())
 
 #: Aliases que o SPA já usa hoje (styles.css) apontando para os tokens novos.
 #: Mantê-los evita reescrever 488 linhas de CSS de uma vez — a migração das

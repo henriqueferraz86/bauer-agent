@@ -17,9 +17,24 @@ from bauer import theme
 _REPO = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _acento_padrao():
+    """Restaura o acento padrão em volta de CADA teste.
+
+    O acento é estado global de módulo e agora é trocável em tempo de execução;
+    sem isto, um teste que troca a cor contamina os outros — e com `-n auto` a
+    ordem varia, então o flake seria intermitente (o pior tipo).
+    """
+    anterior = theme.ACCENT_NAME
+    theme.set_accent("violeta")
+    yield
+    theme.set_accent(anterior)
+
+
 class TestPonteCSS:
     def test_css_gerado_esta_sincronizado(self):
-        """desktop/src/tokens.css tem que ser byte a byte o que o Python gera."""
+        """desktop/src/tokens.css tem que ser byte a byte o que o Python gera
+        COM O ACENTO PADRÃO (o fixture acima garante)."""
         css = _REPO / theme.CSS_PATH
         assert css.exists(), f"rode: python -m bauer.theme  (falta {theme.CSS_PATH})"
         assert css.read_text(encoding="utf-8") == theme.export_css_vars(), (
@@ -41,6 +56,92 @@ class TestPonteCSS:
         não-ASCII aqui só cria chance de mojibake (e o gerador já quebrou
         uma vez por causa disso, no cp1252 do console Windows)."""
         theme.export_css_vars().encode("ascii")
+
+
+class TestCatalogoDeAcentos:
+    """Todo acento do catálogo obedece aos DOIS invariantes, por construção.
+
+    Um acento novo que não passe reprova a suíte em vez de virar bug visual —
+    é a diferença entre a régua estar no código e estar na cabeça de quem
+    escolheu a cor.
+    """
+
+    def test_todo_acento_e_legivel(self):
+        for nome in theme.accent_names():
+            theme.set_accent(nome)
+            assert theme.contrast_ratio(theme.ACCENT) >= 4.5, f"{nome}: acento ilegível"
+            assert theme.contrast_ratio(theme.ACCENT_TEXT) >= 7.0, f"{nome}: texto sem AAA"
+
+    def test_nenhum_acento_invade_cor_de_sinal(self):
+        """OK/WARN/BAD significam RESULTADO. Acento perto de um deles faz o
+        usuário confundir 'isto está vivo' com 'isto deu errado'."""
+        for nome in theme.accent_names():
+            theme.set_accent(nome)
+            for rotulo, sinal in (("OK", theme.OK), ("WARN", theme.WARN), ("BAD", theme.BAD)):
+                d = theme.delta_e(theme.ACCENT, sinal)
+                assert d >= theme.DELTA_E_MINIMO, (
+                    f"acento '{nome}' fica a ΔE {d:.1f} do {rotulo} — confundível"
+                )
+
+    def test_ambar_saturado_seria_reprovado(self):
+        """Documenta a consequência medida: a faixa quente saturada pertence ao
+        WARN/BAD. O âmbar #f0a02a (quase escolhido como acento) fica a ΔE 7.8
+        do WARN — por isso NÃO está no catálogo."""
+        assert theme.delta_e("#f0a02a", theme.WARN) < theme.DELTA_E_MINIMO
+
+    def test_variantes_sao_derivadas_nao_escolhidas(self):
+        for nome in theme.accent_names():
+            theme.set_accent(nome)
+            assert theme.ACCENT_TEXT == theme._para_texto(theme.ACCENT)
+            assert theme.ACCENT_DEEP == theme._profundo(theme.ACCENT)
+
+    def test_gradiente_da_marca_segue_o_acento(self):
+        """Logo violeta com a tela em lima brigaria com o resto."""
+        theme.set_accent("lima")
+        assert theme.ACCENT in theme.BRAND_GRADIENT
+
+
+class TestTrocaDeAcento:
+    def test_set_accent_muda_tudo(self):
+        theme.set_accent("teal")
+        assert theme.ACCENT_NAME == "teal"
+        assert theme.ACCENT == theme.PALETAS["teal"]
+
+    def test_nome_invalido_levanta(self):
+        """Erro em silêncio faria o usuário achar que a tecla não funciona."""
+        with pytest.raises(KeyError):
+            theme.set_accent("cor-que-nao-existe")
+
+    def test_next_accent_cicla_e_da_a_volta(self):
+        nomes = theme.accent_names()
+        theme.set_accent(nomes[-1])
+        assert theme.next_accent() == nomes[0]
+
+    def test_tokens_acompanham_a_troca(self):
+        """O dict é MUTADO no lugar: quem fez `from theme import TOKENS`
+        continua vendo os valores novos."""
+        tokens = theme.TOKENS
+        theme.set_accent("rosa")
+        assert tokens["bauer-accent"] == theme.PALETAS["rosa"]
+        assert tokens is theme.TOKENS
+
+    def test_consumidores_acompanham_a_troca(self):
+        """O ponto todo: ninguém pode ter congelado a cor no import."""
+        from bauer import ascii_intro, indicators, ui
+
+        theme.set_accent("ciano")
+        assert ui.ACCENT == theme.PALETAS["ciano"]
+        assert indicators.ACCENT == theme.PALETAS["ciano"]
+        assert ascii_intro._GRADIENT == theme.BRAND_GRADIENT
+
+    def test_render_usa_a_cor_nova(self):
+        """Prova de ponta: o texto renderizado carrega a cor trocada."""
+        from bauer import ui
+
+        theme.set_accent("lima")
+        console_out = ui.render_str(ui.tool_line("x", status="run"), 40)
+        assert console_out  # renderizou sem erro
+        assert ui.ACCENT == "#b8ff2f"
 
 
 class TestContraste:
@@ -133,7 +234,8 @@ class TestFonteUnica:
         uma segunda paleta. Vale para o kit visual, não para o resto do repo."""
         import re
 
-        alvos = ["ui.py", "ascii_intro.py", "indicators.py"]
+        alvos = ["ui.py", "ascii_intro.py", "indicators.py", "ui_hud.py",
+                 "ui_frame.py", "ui_diff.py", "ui_stream.py"]
         permitidos = {"#a855f7"}  # nenhum esperado hoje; a lista existe p/ exceção consciente
         for nome in alvos:
             texto = (_REPO / "bauer" / nome).read_text(encoding="utf-8")
@@ -141,3 +243,48 @@ class TestFonteUnica:
             assert not (achados - permitidos), (
                 f"{nome} tem cor literal {achados - permitidos} — importe de bauer/theme.py"
             )
+
+    def test_estilo_do_prompt_toolkit_vem_do_tema(self):
+        """O vazamento que passou despercebido no F0: `_PT_STYLE` no agent.py
+        tinha uma paleta INTEIRA hardcoded (Catppuccin no menu de completions,
+        o teal antigo na marca, `ansicyan` no `❯`). O prompt onde o usuário
+        digita era, literalmente, o único lugar que nunca migrou — porque o
+        teste acima cobria só três arquivos."""
+        import ast
+        import inspect
+        import textwrap
+
+        from bauer import agent
+
+        # Inspeciona o CÓDIGO, não a fonte bruta: a docstring da função CITA as
+        # cores antigas ao explicar o que substituiu, e casar com ela testaria
+        # a redação do comentário em vez do comportamento.
+        func = ast.parse(textwrap.dedent(inspect.getsource(agent._build_pt_style))).body[0]
+        corpo = func.body
+        if (corpo and isinstance(corpo[0], ast.Expr)
+                and isinstance(getattr(corpo[0], "value", None), ast.Constant)
+                and isinstance(corpo[0].value.value, str)):
+            corpo = corpo[1:]
+
+        literais = [
+            n.value.lower()
+            for no in corpo
+            for n in ast.walk(no)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        ]
+        for proibido in ("#00d4aa", "#3b82f6", "#313244", "#cdd6f4", "#89b4fa",
+                         "#1e1e2e", "#6c7086", "ansicyan"):
+            assert not any(proibido in lit for lit in literais), (
+                f"_build_pt_style ainda tem {proibido} literal"
+            )
+
+    def test_estilo_do_prompt_acompanha_a_troca(self):
+        """Estilo DINÂMICO: trocar o acento tem que mudar o prompt na hora,
+        sem recriar a PromptSession."""
+        from bauer import agent
+
+        theme.set_accent("violeta")
+        antes = agent._build_pt_style().class_names_and_attrs
+        theme.set_accent("lima")
+        depois = agent._build_pt_style().class_names_and_attrs
+        assert antes != depois

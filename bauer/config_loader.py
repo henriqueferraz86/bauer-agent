@@ -87,6 +87,10 @@ class AgentSection(_StrictSection):
     # só para terminal interativo — sem TTY o caminho continua sendo a
     # impressão única no fim. false = comportamento anterior. default True.
     stream_response: bool = True
+    # Cor de acento da interface (plano 028). Nome de `theme.PALETAS` — ex.:
+    # "violeta" (padrão), "teal" (o Bauer clássico), "lima", "ouro"…
+    # Trocável ao vivo com Ctrl+0 ou `/theme`; a escolha é gravada aqui.
+    accent: str = "violeta"
     # Backend do task-store (achado #10 da auditoria 023). "markdown" = o
     # TASKS.md legado (WorkspaceManager); "sqlite" = o kernel kanban_db
     # (WorkspaceManagerSqlite), que o swarm/specify/boards já usam.

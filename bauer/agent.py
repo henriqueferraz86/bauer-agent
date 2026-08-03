@@ -48,6 +48,7 @@ _EXIT_CMDS = {"/exit", "/quit", "/sair"}
 _CLEAR_CMDS = {"/clear", "/limpar"}
 _STATUS_CMDS = {"/status", "/stats"}
 _MODEL_CMDS = {"/model", "/modelo"}
+_THEME_CMDS = {"/theme", "/tema", "/cor"}
 _SESSIONS_CMDS = {"/sessions", "/sessoes"}
 _SPEC_CMDS = {"/spec", "/specs"}
 _KANBAN_CMDS = {"/kanban", "/board", "/tasks", "/task"}   # bare /task → board
@@ -77,6 +78,7 @@ _SLASH_BASE = [
     "/clear",
     "/status",
     "/model",
+    "/theme",
     "/listen",
     "/listen loop",
     "/sessions",
@@ -119,6 +121,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/clear":          "limpa o histórico",
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
+    "/theme":          "troca a cor de acento (ou Ctrl+0 p/ ciclar)",
     "/listen":         "fala com o Bauer pelo microfone",
     "/listen loop":    "conversa por voz ate cancelar",
     "/sessions":       "lista sessões salvas",
@@ -159,6 +162,7 @@ try:
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory, InMemoryHistory
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import DynamicStyle
     from prompt_toolkit.styles import Style as PtStyle
 
     class _SlashCompleter(Completer):
@@ -187,29 +191,61 @@ try:
                         display_meta=_SLASH_DESCRIPTIONS.get(candidate, ""),
                     )
 
-    _PT_STYLE = PtStyle.from_dict({
-        "prompt":      "bold ansicyan",
-        "completion-menu.completion":         "bg:#313244 #cdd6f4",
-        "completion-menu.completion.current": "bg:#89b4fa #1e1e2e bold",
-        "completion-menu.meta.completion":         "bg:#313244 #6c7086",
-        "completion-menu.meta.completion.current": "bg:#89b4fa #1e1e2e",
-        # Barra de status fixa (bottom toolbar) — identidade BAUER + modelo +
-        # tokens, sempre visível enquanto o prompt está ativo.
-        "bottom-toolbar":       "noreverse bg:#1e1e2e #6b7280",
-        "bottom-toolbar.brand": "bold #00d4aa",
-        "bottom-toolbar.model": "#3b82f6",
-    })
+    def _build_pt_style() -> "PtStyle":
+        """Estilo do prompt_toolkit DERIVADO do tema.
+
+        Até o plano 028 isto era um dicionário de cores literais — Catppuccin
+        (#313244/#cdd6f4/#89b4fa) no menu de completions, o teal antigo
+        (#00d4aa) na marca e `ansicyan` no `❯`. Ou seja: o prompt onde o
+        usuário digita e o popup de autocomplete NUNCA migraram no F0, porque o
+        teste que proíbe cor literal cobria só `ui.py`, `ascii_intro.py` e
+        `indicators.py`. Reconstruído a cada troca de acento (ver `/theme`).
+        """
+        t = _theme_mod
+        return PtStyle.from_dict({
+            "prompt": f"bold {t.ACCENT_TEXT}",
+            "completion-menu.completion":         f"bg:{t.SURFACE} {t.WHITE}",
+            "completion-menu.completion.current": f"bg:{t.ACCENT} {t.VOID} bold",
+            "completion-menu.meta.completion":         f"bg:{t.SURFACE} {t.DIM}",
+            "completion-menu.meta.completion.current": f"bg:{t.ACCENT} {t.VOID}",
+            # Barra de status fixa (bottom toolbar) — identidade BAUER + modelo
+            # + tokens, sempre visível enquanto o prompt está ativo.
+            "bottom-toolbar":       f"noreverse bg:{t.SURFACE} {t.DIM}",
+            "bottom-toolbar.brand": f"bold {t.ACCENT_TEXT}",
+            "bottom-toolbar.model": t.CLOUD,
+        })
+
+    #: Estilo DINÂMICO: `DynamicStyle` chama a fábrica a cada render, então a
+    #: troca de acento (Ctrl+0) aparece no prompt e no menu de completions
+    #: imediatamente, sem recriar a PromptSession.
+    _PT_STYLE = DynamicStyle(_build_pt_style)
 
     _PROMPT_FRAGMENTS = [("class:prompt", "❯ ")]
 
     def _make_slash_kb() -> "KeyBindings":
-        """Key binding: '/' insere o caractere E abre o menu de completions."""
+        """Key bindings do prompt: '/' abre completions, Ctrl+0 cicla o acento."""
         kb = KeyBindings()
 
         @kb.add("/")
         def _on_slash(event):
             event.current_buffer.insert_text("/")
             event.current_buffer.start_completion(select_first=False)
+
+        # Ctrl+0 cicla a cor de acento. ATENÇÃO à portabilidade: no Windows o
+        # console reporta virtual key + modificador, então funciona; em VT100
+        # (Linux/macOS) Ctrl+dígito só chega se o terminal falar o protocolo
+        # modifyOtherKeys (`\x1b[1;5p`), o que a maioria NÃO faz. Por isso o
+        # atalho é conveniência, e `/theme` é a porta que funciona em todo
+        # lugar — nunca a única.
+        @kb.add("c-0")
+        def _on_ciclar_tema(event):
+            try:
+                from . import theme as _t
+                _t.next_accent()
+                _persistir_acento(_t.ACCENT_NAME)
+                event.app.invalidate()  # redesenha prompt/toolbar na cor nova
+            except Exception:  # noqa: BLE001 — atalho nunca derruba o prompt
+                pass
 
         return kb
 
@@ -1510,10 +1546,49 @@ def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
     return decision
 
 
-#: Cor de aviso do tema, para markup Rich dentro das mensagens de gate. Vem de
-#: theme.py e não literal — é o mesmo motivo do F0: cor solta no código é como
-#: as três paletas nasceram.
-_THEME_WARN = _theme_mod.WARN
+#: Cor de aviso do tema, para markup Rich dentro das mensagens de gate. Função
+#: e não constante: o acento (e a paleta) mudam em tempo de execução, e um
+#: valor capturado no import congelaria a cor — foi assim que a `bottom_toolbar`
+#: e o `_PT_STYLE` escaparam do F0.
+def _warn() -> str:
+    return _theme_mod.WARN
+
+
+def _amostra_acentos(destaque: str = ""):
+    """Catálogo de acentos para o `/theme` (cada nome na própria cor)."""
+    from .ui import accent_swatches
+    return accent_swatches(destaque)
+
+
+def _persistir_acento(nome: str) -> None:
+    """Grava o acento escolhido em `agent.accent` do config.yaml.
+
+    Best-effort: em projeto sem config gravável (instalação read-only, CI) a
+    troca continua valendo na SESSÃO — só não sobrevive ao restart. Falhar aqui
+    não pode desfazer o que o usuário acabou de ver na tela.
+    """
+    try:
+        from .config_admin import set_config_value
+        set_config_value("agent.accent", nome)
+    except Exception as exc:  # noqa: BLE001
+        from .logging_config import log_suppressed
+        log_suppressed("theme.persistir_acento", exc)
+
+
+def _aplicar_acento_do_config() -> None:
+    """Aplica o acento salvo no config, no boot da sessão."""
+    try:
+        from .config_loader import load_config
+        nome = str(getattr(load_config().agent, "accent", "") or "").strip()
+        if nome:
+            _theme_mod.set_accent(nome)
+    except KeyError:
+        # nome inválido no config (renomeamos uma paleta, usuário digitou
+        # errado): mantém o padrão em vez de derrubar o boot por causa de cor
+        pass
+    except Exception as exc:  # noqa: BLE001
+        from .logging_config import log_suppressed
+        log_suppressed("theme.aplicar_acento", exc)
 
 
 def _make_cli_approval_callback(console: Console):
@@ -1526,7 +1601,7 @@ def _make_cli_approval_callback(console: Console):
         # espalhar cor solta pelo código.
         return _prompt_cmd_decision(
             console, "⚠ confirmar comando",
-            f"[{_THEME_WARN}]{description}[/]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
+            f"[{_warn()}]{description}[/]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
         )
     return _cb
 
@@ -1538,7 +1613,7 @@ def _make_cli_allowlist_callback(console: Console):
     def _cb(base: str) -> str:
         return _prompt_cmd_decision(
             console, "⚠ comando fora da allowlist",
-            f"[white]'{base}'[/white] [{_THEME_WARN}]não está na allowlist[/].\n"
+            f"[white]'{base}'[/white] [{_warn()}]não está na allowlist[/].\n"
             f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
         )
     return _cb
@@ -4781,6 +4856,11 @@ def run_agent_session(
                            for k, v in sorted(route_profiles.items()))
         _linhas_extra.append(("Roteando", _tiers))
 
+    # Acento salvo pelo usuário (Ctrl+0 / `/theme`) — aplicado ANTES do
+    # primeiro render, senão o logo e o painel de sessão sairiam no padrão e
+    # só o resto da tela obedeceria a escolha.
+    _aplicar_acento_do_config()
+
     # Resolve o conjunto de glifos UMA vez, olhando o console real desta
     # sessão. Sem isto, um terminal cp1252 (cmd legado) estoura com
     # UnicodeEncodeError no primeiro ❯/▰ — o mecanismo de queda para ASCII
@@ -5046,6 +5126,26 @@ def run_agent_session(
                 + (f" | Sessao: {session_id}" if session_id else "")
                 + "[/dim]"
             )
+            continue
+        if user_input.lower().split()[0] in _THEME_CMDS:
+            _partes = user_input.split(maxsplit=1)
+            _pedido = _partes[1].strip().lower() if len(_partes) > 1 else ""
+            if _pedido:
+                try:
+                    _theme_mod.set_accent(_pedido)
+                    _persistir_acento(_pedido)
+                    console.print(_amostra_acentos(destaque=_pedido))
+                except KeyError as _exc:
+                    console.print(f"[{_warn()}]{_exc.args[0]}[/]")
+            else:
+                # Sem argumento: mostra o catálogo com o atual em destaque. É
+                # também a resposta para "quais cores existem?" — perguntar e
+                # ver é melhor que decorar nome de paleta.
+                console.print(_amostra_acentos(destaque=_theme_mod.ACCENT_NAME))
+                console.print(
+                    f"[dim]  /theme <nome> para trocar · Ctrl+0 cicla "
+                    f"(Ctrl+0 depende do terminal; /theme sempre funciona)[/dim]"
+                )
             continue
         if user_input.lower() in _MODEL_CMDS:
             # Live model switch: abre seletor, salva config.yaml, reconstrói client ao vivo.
