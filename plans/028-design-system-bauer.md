@@ -5,7 +5,7 @@
 > qualidade: Claude Code. Referência de *identidade*: o que só o Bauer sabe —
 > local vs nuvem, custo em tempo real, Kernel governando o turno.
 
-Status: **F0 e F1 implementados e verdes** (2026-08-01) · F2–F6 pendentes ·
+Status: **F0, F1 e F2 implementados e verdes** (2026-08-03) · F3–F6 pendentes ·
 Acento definido: **violeta elétrico `#a855f7`** · Escopo: `bauer/ui.py`,
 `bauer/agent.py`, `bauer/ascii_intro.py`, `bauer/indicators.py`,
 `bauer/delta_stream.py`, `desktop/src/`
@@ -342,6 +342,41 @@ a falha sobe, porque retentar reimprimiria a resposta.
 **Verificação:** 147 testes novos, verdes; a fatia `-k "agent or client or
 stream or ollama or openai or config"` da suíte (~1400 testes) passa sem
 regressão. Falta o teste de campo: rodar contra modelo vivo num terminal real.
+
+---
+
+## 4c. F2 entregue (2026-08-03)
+
+**`bauer/ui_hud.py`** — `HudState` (imutável) + dois renders sobre o MESMO
+estado: `render_hud()` (Rich, durante o turno) e `render_hud_html()`
+(prompt_toolkit, enquanto o prompt espera). Dois transportes porque são dois
+mecanismos de desenho, não duas fontes de verdade.
+
+**`bauer/ui_frame.py`** — `TurnFrame` (o único `Live` do turno: histórico rola
+por cima, HUD colado embaixo, trilho no meio) + o registro `register()`/
+`suspend()` que substitui a allowlist, + `current_frame()` (ContextVar) para o
+código fundo do loop achar o quadro sem recebê-lo por parâmetro em três níveis.
+
+**Três achados durante a execução:**
+
+1. **A `bottom_toolbar` escapou inteira do F0.** Ela montava o HTML na mão com
+   `#00d4aa`/`#3b82f6` hardcoded — o teste que proíbe hex literal cobre
+   `ui.py`/`ascii_intro.py`/`indicators.py`, não `agent.py`. Só apareceu ao
+   unificar as duas superfícies no mesmo `HudState`.
+2. **`ThreadPoolExecutor` não herda `ContextVar`.** No batch paralelo do bridge,
+   o `suspend()` de uma tool rodando na worker não enxergava o display
+   registrado na thread principal — `suspend()` virava no-op silencioso e o bug
+   do "totodo" voltaria pelo caminho paralelo. Corrigido com `copy_context()`
+   **por submit** (um `Context` não pode rodar em duas threads ao mesmo tempo:
+   `.run()` levanta "already entered" — verificado na prática).
+3. **O primeiro teste dessa correção não testava nada.** Ele afirmava "o
+   `input()` saiu limpo", o que passa com ou sem o fix (com input mockado nada
+   colide de verdade). Reescrito para afirmar que o display foi **pausado** —
+   e validado por mutação: falha sem o fix, passa com ele.
+
+**Pendente do F2:** a esteira do Kernel não está ligada ao EventBus. O
+`HudState` já a suporta e `kernel_estado=None` a mantém oculta — coerente com a
+regra "não inventa estado".
 
 ---
 
