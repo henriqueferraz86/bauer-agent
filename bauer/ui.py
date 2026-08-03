@@ -1,10 +1,12 @@
 """Bauer UI kit — linguagem visual do terminal (Tema Minimal).
 
 Estética escolhida: sóbria e refinada. Quase monocromática (branco/cinza) +
-UM acento neon (teal). Ações do agente status-primeiro em colchetes [✓]/[✗],
-resposta com barra de acento à esquerda. Sem gradiente, sem trilho — calma e
-legível. Componentes puros (retornam Text/renderáveis Rich), testáveis via
-`render_str`.
+UM acento neon (violeta elétrico). Ações do agente status-primeiro em
+colchetes [✓]/[✗], resposta com barra de acento à esquerda. Componentes puros
+(retornam Text/renderáveis Rich), testáveis via `render_str`.
+
+As cores e glifos NÃO nascem aqui: vêm de `bauer/theme.py`, que também gera o
+CSS do SPA. Ver plano 028 — três paletas divergentes foi o que motivou isso.
 """
 
 from __future__ import annotations
@@ -13,28 +15,42 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
-# ── Paleta Minimal: mono + 1 acento ─────────────────────────────────────────
-ACCENT = "#00d4aa"   # o único neon
-WHITE = "#e5e7eb"    # texto primário
-DIM = "#6b7280"      # secundário
-FAINT = "#4b5563"    # colchetes/moldura, mais apagado que DIM
-OK = "#22c55e"       # ✓ (sinal preservado)
-BAD = "#ef4444"      # ✗
-WARN = "#f59e0b"     # aviso de contexto quase cheio
+from . import theme
+from .theme import ACCENT, ACCENT_TEXT, BAD, DIM, FAINT, OK, WARN, WHITE  # noqa: F401
 
-# gradiente ainda exposto (usado só por quem quiser; o tema não usa)
-GRADIENT = ["#00d4aa", "#3b82f6", "#a855f7"]
+#: Gradiente da MARCA (logo/boot). Conteúdo nunca usa.
+GRADIENT = theme.BRAND_GRADIENT
 
 # ── Glifos ──────────────────────────────────────────────────────────────────
-GLYPH_BOT = "▏"        # barra de acento da resposta
-GLYPH_PROMPT = "❯"
-GLYPH_OK = "✓"
-GLYPH_FAIL = "✗"
+# Constantes mantidas para compatibilidade de import; os componentes resolvem
+# o conjunto em tempo de render (`theme.glyphs()`) para cair em ASCII num
+# console que não codifica os blocos.
+GLYPH_BOT = theme.UNICODE.bot
+GLYPH_PROMPT = theme.UNICODE.prompt
+GLYPH_OK = theme.UNICODE.ok
+GLYPH_FAIL = theme.UNICODE.fail
 GLYPH_RUNNING = "·"    # tool em andamento (status neutro)
-GLYPH_SKILL = "↳"
+GLYPH_SKILL = theme.UNICODE.skill
 
 #: Largura p/ alinhar o nome da tool em coluna (visual de tabela sem tabela).
 _NAME_COL = 15
+
+#: Conjunto de glifos em uso. Default Unicode para render determinístico em
+#: teste; a aplicação decide UMA vez no boot com `use_glyphs(stream=...)`,
+#: olhando o console real. Resolver por chamada olharia `sys.stdout`, que não é
+#: necessariamente o destino do render (Rich escreve no `file` do Console).
+_ACTIVE: theme.Glyphs = theme.UNICODE
+
+
+def use_glyphs(g: "theme.Glyphs | None" = None, *, stream=None) -> theme.Glyphs:
+    """Fixa o conjunto de glifos da sessão. Sem argumento, detecta pelo stream."""
+    global _ACTIVE
+    _ACTIVE = g if g is not None else theme.glyphs(stream=stream)
+    return _ACTIVE
+
+
+def active_glyphs() -> theme.Glyphs:
+    return _ACTIVE
 
 
 # ── Gradiente (helpers, não usados pelo tema Minimal) ───────────────────────
@@ -65,8 +81,10 @@ def response_header(model: str = "", cost: str = "", elapsed: str = "") -> Rende
     grid.add_column(justify="left")
     grid.add_column(justify="right")
     left = Text()
-    left.append(f"{GLYPH_BOT} ", style=f"bold {ACCENT}")
-    left.append("bauer", style=f"bold {ACCENT}")
+    left.append(f"{_ACTIVE.bot} ", style=f"bold {ACCENT}")
+    # ACCENT_TEXT no nome: 4.95:1 do acento puro é apertado para palavra em
+    # corpo de texto; o glifo (não-texto) fica no acento cheio.
+    left.append("bauer", style=f"bold {ACCENT_TEXT}")
     right = Text(" · ".join(meta_parts), style=DIM) if meta_parts else Text()
     grid.add_row(left, right)
     return grid
@@ -95,8 +113,8 @@ def tool_line(
     args e tempo esmaecidos. Calma e escaneável de cima a baixo.
     """
     glyph, gstyle = {
-        "ok": (GLYPH_OK, OK),
-        "fail": (GLYPH_FAIL, BAD),
+        "ok": (_ACTIVE.ok, OK),
+        "fail": (_ACTIVE.fail, BAD),
     }.get(status, (GLYPH_RUNNING, DIM))
 
     t = Text("  ")
@@ -116,7 +134,7 @@ def tool_line(
 def skill_line(name: str, score_pct: int) -> Text:
     """`  ↳ skill 'X' (80%)` — nota discreta de skill aplicada."""
     t = Text("  ")
-    t.append(f"{GLYPH_SKILL} ", style=ACCENT)
+    t.append(f"{_ACTIVE.skill} ", style=ACCENT)
     t.append(f"skill '{name}'", style=DIM)
     t.append(f" ({score_pct}%)", style=FAINT)
     return t
@@ -132,8 +150,8 @@ def context_gauge(pct: float, width: int = 10) -> Text:
     fill_style = BAD if danger else ACCENT
     pct_style = BAD if danger else DIM
     t = Text()
-    t.append("▰" * filled, style=fill_style)
-    t.append("▱" * (width - filled), style=FAINT)
+    t.append(_ACTIVE.gauge_full * filled, style=fill_style)
+    t.append(_ACTIVE.gauge_empty * (width - filled), style=FAINT)
     t.append(f" {int(pct*100)}%", style=pct_style)
     return t
 

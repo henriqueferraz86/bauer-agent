@@ -24,13 +24,15 @@ from rich.text import Text
 from rich import box
 
 
-# ── Paleta (mesma do indicators.py) ────────────────────────────────────────────
-_GRADIENT = ["#00d4aa", "#3b82f6", "#a855f7"]  # teal → azul → roxo
-ACCENT = "#00d4aa"
-BLUE = "#3b82f6"
-PURPLE = "#7c3aed"
-DIM = "#6b7280"
-WHITE = "#f9fafb"
+# ── Paleta — vem de bauer/theme.py (fonte única). Ver plano 028. ──────────────
+from . import theme
+
+_GRADIENT = theme.BRAND_GRADIENT      # gradiente EXCLUSIVO da marca
+ACCENT = theme.ACCENT_TEXT            # título: palavra legível → tom de texto
+BLUE = theme.ACCENT_DEEP              # moldura/marcadores
+PURPLE = theme.ACCENT_TEXT            # comandos
+DIM = theme.DIM
+WHITE = theme.WHITE
 
 
 # ── Glifos em bloco  (largura 7 × altura 5) ─────────────────────────────────────

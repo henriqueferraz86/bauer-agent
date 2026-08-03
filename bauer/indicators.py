@@ -11,7 +11,9 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.style import Style
 from rich.text import Text
 
-ACCENT = '#00d4aa'; PULSE = '#7c3aed'; DIM = '#6b7280'; WHITE = '#f9fafb'; SUCCESS = '#10b981'; ERROR_COLOR = '#ef4444'
+# Paleta vem de bauer/theme.py (fonte única) — ver plano 028.
+from . import theme
+ACCENT = theme.ACCENT; PULSE = theme.ACCENT_DEEP; DIM = theme.DIM; WHITE = theme.WHITE; SUCCESS = theme.OK; ERROR_COLOR = theme.BAD
 ACCENT_STYLE = Style(color=ACCENT); DIM_STYLE = Style(color=DIM); WHITE_STYLE = Style(color=WHITE)
 MODERN_SPINNER = 'dots12'
 

@@ -1138,6 +1138,56 @@ def _detectar_provider_por_host(host: str) -> str:
     return "openai"
 
 
+def _stream_to_sink(
+    client: OllamaClient,
+    model_name: str,
+    api_payload: list[dict],
+    *,
+    max_retries: int = 2,
+    on_retry=None,
+) -> "list[str]":
+    """Consome `chat_stream` emitindo cada chunk ao sink, com retry A FRIO.
+
+    "A frio" é a regra que não pode ser afrouxada: assim que UM chunk saiu, a
+    resposta já está na tela do usuário (ou na mensagem do canal). Retentar
+    depois disso reimprimiria a resposta inteira grudada na anterior. Então a
+    falha pós-emissão sobe — só a falha antes do primeiro token é retentada.
+
+    Antes deste helper, o ramo de sink não tinha retry nenhum: quem instalava
+    sink (o gateway) trocava, sem saber, o backoff de 429/5xx por uma falha
+    seca. Com o terminal virando consumidor de sink (plano 028 F1), isso
+    valeria também para todo `bauer agent` em provider de nuvem.
+    """
+    from .delta_stream import emit_delta as _emit_delta
+    from .delta_stream import emit_round_start as _emit_round
+    from .error_classifier import classify_api_error
+    from .retry_utils import jittered_backoff
+
+    parts: "list[str]" = []
+    for attempt in range(max_retries + 1):
+        _emit_round()
+        parts = []
+        try:
+            for chunk in client.chat_stream(model_name, api_payload):
+                parts.append(chunk)
+                _emit_delta(chunk)
+            return parts
+        except Exception as exc:  # noqa: BLE001 — reclassificado logo abaixo
+            if parts:
+                raise  # já saiu texto: retry duplicaria a resposta
+            classified = classify_api_error(exc)
+            if not classified.retryable or attempt >= max_retries:
+                raise
+            wait = jittered_backoff(attempt, base_delay=5.0, max_delay=60.0)
+            if on_retry is not None:
+                try:
+                    on_retry(attempt + 1, classified, wait)
+                except Exception:  # noqa: BLE001 — aviso não derruba o turno
+                    pass
+            time.sleep(wait)
+    return parts
+
+
 def _collect_response(
     client: OllamaClient,
     model_name: str,
@@ -1183,21 +1233,16 @@ def _collect_response(
         # optimisation.
         api_payload = payload
 
-    # Delta sink (gateway streaming): quando instalado, consome o stream
-    # token a token emitindo cada chunk — a mensagem do canal cresce ao vivo.
-    from .delta_stream import emit_delta as _emit_delta
-    from .delta_stream import emit_round_start as _emit_round
+    # Delta sink: quando instalado, consome o stream token a token emitindo
+    # cada chunk — a mensagem do canal (gateway) ou a resposta no terminal
+    # (plano 028 F1) cresce ao vivo. Agora com retry a frio, ver _stream_to_sink.
     from .delta_stream import get_sink as _get_sink
 
     # Usa retry automático apenas no OpenAIClient (que tem implementação real).
     # Checar apenas hasattr() seria insuficiente pois MagicMock retorna True para tudo.
     from .openai_client import OpenAIClient as _OpenAIClientClass
     if _get_sink() is not None:
-        _emit_round()
-        parts = []
-        for chunk in client.chat_stream(model_name, api_payload):
-            parts.append(chunk)
-            _emit_delta(chunk)
+        parts = _stream_to_sink(client, model_name, api_payload)
     elif isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
         parts = client.chat_with_retry(model_name, api_payload)
     else:
@@ -1472,6 +1517,43 @@ def _make_cli_allowlist_callback(console: Console):
             f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
         )
     return _cb
+
+
+def _make_streamer(console: Console):
+    """Cria o renderizador de streaming do turno, ou None se não fizer sentido.
+
+    Fica desligado fora de terminal interativo: sem TTY (pipe, CI, `bauer agent
+    < arquivo`) o texto ainda sai — pelo caminho normal, no fim do turno — e
+    sem sequência de controle de cursor no meio. Também respeita
+    `agent.stream_response=false` no config, para quem preferir a resposta
+    inteira de uma vez.
+    """
+    try:
+        from .config_loader import load_config
+        if not bool(getattr(load_config().agent, "stream_response", True)):
+            return None
+    except Exception:  # noqa: BLE001 — sem config legível, streaming é o padrão
+        pass
+    try:
+        if not sys.stdin.isatty():
+            return None
+        from .ui_stream import ConsoleStreamRenderer
+        return ConsoleStreamRenderer(console)
+    except Exception:  # noqa: BLE001 — nunca impedir o turno por causa do render
+        return None
+
+
+def _ja_exibido(streamer, texto: str) -> bool:
+    """A resposta já apareceu na tela via streaming?
+
+    Compara o TEXTO, não só o "escreveu algo": entre o que o modelo emitiu e o
+    que o turno resolve exibir há pós-processamento (gate de qualidade, replan,
+    complemento). Quando os dois divergem, o certo é imprimir — repetir é feio,
+    esconder é perder resposta.
+    """
+    if streamer is None or not getattr(streamer, "escreveu_algo", False):
+        return False
+    return streamer.text.strip() == (texto or "").strip()
 
 
 def _print_assistant_response(console: Console, text: str, cost_line: str = "") -> None:
@@ -1830,6 +1912,7 @@ def _native_turn_interactive(
     deduper,
     calls_left: int,
     guardrail=None,
+    streamer=None,
 ) -> tuple[str, str | None]:
     """Um turno de native function calling no chat interativo.
 
@@ -1840,6 +1923,11 @@ def _native_turn_interactive(
     ``guardrail`` (ToolCallGuardrailController opcional, usado pelo /loop —
     ver run_one_turn/_run_native_tool_turn para o mesmo padrão) acumula
     falhas entre chamadas; None preserva o comportamento atual (sem guarda).
+
+    ``streamer`` (ConsoleStreamRenderer opcional, plano 028 F1) faz o texto
+    aparecer enquanto o modelo escreve. Quando presente, o spinner "pensando…"
+    é dispensado — os dois disputariam o mesmo terminal, e o Rich só admite um
+    display ao vivo por vez. Sem ele, tudo segue como antes.
 
     Returns:
         ("final", texto)          — modelo respondeu sem tools; exibir e encerrar turno
@@ -1854,6 +1942,24 @@ def _native_turn_interactive(
 
     schemas = router.get_tool_schemas()
     try:
+        if streamer is not None:
+            # Sem spinner: o texto aparecendo JÁ é o indicador de atividade, e
+            # dois displays ao vivo no mesmo console se atropelam.
+            msg = client.chat_with_tools(
+                model_name, ctx.get_payload(), tools=schemas,
+                on_delta=streamer.on_delta,
+            )
+            streamer.on_round()  # sela o que veio antes das tools/da resposta
+        else:
+            with _thinking_status(console, model_name):
+                msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+    except TypeError as exc:
+        # Client de terceiro/dublê sem o parâmetro `on_delta`: streaming é
+        # opcional, a resposta não — repete sem ele. A checagem do nome é
+        # deliberada: um TypeError vindo de DENTRO do provider dispararia uma
+        # segunda chamada (e uma segunda cobrança) sem ela.
+        if "on_delta" not in str(exc):
+            raise
         with _thinking_status(console, model_name):
             msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
     except Exception as exc:
@@ -3447,6 +3553,7 @@ def _run_tool_loop_body(
     memprov,
     budget=None,
     guardrail=None,
+    streamer=None,
 ) -> _TurnOutcome:
     """Roda uma rodada de chamadas LLM + tool calls até o modelo responder só
     texto (fim natural) ou uma condição de parada disparar. Extração pura do
@@ -3496,6 +3603,7 @@ def _run_tool_loop_body(
                         cli_tool_log, _cli_deduper,
                         MAX_TOOL_TURNS - tool_turns,
                         guardrail=guardrail,
+                        streamer=streamer,
                     )
                 except _NativeToolsUnsupported:
                     state.native_session_ok = False
@@ -4572,6 +4680,16 @@ def run_agent_session(
                            for k, v in sorted(route_profiles.items()))
         _linhas_extra.append(("Roteando", _tiers))
 
+    # Resolve o conjunto de glifos UMA vez, olhando o console real desta
+    # sessão. Sem isto, um terminal cp1252 (cmd legado) estoura com
+    # UnicodeEncodeError no primeiro ❯/▰ — o mecanismo de queda para ASCII
+    # existe em theme.py mas só vale se alguém o acionar (plano 028 F0).
+    try:
+        from . import ui as _ui_kit
+        _ui_kit.use_glyphs(stream=getattr(console, "file", None) or sys.stdout)
+    except Exception:  # noqa: BLE001 — na dúvida segue com o padrão Unicode
+        pass
+
     from .ascii_intro import session_panel
     console.print(session_panel(
         "Bauer Agent",
@@ -5176,7 +5294,13 @@ def run_agent_session(
             mem_turn_idx=_mem_turn_idx,
         )
 
+        # Streaming ao vivo da resposta (plano 028 F1). Um por INVOCAÇÃO, não
+        # por turno: com o replan do Kernel o corpo roda de novo, e um streamer
+        # reaproveitado acumularia a resposta reprovada junto com a boa.
+        _stream_holder: dict = {}
+
         def _invoke_turn():
+            _stream_holder["atual"] = _make_streamer(console)
             return _run_tool_loop_body(
                 ctx=ctx,
                 router=router,
@@ -5190,6 +5314,7 @@ def run_agent_session(
                 active_workspace=active_workspace,
                 turn_input_text=user_input,
                 memprov=_memprov,
+                streamer=_stream_holder["atual"],
             )
 
         if kernel is not None:
@@ -5261,7 +5386,14 @@ def run_agent_session(
         _mem_turn_idx = _state.mem_turn_idx
 
         if outcome.kind == "final":
-            _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
+            if _ja_exibido(_stream_holder.get("atual"), outcome.display):
+                # Já saiu ao vivo — reimprimir daria a resposta em dobro. Só a
+                # linha de custo, que o streaming não tem como saber no meio.
+                if outcome.turn_cost_line:
+                    console.print(outcome.turn_cost_line)
+                console.print()
+            else:
+                _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.

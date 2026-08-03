@@ -82,6 +82,11 @@ class AgentSection(_StrictSection):
     # seguro). Faz as skills DISPARAREM sozinhas em vez de ficarem só no
     # catálogo. default True.
     skill_auto_inject: bool = True
+    # Streaming da resposta no terminal (plano 028 F1): o texto aparece
+    # enquanto o modelo escreve, em vez de cair inteiro no fim do turno. Vale
+    # só para terminal interativo — sem TTY o caminho continua sendo a
+    # impressão única no fim. false = comportamento anterior. default True.
+    stream_response: bool = True
     # Backend do task-store (achado #10 da auditoria 023). "markdown" = o
     # TASKS.md legado (WorkspaceManager); "sqlite" = o kernel kanban_db
     # (WorkspaceManagerSqlite), que o swarm/specify/boards já usam.
