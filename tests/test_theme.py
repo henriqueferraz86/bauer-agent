@@ -278,6 +278,50 @@ class TestFonteUnica:
                 f"_build_pt_style ainda tem {proibido} literal"
             )
 
+    def test_atalho_do_tema_atravessa_qualquer_terminal(self):
+        """O atalho principal precisa ser uma tecla com código ASCII de
+        controle — só essas atravessam qualquer terminal, em qualquer SO.
+
+        Ctrl+A..Z = 1..26 e Ctrl+] [ ^ _ = 27..31. DÍGITO não tem código: num
+        terminal comum, Ctrl+0 chega como o caractere "0" (medido). Os dois
+        protocolos que codificariam a tecla — `modifyOtherKeys` do xterm
+        (`CSI 27;5;48~`) e o formato kitty (`CSI 48;5u`) — NÃO são entendidos
+        pelo parser do prompt_toolkit, que espera `\\x1b[1;5p`, convenção
+        própria que quase nenhum terminal emite. Num terminal com esses
+        protocolos ligados, Ctrl+0 injetaria lixo no input.
+        """
+        from prompt_toolkit.input.vt100_parser import Vt100Parser
+
+        from bauer import agent
+
+        kb = agent._make_slash_kb()
+        # `str(Keys.ControlT)` é "Keys.ControlT"; o código da tecla está em
+        # `.value` ("c-t") — comparar pelo str() silenciaria o teste.
+        teclas = {
+            getattr(b.keys[0], "value", b.keys[0])
+            for b in kb.bindings if len(b.keys) == 1
+        }
+        assert "c-t" in teclas, "o atalho portátil do tema sumiu"
+
+        # e o parser de fato reconhece o byte que o terminal manda (0x14)
+        recebidas = []
+        Vt100Parser(lambda kp: recebidas.append(kp.key)).feed("\x14")
+        assert [str(k) for k in recebidas] == ["Keys.ControlT"]
+
+    def test_ctrl_digito_nao_e_a_unica_porta(self):
+        """Regressão do erro que quase foi commitado: Ctrl+0 sozinho quebraria
+        em silêncio em todo Linux/macOS — inclusive no acesso por SSH."""
+        from bauer import agent
+
+        kb = agent._make_slash_kb()
+        teclas = {
+            getattr(b.keys[0], "value", b.keys[0])
+            for b in kb.bindings if len(b.keys) == 1
+        }
+        assert not ("c-0" in teclas and "c-t" not in teclas), (
+            "Ctrl+0 não pode ser o único atalho — não atravessa VT100"
+        )
+
     def test_estilo_do_prompt_acompanha_a_troca(self):
         """Estilo DINÂMICO: trocar o acento tem que mudar o prompt na hora,
         sem recriar a PromptSession."""

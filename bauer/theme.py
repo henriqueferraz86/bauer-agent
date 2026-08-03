@@ -11,7 +11,7 @@ divergência). Sem a geração, a divergência volta — foi exatamente assim qu
 ela apareceu.
 
 Acento padrão: **violeta elétrico** #a855f7 — mas TROCÁVEL em tempo de execução
-(`set_accent`, Ctrl+0 / `/theme`). As variantes de cada acento não são
+(`set_accent`, Ctrl+T / `/theme`). As variantes de cada acento não são
 escolhidas à mão: `ACCENT_TEXT` é derivado clareando até cruzar 7:1 de
 contraste, e `ACCENT_DEEP` escurecendo. Assim adicionar um acento novo é uma
 linha, e o invariante de legibilidade vale para todos por construção — não por
@@ -195,7 +195,7 @@ BRAND_GRADIENT = _gradiente_da_marca(ACCENT)
 
 
 def accent_names() -> "list[str]":
-    """Nomes dos acentos, na ordem em que o ciclo (Ctrl+0) percorre."""
+    """Nomes dos acentos, na ordem em que o ciclo (Ctrl+T) percorre."""
     return list(PALETAS)
 
 

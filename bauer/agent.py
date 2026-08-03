@@ -121,7 +121,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/clear":          "limpa o histórico",
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
-    "/theme":          "troca a cor de acento (ou Ctrl+0 p/ ciclar)",
+    "/theme":          "troca a cor de acento (ou Ctrl+T p/ ciclar)",
     "/listen":         "fala com o Bauer pelo microfone",
     "/listen loop":    "conversa por voz ate cancelar",
     "/sessions":       "lista sessões salvas",
@@ -216,14 +216,14 @@ try:
         })
 
     #: Estilo DINÂMICO: `DynamicStyle` chama a fábrica a cada render, então a
-    #: troca de acento (Ctrl+0) aparece no prompt e no menu de completions
+    #: troca de acento (Ctrl+T) aparece no prompt e no menu de completions
     #: imediatamente, sem recriar a PromptSession.
     _PT_STYLE = DynamicStyle(_build_pt_style)
 
     _PROMPT_FRAGMENTS = [("class:prompt", "❯ ")]
 
     def _make_slash_kb() -> "KeyBindings":
-        """Key bindings do prompt: '/' abre completions, Ctrl+0 cicla o acento."""
+        """Key bindings do prompt: '/' abre completions, Ctrl+T cicla o acento."""
         kb = KeyBindings()
 
         @kb.add("/")
@@ -231,14 +231,7 @@ try:
             event.current_buffer.insert_text("/")
             event.current_buffer.start_completion(select_first=False)
 
-        # Ctrl+0 cicla a cor de acento. ATENÇÃO à portabilidade: no Windows o
-        # console reporta virtual key + modificador, então funciona; em VT100
-        # (Linux/macOS) Ctrl+dígito só chega se o terminal falar o protocolo
-        # modifyOtherKeys (`\x1b[1;5p`), o que a maioria NÃO faz. Por isso o
-        # atalho é conveniência, e `/theme` é a porta que funciona em todo
-        # lugar — nunca a única.
-        @kb.add("c-0")
-        def _on_ciclar_tema(event):
+        def _ciclar_tema(event) -> None:
             try:
                 from . import theme as _t
                 _t.next_accent()
@@ -246,6 +239,27 @@ try:
                 event.app.invalidate()  # redesenha prompt/toolbar na cor nova
             except Exception:  # noqa: BLE001 — atalho nunca derruba o prompt
                 pass
+
+        # Ctrl+T cicla a cor de acento — o atalho PORTÁVEL.
+        #
+        # Ctrl+T é ASCII 20 (DC4): todo terminal transmite, em qualquer SO.
+        # Ctrl+DÍGITO não tem código ASCII (só Ctrl+A..Z = 1..26 e
+        # Ctrl+] [ ^ _ = 27..31), então num terminal comum Ctrl+0 chega como o
+        # caractere "0" — medido. Os dois protocolos que codificariam a tecla
+        # (`modifyOtherKeys` do xterm, `CSI 27;5;48~`, e o formato kitty,
+        # `CSI 48;5u`) NÃO são entendidos pelo parser do prompt_toolkit, que
+        # espera `\x1b[1;5p` — uma convenção própria que quase nenhum terminal
+        # emite. Num terminal com esses protocolos ligados, Ctrl+0 injetaria
+        # lixo no input em vez de trocar a cor.
+        #
+        # Custo do Ctrl+T: perde o `transpose-chars` do emacs mode — irrelevante
+        # num prompt de conversa.
+        kb.add("c-t")(_ciclar_tema)
+
+        # Ctrl+0 segue registrado como bônus: no Windows funciona, porque o
+        # console Win32 reporta virtual key + modificador direto para a API,
+        # sem passar por sequência de escape.
+        kb.add("c-0")(_ciclar_tema)
 
         return kb
 
@@ -4856,7 +4870,7 @@ def run_agent_session(
                            for k, v in sorted(route_profiles.items()))
         _linhas_extra.append(("Roteando", _tiers))
 
-    # Acento salvo pelo usuário (Ctrl+0 / `/theme`) — aplicado ANTES do
+    # Acento salvo pelo usuário (Ctrl+T / `/theme`) — aplicado ANTES do
     # primeiro render, senão o logo e o painel de sessão sairiam no padrão e
     # só o resto da tela obedeceria a escolha.
     _aplicar_acento_do_config()
@@ -5143,8 +5157,7 @@ def run_agent_session(
                 # ver é melhor que decorar nome de paleta.
                 console.print(_amostra_acentos(destaque=_theme_mod.ACCENT_NAME))
                 console.print(
-                    f"[dim]  /theme <nome> para trocar · Ctrl+0 cicla "
-                    f"(Ctrl+0 depende do terminal; /theme sempre funciona)[/dim]"
+                    "[dim]  /theme <nome> para trocar · [bold]Ctrl+T[/bold] cicla[/dim]"
                 )
             continue
         if user_input.lower() in _MODEL_CMDS:

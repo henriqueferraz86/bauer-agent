@@ -12,7 +12,7 @@ from rich.style import Style
 from rich.text import Text
 
 # Paleta vem de bauer/theme.py (fonte única) — ver plano 028. Nada de constante
-# de módulo: o acento troca em tempo de execução (Ctrl+0), e valor capturado no
+# de módulo: o acento troca em tempo de execução (Ctrl+T), e valor capturado no
 # import deixaria os indicadores na cor antiga.
 from . import theme
 

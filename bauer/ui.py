@@ -18,7 +18,7 @@ from rich.text import Text
 from . import theme
 
 #: Nomes de cor que este módulo reexporta. NÃO são importados por valor: o
-#: acento é trocável em tempo de execução (`theme.set_accent`, Ctrl+0), e
+#: acento é trocável em tempo de execução (`theme.set_accent`, Ctrl+T), e
 #: `from .theme import ACCENT` congelaria a cor do import — foi exatamente
 #: assim que a `bottom_toolbar` e o `_PT_STYLE` ficaram para trás no F0.
 #: As funções abaixo leem `theme.X` na hora do render; este `__getattr__`

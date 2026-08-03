@@ -30,7 +30,7 @@ from rich import box
 from . import theme
 
 # Sem constantes de módulo: o acento é trocável em tempo de execução
-# (`theme.set_accent`, Ctrl+0) e capturar o valor no import deixaria a intro e
+# (`theme.set_accent`, Ctrl+T) e capturar o valor no import deixaria a intro e
 # o painel de sessão na cor antiga. Tudo abaixo lê `theme.X` na hora do render.
 
 
