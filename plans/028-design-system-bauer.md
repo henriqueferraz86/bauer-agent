@@ -5,7 +5,7 @@
 > qualidade: Claude Code. Referência de *identidade*: o que só o Bauer sabe —
 > local vs nuvem, custo em tempo real, Kernel governando o turno.
 
-Status: **F0, F1 e F2 implementados e verdes** (2026-08-03) · F3–F6 pendentes ·
+Status: **F0–F3 implementados e verdes** (2026-08-03) · F4–F6 pendentes ·
 Acento definido: **violeta elétrico `#a855f7`** · Escopo: `bauer/ui.py`,
 `bauer/agent.py`, `bauer/ascii_intro.py`, `bauer/indicators.py`,
 `bauer/delta_stream.py`, `desktop/src/`
@@ -374,9 +374,46 @@ código fundo do loop achar o quadro sem recebê-lo por parâmetro em três nív
    colide de verdade). Reescrito para afirmar que o display foi **pausado** —
    e validado por mutação: falha sem o fix, passa com ele.
 
-**Pendente do F2:** a esteira do Kernel não está ligada ao EventBus. O
-`HudState` já a suporta e `kernel_estado=None` a mantém oculta — coerente com a
-regra "não inventa estado".
+---
+
+## 4d. F2 fechado + F3 entregue (2026-08-03)
+
+**Esteira do Kernel ligada.** Dois erros do plano original corrigidos ao ligar:
+
+1. **São dois EventBus no projeto.** O do Kernel é `bauer/core/events/bus.py`
+   (kwargs, com wildcard `"*"`), não `bauer/event_bus.py` (payload dict) que o
+   plano citava.
+2. **Estado chega por cinco tópicos, não um.** `run.planning.started`,
+   `run.state.changed`, `run.replanning`, `run.validation.started`,
+   `run.progress.warning`. Assinar só `run.state.changed` — o que o plano
+   mandava — perderia *planning* e *evaluating*, metade da esteira. A ligação
+   assina o wildcard.
+
+E uma armadilha achada na leitura: `policy.evaluated` publica
+`status=decision.action` — `allow`/`deny`/`ask` — no MESMO campo que os demais
+usam para estado de run. Ler cru colocaria "allow" na esteira como se fosse
+etapa do turno; `estado_do_evento()` filtra.
+
+**F3 — `bauer/ui_diff.py` + `ui.tool_block()`:**
+
+- O diff exibido é o que a tool **aplicou**: a `patch` já embute um
+  `unified_diff` no resultado ([fs.py:462](bauer/tools/fs.py:462)). Recalcular
+  abriria espaço para mostrar uma coisa e ter escrito outra. Um teste roda a
+  tool de verdade e confirma que a tela bate com o arquivo.
+- **ANSI de subprocesso sanitizado.** Saída de npm/docker traz escape de cor e
+  `\r` de barra de progresso; repassar cru deixa o terminal refém do processo
+  filho (cor que não fecha, cursor que anda).
+- **`elapsed_ms` finalmente medido.** O componente aceitava o parâmetro desde
+  sempre e **nenhum** call site o passava — toda duração exibida até aqui era
+  ficção, inclusive nos previews que eu mesmo gerei. Usa `perf_counter` (não
+  `time()`: ajuste de relógio no meio erraria o intervalo). Resultado vindo do
+  dedup fica `None`, não `0ms` — não houve execução para cronometrar.
+- Card de aprovação no tema, com o `a` (sempre) em destaque: é a opção que
+  **ensina** o allowlist.
+
+**Verificação:** 32 testes novos no F2-fim + F3; a fatia
+`-k "agent or ui or stream or clarify or bridge or tool or custo or kernel"`
+(~1600 testes) sem regressão.
 
 ---
 
