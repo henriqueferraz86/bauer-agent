@@ -25,6 +25,32 @@ from . import theme, ui
 #: "cancelled" são terminais e não aparecem na esteira — o turno já colapsou.
 _ESTEIRA = ("planning", "policy_check", "queued", "running", "evaluating")
 
+#: Status que o Kernel publica e que NÃO são estado de run. `policy.evaluated`
+#: manda `status=decision.action` — "allow"/"deny"/"ask" — no mesmo campo que
+#: os demais eventos usam para o estado. Ler o campo cru colocaria "allow" na
+#: esteira como se fosse uma etapa do turno.
+_STATUS_NAO_E_ESTADO = frozenset({"allow", "deny", "ask", "warn"})
+
+
+def estado_do_evento(event_type: str, status: "str | None") -> "str | None":
+    """Traduz um evento do Kernel no estado que a esteira deve mostrar.
+
+    Devolve `None` quando o evento não carrega estado de run — o chamador
+    mantém o que já tinha em vez de apagar a esteira.
+
+    Existe porque o Kernel publica estado por CINCO tópicos diferentes
+    (`run.planning.started`, `run.state.changed`, `run.replanning`,
+    `run.validation.started`, `run.progress.warning`), não só por
+    `run.state.changed`. Assinar apenas esse tópico — como o plano 028 dizia
+    originalmente — perderia planning e evaluating, ou seja, metade da esteira.
+    """
+    if not status:
+        return None
+    s = str(status).strip().lower()
+    if not s or s in _STATUS_NAO_E_ESTADO:
+        return None
+    return s
+
 
 @dataclass(frozen=True)
 class HudState:

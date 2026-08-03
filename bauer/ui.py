@@ -131,6 +131,76 @@ def tool_line(
     return t
 
 
+def tool_block(
+    name: str,
+    arg_summary: str = "",
+    *,
+    status: str = "run",
+    elapsed_ms: int | None = None,
+    result: str = "",
+) -> RenderableType:
+    """A ação do agente COM corpo (plano 028 F3).
+
+    Cabeçalho igual ao `tool_line` (a linha continua sendo a unidade de leitura)
+    e, embaixo, o que a ação de fato fez:
+
+      - edição de arquivo → o diff que a tool aplicou, colorido;
+      - qualquer outra    → nada (o resumo do cabeçalho basta).
+
+    O diff NÃO é recalculado aqui: vem pronto no resultado da tool `patch`
+    (ver ui_diff). Recalcular abriria espaço para exibir uma coisa e ter
+    escrito outra.
+    """
+    from rich.console import Group
+
+    from .ui_diff import parece_diff, render_diff, separar_diff
+
+    cabecalho = tool_line(name, arg_summary, status=status, elapsed_ms=elapsed_ms)
+    if not result or not parece_diff(result):
+        return cabecalho
+    _msg, diff = separar_diff(result)
+    if not diff.strip():
+        return cabecalho
+    return Group(cabecalho, render_diff(diff))
+
+
+def approval_card(titulo: str, corpo: RenderableType) -> RenderableType:
+    """Card de decisão de comando, no tema (plano 028 F3).
+
+    Substitui o `Panel` amarelo cru — a cor de aviso continua no TÍTULO (é
+    aviso de verdade), mas a moldura entra na paleta em vez de puxar um
+    "yellow" do Rich que não existe em lugar nenhum do design.
+    """
+    from rich import box
+    from rich.panel import Panel
+
+    return Panel(
+        corpo,
+        title=Text(titulo, style=f"bold {WARN}"),
+        title_align="left",
+        border_style=FAINT,
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+
+
+def approval_options() -> Text:
+    """A linha de opções do card. `a` em destaque: é a que ENSINA — pergunta
+    uma vez e nunca mais, e é por isso que o gate deixa de engessar."""
+    t = Text("  ")
+    for i, (tecla, rotulo, ensina) in enumerate((
+        ("e", "executar uma vez", False),
+        ("s", "toda a sessão", False),
+        ("a", "sempre (aprende)", True),
+        ("n", "negar", False),
+    )):
+        if i:
+            t.append(" · ", style=FAINT)
+        t.append(tecla, style=f"bold {ACCENT_TEXT if ensina else WHITE}")
+        t.append(f" {rotulo}", style=DIM if ensina else FAINT)
+    return t
+
+
 def skill_line(name: str, score_pct: int) -> Text:
     """`  ↳ skill 'X' (80%)` — nota discreta de skill aplicada."""
     t = Text("  ")

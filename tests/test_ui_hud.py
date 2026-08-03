@@ -93,6 +93,53 @@ class TestEsteiraDoKernel:
         assert g.step_off not in out  # nada "pendente" — o turno acabou
 
 
+class TestEstadoDoEvento:
+    """`estado_do_evento` traduz evento do Kernel → estado da esteira.
+
+    O Kernel publica estado por CINCO tópicos (`run.planning.started`,
+    `run.state.changed`, `run.replanning`, `run.validation.started`,
+    `run.progress.warning`) — assinar só `run.state.changed`, como o plano
+    dizia originalmente, perderia planning e evaluating.
+    """
+
+    def test_planning_started(self):
+        from bauer.ui_hud import estado_do_evento
+
+        assert estado_do_evento("run.planning.started", "planning") == "planning"
+
+    def test_state_changed(self):
+        from bauer.ui_hud import estado_do_evento
+
+        assert estado_do_evento("run.state.changed", "running") == "running"
+
+    def test_validation_started_e_evaluating(self):
+        from bauer.ui_hud import estado_do_evento
+
+        assert estado_do_evento("run.validation.started", "evaluating") == "evaluating"
+
+    def test_policy_evaluated_nao_polui_a_esteira(self):
+        """`policy.evaluated` manda `status=decision.action` — allow/deny/ask —
+        no MESMO campo que os outros usam para estado de run. Ler cru colocaria
+        'allow' na esteira como se fosse etapa do turno."""
+        from bauer.ui_hud import estado_do_evento
+
+        for acao in ("allow", "deny", "ask", "warn"):
+            assert estado_do_evento("policy.evaluated", acao) is None
+
+    def test_evento_sem_status_nao_apaga_o_que_havia(self):
+        """None = 'nada a dizer', e o chamador mantém o estado atual — não é
+        o mesmo que 'Kernel desligado'."""
+        from bauer.ui_hud import estado_do_evento
+
+        assert estado_do_evento("approval.requested", None) is None
+        assert estado_do_evento("qualquer.coisa", "") is None
+
+    def test_normaliza_caixa_e_espaco(self):
+        from bauer.ui_hud import estado_do_evento
+
+        assert estado_do_evento("run.state.changed", "  RUNNING  ") == "running"
+
+
 class TestComandos:
     def test_comandos_aparecem_em_linha_propria(self):
         out = ui.render_str(

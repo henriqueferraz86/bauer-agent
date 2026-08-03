@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.console import Console
 from rich.rule import Rule
 
+from . import theme as _theme_mod
 from .context_manager import ContextManager
 from .machine_id import machine_id as get_machine_id
 from .model_router import ModelRouter
@@ -1485,15 +1486,13 @@ def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
     "once" | "session" | "always" | "deny". Usado pelos dois gates (padrão
     perigoso e allowlist). "always" é o que ENSINA — pergunta uma vez, nunca mais.
     """
-    from rich.panel import Panel as _Panel
+    from .ui import approval_card as _card
+    from .ui import approval_options as _options
+    from .ui_frame import suspend as _suspend
 
     console.print()
-    console.print(_Panel(body, title=title, border_style="yellow", padding=(0, 1)))
-    console.print(
-        "[dim]  [bold]e[/bold] executar uma vez · [bold]s[/bold] toda a sessão · "
-        "[bold]a[/bold] sempre (aprende) · [bold]n[/bold] negar[/dim]"
-    )
-    from .ui_frame import suspend as _suspend
+    console.print(_card(title, body))
+    console.print(_options())
     try:
         with _suspend():
             raw = input("  > ").strip().lower()
@@ -1511,14 +1510,23 @@ def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
     return decision
 
 
+#: Cor de aviso do tema, para markup Rich dentro das mensagens de gate. Vem de
+#: theme.py e não literal — é o mesmo motivo do F0: cor solta no código é como
+#: as três paletas nasceram.
+_THEME_WARN = _theme_mod.WARN
+
+
 def _make_cli_approval_callback(console: Console):
     """Gate 1 — padrões PERIGOSOS (rm -rf, fork bomb…). Compatível com
     check_all_command_guards: (command, description) -> decisão. "always" grava
     no ~/.bauer/approvals.yaml (approve_permanent) pelo próprio pipeline."""
     def _cb(command: str, description: str) -> str:
+        # O título vai como TEXTO puro: quem estiliza é o `approval_card`
+        # (plano 028 F3). Markup aqui competiria com o tema e voltaria a
+        # espalhar cor solta pelo código.
         return _prompt_cmd_decision(
-            console, "[bold yellow]⚠ confirmar comando[/bold yellow]",
-            f"[yellow]{description}[/yellow]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
+            console, "⚠ confirmar comando",
+            f"[{_THEME_WARN}]{description}[/]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
         )
     return _cb
 
@@ -1529,8 +1537,8 @@ def _make_cli_allowlist_callback(console: Console):
     ~/.bauer/allowed_commands.yaml (via ShellRunner.add_learned_command)."""
     def _cb(base: str) -> str:
         return _prompt_cmd_decision(
-            console, "[bold yellow]⚠ comando fora da allowlist[/bold yellow]",
-            f"[white]'{base}'[/white] [yellow]não está na allowlist[/yellow].\n"
+            console, "⚠ comando fora da allowlist",
+            f"[white]'{base}'[/white] [{_THEME_WARN}]não está na allowlist[/].\n"
             f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
         )
     return _cb
@@ -2055,16 +2063,24 @@ def _native_turn_interactive(
 
         if not _guard_blocked:
             _failed = False
+            _elapsed_ms: "int | None" = None
             _cached = deduper.check(name, args) if deduper is not None else None
             if _cached is not None:
                 result = _cached
             else:
+                # Cronômetro real (plano 028 F3). `tool_line` aceita
+                # `elapsed_ms` desde sempre, mas NENHUM call site o passava — o
+                # componente sabia exibir uma duração que ninguém media.
+                # `perf_counter` e não `time()`: medir intervalo com relógio de
+                # parede erra se o relógio do sistema for ajustado no meio.
+                _t0 = time.perf_counter()
                 try:
                     with _tool_exec_status(console, name):
                         result = router.execute_native_call(name, args)
                 except (ToolError, SandboxError) as exc:
                     result = f"[Erro: {exc}]"
                     _failed = True
+                _elapsed_ms = int((time.perf_counter() - _t0) * 1000)
                 if deduper is not None:
                     deduper.record(name, args, result, failed=_failed)
 
@@ -2082,10 +2098,12 @@ def _native_turn_interactive(
 
             display_line = _format_tool_display(name, result)
             try:
-                from .ui import tool_line as _tool_line
-                console.print(_tool_line(
+                from .ui import tool_block as _tool_block
+                console.print(_tool_block(
                     name, display_line,
                     status=("fail" if _failed else "ok"),
+                    elapsed_ms=_elapsed_ms,
+                    result=result,
                 ))
             except Exception:
                 console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
@@ -3847,14 +3865,20 @@ def _run_tool_loop_body(
                     else:
                         _to_execute.append(_a)
 
-            def _exec_action(action_dict: dict) -> tuple[str, str, str]:
-                """Executa 1 action com dedup e timeout."""
+            def _exec_action(action_dict: dict) -> tuple[str, str, str, "int | None"]:
+                """Executa 1 action com dedup, timeout e cronômetro.
+
+                O 4º item é `elapsed_ms` (plano 028 F3) — None quando o
+                resultado veio do dedup, porque aí não houve execução para
+                cronometrar e exibir "0ms" mentiria sobre o que aconteceu.
+                """
                 _name = action_dict.get("action", "?")
                 _args = action_dict.get("args", {}) or {}
                 _cached = _cli_deduper.check(_name, _args)
                 if _cached is not None:
-                    return _name, _cached, _args_sig(_args)
+                    return _name, _cached, _args_sig(_args), None
                 _failed = False
+                _t0 = time.perf_counter()
                 try:
                     from .tool_timeout import call_with_timeout as _call_to
                     _result, _timed_out = _call_to(
@@ -3867,8 +3891,9 @@ def _run_tool_loop_body(
                 except (ToolError, SandboxError) as _exc:
                     _result = f"[Erro: {_exc}]"
                     _failed = True
+                _elapsed = int((time.perf_counter() - _t0) * 1000)
                 _cli_deduper.record(_name, _args, _result, failed=_failed)
-                return _name, _result, _args_sig(_args)
+                return _name, _result, _args_sig(_args), _elapsed
 
             # Um único spinner cobre o batch inteiro (serial ou paralelo) — não
             # dá pra abrir um spinner por tool no caminho paralelo, Rich só
@@ -3910,7 +3935,9 @@ def _run_tool_loop_body(
                     # (onde o snapshot ainda enxerga o que foi registrado) antes
                     # do despacho, nunca um snapshot único reaproveitado entre
                     # as tasks.
-                    ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(_to_execute)
+                    ordered_results: list[tuple[str, str, str, "int | None"]] = [
+                        ("", "", "", None)
+                    ] * len(_to_execute)
                     with ThreadPoolExecutor(max_workers=min(len(_to_execute), 8)) as _ex:
                         _fmap = {
                             _ex.submit(contextvars.copy_context().run, _exec_action, a): i
@@ -3921,7 +3948,9 @@ def _run_tool_loop_body(
                 else:
                     ordered_results = [_exec_action(a) for a in _to_execute]
 
-            for _exec_dict, (action_name, tool_result, _asig) in zip(_to_execute, ordered_results):
+            for _exec_dict, (action_name, tool_result, _asig, _elapsed_ms) in zip(
+                _to_execute, ordered_results
+            ):
                 if budget is not None and not budget.is_exhausted:
                     budget.consume_tool_call()
 
@@ -3940,10 +3969,12 @@ def _run_tool_loop_body(
                 # Display inteligente — filtra ruído, mostra apenas o relevante
                 display_line = _format_tool_display(action_name, tool_result)
                 try:
-                    from .ui import tool_line as _tool_line
-                    console.print(_tool_line(
+                    from .ui import tool_block as _tool_block
+                    console.print(_tool_block(
                         action_name, display_line,
                         status=("fail" if tool_result.startswith("[Erro:") else "ok"),
+                        elapsed_ms=_elapsed_ms,
+                        result=tool_result,
                     ))
                 except Exception:
                     console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
@@ -4797,6 +4828,43 @@ def run_agent_session(
     _hud_tokens_por_segundo = 0.0
     _hud_kernel_estado: "str | None" = None
 
+    # Esteira do Kernel: assina o bus e acende os estados conforme o turno
+    # governado avança. Só existe quando o Kernel está ligado — sem ele
+    # `_hud_kernel_estado` fica None e a esteira nem aparece (regra do plano
+    # 028: não inventa estado).
+    #
+    # Assina o WILDCARD "*", não `run.state.changed`: o Kernel publica estado
+    # por cinco tópicos diferentes (planning.started, state.changed,
+    # replanning, validation.started, progress.warning). Assinar só um — como
+    # o plano dizia — perderia planning e evaluating.
+    if kernel is not None:
+        from . import ui_frame as _ui_frame_mod
+        from .ui_hud import estado_do_evento as _estado_do_evento
+
+        def _on_kernel_event(evt) -> None:
+            nonlocal _hud_kernel_estado
+            try:
+                novo = _estado_do_evento(
+                    getattr(evt, "event_type", ""), getattr(evt, "status", None)
+                )
+                if novo is None:
+                    return  # evento sem estado de run: mantém o que já havia
+                _hud_kernel_estado = novo
+                _frame_atual = _ui_frame_mod.current_frame()
+                if _frame_atual is not None:
+                    _frame_atual.set_hud(_hud_state_atual())
+            except Exception as _exc:  # noqa: BLE001 — HUD nunca derruba o run
+                from .logging_config import log_suppressed
+                log_suppressed("hud.kernel_event", _exc)
+
+        try:
+            _kernel_bus = getattr(kernel, "bus", None)
+            if _kernel_bus is not None:
+                _kernel_bus.subscribe("*", _on_kernel_event)
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed
+            log_suppressed("hud.kernel_subscribe", _exc)
+
     def _hud_state_atual():
         from .ui_hud import HudState
         from .usage_pricing import provider_e_local as _e_local
@@ -5441,6 +5509,9 @@ def run_agent_session(
                 # imprimiram o necessário no console — o run registra o motivo
                 return {"status": "failed", "error": f"turno terminou em {o.kind}"}
 
+            # Esteira zerada no início do turno: sem isto o rodapé exibiria o
+            # "completed" do turno ANTERIOR enquanto este ainda nem começou.
+            _hud_kernel_estado = None
             # O quadro cobre o `execute()` INTEIRO, não cada invocação do
             # executor: com replan o corpo do turno roda de novo, e abrir/fechar
             # o quadro a cada tentativa faria o HUD piscar no meio do turno.
