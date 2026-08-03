@@ -1415,17 +1415,46 @@ def _busy_spinner(console: Console, text: str):
 
     Best-effort: se o console não suportar live display (outro Live ativo,
     output capturado), segue sem spinner em vez de quebrar o turno.
+
+    Registra o spinner em `ui_frame` (plano 028 F2) — QUALQUER `input()` que
+    rodar dentro do bloco, em qualquer profundidade, pode envolver-se com
+    `ui_frame.suspend()` e pausar este spinner sem precisar saber que ele
+    existe. É isto que substitui a antiga allowlist de tools "interativas":
+    não é mais preciso listar de antemão quem chama input() — quem chama só
+    precisa suspender.
     """
+    from .ui_frame import current_frame as _current_frame
+    from .ui_frame import register as _register
+
+    # Com o quadro do turno ativo (plano 028 F2), a atividade vira uma linha do
+    # TRILHO em vez de um spinner próprio: o Rich admite um único display ao
+    # vivo por vez, e abrir um `console.status()` aqui falharia em silêncio,
+    # deixando o usuário sem indicador — justamente o vão que o spinner cobre.
+    _frame = _current_frame()
+    if _frame is not None:
+        from rich.text import Text as _Text
+
+        _rotulo = _Text.from_markup(text).plain.strip()
+        _frame.set_atividade(_rotulo)
+        try:
+            yield
+        finally:
+            _frame.set_atividade("")
+        return
+
     _status = None
     try:
         _status = console.status(text, spinner="dots")
         _status.__enter__()
     except Exception:
         _status = None
-    try:
+    if _status is None:
         yield
-    finally:
-        if _status is not None:
+        return
+    with _register(_status):
+        try:
+            yield
+        finally:
             try:
                 _status.__exit__(None, None, None)
             except Exception:
@@ -1437,31 +1466,17 @@ def _thinking_status(console: Console, model_name: str):
     return _busy_spinner(console, f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]")
 
 
-# Tools que fazem I/O interativo direto no terminal (input() bloqueante) —
-# NUNCA envolver em _busy_spinner. Rich Live display (console.status) e
-# input() disputam o controle do terminal: a thread de refresh do spinner
-# corrompe a leitura de stdin, fazendo o texto digitado sumir/aparecer
-# truncado ("nao consigo escrever" — incidente real 2026-07-02, regressão
-# introduzida pelo próprio spinner de execução de tool no commit anterior).
-_INTERACTIVE_TOOLS: frozenset[str] = frozenset({"clarify"})
-
-#: Tools que EXECUTAM comando e podem disparar o prompt de confirmação. Quando
-#: a confirmação interativa está ativa (_CONFIRM_EXEC_ACTIVE), elas não podem ter
-#: spinner em volta — Rich Live + input() se atropelam (o bug do "totodo" do
-#: clarify). Sem confirmação ativa, o spinner normal continua.
-_CONFIRM_CAPABLE_TOOLS: frozenset[str] = frozenset({"run_command", "execute_code", "process"})
-_CONFIRM_EXEC_ACTIVE: bool = False
-
-
 def _tool_exec_status(console: Console, name: str):
-    """_busy_spinner para execução de tool — no-op (nullcontext) para tools
-    que fazem input() direto, ver _INTERACTIVE_TOOLS. Também no-op para tools
-    de execução quando a confirmação interativa de comando está ligada (o
-    prompt de aprovação faria input() sob o spinner)."""
-    if name in _INTERACTIVE_TOOLS:
-        return nullcontext()
-    if _CONFIRM_EXEC_ACTIVE and name in _CONFIRM_CAPABLE_TOOLS:
-        return nullcontext()
+    """_busy_spinner para execução de tool.
+
+    Até o F2 (plano 028) isto consultava uma allowlist de nomes de tool
+    "interativas" (clarify, run_command sob confirmação…) para decidir se
+    abria spinner — esquecer uma tool nova na lista reintroduzia o bug do
+    "totodo" (Live + input() corrompendo stdin, incidente 2026-07-02). Agora
+    o spinner SEMPRE abre, registrado em `ui_frame`; a tool que precisar de
+    input() suspende sozinha via `ui_frame.suspend()` (ver `_clarify` em
+    `bauer/tools/agent_misc.py` e `_prompt_cmd_decision` abaixo). Não há mais
+    lista para manter."""
     return _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]")
 
 
@@ -1478,8 +1493,10 @@ def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
         "[dim]  [bold]e[/bold] executar uma vez · [bold]s[/bold] toda a sessão · "
         "[bold]a[/bold] sempre (aprende) · [bold]n[/bold] negar[/dim]"
     )
+    from .ui_frame import suspend as _suspend
     try:
-        raw = input("  > ").strip().lower()
+        with _suspend():
+            raw = input("  > ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return "deny"
     mapping = {
@@ -1541,6 +1558,39 @@ def _make_streamer(console: Console):
         return ConsoleStreamRenderer(console)
     except Exception:  # noqa: BLE001 — nunca impedir o turno por causa do render
         return None
+
+
+@contextmanager
+def _quadro_do_turno(console: Console):
+    """Abre o quadro vivo do turno (HUD fixo + trilho), ou não abre nada.
+
+    Devolve o `TurnFrame` ou `None` — `None` fora de terminal interativo, com
+    o streaming desligado no config, ou se o terminal não suportar Live. Quem
+    chama trata os dois casos com o mesmo `with`, sem `if` espalhado.
+
+    O quadro é do TURNO, não da sessão: entre um prompt e outro quem desenha o
+    rodapé é a `bottom_toolbar` do prompt_toolkit (que precisa do terminal
+    livre para ler input). Os dois nunca coexistem — é essa alternância que
+    mantém o estado sempre visível sem os dois brigarem pelo terminal.
+    """
+    from .ui_frame import TurnFrame
+
+    try:
+        if not sys.stdin.isatty():
+            yield None
+            return
+    except Exception:  # noqa: BLE001
+        yield None
+        return
+
+    try:
+        frame = TurnFrame(console)
+    except Exception:  # noqa: BLE001
+        yield None
+        return
+
+    with frame:
+        yield frame if frame.is_live else None
 
 
 def _ja_exibido(streamer, texto: str) -> bool:
@@ -3824,12 +3874,12 @@ def _run_tool_loop_body(
             # dá pra abrir um spinner por tool no caminho paralelo, Rich só
             # permite um Live display ativo por vez (as threads do
             # ThreadPoolExecutor rodam em background, só a thread principal
-            # mexe no console). NUNCA envolve se alguma action do lote for
-            # interativa (ex.: clarify) — Live display corrompe input().
-            _batch_interactive = any(
-                a.get("action", "") in _INTERACTIVE_TOOLS for a in _to_execute
-            )
-            if not _to_execute or _batch_interactive:
+            # mexe no console). Antes do F2 (plano 028) uma tool "interativa"
+            # no lote (ex.: clarify) fazia o batch inteiro pular o spinner —
+            # allowlist mantida à mão, ver _tool_exec_status acima. Agora o
+            # spinner sempre abre; a tool suspende sozinha quando chama
+            # input() (ver ui_frame.suspend()).
+            if not _to_execute:
                 _busy_label = ""
             elif len(_to_execute) == 1:
                 _busy_label = f"[dim]executando {_to_execute[0].get('action', '?')}… (Ctrl+C interrompe)[/dim]"
@@ -3840,12 +3890,32 @@ def _run_tool_loop_body(
             with _busy_spinner(console, _busy_label) if _busy_label else nullcontext():
                 # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
                 if len(_to_execute) > 1:
+                    import contextvars
                     from concurrent.futures import ThreadPoolExecutor
                     from concurrent.futures import as_completed as _as_completed
 
+                    # ThreadPoolExecutor NÃO herda o Context da thread chamadora
+                    # por conta própria — cada worker começa com um ContextVar
+                    # limpo. Sem isto, a pilha de displays registrada em
+                    # ui_frame (o spinner acima, aberto na thread principal)
+                    # fica invisível para uma tool com input() rodando no pool:
+                    # suspend() veria a pilha vazia e não pausaria nada, trazendo
+                    # de volta o bug do "totodo" — só que agora no caminho
+                    # paralelo.
+                    #
+                    # Um `Context` NÃO pode rodar em duas threads ao mesmo tempo
+                    # (`.run()` levanta RuntimeError "already entered" — testado
+                    # na prática, não é só doc) — por isso cada submit leva o
+                    # SEU PRÓPRIO `copy_context()`, tirado na thread principal
+                    # (onde o snapshot ainda enxerga o que foi registrado) antes
+                    # do despacho, nunca um snapshot único reaproveitado entre
+                    # as tasks.
                     ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(_to_execute)
                     with ThreadPoolExecutor(max_workers=min(len(_to_execute), 8)) as _ex:
-                        _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(_to_execute)}
+                        _fmap = {
+                            _ex.submit(contextvars.copy_context().run, _exec_action, a): i
+                            for i, a in enumerate(_to_execute)
+                        }
                         for _fut in _as_completed(_fmap):
                             ordered_results[_fmap[_fut]] = _fut.result()
                 else:
@@ -4719,6 +4789,43 @@ def run_agent_session(
         from .logging_config import log_suppressed
         log_suppressed("plugin_hooks.session_start", _exc)
 
+    # Estado do HUD (plano 028 F2) — UMA fonte para as duas superfícies que
+    # desenham o rodapé: a `bottom_toolbar` do prompt_toolkit (enquanto o
+    # prompt espera) e o `Live` do Rich (durante o turno). Antes do F2 a
+    # toolbar montava o HTML na mão, com a paleta antiga hardcoded — e por isso
+    # escapou inteira do F0.
+    _hud_tokens_por_segundo = 0.0
+    _hud_kernel_estado: "str | None" = None
+
+    def _hud_state_atual():
+        from .ui_hud import HudState
+        from .usage_pricing import provider_e_local as _e_local
+
+        # O modelo do ÚLTIMO TURNO, não o configurado. Com roteamento ligado os
+        # dois divergem, e a barra afirmava o configurado enquanto o custo subia
+        # no outro. Marca com `→` quando o turno não rodou no modelo escolhido.
+        _m = _modelo_do_turno or model_name
+        _rotulo = str(_m) if _m == model_name else f"→ {_m}"
+
+        # O selo segue o provider do TURNO (mesma razão do modelo acima): o
+        # roteamento pode mandar um turno para a nuvem numa sessão que começou
+        # local, e o selo tem que contar isso — é o dado que ele existe para dar.
+        try:
+            from .cost_meter import provider_from_client as _pfc
+            _local = _e_local(_pfc(client))
+        except Exception:  # noqa: BLE001
+            _local = False
+
+        return HudState(
+            local=_local,
+            modelo=_rotulo,
+            ctx_pct=max(0.0, min(1.0, ctx.usage_pct)),
+            custo_usd=float(getattr(stats, "cost_usd_total", 0.0) or 0.0),
+            tokens_por_segundo=_hud_tokens_por_segundo,
+            kernel_estado=_hud_kernel_estado,
+            comandos=(("/loop", "autonomo"), ("/model", "modelo"), ("/exit", "sair")),
+        )
+
     # Cria sessão prompt_toolkit (autocomplete de /) apenas em terminal interativo real.
     # Só exige stdin como tty — stdout pode estar capturado pelo Rich em alguns terminais.
     # Tenta criar; se o terminal não suportar (ex: pipe, CI), cai para console.input().
@@ -4731,38 +4838,10 @@ def run_agent_session(
         # consumo de tokens/custo refletem na barra a cada prompt.
         def _bottom_toolbar():
             try:
-                import html as _html
-                from .usage_pricing import format_cost as _fmt_cost_tb
-                _cost = _fmt_cost_tb(stats.cost_usd_total)
-                _p = max(0.0, min(1.0, ctx.usage_pct))
-                _pct = int(_p * 100)
-                # Medidor Minimal: preenchido no acento, vazio apagado; o pct
-                # vira vermelho só em perigo de estouro (>85%).
-                _w = 8
-                _fill = round(_p * _w)
-                _danger = _p > 0.85
-                _fc = "#ef4444" if _danger else "#00d4aa"
-                _pc = "#ef4444" if _danger else "#6b7280"
-                _gauge = (
-                    f"<style fg='{_fc}'>{'▰' * _fill}</style>"
-                    f"<style fg='#4b5563'>{'▱' * (_w - _fill)}</style>"
-                    f" <style fg='{_pc}'>{_pct}%</style>"
-                )
-                # O modelo do ÚLTIMO TURNO, não o configurado. Com roteamento
-                # ligado os dois divergem, e a barra afirmava o configurado
-                # enquanto o custo subia no outro. Marca com `→` quando o turno
-                # não rodou no modelo que o usuário escolheu.
-                _m = _modelo_do_turno or model_name
-                _rotulo = str(_m) if _m == model_name else f"→ {_m}"
-                return HTML(
-                    " <b><style fg='#00d4aa'>◆ BAUER</style></b>"
-                    f"  <style fg='#3b82f6'>{_html.escape(_rotulo)}</style>"
-                    f"  ·  ctx {_gauge}"
-                    f"  ·  <style fg='#a855f7'>{_html.escape(str(_cost))}</style>"
-                    "  ·  <style fg='#6b7280'>/loop · /model · /exit</style> "
-                )
+                from .ui_hud import render_hud_html as _render_html
+                return HTML(_render_html(_hud_state_atual()))
             except Exception:
-                return " ◆ BAUER "
+                return " BAUER "
         try:
             _pt_session = _make_prompt_session(bottom_toolbar=_bottom_toolbar)
         except Exception as _pt_exc:
@@ -4791,7 +4870,12 @@ def run_agent_session(
     # Confirmação interativa de comando perigoso (só em TTY real). Em vez de
     # bloquear em silêncio, pergunta e o "always" ENSINA o allowlist. Resolvido
     # uma vez; instala o callback por turno (o /loop usa motor próprio).
-    global _CONFIRM_EXEC_ACTIVE
+    #
+    # Até o F2 (plano 028) havia aqui uma segunda variável global,
+    # `_CONFIRM_EXEC_ACTIVE`, só para avisar `_tool_exec_status` que não podia
+    # abrir spinner em volta de tools de execução. Não é mais necessária: o
+    # spinner sempre abre e `_prompt_cmd_decision` (chamado pelos callbacks
+    # abaixo) suspende sozinho via `ui_frame.suspend()` quando pede input().
     _confirm_cb = None
     try:
         from .config_loader import load_config as _lc_cc
@@ -4808,7 +4892,6 @@ def run_agent_session(
                 _sr.allowlist_callback = _make_cli_allowlist_callback(console)
             except Exception:
                 pass
-    _CONFIRM_EXEC_ACTIVE = _confirm_cb is not None
     _listen_loop_active = False
 
     while True:
@@ -5317,6 +5400,19 @@ def run_agent_session(
                 streamer=_stream_holder["atual"],
             )
 
+        def _invoke_turn_com_quadro():
+            """O turno inteiro dentro do quadro vivo (plano 028 F2).
+
+            É isto que resolve o D3: o HUD fica colado no rodapé durante a
+            execução — antes o estado sumia no Enter e só voltava no prompt
+            seguinte. Fora de TTY, `_quadro_do_turno` devolve um nullcontext e
+            tudo segue pelo caminho antigo.
+            """
+            with _quadro_do_turno(console) as _frame:
+                if _frame is not None:
+                    _frame.set_hud(_hud_state_atual())
+                return _invoke_turn()
+
         if kernel is not None:
             # ── Kernel 6c-3: turno governado (kernel.enabled=true) ────────────
             # O corpo do turno vira EXECUTOR do kernel (o streaming pro console
@@ -5345,10 +5441,16 @@ def run_agent_session(
                 # imprimiram o necessário no console — o run registra o motivo
                 return {"status": "failed", "error": f"turno terminou em {o.kind}"}
 
-            _kout = kernel.execute(_KReq(
-                task=user_input, session_id=session_id or "",
-                agent_id="cli.agent", input={"endpoint": "cli.agent"},
-            ), executor=_turn_executor)
+            # O quadro cobre o `execute()` INTEIRO, não cada invocação do
+            # executor: com replan o corpo do turno roda de novo, e abrir/fechar
+            # o quadro a cada tentativa faria o HUD piscar no meio do turno.
+            with _quadro_do_turno(console) as _frame:
+                if _frame is not None:
+                    _frame.set_hud(_hud_state_atual())
+                _kout = kernel.execute(_KReq(
+                    task=user_input, session_id=session_id or "",
+                    agent_id="cli.agent", input={"endpoint": "cli.agent"},
+                ), executor=_turn_executor)
             outcome = _captured.get("outcome")
             if outcome is None:
                 # governança barrou ANTES do turno (kill-switch/policy/budget) —
@@ -5362,7 +5464,7 @@ def run_agent_session(
                     )
                 continue
         else:
-            outcome = _invoke_turn()
+            outcome = _invoke_turn_com_quadro()
         # Turno roteado (heurístico): o client do profile vale SÓ para este
         # turno — não adota na sessão, a menos que o fallback tenha trocado o
         # client no meio do turno (aí a troca é intencional e permanece).
@@ -5384,6 +5486,20 @@ def run_agent_session(
             _native_session_ok = _state.native_session_ok
         _fb_idx = _state.fb_idx
         _mem_turn_idx = _state.mem_turn_idx
+
+        # tok/s do turno que acabou de rodar — o StreamDiag do renderer (F1) já
+        # mede; aqui só é publicado no HUD para aparecer na barra do próximo
+        # prompt. Fica o valor do ÚLTIMO turno (não zera): "18.4 tok/s" parado
+        # na barra informa a velocidade real da máquina; zerar entre turnos só
+        # apagaria o número que o usuário quer comparar.
+        _streamer_do_turno = _stream_holder.get("atual")
+        if _streamer_do_turno is not None:
+            try:
+                _tps = _streamer_do_turno.diag.tokens_per_second
+                if _tps > 0:
+                    _hud_tokens_por_segundo = _tps
+            except Exception:  # noqa: BLE001 — métrica nunca derruba o turno
+                pass
 
         if outcome.kind == "final":
             if _ja_exibido(_stream_holder.get("atual"), outcome.display):

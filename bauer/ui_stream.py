@@ -147,11 +147,13 @@ class ConsoleStreamRenderer:
         if self._cabecalho_impresso or not self.show_header:
             return
         self._cabecalho_impresso = True
-        self.console.print()
+        frame = self._frame()
+        _print = frame.print_above if frame is not None else self.console.print
+        _print("")
         try:
-            self.console.print(ui.response_header())
+            _print(ui.response_header())
         except Exception:  # noqa: BLE001
-            self.console.print(Text("bauer", style=f"bold {theme.ACCENT_TEXT}"))
+            _print(Text("bauer", style=f"bold {theme.ACCENT_TEXT}"))
 
     def _consumir_blocos_fechados(self) -> None:
         """Fecha todo bloco já completo dentro do buffer corrente.
@@ -211,7 +213,14 @@ class ConsoleStreamRenderer:
             return
         self._parar_live()  # transitório: a prévia crua some
         try:
-            self.console.print(self._formatar(texto))
+            frame = self._frame()
+            if frame is not None:
+                # Com quadro ativo, o bloco selado vai para o HISTÓRICO (acima
+                # da região viva), não para o console direto — senão sairia
+                # embaixo do HUD e seria apagado no refresh seguinte.
+                frame.print_above(self._formatar(texto))
+            else:
+                self.console.print(self._formatar(texto))
         except Exception:  # noqa: BLE001
             return
         self._algo_escrito = True
@@ -226,12 +235,31 @@ class ConsoleStreamRenderer:
         except Exception:  # noqa: BLE001 — Markdown quebrado vira texto puro
             return Text(texto.rstrip("\n"))
 
+    def _frame(self):
+        """O quadro do turno, se houver (plano 028 F2). None = caminho do F1,
+        com `Live` próprio por bloco."""
+        try:
+            from .ui_frame import current_frame
+
+            return current_frame()
+        except Exception:  # noqa: BLE001
+            return None
+
     def _pintar_parcial(self) -> None:
         """Desenha o bloco ainda aberto como texto puro, com o cursor piscando."""
         if not self._bloco:
             return
         corpo = Text(self._bloco.rstrip("\n"))
         corpo.append(ui.active_glyphs().caret, style=theme.ACCENT)
+
+        # Com o quadro do turno ativo, a prévia mora na região viva COMPARTILHADA
+        # — abrir um Live próprio aqui colidiria com o do quadro (o Rich admite
+        # um só) e o texto sumiria.
+        frame = self._frame()
+        if frame is not None:
+            frame.set_rail([corpo])
+            return
+
         if self._live is None:
             self._live = self._abrir_live(corpo)
         else:
@@ -269,6 +297,12 @@ class ConsoleStreamRenderer:
             return None
 
     def _parar_live(self) -> None:
+        # Com quadro ativo, a "prévia" é o trilho compartilhado — limpar é
+        # esvaziá-lo, não fechar um Live (que nem é nosso).
+        frame = self._frame()
+        if frame is not None:
+            frame.clear_rail()
+            return
         if self._live is None:
             return
         try:

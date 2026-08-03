@@ -111,6 +111,16 @@ class MiscToolsMixin:
         choices_hint = f" [{' / '.join(choices)}]" if choices else ""
         prompt = f"\n🤔 {question}{choices_hint}\n> "
 
+        # ui_frame.suspend() pausa qualquer spinner/HUD ao vivo que esteja
+        # registrado (plano 028 F2) antes do input() — sem isto, a thread de
+        # refresh do display corrompe a leitura de stdin ("nao consigo
+        # escrever", incidente real 2026-07-02). Este módulo não importa
+        # agent.py (evita dependência circular tools→agent); ui_frame é de
+        # baixo nível e não sabe nada sobre agent.py, então importa limpo.
+        # No-op se nada estiver registrado (modo não-interativo já saiu acima,
+        # /loop headless, etc.) — sempre seguro de chamar.
+        from bauer.ui_frame import suspend as _suspend_display
+
         try:
             import signal
             import threading
@@ -127,16 +137,17 @@ class MiscToolsMixin:
                 hasattr(signal, "SIGALRM")
                 and threading.current_thread() is threading.main_thread()
             )
-            if _can_alarm:
-                try:
-                    signal.signal(signal.SIGALRM, _timeout_handler)
-                    signal.alarm(300)  # timeout de 5 min p/ não travar indefinido
+            with _suspend_display():
+                if _can_alarm:
+                    try:
+                        signal.signal(signal.SIGALRM, _timeout_handler)
+                        signal.alarm(300)  # timeout de 5 min p/ não travar indefinido
+                        answer = input(prompt).strip()
+                        signal.alarm(0)
+                    except (ValueError, AttributeError, OSError):
+                        answer = input(prompt).strip()
+                else:
                     answer = input(prompt).strip()
-                    signal.alarm(0)
-                except (ValueError, AttributeError, OSError):
-                    answer = input(prompt).strip()
-            else:
-                answer = input(prompt).strip()
 
         except (KeyboardInterrupt, TimeoutError, EOFError):
             return "[clarify] Sem resposta do usuario (timeout/cancelado)."

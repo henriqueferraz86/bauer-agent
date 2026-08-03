@@ -93,6 +93,17 @@ _ANTHROPIC_CACHE_CREATE_RATIO = 1.25
 _PROVIDERS_SEM_CUSTO = frozenset({"ollama", "lmstudio"})
 
 
+def provider_e_local(provider: str) -> bool:
+    """True se o provider roda nesta máquina (não fatura, nada sai daqui).
+
+    Mesma lista que zera o preço em `get_price` — o selo `◆ local` do HUD
+    (plano 028 F2) e o cálculo de custo precisam concordar por construção. Duas
+    listas separadas divergiriam, e aí a tela diria "local" cobrando, ou
+    "nuvem" de graça.
+    """
+    return provider.lower() in _PROVIDERS_SEM_CUSTO
+
+
 def get_price(provider: str, model: str) -> tuple[float, float]:
     """Return (input_per_1M, output_per_1M) USD for a provider/model pair.
 
