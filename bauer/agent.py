@@ -1198,19 +1198,73 @@ def _format_tool_display(action: str, result: str) -> str:
 
 
 
+#: Marca no host → nome do provider. Sem isto, TODO provider de nuvem virava
+#: "openai": a versão anterior só separava Ollama do resto. Na tela isso ficou
+#: como uma contradição visível — o boot dizia `openrouter` (do config) e o
+#: painel de sessão dizia `openai` (desta inferência), sobre a mesma sessão.
+_MARCAS_DE_HOST: "tuple[tuple[str, str], ...]" = (
+    (":11434", "ollama"), ("ollama", "ollama"),
+    ("openrouter", "openrouter"),
+    ("anthropic", "anthropic"),
+    ("deepseek", "deepseek"),
+    ("groq", "groq"),
+    ("mistral", "mistral"),
+    ("together", "together"),
+    ("cerebras", "cerebras"),
+    ("sambanova", "sambanova"),
+    ("perplexity", "perplexity"),
+    ("fireworks", "fireworks"),
+    ("moonshot", "moonshot"),
+    ("dashscope", "alibaba"),
+    ("opencode", "opencode"),
+    ("x.ai", "xai"),
+    ("googleapis", "gemini"),
+    ("azure", "azure"),
+    ("openai", "openai"),
+)
+# Só marcas de DOMÍNIO. Porta não entra, com uma exceção: `:11434` é convenção
+# fixa do Ollama e de mais nada. A porta 1234 (default do LM Studio) foi
+# testada e removida — é porta genérica, usada por qualquer servidor
+# OpenAI-compat local, e chutar "lmstudio" a partir dela seria o mesmo tipo de
+# palpite que esta função existe para consertar. Endpoint local desconhecido
+# é honestamente "openai" (OpenAI-compat de origem indeterminada).
+
+
 def _detectar_provider_por_host(host: str) -> str:
     """Infere o provider a partir da URL do client, quando ele nao se identifica.
 
     A porta 11434 e o sinal forte: e a porta do Ollama, fixa por convencao. A
     heuristica antiga olhava so o NOME do host ("ollama" in host), que falha em
     localhost/127.0.0.1 — ou seja, em praticamente toda instalacao real.
+
+    Ultimo recurso: quando nem o client nem o config dizem quem sao. O nome
+    generico "openai" so sai quando o host nao casa com nada conhecido — e ai
+    e honesto, porque o endpoint e mesmo OpenAI-compat de origem desconhecida.
     """
     h = (host or "").lower()
     if not h:
         return "openai"
-    if ":11434" in h or "ollama" in h:
-        return "ollama"
+    for marca, nome in _MARCAS_DE_HOST:
+        if marca in h:
+            return nome
     return "openai"
+
+
+def _provider_declarado() -> str:
+    """O provider que o config DECLARA — a fonte que não precisa adivinhar.
+
+    O boot usa exatamente isto (`state["configured_provider"]`); o painel de
+    sessão inferia pelo host e discordava na tela. Vale como verdade no boot,
+    quando o client ainda é o configurado; turno roteado é marcado à parte,
+    pelo `→` do rodapé.
+    """
+    try:
+        from .config_loader import load_config
+        return str(load_config().model.provider or "")
+    except Exception as exc:  # noqa: BLE001 — sem config, cai na inferência
+        from .logging_config import log_suppressed
+        log_suppressed("provider.declarado", exc)
+        return ""
 
 
 def _stream_to_sink(
@@ -4846,8 +4900,14 @@ def run_agent_session(
     #
     # A porta 11434 é o sinal confiável (é a do Ollama, fixa por convenção);
     # o nome só como reforço.
-    _provider = getattr(client, "_provider", None) or _detectar_provider_por_host(
-        getattr(client, "host", "")
+    # Ordem: o que o client afirma > o que o config DECLARA > inferência pelo
+    # host. O config entrou no meio porque o painel dizia "openai" para uma
+    # sessão OpenRouter enquanto o boot, lendo o config, dizia "openrouter" —
+    # duas afirmações contraditórias sobre a mesma sessão, na mesma tela.
+    _provider = (
+        getattr(client, "_provider", None)
+        or _provider_declarado()
+        or _detectar_provider_por_host(getattr(client, "host", ""))
     )
     # Uma porta só para o que entra na janela (S9). O prompt do sistema é
     # INSTRUÇÃO — e é a única coisa aqui que é; tudo que vier de arquivo, web ou
