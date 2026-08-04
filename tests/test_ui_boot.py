@@ -34,7 +34,12 @@ ESTADO = {
     "ram_total_mb": 62464,
     "status": "ok",
     "notes": [],
-    "generated_at": _agora_iso(),
+    # SEM `generated_at` de propósito: aqui ele seria avaliado no IMPORT e o
+    # relógio congelaria. Localmente a suíte roda em segundos e passava; no
+    # runner Windows do CI, 3 minutos separavam o import do teste, e o painel
+    # dizia (corretamente) "do cache, medido há 3 min" enquanto o teste exigia
+    # "verificado agora" — o código estava certo, o teste é que media errado.
+    # Quem precisa de um instante específico passa o seu (ver abaixo).
 }
 
 
@@ -103,7 +108,8 @@ class TestProcedencia:
     dias atrás mente com números verdadeiros."""
 
     def test_medido_agora(self):
-        out = ui.render_str(boot_panel(ESTADO), 100)
+        # `_agora_iso()` resolvido AQUI, na execução do teste — não no import.
+        out = ui.render_str(boot_panel({**ESTADO, "generated_at": _agora_iso()}), 100)
         assert "verificado agora" in out
 
     def test_cache_diz_a_idade(self):
@@ -127,6 +133,19 @@ class TestProcedencia:
         """`datetime.now().isoformat()` (sem tz) aparece em state antigo."""
         ingenuo = datetime.now().isoformat(timespec="seconds")
         assert _idade(ingenuo) != ""
+
+    def test_fixture_nao_congela_o_relogio(self):
+        """Trava a regressão: `ESTADO` não pode voltar a trazer `generated_at`.
+
+        Um timestamp no dict de módulo é avaliado no import, e a distância até
+        a execução do teste vira função da velocidade da máquina — passa local,
+        falha em runner lento. Foi assim que este arquivo quebrou o CI do
+        Windows (import → teste levou 3 min lá, segundos aqui).
+        """
+        assert "generated_at" not in ESTADO, (
+            "ESTADO voltou a fixar generated_at no import — o relógio congela "
+            "e o teste passa a medir a velocidade da máquina, não o código"
+        )
 
 
 class TestNaoMedeParaExibir:
