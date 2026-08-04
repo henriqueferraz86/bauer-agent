@@ -113,9 +113,42 @@ class TestTrocaDeAcento:
             theme.set_accent("cor-que-nao-existe")
 
     def test_next_accent_cicla_e_da_a_volta(self):
-        nomes = theme.accent_names()
-        theme.set_accent(nomes[-1])
-        assert theme.next_accent() == nomes[0]
+        """Ciclo usa `cycle_order` (vizinhos distintos), não a ordem do
+        catálogo (agrupada por família)."""
+        ordem = theme.cycle_order()
+        theme.set_accent(ordem[-1])
+        assert theme.next_accent() == ordem[0]
+
+    def test_ciclo_visita_todos_uma_vez(self):
+        ordem = theme.cycle_order()
+        assert sorted(ordem) == sorted(theme.accent_names())
+        assert len(set(ordem)) == len(ordem)
+
+    def test_todo_salto_do_ciclo_e_perceptivel(self):
+        """A razão de o ciclo ter ordem própria.
+
+        Pela ordem do catálogo (por família), 7 dos 16 saltos ficavam abaixo de
+        ΔE 25 — o MESMO limiar que usamos para dizer que duas cores são
+        confundíveis. O primeiro salto era violeta → lavanda, dois roxos: o
+        usuário apertava o atalho e nada parecia acontecer. Relatado em uso
+        real como "ctrl+t não funciona".
+        """
+        ordem = theme.cycle_order()
+        for i, nome in enumerate(ordem):
+            seguinte = ordem[(i + 1) % len(ordem)]
+            d = theme.delta_e(theme.PALETAS[nome], theme.PALETAS[seguinte])
+            assert d >= theme.DELTA_E_MINIMO, (
+                f"salto {nome} → {seguinte} tem ΔE {d:.1f}: imperceptível, "
+                "e um atalho que não se vê é indistinguível de um quebrado"
+            )
+
+    def test_acento_fora_do_ciclo_nao_quebra(self):
+        """Config antigo pode nomear um acento que saiu do catálogo."""
+        theme.ACCENT_NAME = "acento-que-nao-existe-mais"
+        try:
+            assert theme.next_accent() == theme.cycle_order()[0]
+        finally:
+            theme.set_accent("violeta")
 
     def test_tokens_acompanham_a_troca(self):
         """O dict é MUTADO no lugar: quem fez `from theme import TOKENS`
@@ -321,6 +354,54 @@ class TestFonteUnica:
         assert not ("c-0" in teclas and "c-t" not in teclas), (
             "Ctrl+0 não pode ser o único atalho — não atravessa VT100"
         )
+
+    def test_persistir_acento_nunca_cria_config(self, tmp_path, monkeypatch):
+        """Regressão de um bug que QUEBROU a máquina de um usuário.
+
+        `_persistir_acento` chamava `set_config_value` com o default relativo
+        `"config.yaml"`. Rodando de dentro de um projeto sem config próprio, a
+        função CRIAVA o arquivo — com uma chave só, `agent.accent`. Esse
+        arquivo passava a ofuscar o `~/.bauer/config.yaml`, e todo comando
+        `bauer` naquela pasta morria em "Config inválida: model: Field
+        required". Apertar Ctrl+T derrubava o agente inteiro.
+        """
+        from bauer.agent import _persistir_acento
+
+        projeto = tmp_path / "projeto-sem-config"
+        projeto.mkdir()
+        home = tmp_path / "home-sem-config"
+        home.mkdir()
+        monkeypatch.chdir(projeto)
+        monkeypatch.setattr("bauer.paths.config_path", lambda: home / "config.yaml")
+
+        _persistir_acento("lima")
+
+        assert not (projeto / "config.yaml").exists(), (
+            "criou config.yaml no diretório do projeto — é o bug que ofusca o "
+            "config real e derruba todo comando bauer naquela pasta"
+        )
+        assert not (home / "config.yaml").exists(), "criou config no home"
+
+    def test_persistir_acento_grava_em_config_existente(self, tmp_path, monkeypatch):
+        """Existindo config, a escolha tem que sobreviver ao restart."""
+        import yaml
+
+        from bauer.agent import _persistir_acento
+
+        projeto = tmp_path / "projeto"
+        projeto.mkdir()
+        cfg = projeto / "config.yaml"
+        cfg.write_text(
+            yaml.safe_dump({"model": {"provider": "ollama", "name": "x"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(projeto)
+
+        _persistir_acento("ouro")
+
+        salvo = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert salvo["agent"]["accent"] == "ouro"
+        assert salvo["model"]["name"] == "x", "sobrescreveu o resto do config"
 
     def test_estilo_do_prompt_acompanha_a_troca(self):
         """Estilo DINÂMICO: trocar o acento tem que mudar o prompt na hora,

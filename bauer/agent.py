@@ -233,9 +233,32 @@ try:
 
         def _ciclar_tema(event) -> None:
             try:
+                from prompt_toolkit.application import run_in_terminal
+
                 from . import theme as _t
-                _t.next_accent()
-                _persistir_acento(_t.ACCENT_NAME)
+                # Nome capturado AQUI, no momento da tecla. `run_in_terminal`
+                # agenda a função para rodar depois; lendo `_t.ACCENT_NAME`
+                # lá dentro, duas teclas rápidas anunciavam o mesmo acento (o
+                # final) duas vezes — observado no teste real.
+                _aplicado = _t.next_accent()
+                _persistir_acento(_aplicado)
+
+                # CONFIRMAÇÃO EXPLÍCITA. Sem ela o atalho é indistinguível de
+                # não funcionar: o que muda na tela é a cor do `❯` e da barra
+                # de status — dois elementos pequenos. Reportado em uso real
+                # ("ctrl+t não funciona no Linux"); o mecanismo estava certo,
+                # a troca é que era imperceptível.
+                def _anunciar() -> None:
+                    # Console novo, não o da sessão: `_make_slash_kb` vive no
+                    # escopo de MÓDULO, onde não há `console` — a primeira
+                    # versão referenciava um nome inexistente e o NameError
+                    # era engolido pelo `except` abaixo, deixando o atalho
+                    # mudo. `run_in_terminal` já devolveu o terminal, então
+                    # escrever em stdout aqui é seguro.
+                    from .ui import accent_swatch_line
+                    Console().print(accent_swatch_line(_aplicado))
+
+                run_in_terminal(_anunciar)
                 event.app.invalidate()  # redesenha prompt/toolbar na cor nova
             except Exception as _exc:  # noqa: BLE001 — atalho nunca derruba o prompt
                 from .logging_config import log_suppressed
@@ -1175,19 +1198,73 @@ def _format_tool_display(action: str, result: str) -> str:
 
 
 
+#: Marca no host → nome do provider. Sem isto, TODO provider de nuvem virava
+#: "openai": a versão anterior só separava Ollama do resto. Na tela isso ficou
+#: como uma contradição visível — o boot dizia `openrouter` (do config) e o
+#: painel de sessão dizia `openai` (desta inferência), sobre a mesma sessão.
+_MARCAS_DE_HOST: "tuple[tuple[str, str], ...]" = (
+    (":11434", "ollama"), ("ollama", "ollama"),
+    ("openrouter", "openrouter"),
+    ("anthropic", "anthropic"),
+    ("deepseek", "deepseek"),
+    ("groq", "groq"),
+    ("mistral", "mistral"),
+    ("together", "together"),
+    ("cerebras", "cerebras"),
+    ("sambanova", "sambanova"),
+    ("perplexity", "perplexity"),
+    ("fireworks", "fireworks"),
+    ("moonshot", "moonshot"),
+    ("dashscope", "alibaba"),
+    ("opencode", "opencode"),
+    ("x.ai", "xai"),
+    ("googleapis", "gemini"),
+    ("azure", "azure"),
+    ("openai", "openai"),
+)
+# Só marcas de DOMÍNIO. Porta não entra, com uma exceção: `:11434` é convenção
+# fixa do Ollama e de mais nada. A porta 1234 (default do LM Studio) foi
+# testada e removida — é porta genérica, usada por qualquer servidor
+# OpenAI-compat local, e chutar "lmstudio" a partir dela seria o mesmo tipo de
+# palpite que esta função existe para consertar. Endpoint local desconhecido
+# é honestamente "openai" (OpenAI-compat de origem indeterminada).
+
+
 def _detectar_provider_por_host(host: str) -> str:
     """Infere o provider a partir da URL do client, quando ele nao se identifica.
 
     A porta 11434 e o sinal forte: e a porta do Ollama, fixa por convencao. A
     heuristica antiga olhava so o NOME do host ("ollama" in host), que falha em
     localhost/127.0.0.1 — ou seja, em praticamente toda instalacao real.
+
+    Ultimo recurso: quando nem o client nem o config dizem quem sao. O nome
+    generico "openai" so sai quando o host nao casa com nada conhecido — e ai
+    e honesto, porque o endpoint e mesmo OpenAI-compat de origem desconhecida.
     """
     h = (host or "").lower()
     if not h:
         return "openai"
-    if ":11434" in h or "ollama" in h:
-        return "ollama"
+    for marca, nome in _MARCAS_DE_HOST:
+        if marca in h:
+            return nome
     return "openai"
+
+
+def _provider_declarado() -> str:
+    """O provider que o config DECLARA — a fonte que não precisa adivinhar.
+
+    O boot usa exatamente isto (`state["configured_provider"]`); o painel de
+    sessão inferia pelo host e discordava na tela. Vale como verdade no boot,
+    quando o client ainda é o configurado; turno roteado é marcado à parte,
+    pelo `→` do rodapé.
+    """
+    try:
+        from .config_loader import load_config
+        return str(load_config().model.provider or "")
+    except Exception as exc:  # noqa: BLE001 — sem config, cai na inferência
+        from .logging_config import log_suppressed
+        log_suppressed("provider.declarado", exc)
+        return ""
 
 
 def _stream_to_sink(
@@ -1584,15 +1661,40 @@ def _amostra_acentos(destaque: str = ""):
 
 
 def _persistir_acento(nome: str) -> None:
-    """Grava o acento escolhido em `agent.accent` do config.yaml.
+    """Grava o acento escolhido em `agent.accent` de um config EXISTENTE.
 
-    Best-effort: em projeto sem config gravável (instalação read-only, CI) a
-    troca continua valendo na SESSÃO — só não sobrevive ao restart. Falhar aqui
-    não pode desfazer o que o usuário acabou de ver na tela.
+    Duas regras, ambas aprendidas quebrando a máquina de um usuário:
+
+    1. **Escreve no config do diretório atual só se ele JÁ EXISTIR.** A versão
+       anterior chamava `set_config_value` com o default relativo
+       `"config.yaml"`. Rodando de dentro de um projeto que não tem config
+       próprio, `set_config_value` CRIAVA o arquivo — com uma única chave,
+       `agent.accent`. Esse arquivo passava a ofuscar o `~/.bauer/config.yaml`
+       e TODO comando `bauer` naquela pasta morria em
+       "Config inválida: model: Field required". Uma troca de cor derrubou o
+       agente inteiro.
+
+    2. **Nunca cria config.** Se não há config nenhum, o acento vale para a
+       sessão e pronto. Criar um arquivo de configuração como efeito colateral
+       de apertar Ctrl+T é surpresa demais para o benefício.
+
+    Best-effort no resto: falhar ao gravar não pode desfazer o que o usuário
+    acabou de ver na tela.
     """
     try:
+        from pathlib import Path as _Path
+
         from .config_admin import set_config_value
-        set_config_value("agent.accent", nome)
+        from .paths import config_path as _home_cfg
+
+        # 1º o config do diretório atual, se houver; 2º o canônico do ~/.bauer.
+        # Nesta ordem porque é a mesma que o carregamento usa — gravar num
+        # arquivo que a sessão não leu seria escrever no vazio.
+        local = _Path("config.yaml")
+        alvo = local if local.is_file() else _home_cfg()
+        if not alvo.is_file():
+            return  # sem config para atualizar: a troca vale só nesta sessão
+        set_config_value("agent.accent", nome, config_path=alvo)
     except Exception as exc:  # noqa: BLE001
         from .logging_config import log_suppressed
         log_suppressed("theme.persistir_acento", exc)
@@ -4798,8 +4900,14 @@ def run_agent_session(
     #
     # A porta 11434 é o sinal confiável (é a do Ollama, fixa por convenção);
     # o nome só como reforço.
-    _provider = getattr(client, "_provider", None) or _detectar_provider_por_host(
-        getattr(client, "host", "")
+    # Ordem: o que o client afirma > o que o config DECLARA > inferência pelo
+    # host. O config entrou no meio porque o painel dizia "openai" para uma
+    # sessão OpenRouter enquanto o boot, lendo o config, dizia "openrouter" —
+    # duas afirmações contraditórias sobre a mesma sessão, na mesma tela.
+    _provider = (
+        getattr(client, "_provider", None)
+        or _provider_declarado()
+        or _detectar_provider_por_host(getattr(client, "host", ""))
     )
     # Uma porta só para o que entra na janela (S9). O prompt do sistema é
     # INSTRUÇÃO — e é a única coisa aqui que é; tudo que vier de arquivo, web ou

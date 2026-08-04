@@ -195,8 +195,46 @@ BRAND_GRADIENT = _gradiente_da_marca(ACCENT)
 
 
 def accent_names() -> "list[str]":
-    """Nomes dos acentos, na ordem em que o ciclo (Ctrl+T) percorre."""
+    """Nomes dos acentos na ordem do CATÁLOGO — agrupados por família.
+
+    É a ordem boa para OLHAR (`/theme` mostra os azuis juntos, os quentes
+    juntos). Não é a ordem para CICLAR: ver `cycle_order`.
+    """
     return list(PALETAS)
+
+
+def _ordem_do_ciclo() -> "list[str]":
+    """Ordem que maximiza a diferença entre acentos CONSECUTIVOS.
+
+    A ordem do catálogo é por família, então ciclar por ela dá saltos como
+    `indigo → azul` (ΔE 22) — abaixo do mesmo limiar que usamos para proteger
+    as cores de sinal, ou seja, imperceptível. Medido: 7 dos 16 saltos ficavam
+    nessa faixa, e o PRIMEIRO era violeta → lavanda, dois roxos. Apertar o
+    atalho parecia não fazer nada.
+
+    Guloso: a cada passo escolhe o acento ainda não usado mais DISTANTE do
+    atual. Derivado de PALETAS, então um acento novo entra no ciclo sem
+    ninguém reordenar nada à mão.
+    """
+    restantes = list(PALETAS)
+    ordem = [restantes.pop(0)]   # começa no padrão
+    while restantes:
+        atual = PALETAS[ordem[-1]]
+        proximo = max(restantes, key=lambda n: delta_e(atual, PALETAS[n]))
+        ordem.append(proximo)
+        restantes.remove(proximo)
+    return ordem
+
+
+#: Ordem de ciclagem (Ctrl+T). Calculada uma vez — a paleta não muda em runtime.
+CYCLE_ORDER: "list[str]" = []
+
+
+def cycle_order() -> "list[str]":
+    global CYCLE_ORDER
+    if not CYCLE_ORDER:
+        CYCLE_ORDER = _ordem_do_ciclo()
+    return CYCLE_ORDER
 
 
 def set_accent(nome: str) -> str:
@@ -227,9 +265,17 @@ def set_accent(nome: str) -> str:
 
 
 def next_accent() -> str:
-    """Avança para o próximo acento do ciclo. Devolve o nome aplicado."""
-    nomes = accent_names()
-    return set_accent(nomes[(nomes.index(ACCENT_NAME) + 1) % len(nomes)])
+    """Avança para o próximo acento. Devolve o nome aplicado.
+
+    Usa a ordem de CICLO (vizinhos bem distintos), não a do catálogo — ver
+    `_ordem_do_ciclo`.
+    """
+    nomes = cycle_order()
+    try:
+        i = nomes.index(ACCENT_NAME)
+    except ValueError:
+        i = -1   # acento fora do ciclo (config antigo): começa do início
+    return set_accent(nomes[(i + 1) % len(nomes)])
 
 # ── Glifos (com queda para ASCII) ────────────────────────────────────────────
 @dataclass(frozen=True)
