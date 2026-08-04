@@ -183,6 +183,7 @@ def serve(
             tool_mode=_modo_tc(_client),
             tools=list(router.available_tools()),
             local=bool(local) or cfg.model.provider == "ollama",
+            console=console,
         ))
         console.print()
         console.print(_serve_panel(

@@ -142,12 +142,46 @@ def boot_lines(
     return linhas
 
 
+def linha_de_cor(console) -> "Text | None":
+    """Avisa quando o terminal não entrega as cores que o tema assume.
+
+    O design system trabalha em truecolor: 17 acentos separados por contraste e
+    distância perceptual (ΔE). Num terminal de 8 cores ANSI eles colapsam em
+    meia dúzia — roxo vira magenta, azul vira ciano, o gradiente do logo vira
+    listra. Medido em uso real: `TERM=xterm` sem `COLORTERM`.
+
+    A causa quase sempre é SSH: ele encaminha `TERM` e **não** encaminha
+    `COLORTERM`. O terminal de quem está do outro lado costuma suportar
+    truecolor; o que se perde é o aviso disso.
+
+    Devolve None quando está tudo bem — aviso que aparece sempre vira ruído e
+    para de ser lido.
+    """
+    sistema = getattr(console, "color_system", None)
+    if sistema in ("truecolor", "windows", None):
+        return None   # None = sem cor (pipe/CI): o tema já degrada sozinho
+
+    g = ui.active_glyphs()
+    t = Text("  ")
+    t.append("[", style=theme.FAINT)
+    t.append(g.warn, style=theme.WARN)
+    t.append("] ", style=theme.FAINT)
+    t.append("cores      ", style=theme.DIM)
+    quantas = {"standard": "8", "256": "256", "eight_bit": "256"}.get(str(sistema), str(sistema))
+    t.append(f"terminal em {quantas} cores", style=theme.WHITE)
+    t.append("  — os acentos ficam parecidos entre si", style=theme.FAINT)
+    t.append("\n               export COLORTERM=truecolor", style=theme.DIM)
+    t.append("   (SSH não encaminha essa variável)", style=theme.FAINT)
+    return t
+
+
 def boot_panel(
     state: "dict",
     *,
     tool_mode: str = "",
     tools: "list[str] | None" = None,
     local: "bool | None" = None,
+    console=None,
 ) -> RenderableType:
     """As linhas de boot + a procedência do estado (medido agora vs cache)."""
     linhas = boot_lines(state, tool_mode=tool_mode, tools=tools, local=local)
@@ -164,6 +198,14 @@ def boot_panel(
 
     avisos = [n for n in (state.get("notes") or []) if str(n).strip()]
     corpo: "list[RenderableType]" = list(linhas)
+
+    # Antes dos avisos do doctor: sem cor de verdade, o resto da tela mente
+    # sobre si mesma, então este aviso vale mais que os outros.
+    if console is not None:
+        _cor = linha_de_cor(console)
+        if _cor is not None:
+            corpo.append(_cor)
+
     for aviso in avisos[:3]:
         corpo.append(boot_line("", str(aviso), status="warn"))
     if idade:

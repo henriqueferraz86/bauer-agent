@@ -179,6 +179,55 @@ class TestNaoMedeParaExibir:
         assert (time.perf_counter() - t0) < 1.0
 
 
+class TestAvisoDeCor:
+    """O tema assume truecolor: 17 acentos separados por contraste e ΔE. Num
+    terminal de 8 cores eles colapsam em meia dúzia — roxo vira magenta, azul
+    vira ciano, o gradiente do logo vira listra. Visto em uso real com
+    `TERM=xterm` sem `COLORTERM` (o SSH encaminha TERM e não COLORTERM).
+    """
+
+    class _Console:
+        def __init__(self, cs):
+            self.color_system = cs
+
+    def test_avisa_em_8_cores(self):
+        from bauer.ui_boot import linha_de_cor
+
+        linha = linha_de_cor(self._Console("standard"))
+        assert linha is not None
+        out = ui.render_str(linha, 90)
+        assert "8 cores" in out
+        assert "COLORTERM=truecolor" in out, "avisar sem dizer como resolver é ruído"
+
+    def test_avisa_em_256_cores(self):
+        from bauer.ui_boot import linha_de_cor
+
+        assert linha_de_cor(self._Console("256")) is not None
+
+    def test_calado_em_truecolor(self):
+        """Aviso que aparece sempre vira ruído e para de ser lido."""
+        from bauer.ui_boot import linha_de_cor
+
+        assert linha_de_cor(self._Console("truecolor")) is None
+
+    def test_calado_sem_cor(self):
+        """`None` = pipe/CI. O tema já degrada sozinho ali; avisar sobre cor
+        num destino sem cor seria absurdo."""
+        from bauer.ui_boot import linha_de_cor
+
+        assert linha_de_cor(self._Console(None)) is None
+
+    def test_entra_no_painel_de_boot(self):
+        out = ui.render_str(boot_panel(ESTADO, console=self._Console("standard")), 90)
+        assert "cores" in out and "COLORTERM" in out
+
+    def test_painel_sem_console_nao_avisa(self):
+        """Compat: quem chama sem `console=` (código antigo, teste) não ganha
+        a linha nem quebra."""
+        out = ui.render_str(boot_panel(ESTADO), 90)
+        assert "COLORTERM" not in out
+
+
 class TestServePanel:
     def test_cockpit_em_destaque(self):
         """O SPA é servido em '/' desde sempre; o boot só imprimia 'HTTP' e

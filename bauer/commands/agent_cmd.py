@@ -603,6 +603,7 @@ def agent(
                 tool_mode=_tool_mode_boot,
                 tools=_tools_carregadas,
                 local=_e_local,
+                console=console,
             ))
             console.print()
 
