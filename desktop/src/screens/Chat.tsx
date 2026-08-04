@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, streamSSE } from "../api/client";
+import Hud, { HudData } from "../components/Hud";
 import Markdown from "../components/Markdown";
 
 interface ToolCall { name: string; label?: string; icon?: string; }
@@ -69,6 +70,12 @@ export default function Chat() {
   const [palIdx, setPalIdx] = useState(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  // HUD (plano 028 F5) — o mesmo painel de instrumentos do terminal.
+  const [hud, setHud] = useState<HudData>({ provider: "", model: "" });
+  // Medição de tok/s: contada no CLIENTE, sobre o que de fato chegou. Em ref,
+  // não em state — atualizar state a cada delta re-renderizaria a árvore
+  // inteira dezenas de vezes por segundo só para mover um número.
+  const tps = useRef<{ t0: number; chars: number }>({ t0: 0, chars: 0 });
   const endRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -188,6 +195,36 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Provider e modelo para o HUD. Tenta ATÉ CONSEGUIR e então para.
+  //
+  // A primeira versão fazia uma chamada só no mount, com `.catch()` silencioso
+  // — e o HUD ficava vazio para sempre se aquele único request falhasse.
+  // Falha é comum: o serve pode subir depois da aba, e o rate limit do próprio
+  // serve (`serve.rate_limit_requests`) devolve 429 quando o TitleBar, que já
+  // faz polling de 10s, disputa a janela. Foi observado em uso: `/status` 200
+  // no TitleBar e o HUD em "—" na mesma página.
+  //
+  // Para quando obtém o dado: o modelo não muda no meio da sessão, então
+  // polling perpétuo só gastaria request.
+  useEffect(() => {
+    let vivo = true;
+    let timer = 0;
+
+    const tentar = () => {
+      api.get<{ model: string; provider: string }>("/status")
+        .then((s) => {
+          if (!vivo || !s?.model) return;
+          setHud((h) => ({ ...h, model: s.model, provider: s.provider || "" }));
+          window.clearInterval(timer);   // conseguiu: para de tentar
+        })
+        .catch(() => { /* serve offline/429: tenta de novo no próximo tick */ });
+    };
+
+    tentar();
+    timer = window.setInterval(tentar, 8000);
+    return () => { vivo = false; window.clearInterval(timer); };
+  }, []);
+
   // ── Comandos de barra (paridade com o menu "/" do Telegram) ───────────────
   const COMMANDS: SlashCommand[] = [
     { cmd: "/start", desc: "Menu inicial", run: () => appendInfo(helpText()) },
@@ -294,6 +331,11 @@ export default function Chat() {
     setMessages((m) => [...m, { role: "assistant", text: "", tools: [], streaming: true }]);
     scroll();
 
+    // Zera a medição por TURNO: acumular entre turnos daria uma média da
+    // sessão apresentada como velocidade instantânea.
+    tps.current = { t0: 0, chars: 0 };
+    setHud((h) => ({ ...h, tokensPerSecond: undefined, turnModel: undefined, live: true }));
+
     const qs = new URLSearchParams({ message: text });
     if (sessionId) qs.set("session_id", sessionId);
 
@@ -310,7 +352,14 @@ export default function Chat() {
           } else if (e.event === "route") {
             try {
               const r = JSON.parse(e.data) as { tier: string; model: string };
-              if (r.model) last.route = { tier: r.tier, model: r.model };
+              if (r.model) {
+                last.route = { tier: r.tier, model: r.model };
+                // O modelo que REALMENTE roda o turno. O HUD marca a
+                // divergência com `→` — mesma regra do terminal, pelo mesmo
+                // motivo: anunciar o configurado enquanto outro executa foi um
+                // bug real (ver tests/test_modelo_do_turno_visivel.py).
+                setHud((h) => ({ ...h, turnModel: r.model }));
+              }
             } catch { /* ignora payload malformado */ }
           } else if (e.event === "tool") {
             let tc: ToolCall = { name: e.data };
@@ -324,6 +373,16 @@ export default function Chat() {
             last.streaming = false;
           } else {
             last.text += e.data;
+            // tok/s medido sobre o que chegou. ~4 chars por token é a
+            // aproximação usual; é estimativa e está rotulada como tal na UI
+            // (tok/s, não "tokens exatos") — o servidor não manda contagem.
+            const agora = performance.now();
+            if (!tps.current.t0) tps.current = { t0: agora, chars: 0 };
+            tps.current.chars += e.data.length;
+            const seg = (agora - tps.current.t0) / 1000;
+            if (seg > 0.4) {
+              setHud((h) => ({ ...h, tokensPerSecond: tps.current.chars / 4 / seg, live: true }));
+            }
           }
           return copy;
         });
@@ -343,6 +402,10 @@ export default function Chat() {
         return copy;
       });
       setBusy(false);
+      // Sai do estado "vivo": o brilho do HUD marca geração em curso, e
+      // deixá-lo aceso depois do turno seria decoração — o que a regra do
+      // plano 028 proíbe.
+      setHud((h) => ({ ...h, live: false }));
     }
   }
 
@@ -403,6 +466,7 @@ export default function Chat() {
         <span className="title">Chat</span>
         {sessionId && <span className="sub mono">· {sessionId.slice(0, 8)}</span>}
         <div className="spacer" />
+        <Hud data={hud} />
         <button className="btn" onClick={resetSession}>
           <i className="ti ti-plus" /> Nova sessão
         </button>

@@ -164,15 +164,42 @@ def serve(
         workspace=workspace,
     )
 
-    auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"
     base_url = f"http://{serve_host}:{serve_port}"
-    console.print(f"\n[bold]Bauer Agent Server[/bold] — {model_name}")
-    console.print(f"  HTTP:       {base_url}")
-    console.print(f"  Docs:       {base_url}/docs")
-    console.print(f"  Auth:       {auth_status}")
-    console.print(f"[dim]  Config:     {_loaded_config_path(config)}[/dim]")
-    console.print(f"  Tools:      {', '.join(router.available_tools())}")
-    console.print(f"[dim]  OpenAI-compat:  POST {base_url}/v1/chat/completions[/dim]")
+
+    # ── Boot instrumentado (plano 028 F4) ────────────────────────────────────
+    # Mesmo painel do `bauer agent`, alimentado pelo estado que o serve já
+    # resolveu acima — nenhuma checagem nova. E, o que faltava: ANUNCIA O
+    # COCKPIT. O SPA (16 telas, palette Ctrl+K) é servido em "/" desde sempre e
+    # o boot só imprimia uma linha "HTTP", então ninguém sabia que existia.
+    _tem_cockpit = (Path(__file__).resolve().parents[1] / "static" / "index.html").exists()
+    try:
+        from ..runtime_capability import modo_de_tool_calling as _modo_tc
+        from ..ui_boot import boot_panel as _boot_panel
+        from ..ui_boot import serve_panel as _serve_panel
+
+        console.print()
+        console.print(_boot_panel(
+            state,
+            tool_mode=_modo_tc(_client),
+            tools=list(router.available_tools()),
+            local=bool(local) or cfg.model.provider == "ollama",
+        ))
+        console.print()
+        console.print(_serve_panel(
+            base_url, cockpit=_tem_cockpit, auth=bool(serve_key),
+        ))
+        console.print(f"[dim]  config: {_loaded_config_path(config)}[/dim]")
+        console.print(
+            f"[dim]  OpenAI-compat: POST {base_url}/v1/chat/completions[/dim]"
+        )
+    except Exception:  # noqa: BLE001 — painel nunca impede o servidor de subir
+        auth_status = "[green]habilitada[/green]" if serve_key else "[yellow]desabilitada[/yellow]"
+        console.print(f"\n[bold]Bauer Agent Server[/bold] — {model_name}")
+        console.print(f"  HTTP:       {base_url}")
+        console.print(f"  Docs:       {base_url}/docs")
+        console.print(f"  Auth:       {auth_status}")
+        console.print(f"[dim]  Config:     {_loaded_config_path(config)}[/dim]")
+        console.print(f"  Tools:      {', '.join(router.available_tools())}")
 
     # Gateway WebSocket opcional
     if gateway_port > 0:

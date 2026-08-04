@@ -1,7 +1,9 @@
 """ascii_intro.py — Tela de entrada do Bauer Agent.
 
-Logo "BAUER" em blocos com gradiente teal→azul→roxo + painel de sessão
-moderno com bordas arredondadas. Paleta consistente com indicators.py.
+Logo "BAUER" em blocos com o gradiente da MARCA + painel de sessão com bordas
+arredondadas. O gradiente é derivado do acento em uso (`theme.BRAND_GRADIENT`),
+então trocar de acento troca o logo junto — um logo violeta com a tela em lima
+brigaria com o resto.
 """
 from __future__ import annotations
 
@@ -24,13 +26,27 @@ from rich.text import Text
 from rich import box
 
 
-# ── Paleta (mesma do indicators.py) ────────────────────────────────────────────
-_GRADIENT = ["#00d4aa", "#3b82f6", "#a855f7"]  # teal → azul → roxo
-ACCENT = "#00d4aa"
-BLUE = "#3b82f6"
-PURPLE = "#7c3aed"
-DIM = "#6b7280"
-WHITE = "#f9fafb"
+# ── Paleta — vem de bauer/theme.py (fonte única). Ver plano 028. ──────────────
+from . import theme
+
+# Sem constantes de módulo: o acento é trocável em tempo de execução
+# (`theme.set_accent`, Ctrl+T) e capturar o valor no import deixaria a intro e
+# o painel de sessão na cor antiga. Tudo abaixo lê `theme.X` na hora do render.
+
+
+def __getattr__(name: str):
+    """Compat: `ascii_intro.ACCENT` etc. continuam funcionando, agora vivos."""
+    _mapa = {
+        "_GRADIENT": "BRAND_GRADIENT",   # gradiente EXCLUSIVO da marca
+        "ACCENT": "ACCENT_TEXT",         # título: palavra legível → tom de texto
+        "BLUE": "ACCENT_DEEP",           # moldura/marcadores
+        "PURPLE": "ACCENT_TEXT",         # comandos
+        "DIM": "DIM",
+        "WHITE": "WHITE",
+    }
+    if name in _mapa:
+        return getattr(theme, _mapa[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ── Glifos em bloco  (largura 7 × altura 5) ─────────────────────────────────────
@@ -60,7 +76,10 @@ def _lerp(c1: str, c2: str, t: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _grad_color(frac: float, stops: list[str] = _GRADIENT) -> str:
+def _grad_color(frac: float, stops: "list[str] | None" = None) -> str:
+    # default resolvido na CHAMADA: `stops=theme.BRAND_GRADIENT` seria avaliado
+    # no import e o logo ficaria preso ao gradiente do acento inicial.
+    stops = stops if stops is not None else theme.BRAND_GRADIENT
     if frac <= 0:
         return stops[0]
     if frac >= 1:
@@ -124,7 +143,7 @@ def play_intro(
     for row in _logo_rows(_TITLE):
         con.print(Align.center(row))
     con.print()
-    con.print(Align.center(Text(_SUBTITLE, style=f"italic {DIM}")))
+    con.print(Align.center(Text(_SUBTITLE, style=f"italic {theme.DIM}")))
     con.print()
 
 
@@ -143,12 +162,15 @@ def session_panel(
     commands: lista de (comando, descrição) — ex: [("/exit", "sair")].
     """
     info = Table.grid(padding=(0, 2))
-    info.add_column(justify="left", style=BLUE, width=2)
-    info.add_column(justify="left", style=DIM, width=10)
-    info.add_column(justify="left", style=WHITE)
+    info.add_column(justify="left", style=theme.ACCENT_DEEP, width=2)
+    info.add_column(justify="left", style=theme.DIM, width=10)
+    info.add_column(justify="left", style=theme.WHITE)
+
+    from .ui import active_glyphs as _glifos
+    _g = _glifos()
 
     def _row(label: str, value: str) -> None:
-        info.add_row("◆", label, value)
+        info.add_row(_g.seal_local, label, value)
 
     _row("Modelo", str(model_name))
     if provider:
@@ -168,16 +190,16 @@ def session_panel(
         for idx, (cmd, desc) in enumerate(commands):
             if idx:
                 cmd_line.append("   ")
-            cmd_line.append(cmd, style=f"bold {PURPLE}")
-            cmd_line.append(f" {desc}", style=DIM)
+            cmd_line.append(cmd, style=f"bold {theme.ACCENT_TEXT}")
+            cmd_line.append(f" {desc}", style=theme.DIM)
         body.append(Text())
         body.append(cmd_line)
 
     return Panel(
         Group(*body),
-        title=Text(title, style=f"bold {ACCENT}"),
+        title=Text(title, style=f"bold {theme.ACCENT_TEXT}"),
         title_align="left",
-        border_style=BLUE,
-        box=box.ROUNDED,
+        border_style=theme.ACCENT_DEEP,
+        box=theme.box_style(_g),
         padding=(1, 2),
     )

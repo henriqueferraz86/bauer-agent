@@ -217,10 +217,11 @@ def agent(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Animacao de entrada — apenas em sessoes novas (nao --resume)
-    # Para bauer agent run <name>, a intro eh chamada dentro do agent_run
-    if not resume:
-        play_intro(console, skip=no_intro)
+    # O logo NÃO abre mais o boot (plano 028 F4): ele entra depois das
+    # checagens, quando a máquina já se declarou pronta. Anunciar a marca antes
+    # de saber se o modelo existe é o que fazia um erro de config aparecer
+    # DEPOIS de uma tela de boas-vindas.
+    _mostrar_intro = not resume and not no_intro
 
     cfg, reg = _load_or_die(config, models)
     setup_logging(cfg.logging.level, cfg.logging.file)
@@ -570,6 +571,32 @@ def agent(
         )
     if local:
         console.print("[green]◆ --local: nada sai desta máquina[/green]")
+
+    # ── Boot instrumentado (plano 028 F4) ────────────────────────────────────
+    # Mostra o que a máquina JÁ sabe — nada é medido para exibir. O
+    # `runtime_state` acima veio do cache ou do doctor (quando a config mudou),
+    # e o painel diz qual dos dois foi. Forçar checagem aqui para "animar"
+    # jogaria fora o startup de 23s→2s conquistado a duras penas.
+    try:
+        from ..runtime_capability import modo_de_tool_calling as _modo_tc
+        from ..ui_boot import boot_panel as _boot_panel
+
+        _tools_carregadas = list(router.available_tools())
+        _e_local = bool(local) or cfg.model.provider == "ollama"
+        console.print()
+        console.print(_boot_panel(
+            state,
+            tool_mode=_modo_tc(client),
+            tools=_tools_carregadas,
+            local=_e_local,
+        ))
+        if _mostrar_intro:
+            play_intro(console)
+        else:
+            console.print()
+    except Exception as _exc:  # noqa: BLE001 — painel nunca impede a sessão
+        from ..logging_config import log_suppressed
+        log_suppressed("ui_boot.panel", _exc)
 
     # Bauer Kernel (Sprint 6c) — opt-in via kernel.enabled: cada turno vira um
     # Run auditável com kill-switch/policy/budget avaliados antes do LLM.

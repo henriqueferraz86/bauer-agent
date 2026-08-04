@@ -12,7 +12,7 @@ nesta fase.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -223,8 +223,13 @@ class OllamaClient:
         messages: list[dict],
         tools: list[dict],
         tool_choice: str = "auto",
+        *,
+        on_delta: "Callable[[str], None] | None" = None,
     ) -> dict[str, Any]:
         """Function calling nativo via /api/chat. Mesmo contrato do OpenAIClient.
+
+        Com `on_delta`, o texto chega em streaming (plano 028 F1) — mesmo dict
+        de retorno, entregue pedaço a pedaço no caminho.
 
         Devolve a `message` no FORMATO OpenAI (`content` + `tool_calls` com
         `function.arguments` como STRING JSON), porque é isso que o agent
@@ -240,6 +245,9 @@ class OllamaClient:
         - **não existe `tool_choice`.** O parâmetro é aceito e ignorado aqui,
           para manter a assinatura compatível com o OpenAIClient.
         """
+        if on_delta is not None:
+            return self._chat_with_tools_stream(model, messages, tools, on_delta)
+
         self.last_usage = {}
         think_flag = self.think if self.think is not None else False
         body: dict[str, Any] = {
@@ -306,6 +314,114 @@ class OllamaClient:
             "role": "assistant",
             "content": msg.get("content") or "",
             "tool_calls": _openai_tool_calls(msg.get("tool_calls") or []),
+        }
+
+    def _chat_with_tools_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        on_delta: "Callable[[str], None]",
+    ) -> dict[str, Any]:
+        """Function calling com streaming de texto via /api/chat (NDJSON).
+
+        Diferente do OpenAI: o Ollama não fatia a tool call — ela chega inteira
+        num dos objetos do stream, com `arguments` como OBJETO. O acumulador
+        absorve as duas coisas (ver stream_tools.add_complete).
+        """
+        from .stream_tools import ToolCallAccumulator
+
+        self.last_usage = {}
+        think_flag = self.think if self.think is not None else False
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [_ollama_outbound_message(m) for m in messages],
+            "tools": tools,
+            "stream": True,
+            "think": think_flag,
+        }
+        if self.num_ctx:
+            body["options"] = {"num_ctx": self.num_ctx}
+
+        acc = ToolCallAccumulator()
+        partes: list[str] = []
+        _error_status = 0
+        _error_body = ""
+
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.host}/api/chat",
+                json=body,
+                headers=self._headers,
+                timeout=httpx.Timeout(
+                    connect=float(self.timeout),
+                    read=300.0,
+                    write=10.0,
+                    pool=5.0,
+                ),
+                verify=shared_ssl_context(),
+            ) as response:
+                if response.status_code >= 400:
+                    _error_status = response.status_code
+                    try:
+                        _error_body = b"".join(response.iter_bytes()).decode(
+                            "utf-8", errors="replace"
+                        )[:300]
+                    except Exception:  # noqa: BLE001
+                        _error_body = ""
+                else:
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        msg = data.get("message") or {}
+                        texto = msg.get("content") or ""
+                        if texto:
+                            partes.append(texto)
+                            try:
+                                on_delta(texto)
+                            except Exception as _exc:  # noqa: BLE001 — render não derruba a chamada
+                                from .logging_config import log_suppressed
+                                log_suppressed("stream.on_delta", _exc)
+                        for tc in msg.get("tool_calls") or []:
+                            acc.add_complete(tc)
+                        if data.get("done"):
+                            prompt_tokens = int(data.get("prompt_eval_count") or 0)
+                            completion_tokens = int(data.get("eval_count") or 0)
+                            self.last_usage = {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": prompt_tokens + completion_tokens,
+                            }
+        except httpx.ConnectError as exc:
+            raise OllamaError(
+                f"Conexao recusada em {self.host}.\n"
+                f"Verifique se o Ollama esta rodando: ollama serve"
+            ) from exc
+        except httpx.TimeoutException:
+            raise OllamaError(
+                f"Timeout ({self.timeout}s) em {self.host}.\n"
+                f"O modelo pode estar sendo carregado — tente novamente."
+            )
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"Erro em /api/chat: {exc}") from exc
+
+        if _error_status:
+            # "HTTP <code>" é o que o agent procura para rebaixar a sessão ao
+            # bridge quando o modelo não aceita tools — manter o formato.
+            raise OllamaError(
+                f"HTTP {_error_status} em /api/chat (tools, stream) para "
+                f"'{model}': {_error_body}"
+            )
+
+        return {
+            "role": "assistant",
+            "content": "".join(partes),
+            "tool_calls": acc.result(),
         }
 
     def chat_stream(self, model: str, messages: list[dict], num_ctx: int | None = None) -> Iterator[str]:

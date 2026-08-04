@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from rich.console import Console
 from rich.rule import Rule
 
+from . import theme as _theme_mod
 from .context_manager import ContextManager
 from .machine_id import machine_id as get_machine_id
 from .model_router import ModelRouter
@@ -47,6 +48,7 @@ _EXIT_CMDS = {"/exit", "/quit", "/sair"}
 _CLEAR_CMDS = {"/clear", "/limpar"}
 _STATUS_CMDS = {"/status", "/stats"}
 _MODEL_CMDS = {"/model", "/modelo"}
+_THEME_CMDS = {"/theme", "/tema", "/cor"}
 _SESSIONS_CMDS = {"/sessions", "/sessoes"}
 _SPEC_CMDS = {"/spec", "/specs"}
 _KANBAN_CMDS = {"/kanban", "/board", "/tasks", "/task"}   # bare /task → board
@@ -76,6 +78,7 @@ _SLASH_BASE = [
     "/clear",
     "/status",
     "/model",
+    "/theme",
     "/listen",
     "/listen loop",
     "/sessions",
@@ -118,6 +121,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/clear":          "limpa o histórico",
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
+    "/theme":          "troca a cor de acento (ou Ctrl+T p/ ciclar)",
     "/listen":         "fala com o Bauer pelo microfone",
     "/listen loop":    "conversa por voz ate cancelar",
     "/sessions":       "lista sessões salvas",
@@ -158,6 +162,7 @@ try:
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory, InMemoryHistory
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import DynamicStyle
     from prompt_toolkit.styles import Style as PtStyle
 
     class _SlashCompleter(Completer):
@@ -186,29 +191,76 @@ try:
                         display_meta=_SLASH_DESCRIPTIONS.get(candidate, ""),
                     )
 
-    _PT_STYLE = PtStyle.from_dict({
-        "prompt":      "bold ansicyan",
-        "completion-menu.completion":         "bg:#313244 #cdd6f4",
-        "completion-menu.completion.current": "bg:#89b4fa #1e1e2e bold",
-        "completion-menu.meta.completion":         "bg:#313244 #6c7086",
-        "completion-menu.meta.completion.current": "bg:#89b4fa #1e1e2e",
-        # Barra de status fixa (bottom toolbar) — identidade BAUER + modelo +
-        # tokens, sempre visível enquanto o prompt está ativo.
-        "bottom-toolbar":       "noreverse bg:#1e1e2e #6b7280",
-        "bottom-toolbar.brand": "bold #00d4aa",
-        "bottom-toolbar.model": "#3b82f6",
-    })
+    def _build_pt_style() -> "PtStyle":
+        """Estilo do prompt_toolkit DERIVADO do tema.
+
+        Até o plano 028 isto era um dicionário de cores literais — Catppuccin
+        (#313244/#cdd6f4/#89b4fa) no menu de completions, o teal antigo
+        (#00d4aa) na marca e `ansicyan` no `❯`. Ou seja: o prompt onde o
+        usuário digita e o popup de autocomplete NUNCA migraram no F0, porque o
+        teste que proíbe cor literal cobria só `ui.py`, `ascii_intro.py` e
+        `indicators.py`. Reconstruído a cada troca de acento (ver `/theme`).
+        """
+        t = _theme_mod
+        return PtStyle.from_dict({
+            "prompt": f"bold {t.ACCENT_TEXT}",
+            "completion-menu.completion":         f"bg:{t.SURFACE} {t.WHITE}",
+            "completion-menu.completion.current": f"bg:{t.ACCENT} {t.VOID} bold",
+            "completion-menu.meta.completion":         f"bg:{t.SURFACE} {t.DIM}",
+            "completion-menu.meta.completion.current": f"bg:{t.ACCENT} {t.VOID}",
+            # Barra de status fixa (bottom toolbar) — identidade BAUER + modelo
+            # + tokens, sempre visível enquanto o prompt está ativo.
+            "bottom-toolbar":       f"noreverse bg:{t.SURFACE} {t.DIM}",
+            "bottom-toolbar.brand": f"bold {t.ACCENT_TEXT}",
+            "bottom-toolbar.model": t.CLOUD,
+        })
+
+    #: Estilo DINÂMICO: `DynamicStyle` chama a fábrica a cada render, então a
+    #: troca de acento (Ctrl+T) aparece no prompt e no menu de completions
+    #: imediatamente, sem recriar a PromptSession.
+    _PT_STYLE = DynamicStyle(_build_pt_style)
 
     _PROMPT_FRAGMENTS = [("class:prompt", "❯ ")]
 
     def _make_slash_kb() -> "KeyBindings":
-        """Key binding: '/' insere o caractere E abre o menu de completions."""
+        """Key bindings do prompt: '/' abre completions, Ctrl+T cicla o acento."""
         kb = KeyBindings()
 
         @kb.add("/")
         def _on_slash(event):
             event.current_buffer.insert_text("/")
             event.current_buffer.start_completion(select_first=False)
+
+        def _ciclar_tema(event) -> None:
+            try:
+                from . import theme as _t
+                _t.next_accent()
+                _persistir_acento(_t.ACCENT_NAME)
+                event.app.invalidate()  # redesenha prompt/toolbar na cor nova
+            except Exception as _exc:  # noqa: BLE001 — atalho nunca derruba o prompt
+                from .logging_config import log_suppressed
+                log_suppressed("theme.atalho_ciclar", _exc)
+
+        # Ctrl+T cicla a cor de acento — o atalho PORTÁVEL.
+        #
+        # Ctrl+T é ASCII 20 (DC4): todo terminal transmite, em qualquer SO.
+        # Ctrl+DÍGITO não tem código ASCII (só Ctrl+A..Z = 1..26 e
+        # Ctrl+] [ ^ _ = 27..31), então num terminal comum Ctrl+0 chega como o
+        # caractere "0" — medido. Os dois protocolos que codificariam a tecla
+        # (`modifyOtherKeys` do xterm, `CSI 27;5;48~`, e o formato kitty,
+        # `CSI 48;5u`) NÃO são entendidos pelo parser do prompt_toolkit, que
+        # espera `\x1b[1;5p` — uma convenção própria que quase nenhum terminal
+        # emite. Num terminal com esses protocolos ligados, Ctrl+0 injetaria
+        # lixo no input em vez de trocar a cor.
+        #
+        # Custo do Ctrl+T: perde o `transpose-chars` do emacs mode — irrelevante
+        # num prompt de conversa.
+        kb.add("c-t")(_ciclar_tema)
+
+        # Ctrl+0 segue registrado como bônus: no Windows funciona, porque o
+        # console Win32 reporta virtual key + modificador direto para a API,
+        # sem passar por sequência de escape.
+        kb.add("c-0")(_ciclar_tema)
 
         return kb
 
@@ -1138,6 +1190,57 @@ def _detectar_provider_por_host(host: str) -> str:
     return "openai"
 
 
+def _stream_to_sink(
+    client: OllamaClient,
+    model_name: str,
+    api_payload: list[dict],
+    *,
+    max_retries: int = 2,
+    on_retry=None,
+) -> "list[str]":
+    """Consome `chat_stream` emitindo cada chunk ao sink, com retry A FRIO.
+
+    "A frio" é a regra que não pode ser afrouxada: assim que UM chunk saiu, a
+    resposta já está na tela do usuário (ou na mensagem do canal). Retentar
+    depois disso reimprimiria a resposta inteira grudada na anterior. Então a
+    falha pós-emissão sobe — só a falha antes do primeiro token é retentada.
+
+    Antes deste helper, o ramo de sink não tinha retry nenhum: quem instalava
+    sink (o gateway) trocava, sem saber, o backoff de 429/5xx por uma falha
+    seca. Com o terminal virando consumidor de sink (plano 028 F1), isso
+    valeria também para todo `bauer agent` em provider de nuvem.
+    """
+    from .delta_stream import emit_delta as _emit_delta
+    from .delta_stream import emit_round_start as _emit_round
+    from .error_classifier import classify_api_error
+    from .retry_utils import jittered_backoff
+
+    parts: "list[str]" = []
+    for attempt in range(max_retries + 1):
+        _emit_round()
+        parts = []
+        try:
+            for chunk in client.chat_stream(model_name, api_payload):
+                parts.append(chunk)
+                _emit_delta(chunk)
+            return parts
+        except Exception as exc:  # noqa: BLE001 — reclassificado logo abaixo
+            if parts:
+                raise  # já saiu texto: retry duplicaria a resposta
+            classified = classify_api_error(exc)
+            if not classified.retryable or attempt >= max_retries:
+                raise
+            wait = jittered_backoff(attempt, base_delay=5.0, max_delay=60.0)
+            if on_retry is not None:
+                try:
+                    on_retry(attempt + 1, classified, wait)
+                except Exception as _exc:  # noqa: BLE001 — aviso não derruba o turno
+                    from .logging_config import log_suppressed
+                    log_suppressed("stream.on_retry", _exc)
+            time.sleep(wait)
+    return parts
+
+
 def _collect_response(
     client: OllamaClient,
     model_name: str,
@@ -1183,21 +1286,16 @@ def _collect_response(
         # optimisation.
         api_payload = payload
 
-    # Delta sink (gateway streaming): quando instalado, consome o stream
-    # token a token emitindo cada chunk — a mensagem do canal cresce ao vivo.
-    from .delta_stream import emit_delta as _emit_delta
-    from .delta_stream import emit_round_start as _emit_round
+    # Delta sink: quando instalado, consome o stream token a token emitindo
+    # cada chunk — a mensagem do canal (gateway) ou a resposta no terminal
+    # (plano 028 F1) cresce ao vivo. Agora com retry a frio, ver _stream_to_sink.
     from .delta_stream import get_sink as _get_sink
 
     # Usa retry automático apenas no OpenAIClient (que tem implementação real).
     # Checar apenas hasattr() seria insuficiente pois MagicMock retorna True para tudo.
     from .openai_client import OpenAIClient as _OpenAIClientClass
     if _get_sink() is not None:
-        _emit_round()
-        parts = []
-        for chunk in client.chat_stream(model_name, api_payload):
-            parts.append(chunk)
-            _emit_delta(chunk)
+        parts = _stream_to_sink(client, model_name, api_payload)
     elif isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
         parts = client.chat_with_retry(model_name, api_payload)
     else:
@@ -1370,17 +1468,46 @@ def _busy_spinner(console: Console, text: str):
 
     Best-effort: se o console não suportar live display (outro Live ativo,
     output capturado), segue sem spinner em vez de quebrar o turno.
+
+    Registra o spinner em `ui_frame` (plano 028 F2) — QUALQUER `input()` que
+    rodar dentro do bloco, em qualquer profundidade, pode envolver-se com
+    `ui_frame.suspend()` e pausar este spinner sem precisar saber que ele
+    existe. É isto que substitui a antiga allowlist de tools "interativas":
+    não é mais preciso listar de antemão quem chama input() — quem chama só
+    precisa suspender.
     """
+    from .ui_frame import current_frame as _current_frame
+    from .ui_frame import register as _register
+
+    # Com o quadro do turno ativo (plano 028 F2), a atividade vira uma linha do
+    # TRILHO em vez de um spinner próprio: o Rich admite um único display ao
+    # vivo por vez, e abrir um `console.status()` aqui falharia em silêncio,
+    # deixando o usuário sem indicador — justamente o vão que o spinner cobre.
+    _frame = _current_frame()
+    if _frame is not None:
+        from rich.text import Text as _Text
+
+        _rotulo = _Text.from_markup(text).plain.strip()
+        _frame.set_atividade(_rotulo)
+        try:
+            yield
+        finally:
+            _frame.set_atividade("")
+        return
+
     _status = None
     try:
         _status = console.status(text, spinner="dots")
         _status.__enter__()
     except Exception:
         _status = None
-    try:
+    if _status is None:
         yield
-    finally:
-        if _status is not None:
+        return
+    with _register(_status):
+        try:
+            yield
+        finally:
             try:
                 _status.__exit__(None, None, None)
             except Exception:
@@ -1392,31 +1519,17 @@ def _thinking_status(console: Console, model_name: str):
     return _busy_spinner(console, f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]")
 
 
-# Tools que fazem I/O interativo direto no terminal (input() bloqueante) —
-# NUNCA envolver em _busy_spinner. Rich Live display (console.status) e
-# input() disputam o controle do terminal: a thread de refresh do spinner
-# corrompe a leitura de stdin, fazendo o texto digitado sumir/aparecer
-# truncado ("nao consigo escrever" — incidente real 2026-07-02, regressão
-# introduzida pelo próprio spinner de execução de tool no commit anterior).
-_INTERACTIVE_TOOLS: frozenset[str] = frozenset({"clarify"})
-
-#: Tools que EXECUTAM comando e podem disparar o prompt de confirmação. Quando
-#: a confirmação interativa está ativa (_CONFIRM_EXEC_ACTIVE), elas não podem ter
-#: spinner em volta — Rich Live + input() se atropelam (o bug do "totodo" do
-#: clarify). Sem confirmação ativa, o spinner normal continua.
-_CONFIRM_CAPABLE_TOOLS: frozenset[str] = frozenset({"run_command", "execute_code", "process"})
-_CONFIRM_EXEC_ACTIVE: bool = False
-
-
 def _tool_exec_status(console: Console, name: str):
-    """_busy_spinner para execução de tool — no-op (nullcontext) para tools
-    que fazem input() direto, ver _INTERACTIVE_TOOLS. Também no-op para tools
-    de execução quando a confirmação interativa de comando está ligada (o
-    prompt de aprovação faria input() sob o spinner)."""
-    if name in _INTERACTIVE_TOOLS:
-        return nullcontext()
-    if _CONFIRM_EXEC_ACTIVE and name in _CONFIRM_CAPABLE_TOOLS:
-        return nullcontext()
+    """_busy_spinner para execução de tool.
+
+    Até o F2 (plano 028) isto consultava uma allowlist de nomes de tool
+    "interativas" (clarify, run_command sob confirmação…) para decidir se
+    abria spinner — esquecer uma tool nova na lista reintroduzia o bug do
+    "totodo" (Live + input() corrompendo stdin, incidente 2026-07-02). Agora
+    o spinner SEMPRE abre, registrado em `ui_frame`; a tool que precisar de
+    input() suspende sozinha via `ui_frame.suspend()` (ver `_clarify` em
+    `bauer/tools/agent_misc.py` e `_prompt_cmd_decision` abaixo). Não há mais
+    lista para manter."""
     return _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]")
 
 
@@ -1425,16 +1538,16 @@ def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
     "once" | "session" | "always" | "deny". Usado pelos dois gates (padrão
     perigoso e allowlist). "always" é o que ENSINA — pergunta uma vez, nunca mais.
     """
-    from rich.panel import Panel as _Panel
+    from .ui import approval_card as _card
+    from .ui import approval_options as _options
+    from .ui_frame import suspend as _suspend
 
     console.print()
-    console.print(_Panel(body, title=title, border_style="yellow", padding=(0, 1)))
-    console.print(
-        "[dim]  [bold]e[/bold] executar uma vez · [bold]s[/bold] toda a sessão · "
-        "[bold]a[/bold] sempre (aprende) · [bold]n[/bold] negar[/dim]"
-    )
+    console.print(_card(title, body))
+    console.print(_options())
     try:
-        raw = input("  > ").strip().lower()
+        with _suspend():
+            raw = input("  > ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return "deny"
     mapping = {
@@ -1449,14 +1562,70 @@ def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
     return decision
 
 
+#: Cor de aviso do tema, para markup Rich dentro das mensagens de gate. Função
+#: e não constante: o acento (e a paleta) mudam em tempo de execução, e um
+#: valor capturado no import congelaria a cor — foi assim que a `bottom_toolbar`
+#: e o `_PT_STYLE` escaparam do F0.
+def _warn() -> str:
+    return _theme_mod.WARN
+
+
+def _glifo_aviso() -> str:
+    """Sinal de aviso no conjunto ativo. `⚠` cru estoura em cp1252 — e o
+    card onde ele aparece é o do comando perigoso (achado do F6)."""
+    from .ui import active_glyphs
+    return active_glyphs().warn
+
+
+def _amostra_acentos(destaque: str = ""):
+    """Catálogo de acentos para o `/theme` (cada nome na própria cor)."""
+    from .ui import accent_swatches
+    return accent_swatches(destaque)
+
+
+def _persistir_acento(nome: str) -> None:
+    """Grava o acento escolhido em `agent.accent` do config.yaml.
+
+    Best-effort: em projeto sem config gravável (instalação read-only, CI) a
+    troca continua valendo na SESSÃO — só não sobrevive ao restart. Falhar aqui
+    não pode desfazer o que o usuário acabou de ver na tela.
+    """
+    try:
+        from .config_admin import set_config_value
+        set_config_value("agent.accent", nome)
+    except Exception as exc:  # noqa: BLE001
+        from .logging_config import log_suppressed
+        log_suppressed("theme.persistir_acento", exc)
+
+
+def _aplicar_acento_do_config() -> None:
+    """Aplica o acento salvo no config, no boot da sessão."""
+    try:
+        from .config_loader import load_config
+        nome = str(getattr(load_config().agent, "accent", "") or "").strip()
+        if nome:
+            _theme_mod.set_accent(nome)
+    except KeyError as _exc:
+        # nome inválido no config (renomeamos uma paleta, usuário digitou
+        # errado): mantém o padrão em vez de derrubar o boot por causa de cor
+        from .logging_config import log_suppressed
+        log_suppressed("theme.acento_invalido", _exc)
+    except Exception as exc:  # noqa: BLE001
+        from .logging_config import log_suppressed
+        log_suppressed("theme.aplicar_acento", exc)
+
+
 def _make_cli_approval_callback(console: Console):
     """Gate 1 — padrões PERIGOSOS (rm -rf, fork bomb…). Compatível com
     check_all_command_guards: (command, description) -> decisão. "always" grava
     no ~/.bauer/approvals.yaml (approve_permanent) pelo próprio pipeline."""
     def _cb(command: str, description: str) -> str:
+        # O título vai como TEXTO puro: quem estiliza é o `approval_card`
+        # (plano 028 F3). Markup aqui competiria com o tema e voltaria a
+        # espalhar cor solta pelo código.
         return _prompt_cmd_decision(
-            console, "[bold yellow]⚠ confirmar comando[/bold yellow]",
-            f"[yellow]{description}[/yellow]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
+            console, f"{_glifo_aviso()} confirmar comando",
+            f"[{_warn()}]{description}[/]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
         )
     return _cb
 
@@ -1467,11 +1636,82 @@ def _make_cli_allowlist_callback(console: Console):
     ~/.bauer/allowed_commands.yaml (via ShellRunner.add_learned_command)."""
     def _cb(base: str) -> str:
         return _prompt_cmd_decision(
-            console, "[bold yellow]⚠ comando fora da allowlist[/bold yellow]",
-            f"[white]'{base}'[/white] [yellow]não está na allowlist[/yellow].\n"
+            console, f"{_glifo_aviso()} comando fora da allowlist",
+            f"[white]'{base}'[/white] [{_warn()}]não está na allowlist[/].\n"
             f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
         )
     return _cb
+
+
+def _make_streamer(console: Console):
+    """Cria o renderizador de streaming do turno, ou None se não fizer sentido.
+
+    Fica desligado fora de terminal interativo: sem TTY (pipe, CI, `bauer agent
+    < arquivo`) o texto ainda sai — pelo caminho normal, no fim do turno — e
+    sem sequência de controle de cursor no meio. Também respeita
+    `agent.stream_response=false` no config, para quem preferir a resposta
+    inteira de uma vez.
+    """
+    try:
+        from .config_loader import load_config
+        if not bool(getattr(load_config().agent, "stream_response", True)):
+            return None
+    except Exception as _exc:  # noqa: BLE001 — sem config legível, streaming é o padrão
+        from .logging_config import log_suppressed
+        log_suppressed("stream.config", _exc)
+    try:
+        if not sys.stdin.isatty():
+            return None
+        from .ui_stream import ConsoleStreamRenderer
+        return ConsoleStreamRenderer(console)
+    except Exception:  # noqa: BLE001 — nunca impedir o turno por causa do render
+        return None
+
+
+@contextmanager
+def _quadro_do_turno(console: Console):
+    """Abre o quadro vivo do turno (HUD fixo + trilho), ou não abre nada.
+
+    Devolve o `TurnFrame` ou `None` — `None` fora de terminal interativo, com
+    o streaming desligado no config, ou se o terminal não suportar Live. Quem
+    chama trata os dois casos com o mesmo `with`, sem `if` espalhado.
+
+    O quadro é do TURNO, não da sessão: entre um prompt e outro quem desenha o
+    rodapé é a `bottom_toolbar` do prompt_toolkit (que precisa do terminal
+    livre para ler input). Os dois nunca coexistem — é essa alternância que
+    mantém o estado sempre visível sem os dois brigarem pelo terminal.
+    """
+    from .ui_frame import TurnFrame
+
+    try:
+        if not sys.stdin.isatty():
+            yield None
+            return
+    except Exception:  # noqa: BLE001
+        yield None
+        return
+
+    try:
+        frame = TurnFrame(console)
+    except Exception:  # noqa: BLE001
+        yield None
+        return
+
+    with frame:
+        yield frame if frame.is_live else None
+
+
+def _ja_exibido(streamer, texto: str) -> bool:
+    """A resposta já apareceu na tela via streaming?
+
+    Compara o TEXTO, não só o "escreveu algo": entre o que o modelo emitiu e o
+    que o turno resolve exibir há pós-processamento (gate de qualidade, replan,
+    complemento). Quando os dois divergem, o certo é imprimir — repetir é feio,
+    esconder é perder resposta.
+    """
+    if streamer is None or not getattr(streamer, "escreveu_algo", False):
+        return False
+    return streamer.text.strip() == (texto or "").strip()
 
 
 def _print_assistant_response(console: Console, text: str, cost_line: str = "") -> None:
@@ -1830,6 +2070,7 @@ def _native_turn_interactive(
     deduper,
     calls_left: int,
     guardrail=None,
+    streamer=None,
 ) -> tuple[str, str | None]:
     """Um turno de native function calling no chat interativo.
 
@@ -1840,6 +2081,11 @@ def _native_turn_interactive(
     ``guardrail`` (ToolCallGuardrailController opcional, usado pelo /loop —
     ver run_one_turn/_run_native_tool_turn para o mesmo padrão) acumula
     falhas entre chamadas; None preserva o comportamento atual (sem guarda).
+
+    ``streamer`` (ConsoleStreamRenderer opcional, plano 028 F1) faz o texto
+    aparecer enquanto o modelo escreve. Quando presente, o spinner "pensando…"
+    é dispensado — os dois disputariam o mesmo terminal, e o Rich só admite um
+    display ao vivo por vez. Sem ele, tudo segue como antes.
 
     Returns:
         ("final", texto)          — modelo respondeu sem tools; exibir e encerrar turno
@@ -1854,6 +2100,24 @@ def _native_turn_interactive(
 
     schemas = router.get_tool_schemas()
     try:
+        if streamer is not None:
+            # Sem spinner: o texto aparecendo JÁ é o indicador de atividade, e
+            # dois displays ao vivo no mesmo console se atropelam.
+            msg = client.chat_with_tools(
+                model_name, ctx.get_payload(), tools=schemas,
+                on_delta=streamer.on_delta,
+            )
+            streamer.on_round()  # sela o que veio antes das tools/da resposta
+        else:
+            with _thinking_status(console, model_name):
+                msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+    except TypeError as exc:
+        # Client de terceiro/dublê sem o parâmetro `on_delta`: streaming é
+        # opcional, a resposta não — repete sem ele. A checagem do nome é
+        # deliberada: um TypeError vindo de DENTRO do provider dispararia uma
+        # segunda chamada (e uma segunda cobrança) sem ela.
+        if "on_delta" not in str(exc):
+            raise
         with _thinking_status(console, model_name):
             msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
     except Exception as exc:
@@ -1899,16 +2163,24 @@ def _native_turn_interactive(
 
         if not _guard_blocked:
             _failed = False
+            _elapsed_ms: "int | None" = None
             _cached = deduper.check(name, args) if deduper is not None else None
             if _cached is not None:
                 result = _cached
             else:
+                # Cronômetro real (plano 028 F3). `tool_line` aceita
+                # `elapsed_ms` desde sempre, mas NENHUM call site o passava — o
+                # componente sabia exibir uma duração que ninguém media.
+                # `perf_counter` e não `time()`: medir intervalo com relógio de
+                # parede erra se o relógio do sistema for ajustado no meio.
+                _t0 = time.perf_counter()
                 try:
                     with _tool_exec_status(console, name):
                         result = router.execute_native_call(name, args)
                 except (ToolError, SandboxError) as exc:
                     result = f"[Erro: {exc}]"
                     _failed = True
+                _elapsed_ms = int((time.perf_counter() - _t0) * 1000)
                 if deduper is not None:
                     deduper.record(name, args, result, failed=_failed)
 
@@ -1926,10 +2198,12 @@ def _native_turn_interactive(
 
             display_line = _format_tool_display(name, result)
             try:
-                from .ui import tool_line as _tool_line
-                console.print(_tool_line(
+                from .ui import tool_block as _tool_block
+                console.print(_tool_block(
                     name, display_line,
                     status=("fail" if _failed else "ok"),
+                    elapsed_ms=_elapsed_ms,
+                    result=result,
                 ))
             except Exception:
                 console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
@@ -3447,6 +3721,7 @@ def _run_tool_loop_body(
     memprov,
     budget=None,
     guardrail=None,
+    streamer=None,
 ) -> _TurnOutcome:
     """Roda uma rodada de chamadas LLM + tool calls até o modelo responder só
     texto (fim natural) ou uma condição de parada disparar. Extração pura do
@@ -3496,6 +3771,7 @@ def _run_tool_loop_body(
                         cli_tool_log, _cli_deduper,
                         MAX_TOOL_TURNS - tool_turns,
                         guardrail=guardrail,
+                        streamer=streamer,
                     )
                 except _NativeToolsUnsupported:
                     state.native_session_ok = False
@@ -3689,14 +3965,20 @@ def _run_tool_loop_body(
                     else:
                         _to_execute.append(_a)
 
-            def _exec_action(action_dict: dict) -> tuple[str, str, str]:
-                """Executa 1 action com dedup e timeout."""
+            def _exec_action(action_dict: dict) -> tuple[str, str, str, "int | None"]:
+                """Executa 1 action com dedup, timeout e cronômetro.
+
+                O 4º item é `elapsed_ms` (plano 028 F3) — None quando o
+                resultado veio do dedup, porque aí não houve execução para
+                cronometrar e exibir "0ms" mentiria sobre o que aconteceu.
+                """
                 _name = action_dict.get("action", "?")
                 _args = action_dict.get("args", {}) or {}
                 _cached = _cli_deduper.check(_name, _args)
                 if _cached is not None:
-                    return _name, _cached, _args_sig(_args)
+                    return _name, _cached, _args_sig(_args), None
                 _failed = False
+                _t0 = time.perf_counter()
                 try:
                     from .tool_timeout import call_with_timeout as _call_to
                     _result, _timed_out = _call_to(
@@ -3709,19 +3991,20 @@ def _run_tool_loop_body(
                 except (ToolError, SandboxError) as _exc:
                     _result = f"[Erro: {_exc}]"
                     _failed = True
+                _elapsed = int((time.perf_counter() - _t0) * 1000)
                 _cli_deduper.record(_name, _args, _result, failed=_failed)
-                return _name, _result, _args_sig(_args)
+                return _name, _result, _args_sig(_args), _elapsed
 
             # Um único spinner cobre o batch inteiro (serial ou paralelo) — não
             # dá pra abrir um spinner por tool no caminho paralelo, Rich só
             # permite um Live display ativo por vez (as threads do
             # ThreadPoolExecutor rodam em background, só a thread principal
-            # mexe no console). NUNCA envolve se alguma action do lote for
-            # interativa (ex.: clarify) — Live display corrompe input().
-            _batch_interactive = any(
-                a.get("action", "") in _INTERACTIVE_TOOLS for a in _to_execute
-            )
-            if not _to_execute or _batch_interactive:
+            # mexe no console). Antes do F2 (plano 028) uma tool "interativa"
+            # no lote (ex.: clarify) fazia o batch inteiro pular o spinner —
+            # allowlist mantida à mão, ver _tool_exec_status acima. Agora o
+            # spinner sempre abre; a tool suspende sozinha quando chama
+            # input() (ver ui_frame.suspend()).
+            if not _to_execute:
                 _busy_label = ""
             elif len(_to_execute) == 1:
                 _busy_label = f"[dim]executando {_to_execute[0].get('action', '?')}… (Ctrl+C interrompe)[/dim]"
@@ -3732,18 +4015,42 @@ def _run_tool_loop_body(
             with _busy_spinner(console, _busy_label) if _busy_label else nullcontext():
                 # Execução paralela quando o modelo emitiu múltiplos tool calls de uma vez
                 if len(_to_execute) > 1:
+                    import contextvars
                     from concurrent.futures import ThreadPoolExecutor
                     from concurrent.futures import as_completed as _as_completed
 
-                    ordered_results: list[tuple[str, str, str]] = [("", "", "")] * len(_to_execute)
+                    # ThreadPoolExecutor NÃO herda o Context da thread chamadora
+                    # por conta própria — cada worker começa com um ContextVar
+                    # limpo. Sem isto, a pilha de displays registrada em
+                    # ui_frame (o spinner acima, aberto na thread principal)
+                    # fica invisível para uma tool com input() rodando no pool:
+                    # suspend() veria a pilha vazia e não pausaria nada, trazendo
+                    # de volta o bug do "totodo" — só que agora no caminho
+                    # paralelo.
+                    #
+                    # Um `Context` NÃO pode rodar em duas threads ao mesmo tempo
+                    # (`.run()` levanta RuntimeError "already entered" — testado
+                    # na prática, não é só doc) — por isso cada submit leva o
+                    # SEU PRÓPRIO `copy_context()`, tirado na thread principal
+                    # (onde o snapshot ainda enxerga o que foi registrado) antes
+                    # do despacho, nunca um snapshot único reaproveitado entre
+                    # as tasks.
+                    ordered_results: list[tuple[str, str, str, "int | None"]] = [
+                        ("", "", "", None)
+                    ] * len(_to_execute)
                     with ThreadPoolExecutor(max_workers=min(len(_to_execute), 8)) as _ex:
-                        _fmap = {_ex.submit(_exec_action, a): i for i, a in enumerate(_to_execute)}
+                        _fmap = {
+                            _ex.submit(contextvars.copy_context().run, _exec_action, a): i
+                            for i, a in enumerate(_to_execute)
+                        }
                         for _fut in _as_completed(_fmap):
                             ordered_results[_fmap[_fut]] = _fut.result()
                 else:
                     ordered_results = [_exec_action(a) for a in _to_execute]
 
-            for _exec_dict, (action_name, tool_result, _asig) in zip(_to_execute, ordered_results):
+            for _exec_dict, (action_name, tool_result, _asig, _elapsed_ms) in zip(
+                _to_execute, ordered_results
+            ):
                 if budget is not None and not budget.is_exhausted:
                     budget.consume_tool_call()
 
@@ -3762,10 +4069,12 @@ def _run_tool_loop_body(
                 # Display inteligente — filtra ruído, mostra apenas o relevante
                 display_line = _format_tool_display(action_name, tool_result)
                 try:
-                    from .ui import tool_line as _tool_line
-                    console.print(_tool_line(
+                    from .ui import tool_block as _tool_block
+                    console.print(_tool_block(
                         action_name, display_line,
                         status=("fail" if tool_result.startswith("[Erro:") else "ok"),
+                        elapsed_ms=_elapsed_ms,
+                        result=tool_result,
                     ))
                 except Exception:
                     console.print(f"  [dim]→[/dim] [cyan]{action_name}[/cyan]  {display_line}")
@@ -4572,6 +4881,22 @@ def run_agent_session(
                            for k, v in sorted(route_profiles.items()))
         _linhas_extra.append(("Roteando", _tiers))
 
+    # Acento salvo pelo usuário (Ctrl+T / `/theme`) — aplicado ANTES do
+    # primeiro render, senão o logo e o painel de sessão sairiam no padrão e
+    # só o resto da tela obedeceria a escolha.
+    _aplicar_acento_do_config()
+
+    # Resolve o conjunto de glifos UMA vez, olhando o console real desta
+    # sessão. Sem isto, um terminal cp1252 (cmd legado) estoura com
+    # UnicodeEncodeError no primeiro ❯/▰ — o mecanismo de queda para ASCII
+    # existe em theme.py mas só vale se alguém o acionar (plano 028 F0).
+    try:
+        from . import ui as _ui_kit
+        _ui_kit.use_glyphs(stream=getattr(console, "file", None) or sys.stdout)
+    except Exception as _exc:  # noqa: BLE001 — na dúvida segue com o padrão Unicode
+        from .logging_config import log_suppressed
+        log_suppressed("ui.deteccao_glifos", _exc)
+
     from .ascii_intro import session_panel
     console.print(session_panel(
         "Bauer Agent",
@@ -4601,6 +4926,80 @@ def run_agent_session(
         from .logging_config import log_suppressed
         log_suppressed("plugin_hooks.session_start", _exc)
 
+    # Estado do HUD (plano 028 F2) — UMA fonte para as duas superfícies que
+    # desenham o rodapé: a `bottom_toolbar` do prompt_toolkit (enquanto o
+    # prompt espera) e o `Live` do Rich (durante o turno). Antes do F2 a
+    # toolbar montava o HTML na mão, com a paleta antiga hardcoded — e por isso
+    # escapou inteira do F0.
+    _hud_tokens_por_segundo = 0.0
+    _hud_kernel_estado: "str | None" = None
+
+    # Esteira do Kernel: assina o bus e acende os estados conforme o turno
+    # governado avança. Só existe quando o Kernel está ligado — sem ele
+    # `_hud_kernel_estado` fica None e a esteira nem aparece (regra do plano
+    # 028: não inventa estado).
+    #
+    # Assina o WILDCARD "*", não `run.state.changed`: o Kernel publica estado
+    # por cinco tópicos diferentes (planning.started, state.changed,
+    # replanning, validation.started, progress.warning). Assinar só um — como
+    # o plano dizia — perderia planning e evaluating.
+    if kernel is not None:
+        from . import ui_frame as _ui_frame_mod
+        from .ui_hud import estado_do_evento as _estado_do_evento
+
+        def _on_kernel_event(evt) -> None:
+            nonlocal _hud_kernel_estado
+            try:
+                novo = _estado_do_evento(
+                    getattr(evt, "event_type", ""), getattr(evt, "status", None)
+                )
+                if novo is None:
+                    return  # evento sem estado de run: mantém o que já havia
+                _hud_kernel_estado = novo
+                _frame_atual = _ui_frame_mod.current_frame()
+                if _frame_atual is not None:
+                    _frame_atual.set_hud(_hud_state_atual())
+            except Exception as _exc:  # noqa: BLE001 — HUD nunca derruba o run
+                from .logging_config import log_suppressed
+                log_suppressed("hud.kernel_event", _exc)
+
+        try:
+            _kernel_bus = getattr(kernel, "bus", None)
+            if _kernel_bus is not None:
+                _kernel_bus.subscribe("*", _on_kernel_event)
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed
+            log_suppressed("hud.kernel_subscribe", _exc)
+
+    def _hud_state_atual():
+        from .ui_hud import HudState
+        from .usage_pricing import provider_e_local as _e_local
+
+        # O modelo do ÚLTIMO TURNO, não o configurado. Com roteamento ligado os
+        # dois divergem, e a barra afirmava o configurado enquanto o custo subia
+        # no outro. Marca com `→` quando o turno não rodou no modelo escolhido.
+        _m = _modelo_do_turno or model_name
+        _rotulo = str(_m) if _m == model_name else f"→ {_m}"
+
+        # O selo segue o provider do TURNO (mesma razão do modelo acima): o
+        # roteamento pode mandar um turno para a nuvem numa sessão que começou
+        # local, e o selo tem que contar isso — é o dado que ele existe para dar.
+        try:
+            from .cost_meter import provider_from_client as _pfc
+            _local = _e_local(_pfc(client))
+        except Exception:  # noqa: BLE001
+            _local = False
+
+        return HudState(
+            local=_local,
+            modelo=_rotulo,
+            ctx_pct=max(0.0, min(1.0, ctx.usage_pct)),
+            custo_usd=float(getattr(stats, "cost_usd_total", 0.0) or 0.0),
+            tokens_por_segundo=_hud_tokens_por_segundo,
+            kernel_estado=_hud_kernel_estado,
+            comandos=(("/loop", "autonomo"), ("/model", "modelo"), ("/exit", "sair")),
+        )
+
     # Cria sessão prompt_toolkit (autocomplete de /) apenas em terminal interativo real.
     # Só exige stdin como tty — stdout pode estar capturado pelo Rich em alguns terminais.
     # Tenta criar; se o terminal não suportar (ex: pipe, CI), cai para console.input().
@@ -4613,38 +5012,10 @@ def run_agent_session(
         # consumo de tokens/custo refletem na barra a cada prompt.
         def _bottom_toolbar():
             try:
-                import html as _html
-                from .usage_pricing import format_cost as _fmt_cost_tb
-                _cost = _fmt_cost_tb(stats.cost_usd_total)
-                _p = max(0.0, min(1.0, ctx.usage_pct))
-                _pct = int(_p * 100)
-                # Medidor Minimal: preenchido no acento, vazio apagado; o pct
-                # vira vermelho só em perigo de estouro (>85%).
-                _w = 8
-                _fill = round(_p * _w)
-                _danger = _p > 0.85
-                _fc = "#ef4444" if _danger else "#00d4aa"
-                _pc = "#ef4444" if _danger else "#6b7280"
-                _gauge = (
-                    f"<style fg='{_fc}'>{'▰' * _fill}</style>"
-                    f"<style fg='#4b5563'>{'▱' * (_w - _fill)}</style>"
-                    f" <style fg='{_pc}'>{_pct}%</style>"
-                )
-                # O modelo do ÚLTIMO TURNO, não o configurado. Com roteamento
-                # ligado os dois divergem, e a barra afirmava o configurado
-                # enquanto o custo subia no outro. Marca com `→` quando o turno
-                # não rodou no modelo que o usuário escolheu.
-                _m = _modelo_do_turno or model_name
-                _rotulo = str(_m) if _m == model_name else f"→ {_m}"
-                return HTML(
-                    " <b><style fg='#00d4aa'>◆ BAUER</style></b>"
-                    f"  <style fg='#3b82f6'>{_html.escape(_rotulo)}</style>"
-                    f"  ·  ctx {_gauge}"
-                    f"  ·  <style fg='#a855f7'>{_html.escape(str(_cost))}</style>"
-                    "  ·  <style fg='#6b7280'>/loop · /model · /exit</style> "
-                )
+                from .ui_hud import render_hud_html as _render_html
+                return HTML(_render_html(_hud_state_atual()))
             except Exception:
-                return " ◆ BAUER "
+                return " BAUER "
         try:
             _pt_session = _make_prompt_session(bottom_toolbar=_bottom_toolbar)
         except Exception as _pt_exc:
@@ -4673,7 +5044,12 @@ def run_agent_session(
     # Confirmação interativa de comando perigoso (só em TTY real). Em vez de
     # bloquear em silêncio, pergunta e o "always" ENSINA o allowlist. Resolvido
     # uma vez; instala o callback por turno (o /loop usa motor próprio).
-    global _CONFIRM_EXEC_ACTIVE
+    #
+    # Até o F2 (plano 028) havia aqui uma segunda variável global,
+    # `_CONFIRM_EXEC_ACTIVE`, só para avisar `_tool_exec_status` que não podia
+    # abrir spinner em volta de tools de execução. Não é mais necessária: o
+    # spinner sempre abre e `_prompt_cmd_decision` (chamado pelos callbacks
+    # abaixo) suspende sozinho via `ui_frame.suspend()` quando pede input().
     _confirm_cb = None
     try:
         from .config_loader import load_config as _lc_cc
@@ -4690,7 +5066,6 @@ def run_agent_session(
                 _sr.allowlist_callback = _make_cli_allowlist_callback(console)
             except Exception:
                 pass
-    _CONFIRM_EXEC_ACTIVE = _confirm_cb is not None
     _listen_loop_active = False
 
     while True:
@@ -4777,6 +5152,25 @@ def run_agent_session(
                 + (f" | Sessao: {session_id}" if session_id else "")
                 + "[/dim]"
             )
+            continue
+        if user_input.lower().split()[0] in _THEME_CMDS:
+            _partes = user_input.split(maxsplit=1)
+            _pedido = _partes[1].strip().lower() if len(_partes) > 1 else ""
+            if _pedido:
+                try:
+                    _theme_mod.set_accent(_pedido)
+                    _persistir_acento(_pedido)
+                    console.print(_amostra_acentos(destaque=_pedido))
+                except KeyError as _exc:
+                    console.print(f"[{_warn()}]{_exc.args[0]}[/]")
+            else:
+                # Sem argumento: mostra o catálogo com o atual em destaque. É
+                # também a resposta para "quais cores existem?" — perguntar e
+                # ver é melhor que decorar nome de paleta.
+                console.print(_amostra_acentos(destaque=_theme_mod.ACCENT_NAME))
+                console.print(
+                    "[dim]  /theme <nome> para trocar · [bold]Ctrl+T[/bold] cicla[/dim]"
+                )
             continue
         if user_input.lower() in _MODEL_CMDS:
             # Live model switch: abre seletor, salva config.yaml, reconstrói client ao vivo.
@@ -5176,7 +5570,13 @@ def run_agent_session(
             mem_turn_idx=_mem_turn_idx,
         )
 
+        # Streaming ao vivo da resposta (plano 028 F1). Um por INVOCAÇÃO, não
+        # por turno: com o replan do Kernel o corpo roda de novo, e um streamer
+        # reaproveitado acumularia a resposta reprovada junto com a boa.
+        _stream_holder: dict = {}
+
         def _invoke_turn():
+            _stream_holder["atual"] = _make_streamer(console)
             return _run_tool_loop_body(
                 ctx=ctx,
                 router=router,
@@ -5190,7 +5590,21 @@ def run_agent_session(
                 active_workspace=active_workspace,
                 turn_input_text=user_input,
                 memprov=_memprov,
+                streamer=_stream_holder["atual"],
             )
+
+        def _invoke_turn_com_quadro():
+            """O turno inteiro dentro do quadro vivo (plano 028 F2).
+
+            É isto que resolve o D3: o HUD fica colado no rodapé durante a
+            execução — antes o estado sumia no Enter e só voltava no prompt
+            seguinte. Fora de TTY, `_quadro_do_turno` devolve um nullcontext e
+            tudo segue pelo caminho antigo.
+            """
+            with _quadro_do_turno(console) as _frame:
+                if _frame is not None:
+                    _frame.set_hud(_hud_state_atual())
+                return _invoke_turn()
 
         if kernel is not None:
             # ── Kernel 6c-3: turno governado (kernel.enabled=true) ────────────
@@ -5220,10 +5634,19 @@ def run_agent_session(
                 # imprimiram o necessário no console — o run registra o motivo
                 return {"status": "failed", "error": f"turno terminou em {o.kind}"}
 
-            _kout = kernel.execute(_KReq(
-                task=user_input, session_id=session_id or "",
-                agent_id="cli.agent", input={"endpoint": "cli.agent"},
-            ), executor=_turn_executor)
+            # Esteira zerada no início do turno: sem isto o rodapé exibiria o
+            # "completed" do turno ANTERIOR enquanto este ainda nem começou.
+            _hud_kernel_estado = None
+            # O quadro cobre o `execute()` INTEIRO, não cada invocação do
+            # executor: com replan o corpo do turno roda de novo, e abrir/fechar
+            # o quadro a cada tentativa faria o HUD piscar no meio do turno.
+            with _quadro_do_turno(console) as _frame:
+                if _frame is not None:
+                    _frame.set_hud(_hud_state_atual())
+                _kout = kernel.execute(_KReq(
+                    task=user_input, session_id=session_id or "",
+                    agent_id="cli.agent", input={"endpoint": "cli.agent"},
+                ), executor=_turn_executor)
             outcome = _captured.get("outcome")
             if outcome is None:
                 # governança barrou ANTES do turno (kill-switch/policy/budget) —
@@ -5237,7 +5660,7 @@ def run_agent_session(
                     )
                 continue
         else:
-            outcome = _invoke_turn()
+            outcome = _invoke_turn_com_quadro()
         # Turno roteado (heurístico): o client do profile vale SÓ para este
         # turno — não adota na sessão, a menos que o fallback tenha trocado o
         # client no meio do turno (aí a troca é intencional e permanece).
@@ -5260,8 +5683,30 @@ def run_agent_session(
         _fb_idx = _state.fb_idx
         _mem_turn_idx = _state.mem_turn_idx
 
+        # tok/s do turno que acabou de rodar — o StreamDiag do renderer (F1) já
+        # mede; aqui só é publicado no HUD para aparecer na barra do próximo
+        # prompt. Fica o valor do ÚLTIMO turno (não zera): "18.4 tok/s" parado
+        # na barra informa a velocidade real da máquina; zerar entre turnos só
+        # apagaria o número que o usuário quer comparar.
+        _streamer_do_turno = _stream_holder.get("atual")
+        if _streamer_do_turno is not None:
+            try:
+                _tps = _streamer_do_turno.diag.tokens_per_second
+                if _tps > 0:
+                    _hud_tokens_por_segundo = _tps
+            except Exception as _exc:  # noqa: BLE001 — métrica nunca derruba o turno
+                from .logging_config import log_suppressed
+                log_suppressed("hud.metrica", _exc)
+
         if outcome.kind == "final":
-            _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
+            if _ja_exibido(_stream_holder.get("atual"), outcome.display):
+                # Já saiu ao vivo — reimprimir daria a resposta em dobro. Só a
+                # linha de custo, que o streaming não tem como saber no meio.
+                if outcome.turn_cost_line:
+                    console.print(outcome.turn_cost_line)
+                console.print()
+            else:
+                _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.

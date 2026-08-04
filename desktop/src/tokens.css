@@ -1,0 +1,36 @@
+/* GERADO por bauer/theme.py -- NAO EDITE A MAO.
+ *
+ * Regenere com:  python -m bauer.theme
+ * O teste tests/test_theme.py falha se este arquivo divergir do Python.
+ */
+
+:root {
+  --bauer-void: #0a0c10;
+  --bauer-surface: #12151b;
+  --bauer-line: #1e232c;
+  --bauer-accent: #a855f7;
+  --bauer-accent-text: #be80f9;
+  --bauer-accent-deep: #713ba6;
+  --bauer-cloud: #7aa2f7;
+  --bauer-text: #e5e7eb;
+  --bauer-dim: #6b7280;
+  --bauer-faint: #4b5563;
+  --bauer-ok: #22c55e;
+  --bauer-warn: #f59e0b;
+  --bauer-bad: #ef4444;
+
+  /* aliases da paleta antiga -> tokens do Bauer */
+  --bg: var(--bauer-void);
+  --bg-2: var(--bauer-surface);
+  --bg-3: var(--bauer-line);
+  --border: var(--bauer-line);
+  --border-2: var(--bauer-faint);
+  --text: var(--bauer-text);
+  --text-2: var(--bauer-dim);
+  --text-3: var(--bauer-faint);
+  --accent: var(--bauer-accent);
+  --green: var(--bauer-ok);
+  --amber: var(--bauer-warn);
+  --red: var(--bauer-bad);
+  --purple: var(--bauer-accent-text);
+}

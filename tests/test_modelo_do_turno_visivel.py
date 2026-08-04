@@ -32,14 +32,23 @@ AGENT = (RAIZ / "bauer" / "agent.py").read_text(encoding="utf-8")
 # ─── a barra de status ───────────────────────────────────────────────────────
 
 
+# A montagem do rótulo vivia dentro de `_bottom_toolbar`. Desde o plano 028 F2
+# ela vive em `_hud_state_atual` — a fonte ÚNICA que alimenta as duas
+# superfícies que desenham o rodapé (a bottom_toolbar do prompt_toolkit
+# enquanto o prompt espera, e o Live do Rich durante o turno). A garantia é a
+# mesma; o que mudou foi o lugar, e o teste segue o lugar.
+def _fonte_do_rotulo() -> str:
+    trecho = AGENT[AGENT.index("def _hud_state_atual"):]
+    return trecho[:trecho.index("# Cria sessão prompt_toolkit")]
+
+
 def test_barra_nao_exibe_o_modelo_configurado_direto():
     """A barra lia `model_name` — o CONFIGURADO — mesmo com o turno roteado."""
-    barra = AGENT[AGENT.index("def _bottom_toolbar"):]
-    barra = barra[:barra.index("try:\n            _pt_session")]
+    barra = _fonte_do_rotulo()
 
     assert "_modelo_do_turno" in barra, (
         "a barra voltou a exibir o modelo configurado em vez do que rodou")
-    assert not re.search(r"escape\(str\(model_name\)\)", barra), (
+    assert not re.search(r"modelo=str\(model_name\)", barra), (
         "`model_name` cru na barra é exatamente o bug: ele não muda quando o "
         "roteamento manda o turno para outro provider")
 
@@ -47,8 +56,7 @@ def test_barra_nao_exibe_o_modelo_configurado_direto():
 def test_divergencia_fica_marcada():
     """Trocar o texto sem sinalizar seria pior: o usuário veria um modelo que
     não escolheu e nem saberia que houve troca."""
-    barra = AGENT[AGENT.index("def _bottom_toolbar"):]
-    barra = barra[:barra.index("try:\n            _pt_session")]
+    barra = _fonte_do_rotulo()
 
     assert '_m == model_name' in barra, "sem comparação não há como marcar"
     assert 'f"→ {_m}"' in barra, "a divergência precisa de marca visível"
@@ -57,10 +65,19 @@ def test_divergencia_fica_marcada():
 def test_variavel_inicializada_antes_do_closure():
     """O closure roda no PRIMEIRO prompt, antes de qualquer turno. Sem
     inicialização daria NameError — engolido pelo `except` da barra, que cairia
-    para " ◆ BAUER " e esconderia tudo, inclusive o modelo."""
+    para " BAUER " e esconderia tudo, inclusive o modelo."""
     init = AGENT.index("_modelo_do_turno = model_name")
-    uso = AGENT.index("def _bottom_toolbar")
+    uso = AGENT.index("def _hud_state_atual")
     assert init < uso, "inicialização precisa vir antes do closure da barra"
+
+
+def test_selo_local_nuvem_segue_o_provider_do_turno():
+    """Mesma família do bug: o selo ◆local/☁nuvem tem que seguir o provider que
+    REALMENTE rodou. Com roteamento, uma sessão que começou local pode mandar o
+    turno para a nuvem — dizer "local" ali seria a mesma mentira do modelo."""
+    barra = _fonte_do_rotulo()
+    assert "provider_from_client" in barra, (
+        "o selo precisa inferir do CLIENT do turno, não de uma flag de sessão")
 
 
 # ─── o banner ────────────────────────────────────────────────────────────────

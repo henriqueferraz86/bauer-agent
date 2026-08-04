@@ -11,8 +11,29 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.style import Style
 from rich.text import Text
 
-ACCENT = '#00d4aa'; PULSE = '#7c3aed'; DIM = '#6b7280'; WHITE = '#f9fafb'; SUCCESS = '#10b981'; ERROR_COLOR = '#ef4444'
-ACCENT_STYLE = Style(color=ACCENT); DIM_STYLE = Style(color=DIM); WHITE_STYLE = Style(color=WHITE)
+# Paleta vem de bauer/theme.py (fonte única) — ver plano 028. Nada de constante
+# de módulo: o acento troca em tempo de execução (Ctrl+T), e valor capturado no
+# import deixaria os indicadores na cor antiga.
+from . import theme
+
+_MAPA_COR = {'ACCENT': 'ACCENT', 'PULSE': 'ACCENT_DEEP', 'DIM': 'DIM',
+             'WHITE': 'WHITE', 'SUCCESS': 'OK', 'ERROR_COLOR': 'BAD'}
+_MAPA_STYLE = {'ACCENT_STYLE': 'ACCENT', 'DIM_STYLE': 'DIM', 'WHITE_STYLE': 'WHITE'}
+
+
+def __getattr__(name):
+    if name in _MAPA_COR:
+        return getattr(theme, _MAPA_COR[name])
+    if name in _MAPA_STYLE:
+        return _style(getattr(theme, _MAPA_STYLE[name]))
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _style(cor: str) -> Style:
+    """Style do Rich para uma cor do tema, construído na hora do uso."""
+    return Style(color=cor)
+
+
 MODERN_SPINNER = 'dots12'
 
 class ExecutionIndicator:
@@ -25,20 +46,20 @@ class ExecutionIndicator:
         if description: self.description = description
         self._start_time = time.time()
         if self.mode == 'progress':
-            self._progress = Progress(SpinnerColumn(spinner_name=MODERN_SPINNER, style=ACCENT_STYLE), TextColumn('{task.description}', style=WHITE_STYLE), BarColumn(bar_width=24, style=DIM_STYLE, completed_style=ACCENT_STYLE), TextColumn('{task.percentage:>3.0f}%', style=ACCENT_STYLE), TimeElapsedColumn(), console=self.console, transient=self.transient)
+            self._progress = Progress(SpinnerColumn(spinner_name=MODERN_SPINNER, style=_style(theme.ACCENT)), TextColumn('{task.description}', style=_style(theme.WHITE)), BarColumn(bar_width=24, style=_style(theme.DIM), completed_style=_style(theme.ACCENT)), TextColumn('{task.percentage:>3.0f}%', style=_style(theme.ACCENT)), TimeElapsedColumn(), console=self.console, transient=self.transient)
             self._progress.__enter__(); self._task_id = self._progress.add_task(self.description, total=100)
         else:
-            self._progress = Progress(SpinnerColumn(spinner_name=MODERN_SPINNER, style=ACCENT_STYLE), TextColumn('{task.description}', style=WHITE_STYLE), TimeElapsedColumn(), console=self.console, transient=self.transient)
+            self._progress = Progress(SpinnerColumn(spinner_name=MODERN_SPINNER, style=_style(theme.ACCENT)), TextColumn('{task.description}', style=_style(theme.WHITE)), TimeElapsedColumn(), console=self.console, transient=self.transient)
             self._progress.__enter__(); self._task_id = self._progress.add_task(self.description, total=None)
     def update(self, description='', advance=0):
         if self._progress and self._task_id is not None:
             if description: self._progress.update(self._task_id, description=description)
             if advance and self.mode == 'progress': self._progress.update(self._task_id, advance=advance)
     def complete(self, result='OK Concluido'):
-        if self._progress and self._task_id is not None: self._progress.update(self._task_id, description=f'[bold {SUCCESS}]{result}[/]')
+        if self._progress and self._task_id is not None: self._progress.update(self._task_id, description=f'[bold {theme.OK}]{result}[/]')
         self.stop()
     def fail(self, error='X Falhou'):
-        if self._progress and self._task_id is not None: self._progress.update(self._task_id, description=f'[bold {ERROR_COLOR}]{error}[/]')
+        if self._progress and self._task_id is not None: self._progress.update(self._task_id, description=f'[bold {theme.BAD}]{error}[/]')
         self.stop()
     def stop(self):
         if self._progress is not None:
@@ -60,12 +81,12 @@ def progress_bar(description='Processando...', console=None, transient=True):
 
 def show_step(step_name, status='running', console=None):
     console = console or Console()
-    symbols = {'running': (ACCENT, '>'), 'done': (SUCCESS, 'OK'), 'failed': (ERROR_COLOR, 'XX'), 'skip': (DIM, '--'), 'wait': (PULSE, '..')}
+    symbols = {'running': (theme.ACCENT, '>'), 'done': (theme.OK, 'OK'), 'failed': (theme.BAD, 'XX'), 'skip': (theme.DIM, '--'), 'wait': (theme.ACCENT_DEEP, '..')}
     color, icon = symbols.get(status, symbols['running'])
     text = Text(); text.append(f'  {icon}  ', style=color); text.append(step_name, style='bold')
     console.print(text)
 
 def show_header(title, console=None):
     console = console or Console()
-    text = Text(); text.append('  ', style=''); text.append('>', style=ACCENT_STYLE); text.append(f'  {title}', style=WHITE_STYLE)
+    text = Text(); text.append('  ', style=''); text.append('>', style=_style(theme.ACCENT)); text.append(f'  {title}', style=_style(theme.WHITE))
     console.print(text)

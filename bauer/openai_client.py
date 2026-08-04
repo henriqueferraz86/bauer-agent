@@ -7,7 +7,7 @@ Interface idêntica ao OllamaClient para ser intercambiável no CLI e no servido
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -164,8 +164,10 @@ class OpenAIClient:
         messages: list[dict],
         tools: list[dict],
         tool_choice: str = "auto",
+        *,
+        on_delta: "Callable[[str], None] | None" = None,
     ) -> dict[str, Any]:
-        """Chamada não-streaming com native function calling.
+        """Native function calling. Com `on_delta`, o texto chega em streaming.
 
         Retorna o response completo (choices[0].message) incluindo:
         - content: str | None — texto de resposta (None se fez tool call)
@@ -180,7 +182,15 @@ class OpenAIClient:
                     result = router.execute_native_call(name, args)
             else:
                 text = response.get("content", "")
+
+        `on_delta` recebe cada pedaço de TEXTO conforme chega. O contrato de
+        retorno é idêntico com e sem ele — quem chama continua lendo
+        `content`/`tool_calls` do mesmo jeito. Foi de propósito: o turno native
+        do agent é código sensível (pareamento assistant↔tool, custo, fallback)
+        e não deveria mudar só para ganhar streaming (plano 028 F1).
         """
+        if on_delta is not None:
+            return self._chat_with_tools_stream(model, messages, tools, tool_choice, on_delta)
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -264,6 +274,121 @@ class OpenAIClient:
             return data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise OpenAIClientError(f"Resposta inesperada do provider: {exc}") from exc
+
+    def _chat_with_tools_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str,
+        on_delta: "Callable[[str], None]",
+    ) -> dict[str, Any]:
+        """Function calling COM streaming de texto (SSE).
+
+        Devolve exatamente o mesmo dict do caminho não-streaming; a diferença é
+        que o texto foi entregue a `on_delta` enquanto chegava, e as tool calls
+        foram remontadas dos fragmentos (ver `stream_tools.ToolCallAccumulator`
+        — os providers discordam em como fatiam isso).
+
+        Sem retry: aqui o texto já pode ter chegado à tela do usuário, e
+        retentar reimprimiria a resposta. O retry a frio de quem chama é que
+        cobre a falha antes do primeiro token.
+        """
+        from .stream_tools import ToolCallAccumulator
+
+        self.last_usage = {}
+        conhecidas = {
+            (t.get("function") or {}).get("name")
+            for t in (tools or [])
+            if isinstance(t, dict)
+        }
+        acc = ToolCallAccumulator({n for n in conhecidas if n})
+        partes: list[str] = []
+        _error_status = 0
+        _error_body = ""
+
+        try:
+            with httpx.stream(
+                "POST",
+                self._chat_url(),
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                    **self._cost_request_extras(),
+                },
+                headers=self._headers,
+                timeout=httpx.Timeout(
+                    connect=float(self.timeout),
+                    read=300.0,
+                    write=10.0,
+                    pool=5.0,
+                ),
+                verify=shared_ssl_context(),
+            ) as response:
+                if response.status_code >= 400:
+                    # Corpo lido DENTRO do contexto stream (conexão ainda aberta).
+                    _error_status = response.status_code
+                    try:
+                        chunks: list[bytes] = []
+                        for chunk in response.iter_bytes():
+                            chunks.append(chunk)
+                            if sum(len(c) for c in chunks) > 1000:
+                                break
+                        _error_body = b"".join(chunks).decode("utf-8", errors="replace")[:600]
+                    except Exception:  # noqa: BLE001
+                        _error_body = ""
+                else:
+                    for line in response.iter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        payload = line[6:].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        usage_payload = data.get("usage")
+                        if isinstance(usage_payload, dict):
+                            self.last_usage = dict(usage_payload)
+                        choices = data.get("choices") or []
+                        if not choices:
+                            continue  # evento final só com usage
+                        delta = choices[0].get("delta") or {}
+                        texto = delta.get("content") or ""
+                        if texto:
+                            partes.append(texto)
+                            try:
+                                on_delta(texto)
+                            except Exception as _exc:  # noqa: BLE001 — render não derruba a chamada
+                                from .logging_config import log_suppressed
+                                log_suppressed("stream.on_delta", _exc)
+                        for frag in delta.get("tool_calls") or []:
+                            acc.add_fragment(frag)
+        except httpx.ConnectError as exc:
+            raise OpenAIClientError(
+                f"Conexao recusada em {self.host}.\nVerifique se o servidor esta rodando."
+            ) from exc
+        except httpx.TimeoutException:
+            raise OpenAIClientError(f"Timeout ({self.timeout}s) em {self.host}.")
+        except httpx.HTTPError as exc:
+            raise OpenAIClientError(f"Erro HTTP: {exc}") from exc
+
+        if _error_status:
+            # `_safe_body` mantém o prefixo "HTTP <code>" — é por ele que o
+            # agent reconhece "provider não aceita tools" e rebaixa a sessão
+            # para o bridge em vez de morrer.
+            raise OpenAIClientError(f"[Provedor] {_safe_body(_error_status, _error_body)}")
+
+        return {
+            "role": "assistant",
+            "content": "".join(partes),
+            "tool_calls": acc.result(),
+        }
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
         """Streaming via /v1/chat/completions com SSE.
