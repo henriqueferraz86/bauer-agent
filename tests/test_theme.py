@@ -355,6 +355,54 @@ class TestFonteUnica:
             "Ctrl+0 não pode ser o único atalho — não atravessa VT100"
         )
 
+    def test_persistir_acento_nunca_cria_config(self, tmp_path, monkeypatch):
+        """Regressão de um bug que QUEBROU a máquina de um usuário.
+
+        `_persistir_acento` chamava `set_config_value` com o default relativo
+        `"config.yaml"`. Rodando de dentro de um projeto sem config próprio, a
+        função CRIAVA o arquivo — com uma chave só, `agent.accent`. Esse
+        arquivo passava a ofuscar o `~/.bauer/config.yaml`, e todo comando
+        `bauer` naquela pasta morria em "Config inválida: model: Field
+        required". Apertar Ctrl+T derrubava o agente inteiro.
+        """
+        from bauer.agent import _persistir_acento
+
+        projeto = tmp_path / "projeto-sem-config"
+        projeto.mkdir()
+        home = tmp_path / "home-sem-config"
+        home.mkdir()
+        monkeypatch.chdir(projeto)
+        monkeypatch.setattr("bauer.paths.config_path", lambda: home / "config.yaml")
+
+        _persistir_acento("lima")
+
+        assert not (projeto / "config.yaml").exists(), (
+            "criou config.yaml no diretório do projeto — é o bug que ofusca o "
+            "config real e derruba todo comando bauer naquela pasta"
+        )
+        assert not (home / "config.yaml").exists(), "criou config no home"
+
+    def test_persistir_acento_grava_em_config_existente(self, tmp_path, monkeypatch):
+        """Existindo config, a escolha tem que sobreviver ao restart."""
+        import yaml
+
+        from bauer.agent import _persistir_acento
+
+        projeto = tmp_path / "projeto"
+        projeto.mkdir()
+        cfg = projeto / "config.yaml"
+        cfg.write_text(
+            yaml.safe_dump({"model": {"provider": "ollama", "name": "x"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(projeto)
+
+        _persistir_acento("ouro")
+
+        salvo = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert salvo["agent"]["accent"] == "ouro"
+        assert salvo["model"]["name"] == "x", "sobrescreveu o resto do config"
+
     def test_estilo_do_prompt_acompanha_a_troca(self):
         """Estilo DINÂMICO: trocar o acento tem que mudar o prompt na hora,
         sem recriar a PromptSession."""

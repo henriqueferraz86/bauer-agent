@@ -1607,15 +1607,40 @@ def _amostra_acentos(destaque: str = ""):
 
 
 def _persistir_acento(nome: str) -> None:
-    """Grava o acento escolhido em `agent.accent` do config.yaml.
+    """Grava o acento escolhido em `agent.accent` de um config EXISTENTE.
 
-    Best-effort: em projeto sem config gravável (instalação read-only, CI) a
-    troca continua valendo na SESSÃO — só não sobrevive ao restart. Falhar aqui
-    não pode desfazer o que o usuário acabou de ver na tela.
+    Duas regras, ambas aprendidas quebrando a máquina de um usuário:
+
+    1. **Escreve no config do diretório atual só se ele JÁ EXISTIR.** A versão
+       anterior chamava `set_config_value` com o default relativo
+       `"config.yaml"`. Rodando de dentro de um projeto que não tem config
+       próprio, `set_config_value` CRIAVA o arquivo — com uma única chave,
+       `agent.accent`. Esse arquivo passava a ofuscar o `~/.bauer/config.yaml`
+       e TODO comando `bauer` naquela pasta morria em
+       "Config inválida: model: Field required". Uma troca de cor derrubou o
+       agente inteiro.
+
+    2. **Nunca cria config.** Se não há config nenhum, o acento vale para a
+       sessão e pronto. Criar um arquivo de configuração como efeito colateral
+       de apertar Ctrl+T é surpresa demais para o benefício.
+
+    Best-effort no resto: falhar ao gravar não pode desfazer o que o usuário
+    acabou de ver na tela.
     """
     try:
+        from pathlib import Path as _Path
+
         from .config_admin import set_config_value
-        set_config_value("agent.accent", nome)
+        from .paths import config_path as _home_cfg
+
+        # 1º o config do diretório atual, se houver; 2º o canônico do ~/.bauer.
+        # Nesta ordem porque é a mesma que o carregamento usa — gravar num
+        # arquivo que a sessão não leu seria escrever no vazio.
+        local = _Path("config.yaml")
+        alvo = local if local.is_file() else _home_cfg()
+        if not alvo.is_file():
+            return  # sem config para atualizar: a troca vale só nesta sessão
+        set_config_value("agent.accent", nome, config_path=alvo)
     except Exception as exc:  # noqa: BLE001
         from .logging_config import log_suppressed
         log_suppressed("theme.persistir_acento", exc)
