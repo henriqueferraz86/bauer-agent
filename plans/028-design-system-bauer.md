@@ -5,7 +5,7 @@
 > qualidade: Claude Code. Referência de *identidade*: o que só o Bauer sabe —
 > local vs nuvem, custo em tempo real, Kernel governando o turno.
 
-Status: **F0–F3 implementados e verdes** (2026-08-03) · F4–F6 pendentes ·
+Status: **F0–F5 implementados e verdes** (2026-08-04) · F6 pendente ·
 Acento definido: **violeta elétrico `#a855f7`** · Escopo: `bauer/ui.py`,
 `bauer/agent.py`, `bauer/ascii_intro.py`, `bauer/indicators.py`,
 `bauer/delta_stream.py`, `desktop/src/`
@@ -280,10 +280,10 @@ consome ([Chat.tsx:301](desktop/src/screens/Chat.tsx:301)). O trabalho é de
 - O build do Vite emite **direto** em `bauer/static` com `emptyOutDir`
   ([vite.config.ts](desktop/vite.config.ts)) — os assets versionados são
   gerados; mexer no SPA exige `npm run build` e commit dos assets.
-- O proxy de dev aponta para `127.0.0.1:**5174**` enquanto o comentário do
-  próprio arquivo fala em `:8000`, que é o default real do serve
-  ([config_loader.py:602](bauer/config_loader.py:602)). Conferir ao mexer — hoje
-  `npm run dev` só fala com um serve subido em 5174.
+- ~~O proxy de dev aponta para `127.0.0.1:5174` enquanto o comentário fala em
+  `:8000`~~ — **não era papercut.** O `.claude/launch.json` sobe o serve de
+  desenvolvimento justamente em 5174, para não colidir com um serve de produção
+  no default 8000. Só o comentário do `vite.config.ts` estava velho; corrigido.
 
 **Micro-animações (as únicas):** caret de streaming, glow no bloco vivo, shimmer
 no medidor acima de 85%. Todas presas a um dado real; nenhuma decorativa.
@@ -414,6 +414,45 @@ etapa do turno; `estado_do_evento()` filtra.
 **Verificação:** 32 testes novos no F2-fim + F3; a fatia
 `-k "agent or ui or stream or clarify or bridge or tool or custo or kernel"`
 (~1600 testes) sem regressão.
+
+---
+
+---
+
+## 4e. F5 entregue (2026-08-04)
+
+**O SPA está na paleta do Bauer.** `styles.css` importa o `tokens.css` gerado,
+e os ~28 hex literais viraram tokens. Confirmado no navegador com o serve real:
+fundo `#0a0c10`, superfície `#12151b`, acento `#a855f7` na sidebar e nos
+ícones, selo `#7aa2f7`, semáforo do titlebar exatamente em `BAD`/`WARN`/`OK`.
+
+**Tons tingidos derivam por `color-mix`**, não por hex fixo: `--accent-bg`,
+`--accent-border` e as famílias ok/bad são misturas do token com o fundo. Assim
+seguem a troca de acento sozinhas — fixá-los deixaria metade da tela presa ao
+violeta.
+
+**HUD no chat, com menos campos que o do terminal — e a diferença é honesta.**
+Selo local/nuvem (do `provider`), modelo do turno com a mesma marca `→` de
+divergência, e **tok/s medido no cliente** sobre o que de fato chegou. O
+medidor de contexto NÃO existe aqui: o `/status` expõe o TAMANHO da janela, não
+quanto dela foi usada, e desenhar a barra a partir disso seria inventar.
+Entra quando o serve expuser o uso.
+
+**Dois defeitos que só a verificação no navegador revelou:**
+
+1. **O HUD afirmava "nuvem" sem backend.** `provider` vazio significa "não
+   sei"; cair para "nuvem" mente exatamente sobre a pergunta que o selo existe
+   para responder. Sem provider conhecido, o selo some.
+2. **Uma única busca do `/status` com `.catch()` silencioso** deixava o HUD
+   vazio para sempre se aquele request falhasse — e falha é comum: o serve pode
+   subir depois da aba, e o rate limit do próprio serve devolve 429 quando o
+   `TitleBar` (que já faz polling de 10s) disputa a janela. Observado em uso:
+   `/status` 200 no TitleBar e HUD em "—" na mesma página. Agora tenta até
+   conseguir e então para.
+
+**Verificado no navegador** com `bauer serve` real: turno completo com
+`live: true`, glow do acento a 45%, caret de streaming e o HUD voltando ao
+estado neutro no fim. Build do Vite limpo (`tsc --noEmit` + `vite build`).
 
 ---
 
