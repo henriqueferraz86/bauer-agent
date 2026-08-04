@@ -15,6 +15,36 @@ from ._common import console
 config_app = typer.Typer(help="Operacoes com config.yaml")
 
 
+def _config_para_escrita(pedido: Path) -> Path:
+    """Resolve QUAL config será escrito — o mesmo que o load_config leria.
+
+    O default `Path("config.yaml")` é relativo ao diretório atual, e
+    `set_config_value` CRIA o arquivo quando ele não existe. Efeito: rodar
+    `bauer config set` de qualquer pasta sem config próprio criava ali um
+    arquivo com uma chave só, que passava a ofuscar o `~/.bauer/config.yaml` e
+    derrubava todo comando `bauer` naquela pasta com "model: Field required".
+
+    Aconteceu duas vezes na mesma máquina: uma pelo atalho de tema (corrigido
+    em `_persistir_acento`) e outra por este comando. A causa é a mesma, e o
+    conserto também: escrever onde o carregamento lê, nunca criar um novo.
+
+    Um `--config` explícito é respeitado como está — aí a intenção é do
+    usuário, inclusive a de criar.
+    """
+    if pedido != Path("config.yaml"):
+        return pedido   # caminho explícito: respeita, inclusive para criar
+    from ..config_loader import ConfigError as _CfgErr
+    from ..config_loader import resolve_config_path
+
+    try:
+        return resolve_config_path(pedido)
+    except _CfgErr:
+        # nenhum config existe ainda: escreve no canônico do ~/.bauer, não no
+        # diretório de onde o comando por acaso foi chamado
+        from ..paths import config_path
+        return config_path()
+
+
 @config_app.command("validate")
 def config_validate(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
@@ -139,6 +169,7 @@ def config_set_cmd(
 ):
     from bauer.config_admin import set_config_value
 
+    config = _config_para_escrita(config)
     try:
         dest, path = set_config_value(key, value, config)
     except KeyError as exc:
@@ -160,6 +191,7 @@ def config_unset_cmd(
 ):
     from bauer.config_admin import unset_config_value
 
+    config = _config_para_escrita(config)
     dest, removed = unset_config_value(key, config)
     if removed:
         console.print(f"[green]✓[/green] removido {key} ({'.env' if dest == 'env' else 'config.yaml'})")
