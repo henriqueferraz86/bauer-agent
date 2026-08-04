@@ -403,6 +403,43 @@ class TestFonteUnica:
         assert salvo["agent"]["accent"] == "ouro"
         assert salvo["model"]["name"] == "x", "sobrescreveu o resto do config"
 
+    def test_atalho_recebe_callback_de_redesenho(self):
+        """Trocar o tema tem de REIMPRIMIR o cabeçalho, não só recolorir o
+        prompt.
+
+        Texto já impresso é scrollback — não dá para recolorir. Sem reimprimir,
+        o logo e o painel de sessão ficam no acento antigo e metade da tela
+        parece quebrada. Reportado duas vezes em uso: "só muda o >" e "a parte
+        superior ainda não muda".
+        """
+        import inspect
+
+        from bauer import agent
+
+        assert "ao_trocar_tema" in inspect.getsource(agent._make_slash_kb), (
+            "o keybinding não aceita mais o callback de redesenho"
+        )
+        sessao = inspect.getsource(agent.run_agent_session)
+        assert "def _redesenhar_cabecalho" in sessao
+        assert "ao_trocar_tema=_redesenhar_cabecalho" in sessao, (
+            "o redesenho existe mas não está ligado ao atalho"
+        )
+
+    def test_cabecalho_redesenha_pelo_mesmo_caminho_do_boot(self):
+        """O redesenho usa `_montar_cabecalho`, a MESMA função do boot.
+
+        Um segundo caminho de montagem divergiria do primeiro com o tempo — foi
+        exatamente assim que as três paletas nasceram.
+        """
+        import inspect
+
+        from bauer import agent
+
+        sessao = inspect.getsource(agent.run_agent_session)
+        assert sessao.count("_montar_cabecalho()") >= 2, (
+            "boot e redesenho deveriam chamar a mesma função de montagem"
+        )
+
     def test_estilo_do_prompt_acompanha_a_troca(self):
         """Estilo DINÂMICO: trocar o acento tem que mudar o prompt na hora,
         sem recriar a PromptSession."""

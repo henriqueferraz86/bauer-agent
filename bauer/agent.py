@@ -222,8 +222,14 @@ try:
 
     _PROMPT_FRAGMENTS = [("class:prompt", "❯ ")]
 
-    def _make_slash_kb() -> "KeyBindings":
-        """Key bindings do prompt: '/' abre completions, Ctrl+T cicla o acento."""
+    def _make_slash_kb(ao_trocar_tema=None) -> "KeyBindings":
+        """Key bindings do prompt: '/' abre completions, Ctrl+T cicla o acento.
+
+        `ao_trocar_tema` (opcional) é chamado depois da troca, com o terminal
+        já devolvido — a sessão passa um redesenho do cabeçalho. Sem ele o
+        atalho só troca a cor dos elementos vivos (prompt e barra de status),
+        porque o resto da tela é scrollback e não pode ser recolorido.
+        """
         kb = KeyBindings()
 
         @kb.add("/")
@@ -255,6 +261,8 @@ try:
                     # era engolido pelo `except` abaixo, deixando o atalho
                     # mudo. `run_in_terminal` já devolveu o terminal, então
                     # escrever em stdout aqui é seguro.
+                    if ao_trocar_tema is not None:
+                        ao_trocar_tema()          # limpa e reimprime o cabeçalho
                     from .ui import accent_swatch_line
                     Console().print(accent_swatch_line(_aplicado))
 
@@ -287,7 +295,7 @@ try:
 
         return kb
 
-    def _make_prompt_session(bottom_toolbar=None) -> "PromptSession":
+    def _make_prompt_session(bottom_toolbar=None, ao_trocar_tema=None) -> "PromptSession":
         # Histórico persistido entre sessões em ~/.bauer/.cli_history
         import os as _os
         from pathlib import Path as _Path
@@ -315,7 +323,7 @@ try:
             history=_history,
             style=_PT_STYLE,
             mouse_support=False,
-            key_bindings=_make_slash_kb(),
+            key_bindings=_make_slash_kb(ao_trocar_tema),
             output=_output,
             cursor=CursorShape.BLINKING_UNDERLINE,
             bottom_toolbar=bottom_toolbar,
@@ -4848,6 +4856,7 @@ def run_agent_session(
     route_profiles: "dict | None" = None,
     route_client_fn: "Any | None" = None,
     kernel: "Any | None" = None,
+    render_header: "Any | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -5006,23 +5015,51 @@ def run_agent_session(
         log_suppressed("ui.deteccao_glifos", _exc)
 
     from .ascii_intro import session_panel
-    console.print(session_panel(
-        "Bauer Agent",
-        f"{model_name}  (padrão — o turno pode ir p/ outro tier)"
-        if route_profiles else model_name,
-        applied_context,
-        provider=_provider or None,
-        extra_rows=_linhas_extra,
-        commands=[
-            ("/model", "trocar"),
-            ("/listen", "falar"),
-            ("/status", "stats"),
-            ("/clear", "limpar"),
-            ("/memory", "memoria"),
-            ("/loop", "autonomo"),
-            ("/exit", "sair"),
-        ],
-    ))
+    def _montar_cabecalho():
+        """O painel de sessão. Função e não bloco solto porque a troca de tema
+        precisa REDESENHÁ-LO — e redesenhar por um caminho diferente do boot
+        acabaria divergindo dele (foi assim que as três paletas nasceram)."""
+        return session_panel(
+            "Bauer Agent",
+            f"{model_name}  (padrão — o turno pode ir p/ outro tier)"
+            if route_profiles else model_name,
+            applied_context,
+            provider=_provider or None,
+            extra_rows=_linhas_extra,
+            commands=[
+                ("/model", "trocar"),
+                ("/listen", "falar"),
+                ("/status", "stats"),
+                ("/clear", "limpar"),
+                ("/memory", "memoria"),
+                ("/loop", "autonomo"),
+                ("/exit", "sair"),
+            ],
+        )
+
+    def _redesenhar_cabecalho() -> None:
+        """Limpa a tela e reimprime logo + painel no acento atual.
+
+        Texto já impresso não pode ser recolorido — é scrollback, bytes que já
+        saíram. A única forma de o cabeçalho acompanhar a troca de tema é
+        reimprimi-lo. `clear()` usa ESC[2J, que empurra o conteúdo anterior
+        para o histórico de rolagem em vez de destruí-lo: a conversa continua
+        acessível rolando para cima.
+        """
+        try:
+            console.clear()
+            if render_header is not None:
+                # O MESMO renderizador do boot (logo + checagens), passado pelo
+                # agent_cmd. Reconstruir aqui daria um segundo caminho que
+                # divergiria do primeiro com o tempo.
+                render_header()
+            console.print(_montar_cabecalho())
+            console.print()
+        except Exception as _exc:  # noqa: BLE001 — redesenho nunca derruba a sessão
+            from .logging_config import log_suppressed
+            log_suppressed("theme.redesenhar_cabecalho", _exc)
+
+    console.print(_montar_cabecalho())
     console.print()
 
     # Plugin hooks — session_start
@@ -5125,7 +5162,10 @@ def run_agent_session(
             except Exception:
                 return " BAUER "
         try:
-            _pt_session = _make_prompt_session(bottom_toolbar=_bottom_toolbar)
+            _pt_session = _make_prompt_session(
+                bottom_toolbar=_bottom_toolbar,
+                ao_trocar_tema=_redesenhar_cabecalho,
+            )
         except Exception as _pt_exc:
             console.print(f"[dim](autocomplete indisponível: {_pt_exc})[/dim]")
             _pt_session = None  # terminal incompatível — usa fallback
@@ -5268,6 +5308,10 @@ def run_agent_session(
                 try:
                     _theme_mod.set_accent(_pedido)
                     _persistir_acento(_pedido)
+                    # Mesmo redesenho do Ctrl+T: o cabeçalho já impresso não
+                    # muda de cor sozinho, e deixar metade da tela no acento
+                    # antigo parece defeito.
+                    _redesenhar_cabecalho()
                     console.print(_amostra_acentos(destaque=_pedido))
                 except KeyError as _exc:
                     console.print(f"[{_warn()}]{_exc.args[0]}[/]")

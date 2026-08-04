@@ -577,24 +577,38 @@ def agent(
     # `runtime_state` acima veio do cache ou do doctor (quando a config mudou),
     # e o painel diz qual dos dois foi. Forçar checagem aqui para "animar"
     # jogaria fora o startup de 23s→2s conquistado a duras penas.
+    # Ordem: LOGO primeiro, checagens DEPOIS — logo acima do prompt.
+    #
+    # O F4 tinha invertido ("o logo entra quando a máquina está pronta"), mas em
+    # uso a leitura é outra: a marca abre a tela e o diagnóstico fica onde os
+    # olhos param, colado no prompt. Quem precisa conferir RAM ou contexto lê
+    # sem rolar para cima.
+    _render_cabecalho = None
     try:
         from ..runtime_capability import modo_de_tool_calling as _modo_tc
         from ..ui_boot import boot_panel as _boot_panel
 
         _tools_carregadas = list(router.available_tools())
         _e_local = bool(local) or cfg.model.provider == "ollama"
-        console.print()
-        console.print(_boot_panel(
-            state,
-            tool_mode=_modo_tc(client),
-            tools=_tools_carregadas,
-            local=_e_local,
-        ))
-        if _mostrar_intro:
-            play_intro(console)
-        else:
+        _tool_mode_boot = _modo_tc(client)
+
+        def _render_cabecalho() -> None:  # noqa: F811 — nome reusado de propósito
+            """Logo + checagens. Passado à sessão para que a troca de tema
+            possa REIMPRIMIR tudo no acento novo — texto já impresso é
+            scrollback e não pode ser recolorido."""
+            if _mostrar_intro:
+                play_intro(console)
+            console.print(_boot_panel(
+                state,
+                tool_mode=_tool_mode_boot,
+                tools=_tools_carregadas,
+                local=_e_local,
+            ))
             console.print()
+
+        _render_cabecalho()
     except Exception as _exc:  # noqa: BLE001 — painel nunca impede a sessão
+        _render_cabecalho = None
         from ..logging_config import log_suppressed
         log_suppressed("ui_boot.panel", _exc)
 
@@ -624,6 +638,7 @@ def agent(
             route_profiles=_route_profiles,
             route_client_fn=_route_client_fn,
             kernel=_kernel_inst,
+            render_header=_render_cabecalho,
         )
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):
