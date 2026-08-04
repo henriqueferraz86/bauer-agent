@@ -3579,6 +3579,7 @@ def _af_active_gate(active_workspace) -> "tuple[Any, int | None]":  # type: igno
 
 
 _BACKLOG_ITEM_RE = re.compile(r"^-\s*\[[ xX]?\]\s+(.+)$")
+_BACKLOG_STORY_RE = re.compile(r"^###\s+(.+)$")
 
 
 def _parse_backlog_tasks(text: str, *, cap: int = 40) -> "list[dict]":
@@ -3587,7 +3588,21 @@ def _parse_backlog_tasks(text: str, *, cap: int = 40) -> "list[dict]":
     Só itens de nível 0-1 viram card (sub-bullets de prioridade/critério e
     checkboxes aninhados são ignorados). Prioridade lida do sub-bullet
     'Prioridade: alta/média/baixa' logo abaixo, se houver.
+
+    Se nenhum checkbox for encontrado, tenta um fallback lendo headings
+    '### ...' como itens (ex.: '### Story 1.1: Título'). Visto na prática
+    (financeos-pme): o modelo às vezes foge do template
+    (data/app_factory/templates/BACKLOG.md, que usa checkbox) e descreve o
+    backlog como stories em heading — sem o fallback, um BACKLOG.md real e
+    completo semeava ZERO cards, silenciosamente.
     """
+    tasks = _extract_backlog_items(text, _BACKLOG_ITEM_RE, cap=cap)
+    if tasks:
+        return tasks
+    return _extract_backlog_items(text, _BACKLOG_STORY_RE, cap=cap)
+
+
+def _extract_backlog_items(text: str, item_re: "re.Pattern[str]", *, cap: int) -> "list[dict]":
     tasks: list[dict] = []
     phase = ""
     lines = text.splitlines()
@@ -3598,7 +3613,7 @@ def _parse_backlog_tasks(text: str, *, cap: int = 40) -> "list[dict]":
             continue
         if (len(raw) - len(raw.lstrip())) > 1:  # sub-bullet — ignora
             continue
-        m = _BACKLOG_ITEM_RE.match(stripped)
+        m = item_re.match(stripped)
         if not m:
             continue
         title = m.group(1).strip()
@@ -3609,7 +3624,7 @@ def _parse_backlog_tasks(text: str, *, cap: int = 40) -> "list[dict]":
             sub = lines[j].strip().lower()
             if not sub:
                 continue
-            if sub.startswith("## ") or _BACKLOG_ITEM_RE.match(lines[j].strip()):
+            if sub.startswith("## ") or item_re.match(lines[j].strip()):
                 break
             if "priorid" in sub or "priority" in sub:
                 if "alta" in sub or "high" in sub:

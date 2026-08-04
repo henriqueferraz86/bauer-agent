@@ -69,6 +69,37 @@ class TestParseBacklog:
     def test_vazio(self):
         assert _parse_backlog_tasks("# so titulo\nsem tasks\n") == []
 
+    def test_fallback_para_heading_de_story_sem_checkbox(self):
+        """Visto na prática (financeos-pme): o modelo às vezes descreve o
+        backlog como '### Story N.M: Título' em vez do checkbox do template
+        (data/app_factory/templates/BACKLOG.md). Sem fallback, um BACKLOG.md
+        real e completo semeava ZERO cards."""
+        text = (
+            "## Fase 1 — Fundação\n\n"
+            "### Story 1.1: Criar estrutura do projeto\n"
+            "- **Prioridade:** alta\n"
+            "- **Descrição:** blá\n\n"
+            "### Story 1.2: Criar ambiente local\n"
+            "- **Prioridade:** média\n"
+        )
+        tasks = _parse_backlog_tasks(text)
+        titles = [t["title"] for t in tasks]
+        assert titles == [
+            "Story 1.1: Criar estrutura do projeto",
+            "Story 1.2: Criar ambiente local",
+        ]
+        assert tasks[0]["priority"] == "high"
+        assert tasks[1]["priority"] == "medium"
+        assert tasks[0]["phase"] == "Fase 1 — Fundação"
+
+    def test_checkbox_tem_prioridade_sobre_o_fallback(self):
+        """Se o doc tem AO MENOS UM checkbox reconhecível, o fallback de
+        heading nunca entra em jogo — evita reinterpretar um BACKLOG.md que
+        segue o template mas também tem headings '###' por outro motivo."""
+        text = "- [ ] Task do template\n### Não é um item de backlog\n"
+        tasks = _parse_backlog_tasks(text)
+        assert [t["title"] for t in tasks] == ["Task do template"]
+
 
 # ─── _seed_kanban_from_backlog ───────────────────────────────────────────────
 
