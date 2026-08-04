@@ -5262,7 +5262,10 @@ def run_agent_session(
     # TTY) e nunca foi ofertado de novo, ficando com o board vazio para sempre.
     if _planning_checkpoint_enabled:
         try:
-            _af_proj_boot, _ = _af_active_gate(active_workspace)
+            # active_workspace só é atribuída dentro do loop de turnos (mais
+            # abaixo) — aqui, no boot, antes do loop começar, deriva do
+            # router com o mesmo fallback que o loop usa.
+            _af_proj_boot, _ = _af_active_gate(getattr(router, "workspace", "workspace"))
             if _af_proj_boot is not None:
                 _ensure_kanban_seeded(router, _af_proj_boot, console)
         except Exception as _exc:
