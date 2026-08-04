@@ -91,8 +91,9 @@ def _grad_color(frac: float, stops: "list[str] | None" = None) -> str:
 
 # ── Renderização do logo ────────────────────────────────────────────────────────
 
-def _logo_rows(text: str = _TITLE) -> list[Text]:
-    """Retorna `_HEIGHT` linhas Text, cada uma com gradiente horizontal."""
+def _logo_rows(text: str = _TITLE, *, gradiente: bool = True) -> list[Text]:
+    """Retorna `_HEIGHT` linhas Text. Com `gradiente=False`, cor sólida —
+    ver `_cor_da_coluna` (terminal sem truecolor listra a rampa)."""
     raw: list[str] = [""] * _HEIGHT
     for i, ch in enumerate(text.upper()):
         glyph = _G.get(ch, _G[" "])
@@ -108,11 +109,24 @@ def _logo_rows(text: str = _TITLE) -> list[Text]:
         t = Text()
         for col, ch in enumerate(line):
             if ch == "█":
-                t.append(ch, style=_grad_color(col / max(width - 1, 1)))
+                t.append(ch, style=_cor_da_coluna(col, width, gradiente=gradiente))
             else:
                 t.append(" ")
         rows.append(t)
     return rows
+
+
+def _cor_da_coluna(col: int, width: int, *, gradiente: bool) -> str:
+    """Cor de uma coluna do logo — rampa quando dá, sólida quando não dá.
+
+    Um gradiente de 40 passos precisa de truecolor. Em 8 cores ANSI a rampa
+    inteira é arredondada para duas ou três cores muito diferentes, e o logo
+    sai listrado (medido: `#61348f → #a855f7 → #cfa2fb`, três roxos, virando
+    oliva + salmão). Listra parece defeito; cor sólida parece decisão.
+    """
+    if not gradiente:
+        return theme.ACCENT
+    return _grad_color(col / max(width - 1, 1))
 
 
 # ── Console helper ────────────────────────────────────────────────────────────
@@ -139,8 +153,11 @@ def play_intro(
         return
 
     con = _make_console(console)
+    # Gradiente só onde ele existe de verdade. Sem truecolor a rampa é
+    # arredondada para 2-3 cores e o logo sai listrado — pior que sólido.
+    _grad = getattr(con, "color_system", None) == "truecolor"
     con.print()
-    for row in _logo_rows(_TITLE):
+    for row in _logo_rows(_TITLE, gradiente=_grad):
         con.print(Align.center(row))
     con.print()
     con.print(Align.center(Text(_SUBTITLE, style=f"italic {theme.DIM}")))

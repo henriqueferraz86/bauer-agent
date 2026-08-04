@@ -267,14 +267,35 @@ class TestFonteUnica:
         uma segunda paleta. Vale para o kit visual, não para o resto do repo."""
         import re
 
+        import ast
+
         alvos = ["ui.py", "ascii_intro.py", "indicators.py", "ui_hud.py",
                  "ui_frame.py", "ui_diff.py", "ui_stream.py"]
-        permitidos = {"#a855f7"}  # nenhum esperado hoje; a lista existe p/ exceção consciente
         for nome in alvos:
-            texto = (_REPO / "bauer" / nome).read_text(encoding="utf-8")
-            achados = {h.lower() for h in re.findall(r"#[0-9a-fA-F]{6}\b", texto)}
-            assert not (achados - permitidos), (
-                f"{nome} tem cor literal {achados - permitidos} — importe de bauer/theme.py"
+            arvore = ast.parse((_REPO / "bauer" / nome).read_text(encoding="utf-8"))
+
+            # Só STRINGS DE CÓDIGO. Ler o arquivo bruto pegava hex citado em
+            # docstring — e documentar um caso medido ("o gradiente #61348f →
+            # #a855f7 saiu listrado") é justamente o que se quer incentivar.
+            # O guard existe contra cor USADA fora do tema, não contra prosa.
+            docstrings = set()
+            for no in ast.walk(arvore):
+                if isinstance(no, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    corpo = getattr(no, "body", [])
+                    if (corpo and isinstance(corpo[0], ast.Expr)
+                            and isinstance(getattr(corpo[0], "value", None), ast.Constant)
+                            and isinstance(corpo[0].value.value, str)):
+                        docstrings.add(id(corpo[0].value))
+
+            achados = {
+                m.lower()
+                for n in ast.walk(arvore)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and id(n) not in docstrings
+                for m in re.findall(r"#[0-9a-fA-F]{6}\b", n.value)
+            }
+            assert not achados, (
+                f"{nome} tem cor literal {achados} — importe de bauer/theme.py"
             )
 
     def test_estilo_do_prompt_toolkit_vem_do_tema(self):

@@ -201,6 +201,45 @@ class TestLarguraEstreita:
             )
 
 
+class TestDegradaSemTruecolor:
+    """O tema assume truecolor. Onde ele não existe, degradar para algo que
+    pareça INTENCIONAL — não para algo que pareça quebrado."""
+
+    def test_logo_sem_truecolor_usa_cor_solida(self):
+        """Uma rampa de 40 passos em 8 cores vira listra. Medido em uso real:
+        o gradiente violeta (#61348f → #a855f7 → #cfa2fb, três roxos) saiu
+        oliva + salmão na tela do usuário."""
+        from bauer.ascii_intro import _logo_rows
+
+        solido = _logo_rows("BAUER", gradiente=False)[0]
+        cores = {str(s.style) for s in solido.spans}
+        assert len(cores) == 1, f"deveria ser uma cor só, veio {cores}"
+        assert cores == {theme.ACCENT}
+
+    def test_logo_com_truecolor_mantem_a_rampa(self):
+        from bauer.ascii_intro import _logo_rows
+
+        grad = _logo_rows("BAUER", gradiente=True)[0]
+        assert len({str(s.style) for s in grad.spans}) > 10
+
+    def test_logo_solido_segue_o_acento(self):
+        from bauer.ascii_intro import _logo_rows
+
+        theme.set_accent("lima")
+        cores = {str(s.style) for s in _logo_rows("BAUER", gradiente=False)[0].spans}
+        assert cores == {theme.PALETAS["lima"]}
+
+    def test_play_intro_decide_pelo_console(self):
+        """A decisão sai do `color_system` do console real, não de env var
+        lida à parte — é o mesmo valor que o Rich usa para quantizar."""
+        import inspect
+
+        from bauer import ascii_intro
+
+        fonte = inspect.getsource(ascii_intro.play_intro)
+        assert "color_system" in fonte and "truecolor" in fonte
+
+
 class TestCustoDeRender:
     """A única defesa real contra 'ficou lindo e travou em resposta longa'.
 
