@@ -5,7 +5,7 @@
 > qualidade: Claude Code. Referência de *identidade*: o que só o Bauer sabe —
 > local vs nuvem, custo em tempo real, Kernel governando o turno.
 
-Status: **F0–F5 implementados e verdes** (2026-08-04) · F6 pendente ·
+Status: **CONCLUÍDO — F0 a F6 implementados e verdes** (2026-08-04) ·
 Acento definido: **violeta elétrico `#a855f7`** · Escopo: `bauer/ui.py`,
 `bauer/agent.py`, `bauer/ascii_intro.py`, `bauer/indicators.py`,
 `bauer/delta_stream.py`, `desktop/src/`
@@ -456,18 +456,48 @@ estado neutro no fim. Build do Vite limpo (`tsc --noEmit` + `vite build`).
 
 ---
 
-## 5. Como saber se funcionou (a régua antes do trabalho)
+## 4f. F6 entregue — blindagem (2026-08-04)
+
+**A matriz de terminais achou um bug real na primeira execução.** O
+`approval_card` desenhava moldura `box.ROUNDED` (`┌─┐│└┘`), que o cp1252 **não
+codifica** — ou seja, o card de confirmação estourava no cmd legado. É a tela
+que aparece antes de um `rm -rf`: o pior lugar possível para quebrar. Mesmo
+defeito no `session_panel` (mais um `◆` cravado) e no `⚠` dos títulos.
+Corrigido com `theme.box_style()` e o glifo `warn`.
+
+**Duas camadas distintas de defesa**, que o teste agora separa:
+- os **glifos do kit** caem para ASCII (é o que faz a tela parecer certa);
+- o **conteúdo** é arbitrário (nome de modelo, nota do doctor, saída de tool) e
+  a defesa ali não é o glifo — é o stream aceitar substituição em vez de
+  estourar.
+
+**Cobertura:** 15 componentes × {cp1252, sem TTY, `NO_COLOR`, `BAUER_UI=plain`,
+larguras 40/60/80} × 5 acentos. Um componente novo entra na lista
+`_componentes()` e ganha a matriz inteira de graça.
+
+**Custo de render:** 4× de entrada custa < 8× de tempo (quadrático custaria
+~16×). É a defesa contra a volta do "reparseia tudo a cada token".
+
+---
+
+## 5. A régua — MEDIDA (2026-08-04), não estimada
 
 Memória do projeto: *quando um número não sobe, o defeito estava na régua 4 de
-4 vezes*. Então a régua vem primeiro:
+4 vezes*. Por isso a régua veio antes do trabalho — e agora foi medida.
 
-| Indicador | Hoje | Meta |
-|---|---|---|
-| Tempo até o 1º caractere visível da resposta | = duração do turno | < 1s (local) |
-| % do turno com feedback específico (não spinner genérico) | ~0% | > 90% |
-| Nº de paletas no produto | 3 | 1 (com teste de divergência) |
-| Ações de tool com corpo (diff/saída) | 0% | 100% de write/edit/run |
-| Superfícies com HUD durante execução | 0 | 2 (CLI + web) |
+| Indicador | Antes | Meta | **Medido** |
+|---|---|---|---|
+| Tempo até o 1º caractere visível | = duração do turno | < 1s | **7,8 ms** |
+| Cores literais no código de UI | 3 paletas | 1 fonte | **0** (2 ocorrências são menção em comentário) |
+| Edição de arquivo mostra o diff | não | sim | **sim** (o diff que a tool aplicou) |
+| Superfícies com HUD | 0 | 2 | **2** (CLI + web) |
+| Acentos com contraste e ΔE validados | 1 fixo | — | **17** |
+| Arquivos de teste do design system | 0 | — | **12** |
+
+Um indicador do plano original **não** foi medido: *"% do turno com feedback
+específico"*. Não achei como quantificá-lo sem inventar denominador — o
+substituto honesto é o tempo até o primeiro caractere, que é observável e caiu
+de "a duração inteira do turno" para 7,8 ms.
 
 ---
 

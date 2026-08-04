@@ -1568,6 +1568,13 @@ def _warn() -> str:
     return _theme_mod.WARN
 
 
+def _glifo_aviso() -> str:
+    """Sinal de aviso no conjunto ativo. `⚠` cru estoura em cp1252 — e o
+    card onde ele aparece é o do comando perigoso (achado do F6)."""
+    from .ui import active_glyphs
+    return active_glyphs().warn
+
+
 def _amostra_acentos(destaque: str = ""):
     """Catálogo de acentos para o `/theme` (cada nome na própria cor)."""
     from .ui import accent_swatches
@@ -1614,7 +1621,7 @@ def _make_cli_approval_callback(console: Console):
         # (plano 028 F3). Markup aqui competiria com o tema e voltaria a
         # espalhar cor solta pelo código.
         return _prompt_cmd_decision(
-            console, "⚠ confirmar comando",
+            console, f"{_glifo_aviso()} confirmar comando",
             f"[{_warn()}]{description}[/]\n\n[bold]$[/bold] [white]{command[:200]}[/white]",
         )
     return _cb
@@ -1626,7 +1633,7 @@ def _make_cli_allowlist_callback(console: Console):
     ~/.bauer/allowed_commands.yaml (via ShellRunner.add_learned_command)."""
     def _cb(base: str) -> str:
         return _prompt_cmd_decision(
-            console, "⚠ comando fora da allowlist",
+            console, f"{_glifo_aviso()} comando fora da allowlist",
             f"[white]'{base}'[/white] [{_warn()}]não está na allowlist[/].\n"
             f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
         )

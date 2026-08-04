@@ -191,7 +191,6 @@ def approval_card(titulo: str, corpo: RenderableType) -> RenderableType:
     aviso de verdade), mas a moldura entra na paleta em vez de puxar um
     "yellow" do Rich que não existe em lugar nenhum do design.
     """
-    from rich import box
     from rich.panel import Panel
 
     return Panel(
@@ -199,7 +198,9 @@ def approval_card(titulo: str, corpo: RenderableType) -> RenderableType:
         title=Text(titulo, style=f"bold {theme.WARN}"),
         title_align="left",
         border_style=theme.FAINT,
-        box=box.ROUNDED,
+        # A moldura segue os glifos: `ROUNDED` usa box-drawing que o cp1252 não
+        # codifica, e este card é o que aparece antes de um comando perigoso.
+        box=theme.box_style(_ACTIVE),
         padding=(0, 1),
     )
 

@@ -166,8 +166,11 @@ def session_panel(
     info.add_column(justify="left", style=theme.DIM, width=10)
     info.add_column(justify="left", style=theme.WHITE)
 
+    from .ui import active_glyphs as _glifos
+    _g = _glifos()
+
     def _row(label: str, value: str) -> None:
-        info.add_row("◆", label, value)
+        info.add_row(_g.seal_local, label, value)
 
     _row("Modelo", str(model_name))
     if provider:
@@ -197,6 +200,6 @@ def session_panel(
         title=Text(title, style=f"bold {theme.ACCENT_TEXT}"),
         title_align="left",
         border_style=theme.ACCENT_DEEP,
-        box=box.ROUNDED,
+        box=theme.box_style(_g),
         padding=(1, 2),
     )

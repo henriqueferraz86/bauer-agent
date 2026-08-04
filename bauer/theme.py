@@ -251,19 +251,34 @@ class Glyphs:
     seal_cloud: str
     step_on: str        # esteira do Kernel — estado cumprido
     step_off: str       # esteira do Kernel — estado pendente
+    warn: str           # sinal de aviso (título de card, linha de nota)
 
 
 UNICODE = Glyphs(
     bot="▏", prompt="❯", ok="✓", fail="✗", running="◐", skill="↳",
     rail="┃", caret="▍", gauge_full="▰", gauge_empty="▱",
-    seal_local="◆", seal_cloud="☁", step_on="⟐", step_off="◦",
+    seal_local="◆", seal_cloud="☁", step_on="⟐", step_off="◦", warn="⚠",
 )
 
 ASCII = Glyphs(
     bot="|", prompt=">", ok="OK", fail="XX", running="..", skill="->",
     rail="|", caret="_", gauge_full="#", gauge_empty="-",
-    seal_local="*", seal_cloud="~", step_on="=", step_off=".",
+    seal_local="*", seal_cloud="~", step_on="=", step_off=".", warn="!",
 )
+
+
+def box_style(g: "Glyphs | None" = None):
+    """Moldura do Rich compatível com o conjunto de glifos em uso.
+
+    `box.ROUNDED` desenha `┌─┐│└┘`, que o cp1252 NÃO codifica — um card de
+    confirmação com moldura arredondada estoura no cmd legado. E é justamente
+    a tela que aparece antes de um `rm -rf`: quebrar ali é o pior lugar
+    possível. Achado pela matriz de terminais do F6.
+    """
+    from rich import box
+
+    ativo = g if g is not None else UNICODE
+    return box.ROUNDED if ativo is UNICODE else box.ASCII
 
 
 # ── Modo de renderização ─────────────────────────────────────────────────────
