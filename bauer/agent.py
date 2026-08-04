@@ -3661,6 +3661,55 @@ def _seed_kanban_from_backlog(router, project_dir, console) -> int:
     return created
 
 
+def _ensure_kanban_seeded(router, proj, console) -> int:
+    """Kanban = fonte única quando `task_backend=sqlite` — semeia sem perguntar
+    e sem depender de "acabou de cruzar o gate nesta sessão".
+
+    Antes disto, semear só acontecia via `Confirm.ask` no instante exato em
+    que os 7 docs terminavam de ser preenchidos NA MESMA SESSÃO — e
+    `_gate_before` é capturado uma vez no início da sessão (linha ~5713). Um
+    projeto que cruzou o gate numa sessão anterior, ou via `/loop` (que nem
+    passa por TTY), nunca era ofertado de novo: o kanban ficava vazio para
+    sempre, mesmo com IMPLEMENTATION alcançado e BACKLOG.md cheio de itens.
+    Foi exatamente o sintoma relatado ("por que o kanban está vazio?").
+
+    Idempotente por construção: só semeia se o board estiver vazio. Chamado
+    tanto no boot da sessão (pega projetos que já cruzaram antes) quanto no
+    checkpoint (pega o cruzamento ao vivo) — os dois caminhos convergem aqui.
+
+    Em `task_backend=markdown` é no-op: ali "semear" segue com o fluxo antigo
+    (Confirm interativo, ver `_maybe_planning_checkpoint`), porque as tarefas
+    já vão para o MESMO TASKS.md que o resto do workspace usa — não há board
+    separado para unificar.
+    """
+    try:
+        from .workspace_manager_factory import get_workspace_manager, resolve_task_backend
+
+        if resolve_task_backend() != "sqlite":
+            return 0
+
+        from . import app_factory as _af
+        gate = _af.current_gate(proj)
+        if gate is None or int(gate) < int(_af.Gate.IMPLEMENTATION):
+            return 0
+
+        wm = get_workspace_manager(router.workspace)
+        if wm.list_tasks():
+            return 0  # já tem cards — não duplica
+
+        seeded = _seed_kanban_from_backlog(router, proj, console)
+        if seeded:
+            console.print(
+                f"[dim]  (kanban é a fonte única — {seeded} card(s) "
+                "semeados automaticamente do BACKLOG.md)[/dim]"
+            )
+        return seeded
+    except Exception as exc:  # noqa: BLE001 — nunca bloqueia o boot/checkpoint
+        from .logging_config import log_suppressed
+        log_suppressed("kanban.ensure_seeded", exc)
+        return 0
+
+
 def _maybe_planning_checkpoint(
     console, router, active_workspace, gate_before, enabled: bool
 ) -> "tuple[str, str] | None":
@@ -3725,14 +3774,25 @@ def _maybe_planning_checkpoint(
         console.print("[dim]Ok — modo manual. Você conduz cada passo.[/dim]")
         return ("continuar", "")
 
-    # Desenvolver: opcionalmente semeia o kanban, depois monta a task do loop.
-    _seeded = 0
-    try:
-        from rich.prompt import Confirm
-        if Confirm.ask("Semear o kanban a partir do BACKLOG.md?", default=True):
-            _seeded = _seed_kanban_from_backlog(router, proj, console)
-    except Exception:
-        pass
+    # Desenvolver: semeia o kanban, depois monta a task do loop.
+    #
+    # Com task_backend=sqlite o kanban É a fonte única de tarefas — semear é
+    # automático (_ensure_kanban_seeded), sem perguntar. O Confirm só faz
+    # sentido em task_backend=markdown, onde "semear" quer dizer "criar
+    # entradas no MESMO TASKS.md que o resto do workspace usa" — aí a escolha
+    # é do usuário porque mistura o BACKLOG.md deste projeto com o ledger
+    # geral do workspace.
+    from .workspace_manager_factory import resolve_task_backend as _rtb
+    if _rtb() == "sqlite":
+        _seeded = _ensure_kanban_seeded(router, proj, console)
+    else:
+        _seeded = 0
+        try:
+            from rich.prompt import Confirm
+            if Confirm.ask("Semear o kanban a partir do BACKLOG.md?", default=True):
+                _seeded = _seed_kanban_from_backlog(router, proj, console)
+        except Exception:
+            pass
     _kanban_hint = (
         "Trabalhe pelos cards do kanban: kanban_list para ver o board e "
         "kanban_complete(task_id, result=...) ao terminar cada card. "
@@ -5180,6 +5240,19 @@ def run_agent_session(
 
     # Checkpoint de planejamento (App Factory → /loop): resolvido uma vez.
     _planning_checkpoint_enabled = _resolve_planning_checkpoint()
+
+    # Kanban = fonte única (task_backend=sqlite): semeia AQUI, no boot, não só
+    # no instante em que o gate é cruzado. Cobre o caso real que motivou isto —
+    # projeto que cruzou IMPLEMENTATION numa sessão anterior (ou via /loop, sem
+    # TTY) e nunca foi ofertado de novo, ficando com o board vazio para sempre.
+    if _planning_checkpoint_enabled:
+        try:
+            _af_proj_boot, _ = _af_active_gate(active_workspace)
+            if _af_proj_boot is not None:
+                _ensure_kanban_seeded(router, _af_proj_boot, console)
+        except Exception as _exc:
+            from .logging_config import log_suppressed
+            log_suppressed("kanban.ensure_seeded_boot", _exc)
     # Auto-injeção de skill relevante por turno: resolvido uma vez.
     try:
         from .config_loader import load_config as _lc_sk

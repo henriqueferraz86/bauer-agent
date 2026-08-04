@@ -14,6 +14,7 @@ import pytest
 from bauer import app_factory as af
 from bauer.agent import (
     _af_active_gate,
+    _ensure_kanban_seeded,
     _maybe_planning_checkpoint,
     _parse_backlog_tasks,
     _resolve_planning_checkpoint,
@@ -221,3 +222,118 @@ class TestResolveToggle:
     def test_degrada_para_true_se_config_falha(self):
         with patch("bauer.config_loader.load_config", side_effect=Exception("boom")):
             assert _resolve_planning_checkpoint() is True
+
+
+# ─── _ensure_kanban_seeded — kanban = fonte única quando task_backend=sqlite ─
+#
+# Motivação (relatado em uso real): "por que o kanban está vazio?" — um
+# projeto App Factory já tinha cruzado para IMPLEMENTATION, mas o kanban
+# nunca foi semeado porque a oferta antiga só disparava NA SESSÃO em que o
+# cruzamento acontecia (Confirm.ask no instante exato). Sessão seguinte, ou
+# /loop (sem TTY): nunca mais oferecido. `_ensure_kanban_seeded` existe para
+# não depender de "estar presente no momento certo" — só olha o ESTADO atual
+# (gate + board vazio) e semeia se fizer sentido, idempotente.
+
+def _cfg_com_backend(valor: str):
+    """Objeto mínimo com `.agent.task_backend` — o que `resolve_task_backend`
+    lê de `load_config()`."""
+    return type("Cfg", (), {"agent": type("Agent", (), {"task_backend": valor})()})()
+
+
+class TestEnsureKanbanSeeded:
+    def _router(self, ws):
+        from bauer.tool_router import ToolRouter
+        return ToolRouter(workspace=ws)
+
+    def _projeto_pronto(self, tmp_path, *, backlog="## Fase 1\n- [ ] Setup\n- [ ] Login\n"):
+        proj = tmp_path / "app"
+        af.init_project(proj, idea="x")
+        for d in af.PLANNING_DOCS:
+            (proj / "docs" / d).write_text("conteudo real " * 30, encoding="utf-8")
+        if backlog is not None:
+            (proj / "docs" / "BACKLOG.md").write_text(backlog, encoding="utf-8")
+        return proj
+
+    def test_markdown_backend_e_no_op(self, tmp_path):
+        """Sem sqlite, o fluxo antigo (Confirm interativo) segue mandando —
+        esta função nem entra em ação."""
+        proj = self._projeto_pronto(tmp_path)
+        with patch("bauer.config_loader.load_config", return_value=_cfg_com_backend("markdown")):
+            n = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+        assert n == 0
+        from bauer.workspace_manager_sqlite import WorkspaceManagerSqlite
+        assert WorkspaceManagerSqlite(tmp_path).list_tasks() == []
+
+    def test_gate_abaixo_de_implementation_e_no_op(self, tmp_path):
+        proj = tmp_path / "app"
+        af.init_project(proj, idea="x")  # só DISCOVERY — docs vazios
+        with patch("bauer.config_loader.load_config", return_value=_cfg_com_backend("sqlite")):
+            n = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+        assert n == 0
+
+    @staticmethod
+    def _board_tasks(workspace):
+        """Lê o MESMO board que `_ensure_kanban_seeded` escreve —
+        `get_workspace_manager` resolve por `board_for_workspace` (hash do
+        caminho do workspace), não pela variável `BAUER_KANBAN_BOARD` que
+        isola os outros testes da suíte. Um `WorkspaceManagerSqlite(ws)` sem
+        `board=` explícito cai nessa outra convenção e leria um board vazio —
+        foi o que a primeira versão deste teste fez, e falhou por isso."""
+        from bauer.workspace_manager_factory import get_workspace_manager
+        return get_workspace_manager(workspace, backend="sqlite").list_tasks()
+
+    def test_semeia_quando_sqlite_implementation_e_board_vazio(self, tmp_path):
+        proj = self._projeto_pronto(tmp_path)
+        with patch("bauer.config_loader.load_config", return_value=_cfg_com_backend("sqlite")):
+            n = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+        assert n == 2
+        titles = [t.title for t in self._board_tasks(tmp_path)]
+        assert "Setup" in titles and "Login" in titles
+
+    def test_nao_duplica_quando_board_ja_tem_cards(self, tmp_path):
+        """Idempotência: rodar de novo (ex.: todo boot de sessão) não recria."""
+        proj = self._projeto_pronto(tmp_path)
+        cfg = _cfg_com_backend("sqlite")
+        with patch("bauer.config_loader.load_config", return_value=cfg):
+            primeira = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+            segunda = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+        assert primeira == 2
+        assert segunda == 0
+        assert len(self._board_tasks(tmp_path)) == 2  # não dobrou
+
+    def test_backlog_sem_itens_retorna_zero(self, tmp_path):
+        proj = self._projeto_pronto(tmp_path, backlog="# vazio\nsem checkbox\n")
+        with patch("bauer.config_loader.load_config", return_value=_cfg_com_backend("sqlite")):
+            n = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+        assert n == 0
+
+    def test_config_ilegivel_nao_quebra(self, tmp_path):
+        proj = self._projeto_pronto(tmp_path)
+        with patch("bauer.config_loader.load_config", side_effect=RuntimeError("boom")):
+            n = _ensure_kanban_seeded(self._router(tmp_path), proj, MagicMock())
+        assert n == 0  # cai no default markdown — não levanta
+
+    def test_workspace_sem_projeto_nao_quebra(self, tmp_path):
+        with patch("bauer.config_loader.load_config", return_value=_cfg_com_backend("sqlite")):
+            n = _ensure_kanban_seeded(self._router(tmp_path), None, MagicMock())
+        assert n == 0
+
+
+class TestSeedNoBootDaSessao:
+    """A metade que resolve o caso real: sessão NOVA, projeto que já cruzou o
+    gate numa sessão ANTERIOR. Teste estrutural — `run_agent_session` é grande
+    demais para montar um mock completo do turno; verificamos que o boot
+    CHAMA `_ensure_kanban_seeded` logo após resolver o checkpoint, cobrindo o
+    caso que o `Confirm.ask` do cruzamento ao vivo não cobre."""
+
+    def test_boot_chama_ensure_kanban_seeded(self):
+        import inspect
+        from bauer import agent
+
+        fonte = inspect.getsource(agent.run_agent_session)
+        i_checkpoint = fonte.index("_resolve_planning_checkpoint()")
+        i_seed = fonte.index("_ensure_kanban_seeded(router, _af_proj_boot")
+        assert i_seed > i_checkpoint, (
+            "o seed no boot precisa vir DEPOIS de saber se o checkpoint está "
+            "habilitado — chamar antes ignoraria agent.planning_checkpoint=false"
+        )

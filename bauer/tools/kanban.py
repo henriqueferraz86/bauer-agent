@@ -460,7 +460,54 @@ class KanbanToolsMixin:
             summary=result,
             metadata={"tool": "kanban_complete"},
         )
+        self._append_progress_md(t["title"], result)
         return f"[kanban] {t['id']} '{t['title']}' marcado como done."
+
+    def _append_progress_md(self, title: str, result: str) -> None:
+        """Registra a conclusão no PROGRESS.md do projeto App Factory ativo.
+
+        Até aqui, manter o PROGRESS.md atualizado era um PEDIDO EM TEXTO ao
+        modelo ("Atualize PROGRESS.md ao concluir cada item" — agent.py, task
+        do checkpoint) — não código. O modelo podia esquecer, e nada detectava
+        o esquecimento; PROGRESS.md e o kanban divergiam silenciosamente.
+
+        Aqui vira efeito colateral do PRÓPRIO ato de completar o card — sempre
+        roda, é código, não depende do modelo lembrar. Best-effort e silencioso
+        de propósito: PROGRESS.md é um LOG, não uma fonte de verdade (o kanban
+        é); se a escrita falhar, a conclusão do card já está persistida e não
+        pode ser desfeita por causa de um arquivo auxiliar.
+
+        Só grava quando task_backend=sqlite E existe projeto App Factory
+        ativo — sem isso, "PROGRESS.md" não tem um lar óbvio (não é todo
+        workspace que é um projeto App Factory).
+        """
+        try:
+            from ..workspace_manager_factory import resolve_task_backend
+            if resolve_task_backend() != "sqlite":
+                return
+            from .. import app_factory as _af
+            proj = _af.get_active_project(self.workspace)
+            if proj is None:
+                return
+            progress = _af._doc_path(proj, "PROGRESS.md")
+            if not progress.is_file():
+                return  # projeto sem PROGRESS.md: não inventa a estrutura
+            import datetime as _dt
+            carimbo = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            linha = f"- [{carimbo}] Concluído via kanban: **{title}**"
+            if result.strip():
+                linha += f" — {result.strip()}"
+
+            existente = progress.read_text(encoding="utf-8")
+            # Sem \n extra quando o arquivo já termina em quebra de linha —
+            # senão cada conclusão abriria uma linha em branco antes de si,
+            # partindo a lista markdown em vez de encadear os itens.
+            prefixo = "" if not existente or existente.endswith("\n") else "\n"
+            with progress.open("a", encoding="utf-8") as fh:
+                fh.write(prefixo + linha + "\n")
+        except Exception as exc:  # noqa: BLE001 — log auxiliar nunca derruba a conclusão
+            from ..logging_config import log_suppressed
+            log_suppressed("kanban.append_progress_md", exc)
 
     def _kanban_block(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
