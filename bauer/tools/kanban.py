@@ -8,9 +8,47 @@ from __future__ import annotations
 
 import os
 
+from pathlib import Path
+
 from ..workspace_manager import WorkspaceError
 from ..workspace_manager_factory import get_workspace_manager
 from .base import ToolError
+
+
+def _render_task_lines(tasks) -> "list[str]":
+    out = []
+    for t in tasks:
+        mark = "x" if t.status == "DONE" else " "
+        tag = "" if t.status in ("DONE", "TODO", "READY") else f" ({t.status})"
+        out.append(f"- [{mark}] {t.title}{tag}")
+    return out
+
+
+def _render_project_tasks_md(project_name: str, tasks: "list") -> str:
+    done = [t for t in tasks if t.status == "DONE"]
+    em_andamento = [t for t in tasks if t.status == "IN_PROGRESS"]
+    proximas = [t for t in tasks if t.status not in ("DONE", "IN_PROGRESS")]
+    lines = [
+        "# TASKS.md",
+        "",
+        f"> Gerado automaticamente a partir do kanban de {project_name} — "
+        "edições manuais aqui são perdidas na próxima escrita. Para mudar, "
+        "use as tools kanban_* (ou `bauer task`).",
+        "",
+        "## Em andamento",
+        "",
+        *(_render_task_lines(em_andamento) or ["- Nenhuma tarefa em andamento"]),
+        "",
+        "## Próximas",
+        "",
+        *(_render_task_lines(proximas) or ["- Nenhuma tarefa pendente"]),
+        "",
+        "## Concluídas",
+        "",
+        *(_render_task_lines(done) or ["- Nenhuma tarefa concluída"]),
+        "",
+    ]
+    return "\n".join(lines)
 
 
 class KanbanToolsMixin:
@@ -253,6 +291,7 @@ class KanbanToolsMixin:
             raise ToolError(f"kanban_create: {exc}") from exc
 
         task_id = self._kanban_public_id(task.id)
+        self._regenerate_project_tasks_md()
         return f"[kanban] Tarefa criada: {task_id} — '{title}' [{priority}]"
 
     def _kanban_list(self, args: dict) -> str:
@@ -440,6 +479,7 @@ class KanbanToolsMixin:
                 task = wm.add_task_comment(workspace_id, note, author="system")
         except WorkspaceError as exc:
             raise ToolError(f"kanban: {exc}") from exc
+        self._regenerate_project_tasks_md()
         return self._workspace_task_to_kanban(task, wm.list_tasks())
 
     def _kanban_complete(self, args: dict) -> str:
@@ -508,6 +548,56 @@ class KanbanToolsMixin:
         except Exception as exc:  # noqa: BLE001 — log auxiliar nunca derruba a conclusão
             from ..logging_config import log_suppressed
             log_suppressed("kanban.append_progress_md", exc)
+
+    def _regenerate_project_tasks_md(self) -> None:
+        """Projeta o estado do kanban em `<projeto>/docs/TASKS.md`.
+
+        Metade que faltava do "deve ser interligado": `_ensure_kanban_seeded`
+        (agent.py) já deriva o kanban a PARTIR do BACKLOG.md do projeto — esta
+        função faz o caminho inverso, o kanban voltando a aparecer dentro do
+        projeto. Sem isso, o kanban vive só no board sqlite (workspace-level,
+        `<workspace>/TASKS.md` via `WorkspaceManagerSqlite`) e o
+        `<projeto>/docs/TASKS.md` que o App Factory escreveu fica congelado
+        no que foi verdade no planejamento — quem abre a pasta do projeto não
+        vê o board.
+
+        Kanban continua sendo a fonte única (task_backend=sqlite): este
+        TASKS.md é uma VIEW gerada, não um segundo lugar para editar — mesma
+        disciplina do `WorkspaceManagerSqlite._regenerate_tasks_md`, só que
+        escrevendo dentro do projeto ativo em vez do workspace.
+
+        Filtra por tag `[nome-do-projeto]` na descrição (convenção de
+        `_seed_kanban_from_backlog`) só quando ela é ambígua — i.e. quando
+        existe alguma tarefa tagueada para OUTRO projeto no mesmo board
+        (workspace com mais de um projeto App Factory). Tarefas sem tag
+        nenhuma são tratadas como pertencentes ao projeto ativo — é o caso
+        comum de um `kanban_create` ad-hoc do próprio agente durante o
+        trabalho.
+        """
+        try:
+            from ..workspace_manager_factory import resolve_task_backend
+            if resolve_task_backend() != "sqlite":
+                return
+            from .. import app_factory as _af
+            proj = _af.get_active_project(self.workspace)
+            if proj is None:
+                return
+            docs_tasks = _af._doc_path(proj, "TASKS.md")
+            if not docs_tasks.is_file():
+                return  # projeto sem TASKS.md: não inventa a estrutura
+
+            wm = get_workspace_manager(self.workspace)
+            tasks = wm.list_tasks()
+            name = Path(proj).name
+            tag = f"[{name}]"
+            view_tasks = [
+                t for t in tasks
+                if not t.description.strip().startswith("[") or t.description.strip().startswith(tag)
+            ]
+            docs_tasks.write_text(_render_project_tasks_md(name, view_tasks), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 — view auxiliar nunca derruba a mutação
+            from ..logging_config import log_suppressed
+            log_suppressed("kanban.regenerate_project_tasks_md", exc)
 
     def _kanban_block(self, args: dict) -> str:
         task_id = str(args.get("task_id", "")).strip()
