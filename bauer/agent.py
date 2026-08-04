@@ -233,9 +233,32 @@ try:
 
         def _ciclar_tema(event) -> None:
             try:
+                from prompt_toolkit.application import run_in_terminal
+
                 from . import theme as _t
-                _t.next_accent()
-                _persistir_acento(_t.ACCENT_NAME)
+                # Nome capturado AQUI, no momento da tecla. `run_in_terminal`
+                # agenda a função para rodar depois; lendo `_t.ACCENT_NAME`
+                # lá dentro, duas teclas rápidas anunciavam o mesmo acento (o
+                # final) duas vezes — observado no teste real.
+                _aplicado = _t.next_accent()
+                _persistir_acento(_aplicado)
+
+                # CONFIRMAÇÃO EXPLÍCITA. Sem ela o atalho é indistinguível de
+                # não funcionar: o que muda na tela é a cor do `❯` e da barra
+                # de status — dois elementos pequenos. Reportado em uso real
+                # ("ctrl+t não funciona no Linux"); o mecanismo estava certo,
+                # a troca é que era imperceptível.
+                def _anunciar() -> None:
+                    # Console novo, não o da sessão: `_make_slash_kb` vive no
+                    # escopo de MÓDULO, onde não há `console` — a primeira
+                    # versão referenciava um nome inexistente e o NameError
+                    # era engolido pelo `except` abaixo, deixando o atalho
+                    # mudo. `run_in_terminal` já devolveu o terminal, então
+                    # escrever em stdout aqui é seguro.
+                    from .ui import accent_swatch_line
+                    Console().print(accent_swatch_line(_aplicado))
+
+                run_in_terminal(_anunciar)
                 event.app.invalidate()  # redesenha prompt/toolbar na cor nova
             except Exception as _exc:  # noqa: BLE001 — atalho nunca derruba o prompt
                 from .logging_config import log_suppressed

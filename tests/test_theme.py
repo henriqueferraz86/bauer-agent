@@ -113,9 +113,42 @@ class TestTrocaDeAcento:
             theme.set_accent("cor-que-nao-existe")
 
     def test_next_accent_cicla_e_da_a_volta(self):
-        nomes = theme.accent_names()
-        theme.set_accent(nomes[-1])
-        assert theme.next_accent() == nomes[0]
+        """Ciclo usa `cycle_order` (vizinhos distintos), não a ordem do
+        catálogo (agrupada por família)."""
+        ordem = theme.cycle_order()
+        theme.set_accent(ordem[-1])
+        assert theme.next_accent() == ordem[0]
+
+    def test_ciclo_visita_todos_uma_vez(self):
+        ordem = theme.cycle_order()
+        assert sorted(ordem) == sorted(theme.accent_names())
+        assert len(set(ordem)) == len(ordem)
+
+    def test_todo_salto_do_ciclo_e_perceptivel(self):
+        """A razão de o ciclo ter ordem própria.
+
+        Pela ordem do catálogo (por família), 7 dos 16 saltos ficavam abaixo de
+        ΔE 25 — o MESMO limiar que usamos para dizer que duas cores são
+        confundíveis. O primeiro salto era violeta → lavanda, dois roxos: o
+        usuário apertava o atalho e nada parecia acontecer. Relatado em uso
+        real como "ctrl+t não funciona".
+        """
+        ordem = theme.cycle_order()
+        for i, nome in enumerate(ordem):
+            seguinte = ordem[(i + 1) % len(ordem)]
+            d = theme.delta_e(theme.PALETAS[nome], theme.PALETAS[seguinte])
+            assert d >= theme.DELTA_E_MINIMO, (
+                f"salto {nome} → {seguinte} tem ΔE {d:.1f}: imperceptível, "
+                "e um atalho que não se vê é indistinguível de um quebrado"
+            )
+
+    def test_acento_fora_do_ciclo_nao_quebra(self):
+        """Config antigo pode nomear um acento que saiu do catálogo."""
+        theme.ACCENT_NAME = "acento-que-nao-existe-mais"
+        try:
+            assert theme.next_accent() == theme.cycle_order()[0]
+        finally:
+            theme.set_accent("violeta")
 
     def test_tokens_acompanham_a_troca(self):
         """O dict é MUTADO no lugar: quem fez `from theme import TOKENS`

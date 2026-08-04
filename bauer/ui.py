@@ -249,6 +249,23 @@ def accent_swatches(destaque: str = "") -> RenderableType:
     return grid
 
 
+def accent_swatch_line(nome: str) -> Text:
+    """`◆ ▰▰▰ lima  ·  Ctrl+T cicla` — confirmação de uma linha da troca.
+
+    O atalho precisa DIZER que funcionou: sem isto o usuário só teria a cor do
+    prompt e da barra de status mudando — dois elementos pequenos, e às vezes
+    entre dois tons próximos. Foi relatado como "não funciona".
+    """
+    g = active_glyphs()
+    cor = theme.PALETAS.get(nome, theme.ACCENT)
+    t = Text("  ")
+    t.append(f"{g.seal_local} ", style=cor)
+    t.append(f"{g.gauge_full * 3} ", style=cor)
+    t.append(nome, style=f"bold {cor}")
+    t.append("   Ctrl+T cicla · /theme lista", style=theme.FAINT)
+    return t
+
+
 def skill_line(name: str, score_pct: int) -> Text:
     """`  ↳ skill 'X' (80%)` — nota discreta de skill aplicada."""
     t = Text("  ")
