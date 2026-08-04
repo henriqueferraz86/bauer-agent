@@ -142,6 +142,30 @@ def boot_lines(
     return linhas
 
 
+def aplicar_preferencia_de_cor(console) -> str:
+    """Aplica `ui.truecolor` do config ao console. Devolve o modo em uso.
+
+    O Rich fixa o `color_system` na construção do `Console`; trocar depois é
+    mexer no atributo interno `_color_system`. Feito aqui, num lugar só, e com
+    o valor traduzido pelo enum do próprio Rich — para não inventar um segundo
+    vocabulário de cor.
+    """
+    try:
+        from rich.color import ColorSystem
+
+        from .config_loader import load_config
+
+        pref = str(getattr(load_config().ui, "truecolor", "auto") or "auto").lower()
+        if pref == "sim":
+            console._color_system = ColorSystem.TRUECOLOR
+        elif pref == "nao":
+            console._color_system = ColorSystem.STANDARD
+    except Exception as exc:  # noqa: BLE001 — preferência ilegível: mantém o auto
+        from .logging_config import log_suppressed
+        log_suppressed("ui.preferencia_de_cor", exc)
+    return str(getattr(console, "color_system", None))
+
+
 def linha_de_cor(console) -> "Text | None":
     """Avisa quando o terminal não entrega as cores que o tema assume.
 
@@ -170,8 +194,11 @@ def linha_de_cor(console) -> "Text | None":
     quantas = {"standard": "8", "256": "256", "eight_bit": "256"}.get(str(sistema), str(sistema))
     t.append(f"terminal em {quantas} cores", style=theme.WHITE)
     t.append("  — os acentos ficam parecidos entre si", style=theme.FAINT)
-    t.append("\n               export COLORTERM=truecolor", style=theme.DIM)
-    t.append("   (SSH não encaminha essa variável)", style=theme.FAINT)
+    # Ensina o comando do BAUER, não `export` no `.bashrc`: a variável de
+    # ambiente afirma a capacidade para TODO programa e fica fixa mesmo quando
+    # o terminal muda; a config do Bauer vale só para o Bauer e viaja junto.
+    t.append("\n               bauer config set ui.truecolor sim", style=theme.DIM)
+    t.append("   (se este terminal suporta; o SSH não avisa)", style=theme.FAINT)
     return t
 
 

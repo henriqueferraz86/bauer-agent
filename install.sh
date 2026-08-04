@@ -255,6 +255,35 @@ if [ "$PATH_ADDED" = 1 ]; then
     warn "Reinicie o terminal ou execute:  source ~/.bashrc"
     echo ""
 fi
+
+# ─── Cor do terminal ─────────────────────────────────────────────────────────
+# O SSH encaminha TERM e NAO encaminha COLORTERM. Numa sessao remota o Bauer ve
+# TERM=xterm, conclui 8 cores, e os 17 acentos do tema colapsam em meia duzia.
+#
+# Aqui NAO escrevemos `export COLORTERM=truecolor` no rc de proposito. Essa
+# variavel afirma uma capacidade do terminal CONECTADO AGORA; fixa-la no rc
+# afirma isso para sempre, inclusive quando for falso (console basico, screen
+# sem truecolor, cliente antigo) — e vale para TODO programa que a respeita
+# (git, bat, delta, nvim), nao so para o Bauer. Instalador que muda o
+# comportamento de cor de outros programas esta passando do seu escopo.
+#
+# Entao: detecta, informa, e ensina o comando cujo efeito fica no Bauer.
+# Mesma regra do Rich (Console._detect_color_system): so COLORTERM truecolor/
+# 24bit garante 24 bits. TERM=*-256color da 256, que ja achata o tema.
+case "${COLORTERM:-}" in
+    truecolor|24bit) _cor_ok=1 ;;
+    *)               _cor_ok=0 ;;
+esac
+if [ "$_cor_ok" = 0 ] && [ -t 1 ]; then
+    warn "Terminal reportando poucas cores (TERM=${TERM:-?}, COLORTERM=${COLORTERM:-vazio})."
+    echo "     O tema do Bauer usa 24 bits; sem isso os acentos ficam parecidos."
+    echo "     Se ESTE terminal suporta truecolor:"
+    echo ""
+    echo "       bauer config set ui.truecolor sim"
+    echo ""
+    echo "     (vale so para o Bauer — nao mexe no seu shell nem em outros programas)"
+    echo ""
+fi
 echo "  Próximos passos:"
 echo "    bauer --help"
 echo "    bauer gateway init           # configurar Telegram / Discord"

@@ -586,7 +586,12 @@ def agent(
     _render_cabecalho = None
     try:
         from ..runtime_capability import modo_de_tool_calling as _modo_tc
+        from ..ui_boot import aplicar_preferencia_de_cor as _aplicar_cor
         from ..ui_boot import boot_panel as _boot_panel
+
+        # ANTES do primeiro render: o logo é a primeira coisa desenhada, e ele
+        # decide entre gradiente e cor sólida pelo `color_system` do console.
+        _aplicar_cor(console)
 
         _tools_carregadas = list(router.available_tools())
         _e_local = bool(local) or cfg.model.provider == "ollama"

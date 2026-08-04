@@ -967,8 +967,35 @@ class GatewaySection(_StrictSection):
     outbox_drain_interval_s: int = Field(ge=1, le=3600, default=15)
 
 
+class UiSection(_StrictSection):
+    """Aparência do terminal.
+
+    `truecolor` existe por um motivo específico: o SSH encaminha `TERM` e NÃO
+    encaminha `COLORTERM`. Numa sessão remota o Bauer vê `TERM=xterm` e conclui
+    8 cores — os 17 acentos colapsam em meia dúzia e o gradiente do logo vira
+    listra, mesmo com um terminal moderno do outro lado.
+
+    A tentação é `export COLORTERM=truecolor` no `~/.bashrc`. É a solução
+    errada: COLORTERM afirma uma capacidade do terminal CONECTADO AGORA, e
+    fixá-la no rc afirma isso sempre — inclusive quando for falso (console
+    básico, `screen` sem truecolor, cliente antigo). E vale para TODO programa
+    que respeita a variável (git, bat, delta, nvim), não só para o Bauer.
+
+    Aqui a preferência fica no escopo certo: vale só para o Bauer, viaja com o
+    config, e não mente para mais ninguém.
+
+      auto (padrão) — detecta como o Rich detecta
+      sim           — força 24 bits (use quando SEU terminal suporta e o SSH
+                      não avisa)
+      nao           — força a paleta reduzida (útil para testar a degradação)
+    """
+
+    truecolor: Literal["auto", "sim", "nao"] = "auto"
+
+
 class BauerConfig(_StrictSection):
     agent: AgentSection = AgentSection()
+    ui: UiSection = UiSection()
     model: ModelSection
     ollama: OllamaSection = OllamaSection()
     openai: OpenAICompatSection = OpenAICompatSection()

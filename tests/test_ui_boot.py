@@ -8,6 +8,7 @@ existe sob a restrição de NÃO regredir o startup. A memória do projeto regis
 
 from __future__ import annotations
 
+import io
 from datetime import datetime, timedelta, timezone
 
 from bauer import ui
@@ -197,7 +198,7 @@ class TestAvisoDeCor:
         assert linha is not None
         out = ui.render_str(linha, 90)
         assert "8 cores" in out
-        assert "COLORTERM=truecolor" in out, "avisar sem dizer como resolver é ruído"
+        assert "ui.truecolor" in out, "avisar sem dizer como resolver é ruído"
 
     def test_avisa_em_256_cores(self):
         from bauer.ui_boot import linha_de_cor
@@ -219,13 +220,82 @@ class TestAvisoDeCor:
 
     def test_entra_no_painel_de_boot(self):
         out = ui.render_str(boot_panel(ESTADO, console=self._Console("standard")), 90)
-        assert "cores" in out and "COLORTERM" in out
+        assert "cores" in out and "ui.truecolor" in out
 
     def test_painel_sem_console_nao_avisa(self):
         """Compat: quem chama sem `console=` (código antigo, teste) não ganha
         a linha nem quebra."""
         out = ui.render_str(boot_panel(ESTADO), 90)
-        assert "COLORTERM" not in out
+        assert "ui.truecolor" not in out
+
+
+class TestPreferenciaDeCor:
+    """`ui.truecolor` existe porque o SSH encaminha TERM e NÃO encaminha
+    COLORTERM — numa sessão remota o Bauer vê 8 cores mesmo com um terminal
+    moderno do outro lado.
+
+    A preferência fica no config do BAUER, não em `export` no `~/.bashrc`:
+    COLORTERM afirma a capacidade do terminal conectado AGORA, e fixá-la no rc
+    afirma isso sempre — inclusive quando for falso — e para todo programa que
+    a respeita (git, bat, delta, nvim), não só para o Bauer.
+    """
+
+    @staticmethod
+    def _console(sistema="standard"):
+        from rich.console import Console
+        return Console(file=io.StringIO(), force_terminal=True, color_system=sistema)
+
+    @staticmethod
+    def _cfg(valor):
+        return type("C", (), {"ui": type("U", (), {"truecolor": valor})()})()
+
+    def _aplicar(self, pref, sistema="standard"):
+        from unittest.mock import patch
+
+        from bauer.ui_boot import aplicar_preferencia_de_cor
+
+        con = self._console(sistema)
+        with patch("bauer.config_loader.load_config", return_value=self._cfg(pref)):
+            return con, aplicar_preferencia_de_cor(con)
+
+    def test_sim_forca_truecolor(self):
+        _, modo = self._aplicar("sim")
+        assert modo == "truecolor"
+
+    def test_nao_forca_paleta_reduzida(self):
+        _, modo = self._aplicar("nao", sistema="truecolor")
+        assert modo == "standard"
+
+    def test_auto_nao_mexe(self):
+        _, modo = self._aplicar("auto")
+        assert modo == "standard"
+
+    def test_config_ilegivel_mantem_o_auto(self):
+        from unittest.mock import patch
+
+        from bauer.ui_boot import aplicar_preferencia_de_cor
+
+        con = self._console()
+        with patch("bauer.config_loader.load_config", side_effect=RuntimeError("x")):
+            assert aplicar_preferencia_de_cor(con) == "standard"
+
+    def test_forcar_truecolor_cala_o_aviso(self):
+        """O aviso existe para levar a esta configuração — depois dela, some."""
+        from bauer.ui_boot import linha_de_cor
+
+        con, _ = self._aplicar("sim")
+        assert linha_de_cor(con) is None
+
+    def test_aviso_ensina_o_comando_do_bauer(self):
+        """E NÃO `export COLORTERM` — o efeito tem de ficar no escopo do Bauer."""
+        from bauer.ui_boot import linha_de_cor
+
+        out = ui.render_str(linha_de_cor(self._console()), 95)
+        assert "bauer config set ui.truecolor" in out
+        assert "export" not in out, (
+            "ensinar `export COLORTERM` no rc afirma a capacidade para todo "
+            "programa e fica fixa quando o terminal muda"
+        )
 
 
 class TestServePanel:
