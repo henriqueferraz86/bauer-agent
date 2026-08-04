@@ -237,8 +237,9 @@ try:
                 _t.next_accent()
                 _persistir_acento(_t.ACCENT_NAME)
                 event.app.invalidate()  # redesenha prompt/toolbar na cor nova
-            except Exception:  # noqa: BLE001 — atalho nunca derruba o prompt
-                pass
+            except Exception as _exc:  # noqa: BLE001 — atalho nunca derruba o prompt
+                from .logging_config import log_suppressed
+                log_suppressed("theme.atalho_ciclar", _exc)
 
         # Ctrl+T cicla a cor de acento — o atalho PORTÁVEL.
         #
@@ -1233,8 +1234,9 @@ def _stream_to_sink(
             if on_retry is not None:
                 try:
                     on_retry(attempt + 1, classified, wait)
-                except Exception:  # noqa: BLE001 — aviso não derruba o turno
-                    pass
+                except Exception as _exc:  # noqa: BLE001 — aviso não derruba o turno
+                    from .logging_config import log_suppressed
+                    log_suppressed("stream.on_retry", _exc)
             time.sleep(wait)
     return parts
 
@@ -1603,10 +1605,11 @@ def _aplicar_acento_do_config() -> None:
         nome = str(getattr(load_config().agent, "accent", "") or "").strip()
         if nome:
             _theme_mod.set_accent(nome)
-    except KeyError:
+    except KeyError as _exc:
         # nome inválido no config (renomeamos uma paleta, usuário digitou
         # errado): mantém o padrão em vez de derrubar o boot por causa de cor
-        pass
+        from .logging_config import log_suppressed
+        log_suppressed("theme.acento_invalido", _exc)
     except Exception as exc:  # noqa: BLE001
         from .logging_config import log_suppressed
         log_suppressed("theme.aplicar_acento", exc)
@@ -1653,8 +1656,9 @@ def _make_streamer(console: Console):
         from .config_loader import load_config
         if not bool(getattr(load_config().agent, "stream_response", True)):
             return None
-    except Exception:  # noqa: BLE001 — sem config legível, streaming é o padrão
-        pass
+    except Exception as _exc:  # noqa: BLE001 — sem config legível, streaming é o padrão
+        from .logging_config import log_suppressed
+        log_suppressed("stream.config", _exc)
     try:
         if not sys.stdin.isatty():
             return None
@@ -4889,8 +4893,9 @@ def run_agent_session(
     try:
         from . import ui as _ui_kit
         _ui_kit.use_glyphs(stream=getattr(console, "file", None) or sys.stdout)
-    except Exception:  # noqa: BLE001 — na dúvida segue com o padrão Unicode
-        pass
+    except Exception as _exc:  # noqa: BLE001 — na dúvida segue com o padrão Unicode
+        from .logging_config import log_suppressed
+        log_suppressed("ui.deteccao_glifos", _exc)
 
     from .ascii_intro import session_panel
     console.print(session_panel(
@@ -5689,8 +5694,9 @@ def run_agent_session(
                 _tps = _streamer_do_turno.diag.tokens_per_second
                 if _tps > 0:
                     _hud_tokens_por_segundo = _tps
-            except Exception:  # noqa: BLE001 — métrica nunca derruba o turno
-                pass
+            except Exception as _exc:  # noqa: BLE001 — métrica nunca derruba o turno
+                from .logging_config import log_suppressed
+                log_suppressed("hud.metrica", _exc)
 
         if outcome.kind == "final":
             if _ja_exibido(_stream_holder.get("atual"), outcome.display):

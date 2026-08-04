@@ -94,8 +94,9 @@ class ConsoleStreamRenderer:
         try:
             self._fechar_bloco(final=True)
             self.diag.on_round()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_stream.on_round", _exc)
 
     def on_delta(self, chunk: str) -> None:
         if not chunk:
@@ -112,23 +113,26 @@ class ConsoleStreamRenderer:
             self._bloco += chunk
             self._consumir_blocos_fechados()
             self._pintar_parcial()
-        except Exception:  # noqa: BLE001 — render nunca derruba o turno
-            pass
+        except Exception as _exc:  # noqa: BLE001 — render nunca derruba o turno
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_stream.on_delta", _exc)
 
     def on_tool(self, name: str) -> None:
         """Tool vai executar: fecha o bloco corrente para a linha da tool não
         cair dentro do `Live` (que a apagaria no quadro seguinte)."""
         try:
             self._fechar_bloco(final=True)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_stream.on_tool", _exc)
 
     def close(self) -> str:
         """Fecha o último bloco e devolve o texto completo recebido."""
         try:
             self._fechar_bloco(final=True)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_stream.close", _exc)
         return self.text
 
     # ── estado ───────────────────────────────────────────────────────────
@@ -265,8 +269,9 @@ class ConsoleStreamRenderer:
         else:
             try:
                 self._live.update(corpo)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _exc:  # noqa: BLE001
+                from .logging_config import log_suppressed as _log_sup
+                _log_sup("ui_stream.live_update", _exc)
 
     def _abrir_live(self, renderavel: Any) -> Any:
         try:
@@ -292,8 +297,9 @@ class ConsoleStreamRenderer:
             try:
                 self.console.print(renderavel)
                 self._algo_escrito = True
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _exc:  # noqa: BLE001
+                from .logging_config import log_suppressed as _log_sup
+                _log_sup("ui_stream.live_open", _exc)
             return None
 
     def _parar_live(self) -> None:
@@ -307,8 +313,9 @@ class ConsoleStreamRenderer:
             return
         try:
             self._live.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_stream.live_stop", _exc)
         self._live = None
 
     def _fechar_bloco(self, *, final: bool = False) -> None:

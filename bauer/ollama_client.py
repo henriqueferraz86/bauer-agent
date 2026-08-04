@@ -384,8 +384,9 @@ class OllamaClient:
                             partes.append(texto)
                             try:
                                 on_delta(texto)
-                            except Exception:  # noqa: BLE001 — render não derruba a chamada
-                                pass
+                            except Exception as _exc:  # noqa: BLE001 — render não derruba a chamada
+                                from .logging_config import log_suppressed
+                                log_suppressed("stream.on_delta", _exc)
                         for tc in msg.get("tool_calls") or []:
                             acc.add_complete(tc)
                         if data.get("done"):

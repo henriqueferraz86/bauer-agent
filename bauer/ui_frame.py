@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from rich.console import Console, Group, RenderableType
 from rich.text import Text
@@ -102,16 +102,18 @@ def suspend():
         try:
             d.stop()
             paused.append(d)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_frame.suspend_stop", _exc)
     try:
         yield
     finally:
         for d in reversed(paused):
             try:
                 d.start()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _exc:  # noqa: BLE001
+                from .logging_config import log_suppressed as _log_sup
+                _log_sup("ui_frame.suspend_start", _exc)
 
 
 # ── o quadro do turno (HUD + trilho) ─────────────────────────────────────────
@@ -171,7 +173,10 @@ class TurnFrame:
         self._current_token = _current.set(self)
         return self
 
-    def __exit__(self, *exc_info: Any) -> bool:
+    # `Literal[False]` e não `bool`: um `__exit__` que PODE devolver True engole
+    # exceções, e o mypy avisa justamente porque a diferença é invisível na
+    # leitura. Este quadro nunca engole — se o turno estourou, o erro sobe.
+    def __exit__(self, *exc_info: Any) -> "Literal[False]":
         if self._current_token is not None:
             try:
                 _current.reset(self._current_token)
@@ -181,14 +186,16 @@ class TurnFrame:
         if self._register_cm is not None:
             try:
                 self._register_cm.__exit__(*exc_info)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _exc:  # noqa: BLE001
+                from .logging_config import log_suppressed as _log_sup
+                _log_sup("ui_frame.exit_register", _exc)
             self._register_cm = None
         if self._live is not None:
             try:
                 self._live.__exit__(*exc_info)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _exc:  # noqa: BLE001
+                from .logging_config import log_suppressed as _log_sup
+                _log_sup("ui_frame.exit_live", _exc)
             self._live = None
         return False
 
@@ -198,8 +205,9 @@ class TurnFrame:
         target = self._live.console if self._live is not None else self.console
         try:
             target.print(renderable)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_frame.print_above", _exc)
 
     def set_hud(self, state: "HudState | None") -> None:
         self._hud = state
@@ -243,8 +251,9 @@ class TurnFrame:
             return
         try:
             self._live.update(self._render())
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            from .logging_config import log_suppressed as _log_sup
+            _log_sup("ui_frame.refresh", _exc)
 
     # ── protocolo Pausable ───────────────────────────────────────────────
     def stop(self) -> None:
