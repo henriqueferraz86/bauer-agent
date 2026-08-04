@@ -249,21 +249,49 @@ def accent_swatches(destaque: str = "") -> RenderableType:
     return grid
 
 
-def accent_swatch_line(nome: str) -> Text:
-    """`◆ ▰▰▰ lima  ·  Ctrl+T cicla` — confirmação de uma linha da troca.
+def accent_swatch_line(nome: str) -> RenderableType:
+    """Amostra do acento novo aplicada em componentes REAIS.
 
-    O atalho precisa DIZER que funcionou: sem isto o usuário só teria a cor do
-    prompt e da barra de status mudando — dois elementos pequenos, e às vezes
-    entre dois tons próximos. Foi relatado como "não funciona".
+    Por que uma amostra e não só o nome: **texto já impresso não pode ser
+    recolorido**. O painel de sessão, o logo e as linhas de boot são
+    scrollback — bytes que já saíram para o terminal. Só o prompt e a barra de
+    status são redesenhados a cada tecla, e trocar a cor de dois glifos
+    pequenos parece "não fez nada" (reportado em uso real).
+
+    Então a confirmação mostra o tema novo NO QUE ELE VAI PINTAR daqui para a
+    frente: linha de tool, medidor de contexto, esteira. É uma prévia do
+    próximo turno, no lugar de uma promessa.
     """
+    from rich.console import Group
+
     g = active_glyphs()
     cor = theme.PALETAS.get(nome, theme.ACCENT)
-    t = Text("  ")
-    t.append(f"{g.seal_local} ", style=cor)
-    t.append(f"{g.gauge_full * 3} ", style=cor)
-    t.append(nome, style=f"bold {cor}")
-    t.append("   Ctrl+T cicla · /theme lista", style=theme.FAINT)
-    return t
+    claro = theme._para_texto(cor)
+
+    titulo = Text("  ")
+    titulo.append(f"{g.seal_local} ", style=cor)
+    titulo.append(f"{g.gauge_full * 4} ", style=cor)
+    titulo.append(nome, style=f"bold {claro}")
+    titulo.append("   Ctrl+T cicla · /theme lista", style=theme.FAINT)
+
+    amostra = Text("  ")
+    amostra.append("[", style=theme.FAINT)
+    amostra.append(g.ok, style=theme.OK)
+    amostra.append("] ", style=theme.FAINT)
+    amostra.append("read_file".ljust(11), style=theme.WHITE)
+    amostra.append("exemplo.py", style=theme.DIM)
+    amostra.append("   ctx ", style=theme.DIM)
+    amostra.append(g.gauge_full * 3, style=cor)
+    amostra.append(g.gauge_empty * 5, style=theme.FAINT)
+    amostra.append("  ", style=theme.DIM)
+    amostra.append(g.step_on * 3, style=cor)
+    amostra.append(g.step_off, style=theme.FAINT)
+
+    nota = Text("  ", style=theme.FAINT)
+    nota.append("o que já está na tela mantém a cor antiga — só o novo usa esta",
+                style=theme.FAINT)
+
+    return Group(titulo, amostra, nota)
 
 
 def skill_line(name: str, score_pct: int) -> Text:
