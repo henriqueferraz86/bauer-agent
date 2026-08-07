@@ -697,12 +697,50 @@ class TestBrowserAvailable:
         monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
         assert browser_available() is False
 
-    def test_linux_with_display_is_true(self, monkeypatch):
+    def test_linux_with_display_and_browser_is_true(self, monkeypatch):
         self._clean_env(monkeypatch)
         monkeypatch.setattr("bauer.auth.sys.platform", "linux")
         monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
         monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(
+            "bauer.auth.shutil.which",
+            lambda n: "/usr/bin/firefox" if n == "firefox" else None,
+        )
         assert browser_available() is True
+
+    def test_ssh_x_forwarding_without_browser_is_false(self, monkeypatch):
+        """REGRESSÃO: `ssh -X` num servidor headless preenche o DISPLAY e nao ha
+        browser nenhum. Tratar DISPLAY como prova suficiente travou o login."""
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "linux")
+        monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
+        monkeypatch.setenv("DISPLAY", "localhost:10.0")
+        monkeypatch.setattr("bauer.auth.shutil.which", lambda n: None)
+        assert browser_available() is False
+
+    def test_sensible_browser_alone_does_not_count(self, monkeypatch):
+        """/usr/bin/sensible-browser existe em toda Ubuntu e so delega —
+        conta-lo reintroduz o bug (era o unico presente no Beelink)."""
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "linux")
+        monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
+        monkeypatch.setenv("DISPLAY", "localhost:10.0")
+        monkeypatch.setattr(
+            "bauer.auth.shutil.which",
+            lambda n: "/usr/bin/sensible-browser" if n == "sensible-browser" else None,
+        )
+        assert browser_available() is False
+
+    def test_xdg_open_alone_does_not_count(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "linux")
+        monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(
+            "bauer.auth.shutil.which",
+            lambda n: "/usr/bin/xdg-open" if n == "xdg-open" else None,
+        )
+        assert browser_available() is False
 
     def test_wsl_with_wslview_is_true(self, monkeypatch):
         self._clean_env(monkeypatch)
@@ -774,6 +812,47 @@ class TestWaitForPastedCode:
 
     def test_aborted_is_not_confused_with_timeout(self):
         assert not issubclass(AuthAborted, TimeoutError)
+
+
+class TestWaitForCodeHint:
+    def setup_method(self):
+        _OAuthCallbackHandler.auth_code = None
+        _OAuthCallbackHandler.state = None
+
+    def test_hint_printed_when_callback_never_arrives(self, capsys):
+        """Browser que 'abriu' mas nao abriu: em vez de congelar, orienta."""
+        server = OAuthCallbackServer(port=19323)
+
+        code, _ = server.wait_for_code(timeout=0.4, hint_after=0.1)
+
+        assert code is None
+        out = capsys.readouterr().out
+        assert "--no-browser" in out
+
+    def test_no_hint_when_callback_arrives(self, capsys):
+        server = OAuthCallbackServer(port=19323)
+        _OAuthCallbackHandler.auth_code = "chegou"
+        _OAuthCallbackHandler.state = "st"
+
+        code, _ = server.wait_for_code(timeout=5, hint_after=0.1)
+
+        assert code == "chegou"
+        assert "--no-browser" not in capsys.readouterr().out
+
+    def test_hint_printed_only_once(self, capsys):
+        server = OAuthCallbackServer(port=19323)
+
+        server.wait_for_code(timeout=0.6, hint_after=0.05)
+
+        assert capsys.readouterr().out.count("--no-browser") == 1
+
+    def test_silent_by_default(self, capsys):
+        """Sem hint_after o comportamento antigo continua identico."""
+        server = OAuthCallbackServer(port=19323)
+
+        server.wait_for_code(timeout=0.2)
+
+        assert capsys.readouterr().out == ""
 
 
 class TestServerReleasesPort:

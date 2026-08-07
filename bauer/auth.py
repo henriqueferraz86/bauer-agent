@@ -455,6 +455,27 @@ def _safe_print(text: str = "") -> None:
 
 _TRUTHY = ("1", "true", "yes", "sim", "on")
 
+# Browsers gráficos de verdade (o mesmo conjunto que o xdg-open varre).
+# Ter DISPLAY NÃO basta: num servidor headless acessado com `ssh -X` o DISPLAY
+# vem preenchido pelo forwarding e não há browser nenhum instalado — foi
+# exatamente assim que o login travou no Beelink.
+# Fora da lista de propósito:
+#   - `sensible-browser`/`xdg-open`: existem em toda instalação Debian/Ubuntu e
+#     só delegam para outro binário; contá-los é reintroduzir o bug.
+#   - lynx/w3m/links: fazer login OAuth em browser de texto não é realista;
+#     melhor cair no fluxo de colagem.
+_POSIX_BROWSERS = (
+    "x-www-browser", "firefox", "iceweasel", "seamonkey", "mozilla",
+    "epiphany", "konqueror", "falkon", "midori", "vivaldi", "opera",
+    "chromium", "chromium-browser", "chrome", "google-chrome",
+    "google-chrome-stable", "brave-browser", "microsoft-edge",
+)
+
+
+def _has_posix_browser() -> bool:
+    """True se existe binário de browser gráfico instalado."""
+    return any(shutil.which(name) for name in _POSIX_BROWSERS)
+
 
 def is_wsl() -> bool:
     """True se rodando dentro do WSL (onde o browser mora no lado Windows)."""
@@ -474,6 +495,11 @@ def browser_available() -> bool:
     não acha browser nenhum (é o caso de host headless via SSH — ele cospe
     "firefox: not found", "chromium: not found", … e o login trava esperando
     um callback que nunca vem).
+
+    Tampouco basta olhar ``DISPLAY``: com ``ssh -X`` num servidor headless o
+    forwarding preenche o DISPLAY e continua não havendo browser instalado.
+    Sessão gráfica e browser instalado são condições SEPARADAS — exigimos as
+    duas.
     """
     if os.environ.get("BAUER_NO_BROWSER", "").strip().lower() in _TRUTHY:
         return False
@@ -481,9 +507,9 @@ def browser_available() -> bool:
         return True
     if sys.platform.startswith("win") or sys.platform == "darwin":
         return True
-    # POSIX: sem sessão gráfica não há o que abrir.
+    # POSIX: precisa de sessão gráfica E de um browser de verdade instalado.
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-        return True
+        return _has_posix_browser()
     if is_wsl() and (shutil.which("wslview") or shutil.which("powershell.exe")):
         return True
     return False
@@ -620,13 +646,29 @@ class OAuthCallbackServer:
             self.server.server_close()
             self.server = None
 
-    def wait_for_code(self, timeout: int = 300) -> tuple[str | None, str | None]:
-        """Aguarda o código de autorização e a entrega da página /success ao browser."""
+    def wait_for_code(
+        self, timeout: int = 300, hint_after: float | None = None
+    ) -> tuple[str | None, str | None]:
+        """Aguarda o código de autorização e a entrega da página /success ao browser.
+
+        ``hint_after``: segundos de silêncio depois dos quais avisa como sair do
+        impasse. Sem isso, um browser que só FINGIU abrir deixa o terminal
+        congelado até o timeout, sem uma linha explicando o que fazer.
+        """
         start = time.time()
+        hinted = False
         # Fase 1: espera o /auth/callback ser recebido
         while time.time() - start < timeout:
             if _OAuthCallbackHandler.auth_code:
                 break
+            if hint_after is not None and not hinted and time.time() - start >= hint_after:
+                hinted = True
+                _safe_print(
+                    "\n[!] Nada recebido ainda. Se o browser nao abriu de verdade"
+                    " (host remoto/headless),\n"
+                    "    aborte com Ctrl-C e rode com a flag explicita:\n"
+                    "        bauer auth login -p openai --no-browser"
+                )
             time.sleep(0.1)
 
         code = _OAuthCallbackHandler.auth_code
@@ -833,8 +875,10 @@ class AuthManager:
                 _safe_print("\nAguardando autenticacao...")
 
                 if open_browser(auth_url):
-                    # Aguardar callback + /success ser servido ao browser
-                    code, returned_state = server.wait_for_code(timeout=300)
+                    # Aguardar callback + /success ser servido ao browser.
+                    # hint_after: se o "abriu" foi mentira (xdg-open com DISPLAY
+                    # de forwarding, por exemplo), avisa em vez de congelar 5min.
+                    code, returned_state = server.wait_for_code(timeout=300, hint_after=25)
                 else:
                     # Nada abriu: em vez de esperar 300s por um callback que pode
                     # nunca vir, aceitar a URL de callback colada.
