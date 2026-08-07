@@ -422,6 +422,14 @@ class TokenStore:
         return list(self.load_all().keys())
 
 
+class AuthAborted(RuntimeError):
+    """Usuário cancelou o login (Ctrl-C ou stdin fechado).
+
+    Distinto de TimeoutError: dizer "tempo esgotado" a quem apertou Ctrl-C é
+    diagnóstico falso e manda a pessoa procurar problema de rede.
+    """
+
+
 # ─── Saída de console ────────────────────────────────────────────────────────
 
 # Console legado do Windows (cp850 em pt-BR, cp437, cp1252) não tem '✓' nem
@@ -600,9 +608,17 @@ class OAuthCallbackServer:
             return False
 
     def stop(self) -> None:
-        """Para o servidor."""
+        """Para o servidor e libera a porta.
+
+        `shutdown()` só encerra o loop do serve_forever — o socket segue
+        escutando até `server_close()`. Sem isso a porta 1455 fica presa e a
+        tentativa seguinte de login no mesmo processo falha ao fazer bind.
+        Idempotente: chamar duas vezes não trava.
+        """
         if self.server:
             self.server.shutdown()
+            self.server.server_close()
+            self.server = None
 
     def wait_for_code(self, timeout: int = 300) -> tuple[str | None, str | None]:
         """Aguarda o código de autorização e a entrega da página /success ao browser."""
@@ -654,8 +670,13 @@ class OAuthCallbackServer:
 
             try:
                 raw = input(prompt)
-            except (EOFError, KeyboardInterrupt):
-                return None, None
+            except EOFError:
+                raise AuthAborted(
+                    "Login cancelado: entrada padrao fechada. "
+                    "Rode 'bauer auth login -p openai --no-browser' num terminal interativo."
+                ) from None
+            except KeyboardInterrupt:
+                raise AuthAborted("Login cancelado pelo usuario.") from None
 
             if not raw.strip():
                 # Janela curta para o callback pousar antes de perguntar de novo.
@@ -786,39 +807,42 @@ class AuthManager:
         _safe_print(f"Autenticar com {config['name']}")
         _safe_print(f"{'='*60}")
 
-        if no_browser:
-            # Servidor é opcional aqui — só serve para quem tem túnel SSH.
-            server_up = server.try_start()
-            _safe_print("\nSem browser nesta maquina (modo --no-browser).")
-            _safe_print("\n1. Abra esta URL em qualquer maquina com browser:\n")
-            _safe_print(f"  {auth_url}")
-            _safe_print("\n2. Faca login. No fim o browser vai tentar abrir")
-            _safe_print(f"   http://localhost:{actual_port}/auth/callback?code=... e falhar")
-            _safe_print("   ('nao foi possivel conectar'). Isso e esperado.")
-            _safe_print("\n3. Copie a URL INTEIRA da barra de enderecos e cole abaixo.")
-            if server_up:
-                _safe_print(f"\n   [Alternativa] Com um tunel ativo (ssh -L {actual_port}:localhost:{actual_port} ...)")
-                _safe_print("   o browser mostra 'Autenticado com sucesso' - nesse caso e so dar Enter.")
-            _safe_print()
-            code, returned_state = server.wait_for_pasted_code(timeout=300)
-        else:
-            server.start()
-            _safe_print("\nAbrindo browser para login...")
-            _safe_print("\nSe o browser nao abrir, acesse:")
-            _safe_print(f"  {auth_url}")
-            _safe_print("\nAguardando autenticacao...")
-
-            if open_browser(auth_url):
-                # Aguardar callback + /success ser servido ao browser
-                code, returned_state = server.wait_for_code(timeout=300)
-            else:
-                # Nada abriu: em vez de esperar 300s por um callback que pode
-                # nunca vir, aceitar a URL de callback colada.
-                _safe_print("\n(Nao consegui abrir o browser - abra a URL acima manualmente.)")
-                _safe_print("Se abrir em OUTRA maquina, cole aqui a URL de callback do fim do login.")
+        # try/finally: abortar no prompt (Ctrl-C) nao pode deixar a porta 1455
+        # presa e quebrar a proxima tentativa no mesmo processo.
+        try:
+            if no_browser:
+                # Servidor é opcional aqui — só serve para quem tem túnel SSH.
+                server_up = server.try_start()
+                _safe_print("\nSem browser nesta maquina (modo --no-browser).")
+                _safe_print("\n1. Abra esta URL em qualquer maquina com browser:\n")
+                _safe_print(f"  {auth_url}")
+                _safe_print("\n2. Faca login. No fim o browser vai tentar abrir")
+                _safe_print(f"   http://localhost:{actual_port}/auth/callback?code=... e falhar")
+                _safe_print("   ('nao foi possivel conectar'). Isso e esperado.")
+                _safe_print("\n3. Copie a URL INTEIRA da barra de enderecos e cole abaixo.")
+                if server_up:
+                    _safe_print(f"\n   [Alternativa] Com um tunel ativo (ssh -L {actual_port}:localhost:{actual_port} ...)")
+                    _safe_print("   o browser mostra 'Autenticado com sucesso' - nesse caso e so dar Enter.")
+                _safe_print()
                 code, returned_state = server.wait_for_pasted_code(timeout=300)
+            else:
+                server.start()
+                _safe_print("\nAbrindo browser para login...")
+                _safe_print("\nSe o browser nao abrir, acesse:")
+                _safe_print(f"  {auth_url}")
+                _safe_print("\nAguardando autenticacao...")
 
-        server.stop()
+                if open_browser(auth_url):
+                    # Aguardar callback + /success ser servido ao browser
+                    code, returned_state = server.wait_for_code(timeout=300)
+                else:
+                    # Nada abriu: em vez de esperar 300s por um callback que pode
+                    # nunca vir, aceitar a URL de callback colada.
+                    _safe_print("\n(Nao consegui abrir o browser - abra a URL acima manualmente.)")
+                    _safe_print("Se abrir em OUTRA maquina, cole aqui a URL de callback do fim do login.")
+                    code, returned_state = server.wait_for_pasted_code(timeout=300)
+        finally:
+            server.stop()
 
         if not code:
             raise TimeoutError("Tempo esgotado aguardando autenticacao")
@@ -1409,6 +1433,9 @@ def cmd_login(provider: str | None = None, no_browser: bool | None = None) -> No
         # Atualiza config.yaml para usar o provider autenticado
         _switch_config_to_provider(token.provider)
 
+    except AuthAborted as e:
+        # Cancelar não é erro — não pintar de vermelho nem sugerir depuração.
+        console.print(f"[yellow]{e}[/yellow]")
     except Exception as e:
         console.print(f"[red]Erro na autenticacao:[/red] {e}")
     finally:

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from bauer.auth import (
+    AuthAborted,
     AuthToken,
     AuthManager,
     TokenStore,
@@ -749,14 +750,68 @@ class TestWaitForPastedCode:
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
         assert server.wait_for_pasted_code(timeout=5) == ("ok", "st")
 
-    def test_eof_aborts(self, monkeypatch):
+    def test_eof_raises_aborted_not_timeout(self, monkeypatch):
+        """stdin fechado nao e timeout — dizer 'tempo esgotado' manda a pessoa
+        procurar problema de rede que nao existe."""
         server = OAuthCallbackServer(port=19997)
 
         def _raise(_prompt=""):
             raise EOFError
 
         monkeypatch.setattr("builtins.input", _raise)
-        assert server.wait_for_pasted_code(timeout=5) == (None, None)
+        with pytest.raises(AuthAborted, match="entrada padrao fechada"):
+            server.wait_for_pasted_code(timeout=5)
+
+    def test_ctrl_c_raises_aborted(self, monkeypatch):
+        server = OAuthCallbackServer(port=19997)
+
+        def _raise(_prompt=""):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("builtins.input", _raise)
+        with pytest.raises(AuthAborted, match="cancelado pelo usuario"):
+            server.wait_for_pasted_code(timeout=5)
+
+    def test_aborted_is_not_confused_with_timeout(self):
+        assert not issubclass(AuthAborted, TimeoutError)
+
+
+class TestServerReleasesPort:
+    def test_stop_closes_socket(self):
+        """shutdown() sozinho encerra o loop mas deixa a porta escutando."""
+        server = OAuthCallbackServer(port=19321)
+        server.start()
+        sock = server.server.socket
+
+        server.stop()
+
+        assert sock.fileno() == -1, "server_close() nao foi chamado — porta presa"
+        assert server.server is None
+
+    def test_stop_is_idempotent(self):
+        server = OAuthCallbackServer(port=19322)
+        server.start()
+        server.stop()
+        server.stop()   # nao pode travar nem estourar
+
+    def test_abort_at_prompt_still_releases_port(self, tmp_path: Path, monkeypatch):
+        """Ctrl-C no prompt nao pode deixar a porta presa para a retentativa."""
+        mgr = _make_manager(tmp_path)
+        stopped: list[bool] = []
+
+        class _RecordingServer(_FakeServer):
+            def wait_for_pasted_code(self, timeout: int = 300, prompt=None):
+                raise AuthAborted("Login cancelado pelo usuario.")
+
+            def stop(self) -> None:
+                stopped.append(True)
+
+        monkeypatch.setattr("bauer.auth.OAuthCallbackServer", _RecordingServer)
+
+        with pytest.raises(AuthAborted):
+            mgr.login_oauth("openai", no_browser=True)
+
+        assert stopped == [True], "server.stop() pulado quando o login aborta"
 
     def test_timeout_returns_none(self, monkeypatch):
         server = OAuthCallbackServer(port=19997)
@@ -879,6 +934,18 @@ class TestCmdLogin:
 
         mock_auth.login_interactive.assert_called_once_with("anthropic", no_browser=None)
         mock_switch.assert_called_once_with("anthropic")
+        mock_auth.close.assert_called_once()
+
+    def test_cmd_login_abort_is_not_reported_as_error(self, tmp_path: Path, capsys):
+        mock_auth = MagicMock()
+        mock_auth.login_interactive.side_effect = AuthAborted("Login cancelado pelo usuario.")
+
+        with patch("bauer.auth.AuthManager", return_value=mock_auth):
+            cmd_login("openai")
+
+        out = capsys.readouterr().out
+        assert "Login cancelado" in out
+        assert "Erro na autenticacao" not in out
         mock_auth.close.assert_called_once()
 
     def test_cmd_login_exception_handled(self, tmp_path: Path):
