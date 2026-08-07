@@ -21,6 +21,15 @@ def auth_login(
             "OAuth:       openai"
         ),
     ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help=(
+            "Nao abrir browser (host headless / SSH): imprime a URL e aceita "
+            "a URL de callback colada no terminal. Detectado automaticamente "
+            "quando nao ha sessao grafica."
+        ),
+    ),
 ):
     """Autentica com um provider cloud.
 
@@ -30,10 +39,12 @@ def auth_login(
       bauer auth login                   # menu interativo
       bauer auth login --provider copilot
       bauer auth login -p groq
+      bauer auth login -p openai --no-browser   # servidor sem browser
     """
     from ..auth import cmd_login
 
-    cmd_login(provider if provider else None)
+    # None = autodetectar; True = forcar fluxo por colagem.
+    cmd_login(provider if provider else None, no_browser=True if no_browser else None)
 
 
 @auth_app.command("status")

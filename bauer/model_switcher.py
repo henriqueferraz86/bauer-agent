@@ -462,13 +462,21 @@ def run_model_switcher(config_path: Path) -> None:
             else:
                 console.print("[yellow]Não foi possível renovar — fazendo login novo.[/yellow]")
         if token is None:
+            from .auth import browser_available
+            _headless = not browser_available()
+            _abertura = (
+                "esta máquina não tem browser — o Bauer vai imprimir a URL para você "
+                "abrir em outra e colar o retorno aqui."
+                if _headless
+                else "abrirá o browser para você logar com sua conta ChatGPT."
+            )
             console.print(
-                "\n[cyan]ChatGPT (login browser)[/cyan] — abrirá o browser para você logar com sua conta ChatGPT.\n"
+                f"\n[cyan]ChatGPT (login browser)[/cyan] — {_abertura}\n"
                 "[dim]Usa sua assinatura ChatGPT Plus/Pro — sem API key (sk-...).[/dim]\n"
                 "[yellow]Experimental:[/yellow] [dim]depende do backend do ChatGPT; requer assinatura ativa.[/dim]\n"
             )
             try:
-                token = auth.login_oauth("openai")   # vai direto ao browser
+                token = auth.login_oauth("openai")   # autodetecta browser/headless
                 auth.close()
                 _acct = token.extra.get("chatgpt_account_id") if hasattr(token, "extra") else ""
                 console.print("[green]✓ Autenticado com conta ChatGPT[/green]")

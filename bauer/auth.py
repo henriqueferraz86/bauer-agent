@@ -18,6 +18,9 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -419,6 +422,101 @@ class TokenStore:
         return list(self.load_all().keys())
 
 
+# ─── Saída de console ────────────────────────────────────────────────────────
+
+# Console legado do Windows (cp850 em pt-BR, cp437, cp1252) não tem '✓' nem
+# em-dash. O fluxo de auth imprime fora do Rich, então um caractere desses
+# levanta UnicodeEncodeError e mata um login que já tinha dado certo.
+_ASCII_FALLBACK = str.maketrans({
+    "✓": "[ok]", "✗": "[x]", "—": "-", "–": "-", "…": "...",
+    "“": '"', "”": '"', "‘": "'", "’": "'", "→": "->", "•": "*",
+})
+
+
+def _safe_print(text: str = "") -> None:
+    """print() que degrada para ASCII em vez de derrubar o login."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        downgraded = text.translate(_ASCII_FALLBACK)
+        print(downgraded.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
+# ─── Detecção de browser ─────────────────────────────────────────────────────
+
+_TRUTHY = ("1", "true", "yes", "sim", "on")
+
+
+def is_wsl() -> bool:
+    """True se rodando dentro do WSL (onde o browser mora no lado Windows)."""
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def browser_available() -> bool:
+    """True quando dá para abrir um browser gráfico NESTA máquina.
+
+    Não dá para confiar no ``webbrowser``: em POSIX ele registra ``xdg-open``
+    só por existir no PATH e ``open()`` devolve True mesmo quando o xdg-open
+    não acha browser nenhum (é o caso de host headless via SSH — ele cospe
+    "firefox: not found", "chromium: not found", … e o login trava esperando
+    um callback que nunca vem).
+    """
+    if os.environ.get("BAUER_NO_BROWSER", "").strip().lower() in _TRUTHY:
+        return False
+    if os.environ.get("BROWSER"):
+        return True
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        return True
+    # POSIX: sem sessão gráfica não há o que abrir.
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    if is_wsl() and (shutil.which("wslview") or shutil.which("powershell.exe")):
+        return True
+    return False
+
+
+def open_browser(url: str) -> bool:
+    """Abre a URL no browser. Devolve False se não conseguiu."""
+    if is_wsl():
+        # webbrowser não conhece wslview e o xdg-open do WSL raramente resolve.
+        if shutil.which("wslview"):
+            return subprocess.run(["wslview", url], check=False).returncode == 0
+        pwsh = shutil.which("powershell.exe")
+        if pwsh:
+            return subprocess.run(
+                [pwsh, "-NoProfile", "-Command", "Start-Process", f"'{url}'"],
+                check=False,
+            ).returncode == 0
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
+def _parse_pasted_callback(raw: str) -> tuple[str | None, str | None]:
+    """Extrai (code, state) do que o usuário colou.
+
+    Aceita a URL inteira de callback (mesmo a que o browser não conseguiu
+    abrir) ou só o código solto.
+    """
+    raw = raw.strip().strip('"').strip("'")
+    if not raw:
+        return None, None
+    if raw.startswith(("http://", "https://")) or "code=" in raw:
+        params = parse_qs(urlparse(raw).query or raw.lstrip("?"))
+        return params.get("code", [None])[0], params.get("state", [None])[0]
+    if any(c.isspace() for c in raw):
+        return None, None   # frase solta, não é código
+    # Código solto — sem state para conferir.
+    return raw, None
+
+
 # ─── OAuth Server ────────────────────────────────────────────────────────────
 
 class _OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -488,6 +586,19 @@ class OAuthCallbackServer:
         # Aguardar servidor estar pronto
         time.sleep(0.5)
 
+    def try_start(self) -> bool:
+        """Como start(), mas devolve False em vez de estourar se a porta estiver ocupada.
+
+        No fluxo headless o servidor é só uma conveniência (cobre quem tem
+        túnel SSH) — porta ocupada não pode derrubar o login por colagem.
+        """
+        try:
+            self.start()
+            return True
+        except OSError:
+            self.server = None
+            return False
+
     def stop(self) -> None:
         """Para o servidor."""
         if self.server:
@@ -520,6 +631,67 @@ class OAuthCallbackServer:
 
         return code, state
 
+    def wait_for_pasted_code(
+        self, timeout: int = 300, prompt: str | None = None
+    ) -> tuple[str | None, str | None]:
+        """Modo headless: recebe a URL de callback colada no terminal.
+
+        Sem browser na máquina não há como o redirect chegar ao servidor local
+        — mas o código vem na própria URL de redirect, então basta o usuário
+        colar de volta. O servidor local segue de pé mesmo assim: quem tiver
+        túnel SSH na porta recebe o callback direto e só precisa dar Enter.
+        """
+        # Texto ASCII-only por padrão: console Windows legado engole acentuado
+        # (o _safe_print cobre o resto, mas aqui dá para simplesmente evitar).
+        prompt = prompt or "  Cole a URL de callback (ou Enter se o browser ja confirmou): "
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            # O callback pode ter chegado via túnel enquanto o usuário lia.
+            code, state = self._take_code()
+            if code:
+                return code, state
+
+            try:
+                raw = input(prompt)
+            except (EOFError, KeyboardInterrupt):
+                return None, None
+
+            if not raw.strip():
+                # Janela curta para o callback pousar antes de perguntar de novo.
+                code, state = self._poll_code(min(2.0, max(0.0, deadline - time.time())))
+                if code:
+                    return code, state
+                continue
+
+            code, state = _parse_pasted_callback(raw)
+            if code:
+                return code, state
+
+            _safe_print("  Nao encontrei 'code=' nisso. Cole a URL inteira da barra de enderecos.")
+
+        return None, None
+
+    @staticmethod
+    def _take_code() -> tuple[str | None, str | None]:
+        """Consome o código recebido pelo servidor (se houver)."""
+        code = _OAuthCallbackHandler.auth_code
+        state = _OAuthCallbackHandler.state
+        if code:
+            _OAuthCallbackHandler.auth_code = None
+            _OAuthCallbackHandler.state = None
+            _OAuthCallbackHandler.success_served = False
+        return code, state
+
+    def _poll_code(self, seconds: float) -> tuple[str | None, str | None]:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            code, state = self._take_code()
+            if code:
+                return code, state
+            time.sleep(0.05)
+        return None, None
+
 
 # ─── Auth Manager ────────────────────────────────────────────────────────────
 
@@ -542,16 +714,27 @@ class AuthManager:
             )
         return self._http_client
 
-    def login_oauth(self, provider: str, port: int | None = None) -> AuthToken:
+    def login_oauth(
+        self, provider: str, port: int | None = None, no_browser: bool | None = None
+    ) -> AuthToken:
         """Login via OAuth Authorization Code Flow com PKCE — igual ao Codex CLI.
 
-        Fluxo:
+        Fluxo (com browser):
         1. Gera PKCE (code_verifier + code_challenge)
         2. Inicia servidor local na porta 1455
         3. Abre browser para auth.openai.com
         4. Usuário loga no ChatGPT
         5. Recebe callback com código
         6. Troca código por tokens
+
+        Fluxo headless (``no_browser=True`` ou nenhum browser detectado):
+        imprime a URL, o usuário loga em qualquer máquina e cola a URL de
+        callback de volta no terminal — o código vem nela, então não é preciso
+        que o redirect alcance a porta 1455 (nem túnel SSH).
+
+        Args:
+            no_browser: ``None`` autodetecta (ver :func:`browser_available`),
+                ``True`` força o fluxo por colagem, ``False`` força o browser.
         """
         if provider not in PROVIDERS:
             raise ValueError(f"Provider '{provider}' nao suporta OAuth")
@@ -594,29 +777,54 @@ class AuthManager:
         )
         auth_url = f"{issuer}/oauth/authorize?{query_string}"
 
-        # Iniciar servidor de callback
+        if no_browser is None:
+            no_browser = not browser_available()
+
         server = OAuthCallbackServer(actual_port)
-        server.start()
 
-        print(f"\n{'='*60}")
-        print(f"Autenticar com {config['name']}")
-        print(f"{'='*60}")
-        print("\nAbrindo browser para login...")
-        print("\nSe o browser nao abrir, acesse:")
-        print(f"  {auth_url}")
-        print("\nAguardando autenticacao...")
+        _safe_print(f"\n{'='*60}")
+        _safe_print(f"Autenticar com {config['name']}")
+        _safe_print(f"{'='*60}")
 
-        # Abrir browser
-        webbrowser.open(auth_url)
+        if no_browser:
+            # Servidor é opcional aqui — só serve para quem tem túnel SSH.
+            server_up = server.try_start()
+            _safe_print("\nSem browser nesta maquina (modo --no-browser).")
+            _safe_print("\n1. Abra esta URL em qualquer maquina com browser:\n")
+            _safe_print(f"  {auth_url}")
+            _safe_print("\n2. Faca login. No fim o browser vai tentar abrir")
+            _safe_print(f"   http://localhost:{actual_port}/auth/callback?code=... e falhar")
+            _safe_print("   ('nao foi possivel conectar'). Isso e esperado.")
+            _safe_print("\n3. Copie a URL INTEIRA da barra de enderecos e cole abaixo.")
+            if server_up:
+                _safe_print(f"\n   [Alternativa] Com um tunel ativo (ssh -L {actual_port}:localhost:{actual_port} ...)")
+                _safe_print("   o browser mostra 'Autenticado com sucesso' - nesse caso e so dar Enter.")
+            _safe_print()
+            code, returned_state = server.wait_for_pasted_code(timeout=300)
+        else:
+            server.start()
+            _safe_print("\nAbrindo browser para login...")
+            _safe_print("\nSe o browser nao abrir, acesse:")
+            _safe_print(f"  {auth_url}")
+            _safe_print("\nAguardando autenticacao...")
 
-        # Aguardar callback + /success ser servido ao browser
-        code, returned_state = server.wait_for_code(timeout=300)
+            if open_browser(auth_url):
+                # Aguardar callback + /success ser servido ao browser
+                code, returned_state = server.wait_for_code(timeout=300)
+            else:
+                # Nada abriu: em vez de esperar 300s por um callback que pode
+                # nunca vir, aceitar a URL de callback colada.
+                _safe_print("\n(Nao consegui abrir o browser - abra a URL acima manualmente.)")
+                _safe_print("Se abrir em OUTRA maquina, cole aqui a URL de callback do fim do login.")
+                code, returned_state = server.wait_for_pasted_code(timeout=300)
+
         server.stop()
 
         if not code:
             raise TimeoutError("Tempo esgotado aguardando autenticacao")
 
-        if returned_state != state:
+        # Colagem de código solto não traz state; quando vem, tem que bater.
+        if returned_state is not None and returned_state != state:
             raise ValueError("State mismatch - possivel ataque CSRF")
 
         # Trocar code por token
@@ -656,11 +864,11 @@ class AuthManager:
             if api_key:
                 token.api_key = api_key
                 self.store.save(token)
-                print("[✓] API key de sessão obtida via token exchange.")
+                _safe_print("[✓] API key de sessão obtida via token exchange.")
             else:
                 # Sem API key — usará access_token como Bearer.
                 # Isso funciona para autenticação mas requer billing na conta API da OpenAI.
-                print(
+                _safe_print(
                     "[!] Token exchange nao retornou API key (normal para contas pessoais sem org).\n"
                     "    Usando access_token OAuth — requer billing em platform.openai.com/settings/billing\n"
                     "    para usar a API developer. ChatGPT Plus (assinatura web) e separado."
@@ -723,7 +931,7 @@ class AuthManager:
             pass
         return None
 
-    def login_device_flow(self, provider: str) -> AuthToken:
+    def login_device_flow(self, provider: str, no_browser: bool | None = None) -> AuthToken:
         """Login via GitHub Device Flow — sem servidor local, sem redirect.
 
         Fluxo:
@@ -775,12 +983,12 @@ class AuthManager:
             border_style="cyan",
         ))
 
-        # Tenta abrir browser automaticamente
-        try:
-            webbrowser.open(verification_uri)
+        # Tenta abrir browser automaticamente (device flow não depende disso —
+        # o usuário pode digitar o código em outra máquina).
+        if no_browser is None:
+            no_browser = not browser_available()
+        if not no_browser and open_browser(verification_uri):
             console.print("[dim]Browser aberto automaticamente...[/dim]")
-        except Exception:
-            pass
 
         console.print("\n[dim]Aguardando aprovação...[/dim]")
 
@@ -924,8 +1132,13 @@ class AuthManager:
         self.store.save(token)
         return token
 
-    def login_interactive(self, provider: str | None = None) -> AuthToken:
-        """Login interativo — pergunta ao usuário."""
+    def login_interactive(
+        self, provider: str | None = None, no_browser: bool | None = None
+    ) -> AuthToken:
+        """Login interativo — pergunta ao usuário.
+
+        ``no_browser=None`` autodetecta se há browser nesta máquina.
+        """
         # Usa Rich Console para garantir encoding correto no Windows (UTF-8, cp1252, etc.)
         from rich.console import Console
         from rich.table import Table
@@ -973,11 +1186,11 @@ class AuthManager:
         config = PROVIDERS.get(provider, PROVIDERS["custom"])
 
         if config["auth_type"] == "device_flow":
-            return self.login_device_flow(provider)
+            return self.login_device_flow(provider, no_browser=no_browser)
         elif config["auth_type"] == "oauth":
             if provider == "openai":
-                return self._login_openai_via_codex()
-            return self.login_oauth(provider)
+                return self._login_openai_via_codex(no_browser=no_browser)
+            return self.login_oauth(provider, no_browser=no_browser)
         else:
             # API Key
             env_key = config.get("env_key")
@@ -999,7 +1212,7 @@ class AuthManager:
 
             return self.login_api_key(provider, api_key, api_base)
 
-    def _login_openai_via_codex(self) -> AuthToken:
+    def _login_openai_via_codex(self, no_browser: bool | None = None) -> AuthToken:
         """Importa token do Codex CLI se disponível."""
         codex_paths = [
             Path.home() / ".codex" / "auth.json",
@@ -1008,17 +1221,17 @@ class AuthManager:
 
         for codex_path in codex_paths:
             if codex_path.exists():
-                print(f"\nCodex CLI encontrado: {codex_path}")
+                _safe_print(f"\nCodex CLI encontrado: {codex_path}")
                 use_codex = input("Importar token do Codex? (s/n): ").strip().lower()
 
                 if use_codex in ("s", "sim", "y", "yes"):
                     return self._import_codex_token(codex_path)
                 else:
                     # Usuário não quis importar, usar OAuth
-                    return self.login_oauth("openai")
+                    return self.login_oauth("openai", no_browser=no_browser)
 
         # Se não encontrou Codex, usar OAuth diretamente
-        return self.login_oauth("openai")
+        return self.login_oauth("openai", no_browser=no_browser)
 
     def _import_codex_token(self, codex_path: Path) -> AuthToken:
         """Importa token do arquivo de configuração do Codex CLI.
@@ -1055,10 +1268,10 @@ class AuthManager:
                 raise ValueError("Token não encontrado no arquivo do Codex")
 
             # Aviso sobre limitações do token do Codex
-            print("\n[!] Token do Codex CLI importado.")
-            print("    Este token é para uso exclusivo do Codex CLI.")
-            print("    Para usar a API da OpenAI diretamente, insira uma API key do Platform.")
-            print("    Acesse: https://platform.openai.com/api-keys\n")
+            _safe_print("\n[!] Token do Codex CLI importado.")
+            _safe_print("    Este token é para uso exclusivo do Codex CLI.")
+            _safe_print("    Para usar a API da OpenAI diretamente, insira uma API key do Platform.")
+            _safe_print("    Acesse: https://platform.openai.com/api-keys\n")
 
             token = AuthToken(
                 provider="openai",
@@ -1172,7 +1385,7 @@ class AuthManager:
 
 # ─── Funções CLI ─────────────────────────────────────────────────────────────
 
-def cmd_login(provider: str | None = None) -> None:
+def cmd_login(provider: str | None = None, no_browser: bool | None = None) -> None:
     """Comando: bauer auth login"""
     from rich.console import Console
     from rich.panel import Panel
@@ -1181,7 +1394,7 @@ def cmd_login(provider: str | None = None) -> None:
     auth = AuthManager()
 
     try:
-        token = auth.login_interactive(provider)
+        token = auth.login_interactive(provider, no_browser=no_browser)
 
         console.print()
         console.print(Panel(

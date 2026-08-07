@@ -23,6 +23,10 @@ from bauer.auth import (
     cmd_status,
     cmd_list_providers,
     _switch_config_to_provider,
+    _parse_pasted_callback,
+    _safe_print,
+    browser_available,
+    is_wsl,
 )
 
 
@@ -495,7 +499,7 @@ class TestLoginOpenAIViaCodex:
         with patch.object(mgr, "login_oauth", return_value=mock_token) as mock_oauth, \
              patch("pathlib.Path.home", return_value=tmp_path / "nonexistent"):
             result = mgr._login_openai_via_codex()
-        mock_oauth.assert_called_once_with("openai")
+        mock_oauth.assert_called_once_with("openai", no_browser=None)
 
     def test_codex_file_found_user_says_yes(self, tmp_path: Path):
         """Arquivo encontrado, usuário aceita importar."""
@@ -525,7 +529,7 @@ class TestLoginOpenAIViaCodex:
              patch("builtins.input", return_value="n"), \
              patch.object(mgr, "login_oauth", return_value=mock_token) as mock_oauth:
             result = mgr._login_openai_via_codex()
-        mock_oauth.assert_called_once_with("openai")
+        mock_oauth.assert_called_once_with("openai", no_browser=None)
 
 
 # ─── OAuthCallbackServer.wait_for_code ───────────────────────────────────────
@@ -555,6 +559,312 @@ class TestWaitForCode:
         assert state is None
 
 
+# ─── Saída em console legado ─────────────────────────────────────────────────
+
+class TestSafePrint:
+    """Console pt-BR do Windows é cp850: nao tem '✓' nem em-dash."""
+
+    @staticmethod
+    def _legacy_stdout(monkeypatch, encoding: str = "cp850"):
+        import io
+        import sys as _sys
+
+        buf = io.BytesIO()
+        stream = io.TextIOWrapper(buf, encoding=encoding, errors="strict")
+        monkeypatch.setattr(_sys, "stdout", stream)
+        return buf, stream
+
+    def test_checkmark_does_not_crash_legacy_console(self, monkeypatch):
+        """Regressao: este print roda DEPOIS do token salvo — crashar aqui
+        derruba um login que ja tinha dado certo."""
+        buf, stream = self._legacy_stdout(monkeypatch)
+
+        _safe_print("[✓] API key de sessao obtida via token exchange.")
+
+        stream.flush()
+        out = buf.getvalue().decode("cp850")
+        assert "[ok]" in out
+        assert "API key de sessao obtida" in out
+
+    def test_em_dash_downgraded(self, monkeypatch):
+        buf, stream = self._legacy_stdout(monkeypatch)
+
+        _safe_print("Usando access_token OAuth — requer billing")
+
+        stream.flush()
+        assert "OAuth - requer billing" in buf.getvalue().decode("cp850")
+
+    def test_accents_survive_when_encoding_allows(self, monkeypatch):
+        """cp850 tem 'ã' — nao pode virar '?' so porque houve fallback."""
+        buf, stream = self._legacy_stdout(monkeypatch)
+
+        _safe_print("[✓] API key de sessão obtida.")
+
+        stream.flush()
+        assert "sessão" in buf.getvalue().decode("cp850")
+
+    def test_utf8_console_keeps_original(self, monkeypatch):
+        buf, stream = self._legacy_stdout(monkeypatch, encoding="utf-8")
+
+        _safe_print("[✓] tudo certo — mesmo texto")
+
+        stream.flush()
+        assert "[✓] tudo certo — mesmo texto" in buf.getvalue().decode("utf-8")
+
+    def test_raw_print_would_have_crashed(self, monkeypatch):
+        """Prova que o cenario e real, nao teatro de teste."""
+        buf, stream = self._legacy_stdout(monkeypatch)
+        with pytest.raises(UnicodeEncodeError):
+            print("[✓] isto derruba o login")
+
+    def test_no_raw_print_left_in_auth_module(self):
+        """Qualquer print() cru novo no fluxo de auth reintroduz o bug."""
+        import ast
+        from pathlib import Path as _Path
+
+        import bauer.auth as auth_mod
+
+        tree = ast.parse(_Path(auth_mod.__file__).read_text(encoding="utf-8"))
+
+        # O único lugar onde print() cru é legítimo é dentro do _safe_print.
+        allowed: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_safe_print":
+                allowed = set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+
+        assert allowed, "_safe_print sumiu do módulo"
+
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            and node.lineno not in allowed
+        ]
+        assert offenders == [], f"use _safe_print nas linhas: {offenders}"
+
+
+# ─── Fluxo headless (--no-browser) ───────────────────────────────────────────
+
+class TestParsePastedCallback:
+    def test_full_callback_url(self):
+        url = "http://localhost:1455/auth/callback?code=abc123&state=xyz789"
+        assert _parse_pasted_callback(url) == ("abc123", "xyz789")
+
+    def test_url_with_quotes_and_spaces(self):
+        url = '  "http://localhost:1455/auth/callback?code=abc123&state=xyz789"  '
+        assert _parse_pasted_callback(url) == ("abc123", "xyz789")
+
+    def test_bare_code_has_no_state(self):
+        assert _parse_pasted_callback("abc123") == ("abc123", None)
+
+    def test_query_string_only(self):
+        assert _parse_pasted_callback("?code=abc123&state=s") == ("abc123", "s")
+
+    def test_empty_returns_none(self):
+        assert _parse_pasted_callback("   ") == (None, None)
+
+    def test_prose_is_not_a_code(self):
+        assert _parse_pasted_callback("nao consegui abrir") == (None, None)
+
+    def test_url_without_code_returns_none(self):
+        assert _parse_pasted_callback("http://localhost:1455/auth/callback?error=denied") == (None, None)
+
+
+class TestBrowserAvailable:
+    @staticmethod
+    def _clean_env(monkeypatch):
+        for var in ("BAUER_NO_BROWSER", "BROWSER", "DISPLAY", "WAYLAND_DISPLAY",
+                    "WSL_DISTRO_NAME", "WSL_INTEROP"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_env_override_disables(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("BAUER_NO_BROWSER", "1")
+        assert browser_available() is False
+
+    def test_windows_always_true(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "win32")
+        assert browser_available() is True
+
+    def test_headless_linux_is_false(self, monkeypatch):
+        """Host via SSH sem X/Wayland — o caso do xdg-open que nao acha browser."""
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "linux")
+        monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
+        assert browser_available() is False
+
+    def test_linux_with_display_is_true(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "linux")
+        monkeypatch.setattr("bauer.auth.is_wsl", lambda: False)
+        monkeypatch.setenv("DISPLAY", ":0")
+        assert browser_available() is True
+
+    def test_wsl_with_wslview_is_true(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setattr("bauer.auth.sys.platform", "linux")
+        monkeypatch.setattr("bauer.auth.is_wsl", lambda: True)
+        monkeypatch.setattr("bauer.auth.shutil.which", lambda name: "/usr/bin/wslview")
+        assert browser_available() is True
+
+    def test_is_wsl_reads_proc_version(self, monkeypatch):
+        monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+        monkeypatch.delenv("WSL_INTEROP", raising=False)
+        monkeypatch.setattr(
+            "bauer.auth.Path.read_text",
+            lambda self, *a, **kw: "Linux version 5.15 microsoft-standard-WSL2",
+        )
+        assert is_wsl() is True
+
+
+class TestWaitForPastedCode:
+    def setup_method(self):
+        _OAuthCallbackHandler.auth_code = None
+        _OAuthCallbackHandler.state = None
+
+    def test_accepts_pasted_url(self, monkeypatch):
+        server = OAuthCallbackServer(port=19997)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _prompt="": "http://localhost:1455/auth/callback?code=pasted&state=st",
+        )
+        assert server.wait_for_pasted_code(timeout=5) == ("pasted", "st")
+
+    def test_server_code_wins_without_input(self, monkeypatch):
+        """Quem tem tunel SSH recebe o callback direto — nem chega a perguntar."""
+        server = OAuthCallbackServer(port=19997)
+        _OAuthCallbackHandler.auth_code = "from-tunnel"
+        _OAuthCallbackHandler.state = "st"
+        monkeypatch.setattr(
+            "builtins.input", lambda _prompt="": pytest.fail("nao deveria pedir colagem")
+        )
+        assert server.wait_for_pasted_code(timeout=5) == ("from-tunnel", "st")
+
+    def test_retries_on_garbage_then_accepts(self, monkeypatch):
+        server = OAuthCallbackServer(port=19997)
+        answers = iter(["isso nao e um code", "?code=ok&state=st"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+        assert server.wait_for_pasted_code(timeout=5) == ("ok", "st")
+
+    def test_eof_aborts(self, monkeypatch):
+        server = OAuthCallbackServer(port=19997)
+
+        def _raise(_prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise)
+        assert server.wait_for_pasted_code(timeout=5) == (None, None)
+
+    def test_timeout_returns_none(self, monkeypatch):
+        server = OAuthCallbackServer(port=19997)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+        # Enter vazio abre janela de 2s para o callback; timeout curto corta o loop.
+        assert server.wait_for_pasted_code(timeout=0.01) == (None, None)
+
+
+class _FakeServer:
+    """Servidor que não faz bind — só devolve o que o teste mandar."""
+
+    def __init__(self, port: int):
+        self.port = port
+        self.stopped = False
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def try_start(self) -> bool:
+        self.started = True
+        return False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def wait_for_pasted_code(self, timeout: int = 300, prompt=None):
+        return "pasted-code", None
+
+    def wait_for_code(self, timeout: int = 300):
+        raise AssertionError("modo headless nao deve esperar callback")
+
+
+class TestLoginOAuthHeadless:
+    def test_no_browser_pastes_code_and_never_opens_browser(self, tmp_path: Path, monkeypatch):
+        mgr = _make_manager(tmp_path)
+        monkeypatch.setattr("bauer.auth.OAuthCallbackServer", _FakeServer)
+        monkeypatch.setattr(
+            "bauer.auth.open_browser",
+            lambda url: pytest.fail("--no-browser nao pode tentar abrir browser"),
+        )
+        monkeypatch.setattr(
+            mgr, "_exchange_code",
+            lambda **kw: {"access_token": "at-headless", "expires_in": 3600},
+        )
+        monkeypatch.setattr(mgr, "_obtain_api_key", lambda *a, **kw: None)
+
+        token = mgr.login_oauth("openai", no_browser=True)
+
+        assert token.access_token == "at-headless"
+        assert mgr.store.load("openai") is not None
+
+    def test_autodetect_headless_when_no_browser(self, tmp_path: Path, monkeypatch):
+        """Sem flag: browser_available() False já leva ao fluxo de colagem."""
+        mgr = _make_manager(tmp_path)
+        monkeypatch.setattr("bauer.auth.OAuthCallbackServer", _FakeServer)
+        monkeypatch.setattr("bauer.auth.browser_available", lambda: False)
+        monkeypatch.setattr(
+            "bauer.auth.open_browser", lambda url: pytest.fail("nao deve abrir browser")
+        )
+        monkeypatch.setattr(
+            mgr, "_exchange_code",
+            lambda **kw: {"access_token": "at-auto", "expires_in": 3600},
+        )
+        monkeypatch.setattr(mgr, "_obtain_api_key", lambda *a, **kw: None)
+
+        assert mgr.login_oauth("openai").access_token == "at-auto"
+
+    def test_state_mismatch_still_raises_when_state_present(self, tmp_path: Path, monkeypatch):
+        class _MismatchServer(_FakeServer):
+            def wait_for_pasted_code(self, timeout: int = 300, prompt=None):
+                return "code", "state-de-outra-sessao"
+
+        mgr = _make_manager(tmp_path)
+        monkeypatch.setattr("bauer.auth.OAuthCallbackServer", _MismatchServer)
+        monkeypatch.setattr("bauer.auth.open_browser", lambda url: True)
+
+        with pytest.raises(ValueError, match="State mismatch"):
+            mgr.login_oauth("openai", no_browser=True)
+
+    def test_browser_path_falls_back_to_paste_when_open_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """open_browser() False nao pode deixar o login esperando 300s a toa."""
+        mgr = _make_manager(tmp_path)
+        monkeypatch.setattr("bauer.auth.OAuthCallbackServer", _FakeServer)
+        monkeypatch.setattr("bauer.auth.open_browser", lambda url: False)
+        monkeypatch.setattr(
+            mgr, "_exchange_code",
+            lambda **kw: {"access_token": "at-fallback", "expires_in": 3600},
+        )
+
+        # _FakeServer.wait_for_code levanta se for chamado — o fallback tem que
+        # ir para wait_for_pasted_code.
+        assert mgr.login_oauth("openai", no_browser=False).access_token == "at-fallback"
+
+    def test_timeout_raises(self, tmp_path: Path, monkeypatch):
+        class _EmptyServer(_FakeServer):
+            def wait_for_pasted_code(self, timeout: int = 300, prompt=None):
+                return None, None
+
+        mgr = _make_manager(tmp_path)
+        monkeypatch.setattr("bauer.auth.OAuthCallbackServer", _EmptyServer)
+
+        with pytest.raises(TimeoutError):
+            mgr.login_oauth("openai", no_browser=True)
+
+
 # ─── cmd_* functions ─────────────────────────────────────────────────────────
 
 class TestCmdLogin:
@@ -567,7 +877,7 @@ class TestCmdLogin:
              patch("bauer.auth._switch_config_to_provider") as mock_switch:
             cmd_login("anthropic")
 
-        mock_auth.login_interactive.assert_called_once_with("anthropic")
+        mock_auth.login_interactive.assert_called_once_with("anthropic", no_browser=None)
         mock_switch.assert_called_once_with("anthropic")
         mock_auth.close.assert_called_once()
 

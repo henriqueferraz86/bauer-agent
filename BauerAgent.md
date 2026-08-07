@@ -1291,6 +1291,7 @@ Config salva. Chave salva em .env.
 
 ```bash
 bauer auth login [PROVIDER]    # Faz login no provider indicado
+bauer auth login -p openai --no-browser   # Host headless / SSH (ver 24.3.1)
 bauer auth status              # Mostra tokens salvos e validade
 bauer auth logout [PROVIDER]   # Remove token (ou todos se sem arg)
 bauer auth providers           # Lista providers suportados com tipo de auth
@@ -1327,6 +1328,23 @@ Fluxo PKCE:
 ```
 
 O token fica armazenado em `~/.bauer/auth.json`. Ao executar `bauer chat`, o Bauer usa automaticamente o token salvo se o provider for `openai`.
+
+#### 24.3.1 Máquina sem browser (headless / SSH)
+
+Em host sem sessão gráfica o passo 3 falha: o `xdg-open` varre firefox, chromium, lynx… não acha nenhum e o login fica esperando um callback que nunca chega. O Bauer detecta isso sozinho (`browser_available()` — checa `DISPLAY`/`WAYLAND_DISPLAY`, WSL, plataforma) e troca para o fluxo de colagem. Dá para forçar com `--no-browser` ou `BAUER_NO_BROWSER=1`.
+
+**Não precisa de túnel SSH**: o `code` vem na própria URL de redirect.
+
+```txt
+1. Bauer imprime a URL de autorização
+2. Você abre a URL em qualquer máquina com browser e faz login
+3. O browser tenta abrir localhost:1455/auth/callback?code=... e falha
+   ("não foi possível conectar") — esperado, o servidor está na outra máquina
+4. Você copia a URL inteira da barra de endereços e cola no terminal
+5. Bauer extrai o code (o code_verifier do PKCE está no processo) e segue igual
+```
+
+O servidor local continua de pé no modo headless: quem tiver `ssh -L 1455:localhost:1455 user@host` recebe o callback direto e só precisa dar Enter no prompt. Colar só o `code` também funciona — nesse caso não há `state` para conferir contra CSRF.
 
 ### 24.4 Login via API Key
 

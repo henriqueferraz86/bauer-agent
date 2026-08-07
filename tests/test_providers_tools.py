@@ -1274,7 +1274,7 @@ class TestCopilotDeviceFlowAuth:
         auth = self._make_auth(tmp_path)
         called_with: list[str] = []
 
-        def fake_device_flow(provider: str):
+        def fake_device_flow(provider: str, no_browser: bool | None = None):
             called_with.append(provider)
             from bauer.auth import AuthToken
             return AuthToken(provider=provider, access_token="tok")
@@ -1289,7 +1289,7 @@ class TestCopilotDeviceFlowAuth:
         auth = self._make_auth(tmp_path)
         called_with: list[str] = []
 
-        def fake_device_flow(provider: str):
+        def fake_device_flow(provider: str, no_browser: bool | None = None):
             called_with.append(provider)
             from bauer.auth import AuthToken
             return AuthToken(provider=provider, access_token="tok")
