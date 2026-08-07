@@ -65,8 +65,15 @@ def test_client_headers_and_defaults():
     # Usa bridge de tools por texto, não native
     assert c.supports_native_tools is False
     assert c.is_alive() == (True, "")
-    assert c.list_models() == ["codex-mini-latest", "o4-mini", "o3-mini"]
     assert c.has_model("qualquer") is True
+
+
+def test_list_models_delegates_to_discovery():
+    """list_models nao pode voltar a ser lista fixa — ela apodreceu inteira."""
+    c = ChatGPTBackendClient(access_token="tok", account_id="acct-1")
+    with patch("bauer.chatgpt_backend.discover_models", return_value=["gpt-5.5"]) as disc:
+        assert c.list_models() == ["gpt-5.5"]
+    disc.assert_called_once_with("tok", "acct-1", base_url=DEFAULT_CHATGPT_BASE)
 
 
 def test_client_without_account_id_omits_header():
@@ -149,3 +156,128 @@ def test_chat_stream_error_event_raises():
         with pytest.raises(OpenAIClientError) as exc:
             list(c.chat_stream("gpt-5", [{"role": "user", "content": "x"}]))
     assert "boom" in str(exc.value)
+
+
+# ── Descoberta de modelos (sonda + cache) ────────────────────────────────────
+#
+# Contexto medido em 2026-08-07 contra a conta real: o token OAuth da
+# assinatura recebe 403 "missing scopes: api.model.read" no /v1/models, e dos
+# 31 candidatos sondados no backend Codex SÓ `gpt-5.5` foi aceito — os três da
+# lista fixa antiga responderam "not supported when using Codex with a ChatGPT
+# account". Daí a sonda.
+
+def _stream_by_status(status_por_modelo: dict[str, int], chamadas: list[str] | None = None):
+    """Fake de httpx.stream que responde conforme o modelo do body."""
+    def _fake(method, url, **kw):
+        model = kw["json"]["model"]
+        if chamadas is not None:
+            chamadas.append(model)
+        return _FakeStream(_FakeResp([], status_code=status_por_modelo.get(model, 400)))
+    return _fake
+
+
+def test_probe_keeps_only_accepted_models():
+    from bauer.chatgpt_backend import probe_supported_models
+
+    with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200, "o3-mini": 200})):
+        out = probe_supported_models(
+            "tok", "acct", candidates=["codex-mini-latest", "gpt-5.5", "o4-mini", "o3-mini"]
+        )
+    assert out == ["gpt-5.5", "o3-mini"]   # preserva a ordem dos candidatos
+
+
+def test_probe_survives_network_error():
+    from bauer.chatgpt_backend import probe_supported_models
+
+    def _boom(*a, **kw):
+        raise OSError("rede caiu")
+
+    with patch("httpx.stream", _boom):
+        assert probe_supported_models("tok", None, candidates=["gpt-5.5"]) == []
+
+
+def test_discover_caches_and_avoids_second_probe(tmp_path, monkeypatch):
+    from bauer import chatgpt_backend as cb
+
+    monkeypatch.setattr(cb, "_cache_path", lambda: tmp_path / "chatgpt_models.json")
+    chamadas: list[str] = []
+
+    with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200}, chamadas)):
+        first = cb.discover_models("tok", "acct")
+        n_primeira = len(chamadas)
+        second = cb.discover_models("tok", "acct")
+
+    assert first == ["gpt-5.5"] and second == ["gpt-5.5"]
+    assert n_primeira > 0
+    assert len(chamadas) == n_primeira, "cache nao evitou a segunda sonda"
+
+
+def test_discover_force_ignores_cache(tmp_path, monkeypatch):
+    from bauer import chatgpt_backend as cb
+
+    monkeypatch.setattr(cb, "_cache_path", lambda: tmp_path / "c.json")
+    chamadas: list[str] = []
+    with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200}, chamadas)):
+        cb.discover_models("tok", "acct")
+        n = len(chamadas)
+        cb.discover_models("tok", "acct", force=True)
+    assert len(chamadas) > n
+
+
+def test_discover_expired_cache_reprobes(tmp_path, monkeypatch):
+    from bauer import chatgpt_backend as cb
+
+    path = tmp_path / "c.json"
+    monkeypatch.setattr(cb, "_cache_path", lambda: path)
+    path.write_text(json.dumps({"acct": {"models": ["velho"], "checked_at": 0}}), encoding="utf-8")
+
+    with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200})):
+        assert cb.discover_models("tok", "acct") == ["gpt-5.5"]
+
+
+def test_discover_does_not_cache_empty_result(tmp_path, monkeypatch):
+    """Sonda vazia = rede/token ruim. Cachear deixaria o menu vazio por 24h."""
+    from bauer import chatgpt_backend as cb
+
+    path = tmp_path / "c.json"
+    monkeypatch.setattr(cb, "_cache_path", lambda: path)
+
+    with patch("httpx.stream", _stream_by_status({})):      # tudo 400
+        out = cb.discover_models("tok", "acct")
+
+    assert out == list(cb.CHATGPT_FALLBACK_MODELS)
+    assert not path.exists(), "cacheou resultado vazio"
+
+
+def test_discover_separates_cache_by_account(tmp_path, monkeypatch):
+    from bauer import chatgpt_backend as cb
+
+    monkeypatch.setattr(cb, "_cache_path", lambda: tmp_path / "c.json")
+    with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200})):
+        cb.discover_models("tok", "conta-A")
+    with patch("httpx.stream", _stream_by_status({"gpt-5.6": 200})):
+        assert cb.discover_models("tok", "conta-B") == ["gpt-5.6"]
+    # conta-A nao foi contaminada
+    assert cb.discover_models("tok", "conta-A") == ["gpt-5.5"]
+
+
+def test_discover_survives_corrupt_cache(tmp_path, monkeypatch):
+    from bauer import chatgpt_backend as cb
+
+    path = tmp_path / "c.json"
+    monkeypatch.setattr(cb, "_cache_path", lambda: path)
+    path.write_text("{lixo", encoding="utf-8")
+
+    with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200})):
+        assert cb.discover_models("tok", "acct") == ["gpt-5.5"]
+
+
+def test_dead_models_are_not_offered_as_default():
+    """Regressao: a lista fixa anunciava 'codex-mini-latest (recomendado)' e os
+    tres modelos dela sao invalidos para conta ChatGPT."""
+    from bauer.chatgpt_backend import CHATGPT_FALLBACK_MODELS
+    from bauer.model_switcher import CHATGPT_CODEX_MODELS
+
+    mortos = {"codex-mini-latest", "o4-mini", "o3-mini"}
+    assert not (set(CHATGPT_FALLBACK_MODELS) & mortos)
+    assert not ({m for m, _ in CHATGPT_CODEX_MODELS} & mortos)

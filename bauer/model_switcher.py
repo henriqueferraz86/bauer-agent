@@ -68,14 +68,46 @@ OPENAI_MODELS: list[tuple[str, str]] = [
     # gpt-3.5-turbo removido: descontinuado em jan/2025
 ]
 
-# Modelos aceitos pelo backend Codex do ChatGPT (login via browser).
-# O endpoint /backend-api/codex/responses só aceita modelos Codex — não GPT genérico.
+# Fallback do menu ChatGPT quando a sonda não roda (offline, token ruim).
+# A lista de verdade é DESCOBERTA — ver _chatgpt_model_choices e
+# chatgpt_backend.discover_models. Uma lista fixa aqui apodrece calada: a
+# anterior (codex-mini-latest / o4-mini / o3-mini) tinha os três inválidos e
+# ainda anunciava o primeiro como "recomendado".
 CHATGPT_CODEX_MODELS: list[tuple[str, str]] = [
-    ("codex-mini-latest", "Codex Mini — padrão do Codex CLI (recomendado)"),
-    ("o4-mini",           "o4-mini — raciocínio, disponível em contas Pro"),
-    ("o3-mini",           "o3-mini — raciocínio, disponível em contas Pro"),
-    ("__custom__",        ">> outro modelo (digitar nome)"),
+    ("gpt-5.5",    "GPT-5.5 — único aceito na medição de 2026-08-07"),
+    ("__custom__", ">> outro modelo (digitar nome)"),
 ]
+
+def _chatgpt_model_choices(token, console) -> list[tuple[str, str]]:
+    """Sonda o backend e devolve só os modelos que ESTA conta aceita.
+
+    Não há como listar: o token da assinatura recebe 403 `missing scopes:
+    api.model.read` no /v1/models. Então perguntamos ao endpoint real, um
+    request mínimo por candidato, com cache de 24h.
+    """
+    from .chatgpt_backend import CHATGPT_FALLBACK_MODELS, discover_models
+
+    account = ""
+    if getattr(token, "extra", None):
+        account = token.extra.get("chatgpt_account_id") or ""
+
+    try:
+        with console.status("[dim]Verificando quais modelos sua conta aceita…[/dim]"):
+            models = discover_models(token.access_token, account or None)
+        origem = "sondados agora no backend"
+    except Exception as exc:
+        console.print(f"[yellow]Não consegui sondar os modelos:[/yellow] [dim]{exc}[/dim]")
+        models = list(CHATGPT_FALLBACK_MODELS)
+        origem = "fallback — a sonda falhou"
+
+    console.print(
+        f"[dim]Assinatura ChatGPT Plus/Pro, sem API key. {len(models)} modelo(s) "
+        f"aceito(s) ({origem}).[/dim]"
+    )
+    choices = [(m, f"{m} — aceito pela sua conta") for m in models]
+    choices.append(("__custom__", ">> outro modelo (digitar nome)"))
+    return choices
+
 
 GROQ_MODELS: list[tuple[str, str]] = [
     ("llama-3.3-70b-versatile",     "Llama 3.3 70B — gratuito, muito rápido"),
@@ -492,10 +524,9 @@ def run_model_switcher(config_path: Path) -> None:
                 console.print("[dim]Tente manualmente: bauer auth login -p openai[/dim]")
                 return
 
-        console.print(
-            "[dim]Modelos disponíveis via assinatura ChatGPT Plus/Pro (sem API key).[/dim]"
+        model_name = _pick_from_list(
+            _chatgpt_model_choices(token, console), "Modelos ChatGPT (assinatura)"
         )
-        model_name = _pick_from_list(CHATGPT_CODEX_MODELS, "Modelos ChatGPT (assinatura)")
         if not model_name:
             console.print("[dim]↩ Voltando à lista de providers…[/dim]\n")
             return run_model_switcher(config_path)

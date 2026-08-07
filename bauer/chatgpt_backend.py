@@ -15,19 +15,152 @@ Formato da Responses API difere de /chat/completions:
 from __future__ import annotations
 
 import json
+import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .http_shared import shared_ssl_context
+from .logging_config import log_suppressed
 
 from .openai_client import OpenAIClient, OpenAIClientError
 
 
 # Endpoint padrão usado pelo Codex CLI (billa na assinatura ChatGPT).
 DEFAULT_CHATGPT_BASE = "https://chatgpt.com/backend-api/codex"
+
+# Candidatos que JÁ existiram ou podem existir neste backend. Não é a resposta —
+# é só o conjunto que a sonda testa.
+#
+# Por que sondar em vez de manter lista fixa: o token OAuth do login ChatGPT
+# tem escopos `openid profile email offline_access api.connectors.*` e o
+# `GET /v1/models` devolve **403 missing scopes: api.model.read**. Não existe
+# listagem. A lista fixa anterior (codex-mini-latest / o4-mini / o3-mini)
+# apodreceu inteira: medido em 2026-08-07, os TRÊS respondem
+# "not supported when using Codex with a ChatGPT account" — inclusive o que
+# estava marcado como recomendado. Só `gpt-5.5` passou, de 31 testados.
+CHATGPT_MODEL_CANDIDATES: tuple[str, ...] = (
+    "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-mini", "gpt-5.5-codex",
+    "gpt-5.6", "gpt-6",
+    "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex",
+    "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
+    "gpt-5", "gpt-5-codex", "gpt-5-codex-mini",
+    "codex-mini-latest", "o4-mini", "o3-mini", "o3",
+)
+
+# Fallback quando a sonda não pôde rodar (sem rede, sem token). Reflete a
+# medição de 2026-08-07 — melhor que a lista morta, pior que sondar.
+CHATGPT_FALLBACK_MODELS: tuple[str, ...] = ("gpt-5.5",)
+
+_CACHE_TTL_SECONDS = 24 * 3600
+
+
+def _codex_headers(access_token: str, account_id: str | None) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "OpenAI-Beta": "responses=experimental",
+        "originator": "codex_cli_rs",
+        "session_id": str(uuid.uuid4()),
+    }
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
+    return headers
+
+
+def _model_is_accepted(
+    model: str, headers: dict[str, str], base_url: str, timeout: float
+) -> bool:
+    """Pergunta ao backend se ele aceita o modelo.
+
+    Manda o menor request possível e fecha o stream assim que sabe o status —
+    modelo aceito custa alguns tokens da assinatura, não uma resposta inteira.
+    """
+    body = {
+        "model": model,
+        "input": [{"type": "message", "role": "user",
+                   "content": [{"type": "input_text", "text": "hi"}]}],
+        "stream": True,
+        "store": False,
+    }
+    try:
+        with httpx.stream(
+            "POST", f"{base_url}/responses", json=body, headers=headers,
+            timeout=httpx.Timeout(connect=timeout, read=timeout, write=10.0, pool=5.0),
+            verify=shared_ssl_context(),
+        ) as response:
+            return response.status_code < 400
+    except Exception:
+        return False
+
+
+def probe_supported_models(
+    access_token: str,
+    account_id: str | None = None,
+    *,
+    base_url: str = DEFAULT_CHATGPT_BASE,
+    candidates: Sequence[str] | None = None,
+    timeout: float = 20.0,
+    max_workers: int = 6,
+) -> list[str]:
+    """Descobre quais modelos ESTA conta aceita, na ordem de `candidates`."""
+    names = list(candidates or CHATGPT_MODEL_CANDIDATES)
+    headers = _codex_headers(access_token, account_id)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        verdicts = list(pool.map(
+            lambda m: _model_is_accepted(m, headers, base_url, timeout), names
+        ))
+    return [name for name, ok in zip(names, verdicts) if ok]
+
+
+def _cache_path() -> Path:
+    from .paths import get_bauer_home
+    return get_bauer_home() / "chatgpt_models.json"
+
+
+def discover_models(
+    access_token: str,
+    account_id: str | None = None,
+    *,
+    base_url: str = DEFAULT_CHATGPT_BASE,
+    force: bool = False,
+    ttl_seconds: int = _CACHE_TTL_SECONDS,
+) -> list[str]:
+    """Modelos aceitos, com cache em disco (a sonda custa ~20 requests)."""
+    path = _cache_path()
+    key = account_id or "default"
+
+    if not force:
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            entry = cached.get(key) or {}
+            fresh = (time.time() - float(entry.get("checked_at", 0))) < ttl_seconds
+            if fresh and entry.get("models"):
+                return list(entry["models"])
+        except (OSError, ValueError, TypeError) as exc:
+            log_suppressed("chatgpt_backend.discover_models/read_cache", exc)
+
+    models = probe_supported_models(access_token, account_id, base_url=base_url)
+    if not models:
+        # Sonda vazia = rede caiu ou token expirou. Não gravar: cachear vazio
+        # deixaria o menu sem nenhuma opção por 24h.
+        return list(CHATGPT_FALLBACK_MODELS)
+
+    try:
+        existing = {}
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        existing[key] = {"models": models, "checked_at": time.time()}
+        path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        # Cache é otimização, nunca motivo de falha.
+        log_suppressed("chatgpt_backend.discover_models/write_cache", exc)
+    return models
 
 
 class ChatGPTBackendClient(OpenAIClient):
@@ -52,6 +185,9 @@ class ChatGPTBackendClient(OpenAIClient):
             api_key=access_token,
             model=model,
         )
+        # O pai só guarda o token dentro do header Authorization; list_models
+        # precisa dele solto para sondar.
+        self._access_token = access_token
         self._account_id = account_id or ""
         # Headers que o backend do ChatGPT espera (estilo Codex CLI).
         self._headers["OpenAI-Beta"] = "responses=experimental"
@@ -66,12 +202,10 @@ class ChatGPTBackendClient(OpenAIClient):
         return True, ""
 
     def list_models(self) -> list[str]:
-        # O endpoint /backend-api/codex/responses só aceita modelos Codex.
-        return [
-            "codex-mini-latest",
-            "o4-mini",
-            "o3-mini",
-        ]
+        """Modelos que ESTA conta aceita (sondados, com cache de 24h)."""
+        return discover_models(
+            self._access_token, self._account_id or None, base_url=self.host
+        )
 
     def has_model(self, name: str) -> bool:
         return True
