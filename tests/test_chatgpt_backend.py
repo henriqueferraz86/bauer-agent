@@ -358,3 +358,60 @@ def test_menu_does_not_claim_plus_pro_on_free_account(capsys):
     assert "Plus/Pro" not in out
     assert "free" in out
     assert "gpt-5.6-sol" in out       # diz o que o plano pago acrescentaria
+
+
+# ── Rede instável não pode virar "modelo não existe" ─────────────────────────
+#
+# Visto ao vivo na troca de plano free->plus: gpt-5.4-mini sumiu de uma sonda e
+# voltou na seguinte. A causa era o probe tratar QUALQUER falha como recusa.
+
+def _stream_raising(erro_para: set[str], status_ok: set[str]):
+    def _fake(method, url, **kw):
+        model = kw["json"]["model"]
+        if model in erro_para:
+            raise OSError("conexao caiu")
+        return _FakeStream(_FakeResp([], status_code=200 if model in status_ok else 400))
+    return _fake
+
+
+def test_network_error_is_inconclusive_not_rejection():
+    from bauer.chatgpt_backend import _probe_with_verdicts
+
+    with patch("httpx.stream", _stream_raising({"gpt-5.5"}, {"gpt-5.6-terra"})):
+        aceitos, indefinidos = _probe_with_verdicts(
+            "tok", "a", candidates=["gpt-5.6-terra", "gpt-5.5", "gpt-5.4"]
+        )
+    assert aceitos == ["gpt-5.6-terra"]
+    assert indefinidos == ["gpt-5.5"]      # rede caiu — nao e veredito
+    # gpt-5.4 levou 400 de verdade: recusa legitima, fora dos dois
+
+
+def test_5xx_and_429_are_inconclusive():
+    from bauer.chatgpt_backend import _probe_with_verdicts
+
+    for status in (429, 500, 503, 401):
+        with patch("httpx.stream", _stream_by_status({"m": status})):
+            _, indefinidos = _probe_with_verdicts("tok", "a", candidates=["m"])
+        assert indefinidos == ["m"], f"status {status} deveria ser inconclusivo"
+
+
+def test_400_is_a_real_rejection():
+    from bauer.chatgpt_backend import _probe_with_verdicts
+
+    with patch("httpx.stream", _stream_by_status({"m": 400})):
+        aceitos, indefinidos = _probe_with_verdicts("tok", "a", candidates=["m"])
+    assert aceitos == [] and indefinidos == []
+
+
+def test_partial_probe_is_not_cached(tmp_path, monkeypatch):
+    """Lista incompleta congelada por 24h esconderia modelo que existe."""
+    from bauer import chatgpt_backend as cb
+
+    path = tmp_path / "c.json"
+    monkeypatch.setattr(cb, "_cache_path", lambda: path)
+
+    with patch("httpx.stream", _stream_raising({"gpt-5.5"}, {"gpt-5.6-terra"})):
+        out = cb.discover_models("tok", "acct")
+
+    assert "gpt-5.6-terra" in out
+    assert not path.exists(), "cacheou sonda parcial"

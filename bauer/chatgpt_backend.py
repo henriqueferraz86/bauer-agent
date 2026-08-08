@@ -88,11 +88,16 @@ def _codex_headers(access_token: str, account_id: str | None) -> dict[str, str]:
 
 def _model_is_accepted(
     model: str, headers: dict[str, str], base_url: str, timeout: float
-) -> bool:
-    """Pergunta ao backend se ele aceita o modelo.
+) -> bool | None:
+    """O backend aceita este modelo? ``None`` = não deu para saber.
 
     Manda o menor request possível e fecha o stream assim que sabe o status —
     modelo aceito custa alguns tokens da assinatura, não uma resposta inteira.
+
+    Distinguir ``False`` (400 "not supported") de ``None`` (rede caiu, 5xx,
+    429) importa: tratar falha de rede como recusa faz modelo sumir e voltar
+    da lista entre duas sondas — visto ao vivo com `gpt-5.4-mini`. Só o 400
+    explícito é veredito.
     """
     body = {
         "model": model,
@@ -107,9 +112,15 @@ def _model_is_accepted(
             timeout=httpx.Timeout(connect=timeout, read=timeout, write=10.0, pool=5.0),
             verify=shared_ssl_context(),
         ) as response:
-            return response.status_code < 400
-    except Exception:
-        return False
+            status = response.status_code
+            if status < 400:
+                return True
+            if status in (401, 403, 429) or status >= 500:
+                return None    # problema de sessão/limite/servidor, não do modelo
+            return False       # 400 & cia: o backend recusou ESTE modelo
+    except Exception as exc:
+        log_suppressed(f"chatgpt_backend.probe/{model}", exc)
+        return None
 
 
 def probe_supported_models(
@@ -122,6 +133,22 @@ def probe_supported_models(
     max_workers: int = 6,
 ) -> list[str]:
     """Descobre quais modelos ESTA conta aceita, na ordem de `candidates`."""
+    return _probe_with_verdicts(
+        access_token, account_id, base_url=base_url, candidates=candidates,
+        timeout=timeout, max_workers=max_workers,
+    )[0]
+
+
+def _probe_with_verdicts(
+    access_token: str,
+    account_id: str | None = None,
+    *,
+    base_url: str = DEFAULT_CHATGPT_BASE,
+    candidates: Sequence[str] | None = None,
+    timeout: float = 20.0,
+    max_workers: int = 6,
+) -> tuple[list[str], list[str]]:
+    """(aceitos, inconclusivos) — inconclusivo é o que a rede não deixou saber."""
     names = list(candidates or CHATGPT_MODEL_CANDIDATES)
     headers = _codex_headers(access_token, account_id)
 
@@ -129,7 +156,9 @@ def probe_supported_models(
         verdicts = list(pool.map(
             lambda m: _model_is_accepted(m, headers, base_url, timeout), names
         ))
-    return [name for name, ok in zip(names, verdicts) if ok]
+    aceitos = [n for n, v in zip(names, verdicts) if v is True]
+    indefinidos = [n for n, v in zip(names, verdicts) if v is None]
+    return aceitos, indefinidos
 
 
 def _cache_path() -> Path:
@@ -159,11 +188,22 @@ def discover_models(
         except (OSError, ValueError, TypeError) as exc:
             log_suppressed("chatgpt_backend.discover_models/read_cache", exc)
 
-    models = probe_supported_models(access_token, account_id, base_url=base_url)
+    models, indefinidos = _probe_with_verdicts(
+        access_token, account_id, base_url=base_url
+    )
     if not models:
         # Sonda vazia = rede caiu ou token expirou. Não gravar: cachear vazio
         # deixaria o menu sem nenhuma opção por 24h.
         return list(CHATGPT_FALLBACK_MODELS)
+
+    if indefinidos:
+        # Lista incompleta: congelá-la por 24h esconderia modelo que existe.
+        # Devolve o que deu para confirmar e sonda de novo na próxima.
+        log_suppressed(
+            "chatgpt_backend.discover_models/parcial",
+            RuntimeError(f"sem veredito para: {', '.join(indefinidos)}"),
+        )
+        return models
 
     try:
         existing = {}
