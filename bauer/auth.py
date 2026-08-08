@@ -231,6 +231,30 @@ def _decrypt_token(encrypted: str, key: str) -> str:
         return encrypted  # já estava em plaintext (sem encriptação)
 
 
+def extract_chatgpt_plan_type(id_token: str | None) -> str:
+    """Plano declarado no id_token: 'free', 'plus', 'pro', … ou "".
+
+    O Bauer anunciava "assinatura ChatGPT Plus/Pro" para qualquer login OAuth,
+    inclusive conta gratuita — e o conjunto de modelos aceitos MUDA com o
+    plano (o flagship `gpt-5.6-sol` é recusado no free). Dizer o plano de
+    verdade evita atribuir ao Bauer um limite que é da conta.
+    """
+    if not id_token:
+        return ""
+    try:
+        import base64 as _b64
+        import json as _json
+        parts = id_token.split(".")
+        if len(parts) < 2:
+            return ""
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+        claim = payload.get("https://api.openai.com/auth", {})
+        return str(claim.get("chatgpt_plan_type") or "")
+    except Exception:
+        return ""
+
+
 def _extract_chatgpt_account_id(id_token: str | None) -> str:
     """Decodifica o JWT id_token (sem verificar assinatura) e extrai o
     chatgpt_account_id do claim `https://api.openai.com/auth`.

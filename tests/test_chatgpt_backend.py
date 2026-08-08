@@ -312,3 +312,49 @@ def test_probe_preserves_preference_order():
     # e o flagship, quando o plano liberar, aparece na frente
     with patch("httpx.stream", _stream_by_status({**aceitos, "gpt-5.6-sol": 200})):
         assert probe_supported_models("tok", "acct")[0] == "gpt-5.6-sol"
+
+
+# ── Plano da conta ───────────────────────────────────────────────────────────
+
+def _id_token(claims: dict) -> str:
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"https://api.openai.com/auth": claims}).encode()
+    ).decode().rstrip("=")
+    return f"header.{payload}.sig"
+
+
+def test_extract_plan_type():
+    from bauer.auth import extract_chatgpt_plan_type
+
+    assert extract_chatgpt_plan_type(_id_token({"chatgpt_plan_type": "free"})) == "free"
+    assert extract_chatgpt_plan_type(_id_token({"chatgpt_plan_type": "pro"})) == "pro"
+
+
+def test_extract_plan_type_handles_garbage():
+    from bauer.auth import extract_chatgpt_plan_type
+
+    assert extract_chatgpt_plan_type(None) == ""
+    assert extract_chatgpt_plan_type("nao-e-jwt") == ""
+    assert extract_chatgpt_plan_type(_id_token({})) == ""
+
+
+def test_menu_does_not_claim_plus_pro_on_free_account(capsys):
+    """Regressao: o menu afirmava 'Assinatura ChatGPT Plus/Pro' para QUALQUER
+    login OAuth — inclusive conta free, que nao tem o flagship."""
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from bauer.model_switcher import _chatgpt_model_choices
+
+    token = SimpleNamespace(
+        access_token="tok",
+        extra={"chatgpt_account_id": "acct", "id_token": _id_token({"chatgpt_plan_type": "free"})},
+    )
+    with patch("bauer.chatgpt_backend.discover_models", return_value=["gpt-5.6-terra"]):
+        _chatgpt_model_choices(token, Console(force_terminal=False, width=200))
+
+    out = capsys.readouterr().out
+    assert "Plus/Pro" not in out
+    assert "free" in out
+    assert "gpt-5.6-sol" in out       # diz o que o plano pago acrescentaria

@@ -100,10 +100,20 @@ def _chatgpt_model_choices(token, console) -> list[tuple[str, str]]:
         models = list(CHATGPT_FALLBACK_MODELS)
         origem = "fallback — a sonda falhou"
 
+    from .auth import extract_chatgpt_plan_type
+    plano = extract_chatgpt_plan_type((getattr(token, "extra", None) or {}).get("id_token"))
+    # Nunca afirmar "Plus/Pro": conta free também loga por aqui, e o conjunto
+    # de modelos muda com o plano.
+    rotulo = f"Conta ChatGPT [bold]{plano}[/bold]" if plano else "Conta ChatGPT"
     console.print(
-        f"[dim]Assinatura ChatGPT Plus/Pro, sem API key. {len(models)} modelo(s) "
+        f"[dim]{rotulo}[/dim][dim], sem API key. {len(models)} modelo(s) "
         f"aceito(s) ({origem}).[/dim]"
     )
+    if plano == "free":
+        console.print(
+            "[dim]Plano free — modelos como [bold]gpt-5.6-sol[/bold] (flagship) e "
+            "[bold]gpt-5.3-codex-spark[/bold] exigem plano pago.[/dim]"
+        )
     choices = [(m, f"{m} — aceito pela sua conta") for m in models]
     choices.append(("__custom__", ">> outro modelo (digitar nome)"))
     return choices
