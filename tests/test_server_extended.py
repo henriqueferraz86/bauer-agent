@@ -553,14 +553,28 @@ def test_stream_timeout_worker_persists_full_history_after_background_completes(
     store = SessionStore(tmp_path / "sessions")
 
     # A thread de fundo ainda está terminando o turno real — espera convergir.
-    deadline = _time.monotonic() + 3.0
+    #
+    # Deadline GENEROSO de propósito. O caminho feliz sai em ~0,2s (o loop
+    # encerra assim que a condição vale), então o número alto não custa tempo:
+    # ele só compra folga para o pior caso do CI, que roda a suíte com
+    # `-n auto` e pode deixar a thread órfã sem CPU por segundos.
+    #
+    # Com 3s isto falhou no CI em 2026-08-08 — o run ficou no `failed` que o
+    # timeout do SSE gravou, porque a thread ainda não tinha chegado no
+    # `complete_run` que corrige o desfecho. Re-run do MESMO commit passou.
+    # Mesma classe de flake do PR #90 (fix/test-deadlines-anti-flake): o que
+    # se mede aqui é convergência, não velocidade.
+    deadline = _time.monotonic() + 30.0
     run = rm.get_run(run_id)
     while _time.monotonic() < deadline and (run is None or run.status != "completed"):
         _time.sleep(0.02)
         run = rm.get_run(run_id)
 
     assert run is not None and run.status == "completed", (
-        "run deveria convergir para 'completed' quando o trabalho de fundo termina"
+        "run deveria convergir para 'completed' quando o trabalho de fundo termina; "
+        f"status={getattr(run, 'status', None)} — se for 'failed', o timeout do SSE "
+        "gravou o desfecho e a thread do turno não corrigiu (ver "
+        "RunManager.fail_run_se_nao_terminal)"
     )
 
     saved = store.load(sid)
