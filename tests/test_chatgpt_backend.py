@@ -255,8 +255,8 @@ def test_discover_separates_cache_by_account(tmp_path, monkeypatch):
     monkeypatch.setattr(cb, "_cache_path", lambda: tmp_path / "c.json")
     with patch("httpx.stream", _stream_by_status({"gpt-5.5": 200})):
         cb.discover_models("tok", "conta-A")
-    with patch("httpx.stream", _stream_by_status({"gpt-5.6": 200})):
-        assert cb.discover_models("tok", "conta-B") == ["gpt-5.6"]
+    with patch("httpx.stream", _stream_by_status({"gpt-5.6-terra": 200})):
+        assert cb.discover_models("tok", "conta-B") == ["gpt-5.6-terra"]
     # conta-A nao foi contaminada
     assert cb.discover_models("tok", "conta-A") == ["gpt-5.5"]
 
@@ -281,3 +281,34 @@ def test_dead_models_are_not_offered_as_default():
     mortos = {"codex-mini-latest", "o4-mini", "o3-mini"}
     assert not (set(CHATGPT_FALLBACK_MODELS) & mortos)
     assert not ({m for m, _ in CHATGPT_CODEX_MODELS} & mortos)
+
+
+def test_candidates_cover_current_generation():
+    """A 1a versao da sonda so tinha nomes gpt-5.x/codex-* e concluiu 'so
+    gpt-5.5 funciona'. Faltavam os IDs atuais — sonda so responde sobre o que
+    voce pergunta."""
+    from bauer.chatgpt_backend import CHATGPT_MODEL_CANDIDATES
+
+    atuais = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+    assert atuais <= set(CHATGPT_MODEL_CANDIDATES)
+
+
+def test_fallback_excludes_deprecated_models():
+    """gpt-5.4/-mini saem do Codex em 31/08/2026 — nao oferecer como fallback."""
+    from bauer.chatgpt_backend import CHATGPT_DEPRECATED_MODELS, CHATGPT_FALLBACK_MODELS
+
+    assert not (set(CHATGPT_FALLBACK_MODELS) & CHATGPT_DEPRECATED_MODELS)
+
+
+def test_probe_preserves_preference_order():
+    """Ordem dos candidatos = ordem do menu; o melhor tem de vir primeiro."""
+    from bauer.chatgpt_backend import CHATGPT_MODEL_CANDIDATES, probe_supported_models
+
+    aceitos = {"gpt-5.6-terra": 200, "gpt-5.6-luna": 200, "gpt-5.5": 200}
+    with patch("httpx.stream", _stream_by_status(aceitos)):
+        out = probe_supported_models("tok", "acct")
+
+    assert out == ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+    # e o flagship, quando o plano liberar, aparece na frente
+    with patch("httpx.stream", _stream_by_status({**aceitos, "gpt-5.6-sol": 200})):
+        assert probe_supported_models("tok", "acct")[0] == "gpt-5.6-sol"

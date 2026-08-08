@@ -43,18 +43,32 @@ DEFAULT_CHATGPT_BASE = "https://chatgpt.com/backend-api/codex"
 # apodreceu inteira: medido em 2026-08-07, os TRÊS respondem
 # "not supported when using Codex with a ChatGPT account" — inclusive o que
 # estava marcado como recomendado. Só `gpt-5.5` passou, de 31 testados.
+# Ordem = preferência no menu (melhor primeiro).
+#
+# LIÇÃO: a primeira versão desta lista só tinha nomes da geração `gpt-5.x` e
+# `codex-*` e concluiu "só gpt-5.5 funciona". Errado — faltavam os IDs atuais
+# (`gpt-5.6-sol|terra|luna`, docs em learn.chatgpt.com/docs/models). Sonda só
+# responde sobre o que você pergunta: ao acrescentar modelo novo aqui, conferir
+# a lista oficial em vez de extrapolar padrão de nome.
 CHATGPT_MODEL_CANDIDATES: tuple[str, ...] = (
-    "gpt-5.5", "gpt-5.5-pro", "gpt-5.5-mini", "gpt-5.5-codex",
-    "gpt-5.6", "gpt-6",
-    "gpt-5.2", "gpt-5.2-codex", "gpt-5.1", "gpt-5.1-codex",
-    "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
-    "gpt-5", "gpt-5-codex", "gpt-5-codex-mini",
-    "codex-mini-latest", "o4-mini", "o3-mini", "o3",
+    # Geração atual (GPT-5.6)
+    "gpt-5.6-sol",           # flagship — recusado em conta free (2026-08-08)
+    "gpt-5.6-terra",         # equilibrado, dia a dia
+    "gpt-5.6-luna",          # mais rápido e barato
+    "gpt-5.3-codex-spark",   # doc: "Available to ChatGPT Pro users"
+    # Geração anterior
+    "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+    # Nomes futuros plausíveis — sondar não custa e evita a lista envelhecer
+    "gpt-5.7-sol", "gpt-5.7-terra", "gpt-5.7-luna", "gpt-6",
 )
 
-# Fallback quando a sonda não pôde rodar (sem rede, sem token). Reflete a
-# medição de 2026-08-07 — melhor que a lista morta, pior que sondar.
-CHATGPT_FALLBACK_MODELS: tuple[str, ...] = ("gpt-5.5",)
+# `gpt-5.4-mini` fica fora do fallback: a OpenAI anunciou remoção do Codex em
+# 31/08/2026 (substituto indicado: gpt-5.6-luna).
+CHATGPT_DEPRECATED_MODELS: frozenset[str] = frozenset({"gpt-5.4", "gpt-5.4-mini"})
+
+# Fallback quando a sonda não pôde rodar (sem rede, sem token). Medido em
+# 2026-08-08 numa conta FREE — plano pago tende a aceitar mais (sol, spark).
+CHATGPT_FALLBACK_MODELS: tuple[str, ...] = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5")
 
 _CACHE_TTL_SECONDS = 24 * 3600
 
