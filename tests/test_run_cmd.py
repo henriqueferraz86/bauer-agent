@@ -247,3 +247,73 @@ def _mk_router_stub(ws):
     r._approval_callback = None
     r.workspace = ws
     return r
+
+
+# ─── roteamento por tier ─────────────────────────────────────────────────────
+#
+# `bauer run` ignorava model.profiles e usava sempre model.name: quem
+# configurava coding/heavy via os tiers valerem no `bauer agent` e no serve,
+# mas NAO no caminho mais autonomo do Bauer.
+
+def _cfg_com_tiers() -> BauerConfig:
+    return BauerConfig(
+        model=ModelSection(provider="openrouter", name="modelo-default",
+                           router_enabled=True),
+    )
+
+
+def _perfis_falsos() -> dict:
+    from bauer.model_router import ModelProfile
+
+    return {
+        "fast": ModelProfile(name="fast", provider="openrouter", model="modelo-rapido"),
+        "coding": ModelProfile(name="coding", provider="openai", model="modelo-de-codigo"),
+        "heavy": ModelProfile(name="heavy", provider="openai", model="modelo-pesado"),
+    }
+
+
+def test_run_usa_o_modelo_do_tier_da_tarefa(tmp_path):
+    cfg = _cfg_com_tiers()
+    cliente_do_tier = MagicMock(name="cliente-openai")
+    with patch("bauer.commands._runtime.heuristic_route_kit",
+               return_value=(_perfis_falsos(), lambda p: cliente_do_tier)):
+        result, seen = _run(
+            ["escreva uma funcao python que ordena uma lista"],
+            cfg, [("pronto", [])], tmp_path,
+        )
+    assert "modelo-de-codigo" in result.output
+    assert "Tier" in result.output and "coding" in result.output
+
+
+def test_run_respeita_model_explicito_acima_do_tier(tmp_path):
+    """Flag do usuario vence heuristica."""
+    cfg = _cfg_com_tiers()
+    with patch("bauer.commands._runtime.heuristic_route_kit",
+               return_value=(_perfis_falsos(), lambda p: MagicMock())):
+        result, _ = _run(
+            ["escreva uma funcao python", "--model", "escolhido-na-mao"],
+            cfg, [("pronto", [])], tmp_path,
+        )
+    assert "escolhido-na-mao" in result.output
+    assert "modelo-de-codigo" not in result.output
+
+
+def test_run_sem_router_mantem_comportamento_antigo(tmp_path):
+    """router_enabled desligado → heuristic_route_kit devolve (None, None)."""
+    cfg = _cfg()
+    with patch("bauer.commands._runtime.heuristic_route_kit", return_value=(None, None)):
+        result, _ = _run(["faca algo"], cfg, [("pronto", [])], tmp_path)
+    assert "deepseek/deepseek-v4-flash" in result.output
+    assert "Tier" not in result.output
+
+
+def test_run_cai_no_default_se_provider_do_tier_nao_sobe(tmp_path):
+    """Factory devolvendo None nao pode derrubar o run — avisa e segue."""
+    cfg = _cfg_com_tiers()
+    with patch("bauer.commands._runtime.heuristic_route_kit",
+               return_value=(_perfis_falsos(), lambda p: None)):
+        result, _ = _run(
+            ["escreva uma funcao python"], cfg, [("pronto", [])], tmp_path,
+        )
+    assert "modelo-default" in result.output
+    assert "não subiu" in result.output

@@ -82,7 +82,10 @@ def run(
     cfg_path = config or _canonical_config()
     models_path = models or (get_bauer_home() / "models.yaml")
 
-    from ._runtime import _apply_ollama_runtime, _build_client, _build_router, _load_or_die
+    from ._runtime import (
+        _apply_ollama_runtime, _build_client, _build_router, _load_or_die,
+        heuristic_route_kit,
+    )
     try:
         cfg, _reg = _load_or_die(cfg_path, models_path)
     except typer.Exit:
@@ -132,7 +135,39 @@ def run(
         ws = _iso.workspace   # tudo abaixo — router, contexto, gates — usa o worktree
 
     model_name = (model or cfg.model.name).strip()
+    provider_efetivo = cfg.model.provider
     client = _build_client(cfg)
+
+    # Roteamento por tier — `bauer run` ignorava `model.profiles` e usava sempre
+    # `model.name`, então quem configurou coding/heavy via os tiers valerem no
+    # `bauer agent` e no serve, mas NÃO no caminho mais autônomo.
+    #
+    # Classifica UMA vez, pela tarefa, e fixa o modelo do tier para o run
+    # inteiro: aqui o objetivo não muda entre rodadas, e trocar de modelo no
+    # meio de um laço sem supervisão só tornaria o resultado irreprodutível.
+    # `--model` explícito continua vencendo — flag do usuário acima de heurística.
+    if not model:
+        _perfis, _cliente_do_provider = heuristic_route_kit(cfg)
+        if _perfis:
+            from ..model_router import classify_task
+            _rota = classify_task(task)
+            _perfil = _perfis.get(_rota.profile)
+            _alvo = getattr(_perfil, "model", "") if _perfil else ""
+            if _alvo:
+                _prov = getattr(_perfil, "provider", "") or cfg.model.provider
+                _c = client if _prov == cfg.model.provider else _cliente_do_provider(_prov)
+                if _c is not None:
+                    client, model_name, provider_efetivo = _c, _alvo, _prov
+                    console.print(
+                        f"[dim]Tier [bold]{_rota.profile}[/bold] → {_alvo} ({_prov})"
+                        f" — {_rota.reason}[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"[yellow]Tier '{_rota.profile}' pede provider "
+                        f"'{_prov}', que não subiu — seguindo com {model_name}.[/yellow]"
+                    )
+
     router = _build_router(cfg, ws, llm_client=client)
 
     from .agent_cmd import _build_fallback_clients
@@ -182,7 +217,7 @@ def run(
         risk_threshold=float(getattr(cfg.loop, "approval_risk_threshold", 0.4)),
     ))
 
-    _banner(ws, model_name, cfg.model.provider, limits, kernel is not None)
+    _banner(ws, model_name, provider_efetivo, limits, kernel is not None)
 
     from ..autonomous_budget import AutonomousBudget
     from ..serve_loop import run_loop_rounds
