@@ -662,6 +662,12 @@ class KernelSection(_StrictSection):
     # nao paga nada.
     tests_gate: bool = True
     tests_gate_timeout_s: int = Field(ge=1, default=600)
+    # Pulso de vida do run, para o recovery distinguir "trabalhando" de
+    # "travado". `updated_at` so se move em mudanca de estado, e um run pode
+    # passar meia hora legitimamente dentro do executor ou dos gates (os dois
+    # acima valem 600s CADA) — sem pulso, o recovery marcava failed um run vivo.
+    # Tem de ser bem menor que o `max_age_s` do recovery (900s). 0 desliga.
+    heartbeat_interval_s: float = Field(ge=0.0, default=30.0)
     # "regressao" (default): reprova so falha NOVA em relacao ao baseline —
     # projeto herdado vermelho nao trava todo run autonomo. "estrito":
     # qualquer falha reprova; correto so onde a suite ja e verde.

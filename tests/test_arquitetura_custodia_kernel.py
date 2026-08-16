@@ -29,15 +29,24 @@ RAIZ = Path(__file__).resolve().parent.parent / "bauer"
 PERMITIDOS: dict[str, tuple[int, str]] = {
     # o dono legítimo: é ele que fecha depois dos gates
     "core/kernel/kernel.py": (
-        8,
+        6,
         "o Kernel É o dono do ciclo de vida — complete_run/fail_run depois dos "
-        "gates, mais o cancelamento e o guarda de terminal (_fail_se_nao_terminal)",
+        "gates, mais o cancelamento e o guarda de terminal (_fail_se_nao_terminal). "
+        "Caiu de 8 para 6 em 2026-08-16: o stream() fechava run por fora em três "
+        "pontos (fail_run cru no erro do executor e na reprovação do gate, "
+        "update_run(cancelled) na desconexão), apagando desfecho terminal já "
+        "escrito pela thread órfã. Agora passa pelos guardas — que é o que este "
+        "ratchet existe para forçar",
     ),
     # recuperação pós-restart: marcar run preso como failed É o mecanismo
     "core/runtime/resilience.py": (
-        1,
+        0,
         "RuntimeRecovery.recover_stuck_runs — run preso há >max_age_s vira failed; "
-        "é a recuperação em si, não um caller declarando desfecho",
+        "é a recuperação em si, não um caller declarando desfecho. Caiu de 1 para "
+        "0 em 2026-08-16: passou a usar `fail_run_se_nao_terminal`, porque entre o "
+        "list_runs() e a escrita o dono do run pode ter concluído — recuperação "
+        "que apaga desfecho decidido não é recuperação. Fica travado em 0 para "
+        "que um fail_run cru novo aqui volte a falhar o teste",
     ),
     # diagnóstico: governar ferramenta de medição só a acopla à policy
     "commands/benchmark_cmd.py": (

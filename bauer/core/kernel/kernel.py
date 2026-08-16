@@ -23,7 +23,7 @@ from typing import Any
 from uuid import uuid4
 
 from .schemas import KernelRequest, KernelRun
-from .states import KERNEL_ONLY_STATES, ensure_transition
+from .states import KERNEL_ONLY_STATES, KernelStateError, ensure_transition
 
 
 #: sentinela p/ _open_run não resolver adapter (admissão sem custódia — admit())
@@ -60,6 +60,8 @@ class BauerKernel:
         recovery: Any | None = None,         # core.runtime.resilience.RuntimeRecovery
         breaker: Any | None = None,          # bauer.circuit_breaker.CircuitBreaker
         contract: Any | None = None,         # core.task.TaskContract (S12 nível 3)
+        heartbeat: Any | None = None,        # core.runtime.resilience.RunHeartbeat
+        heartbeat_interval_s: float | None = None,
     ) -> None:
         self.runs = runs
         # Contrato da tarefa, lido do workspace ANTES do run. Só o nível 3 do
@@ -79,10 +81,32 @@ class BauerKernel:
         # None = sem circuito (comportamento anterior). Com breaker, executor
         # que falha sistematicamente para de ser tentado a cada run.
         self.breaker = breaker
+        # Pulso de vida do run. Montado por DEFAULT sobre o mesmo store dos runs:
+        # é proteção contra o recovery matar run vivo, e proteção que depende de
+        # alguém lembrar de injetar é proteção que um dia não está lá. Passe
+        # `heartbeat_interval_s=0` para desligar.
+        from ..runtime.resilience import INTERVALO_PULSO_PADRAO_S, RunHeartbeat
+        self.heartbeat = (heartbeat if heartbeat is not None
+                          else RunHeartbeat(store=runs.store))
+        self.heartbeat_interval_s = (INTERVALO_PULSO_PADRAO_S
+                                     if heartbeat_interval_s is None
+                                     else float(heartbeat_interval_s))
         if adapter_factory is None:
             from ..runtime.adapters import get_runtime_adapter
             adapter_factory = get_runtime_adapter
         self.adapter_factory = adapter_factory
+
+    def _pulso(self, run_id: str):
+        """Contexto que mantém o run "vivo" aos olhos do recovery.
+
+        Cobre exatamente os trechos em que o Kernel está bloqueado dentro de
+        código de terceiros — o executor e os gates — que são justamente os que
+        podem passar dos 900s sem nenhuma transição de estado.
+        """
+        if self.heartbeat is None or self.heartbeat_interval_s <= 0:
+            import contextlib
+            return contextlib.nullcontext()
+        return self.heartbeat.pulso(run_id, intervalo_s=self.heartbeat_interval_s)
 
     # ── ciclo de vida ─────────────────────────────────────────────────────────
 
@@ -174,9 +198,10 @@ class BauerKernel:
         decision, early = self._preflight(request, run, session_id, trajectory)
         if early is not None:
             return early
-        return self._run_to_completion(run, payload, session_id, trajectory,
-                                       executor=executor, adapter=adapter,
-                                       decision=decision, request=request)
+        with self._pulso(run.id):
+            return self._run_to_completion(run, payload, session_id, trajectory,
+                                           executor=executor, adapter=adapter,
+                                           decision=decision, request=request)
 
     def admit(self, request: KernelRequest) -> "tuple[Any, KernelRun | None]":
         """Controle de admissão SEM custódia da execução (Sprint 6c).
@@ -233,66 +258,85 @@ class BauerKernel:
         trajectory.append("running")
 
         chunks: list[str] = []
-        last_meta: dict[str, Any] = {}
+        #: metadados do run (tool_calls_count, cost) — SÓ de run.completed/started.
+        #: Era a mesma variável que ecoava os eventos passthrough, e por isso um
+        #: `tool.finished` chegando DEPOIS do `run.completed` sobrescrevia custo e
+        #: contagem de tools: o run concluía com cost=None e tool_calls_count=0, e
+        #: o BudgetManager subcontava todo run via streaming. Duas
+        #: responsabilidades, duas variáveis.
+        meta: dict[str, Any] = {}
         error: str | None = None
-        try:
-            source = executor(payload) if executor is not None else adapter.stream_agent(payload)
-            for evt in source:
-                evt = evt or {}
-                kind = evt.get("event")
-                if kind == "message.delta":
-                    content = str(evt.get("content", ""))
-                    chunks.append(content)
-                    yield {"event": "message.delta", "content": content}
-                elif kind == "run.failed":
-                    error = str(evt.get("error") or "executor failed")
-                    break
-                elif kind in ("run.completed", "run.started"):
-                    last_meta = evt  # metadados (tool_calls_count, cost) — o
-                    # "final" do kernel já sinaliza início/fim; não re-emite
-                else:
-                    # passthrough (6c): eventos intermediários do executor —
-                    # tool/fase/rota — atravessam para o front-end (SSE) sem o
-                    # kernel opinar sobre o formato deles
-                    last_meta = evt
-                    yield evt
-        except GeneratorExit:
-            # Caller abandonou o stream (desconexão SSE, .close()) — sem isto o
-            # run ficaria preso em `running` até o recover() (15min). BaseException,
-            # então o `except Exception` abaixo não o captura.
-            self.runs.update_run(run.id, status="cancelled",
-                                 error="stream interrompido pelo cliente")
-            raise
-        except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
-            error = str(exc)
+        # Pulso durante o consumo do stream: entre um delta e o próximo não há
+        # transição de estado, e um turno longo passaria dos 900s parecendo
+        # travado. O `finally` do contexto fecha a thread em TODAS as saídas
+        # daqui — inclusive o GeneratorExit da desconexão.
+        with self._pulso(run.id):
+            try:
+                source = (executor(payload) if executor is not None
+                          else adapter.stream_agent(payload))
+                for evt in source:
+                    evt = evt or {}
+                    kind = evt.get("event")
+                    if kind == "message.delta":
+                        content = str(evt.get("content", ""))
+                        chunks.append(content)
+                        yield {"event": "message.delta", "content": content}
+                    elif kind == "run.failed":
+                        error = str(evt.get("error") or "executor failed")
+                        break
+                    elif kind in ("run.completed", "run.started"):
+                        meta.update(evt)  # o "final" do kernel já sinaliza
+                        # início/fim; não re-emite
+                    else:
+                        # passthrough (6c): eventos intermediários do executor —
+                        # tool/fase/rota — atravessam para o front-end (SSE) sem
+                        # o kernel opinar sobre o formato deles
+                        yield evt
+            except GeneratorExit:
+                # Caller abandonou o stream (desconexão SSE, .close()) — sem isto
+                # o run ficaria preso em `running` até o recover() (15min).
+                # BaseException, então o `except Exception` abaixo não o captura.
+                self._cancelar_se_nao_terminal(run.id, "stream interrompido pelo cliente")
+                raise
+            except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
+                error = str(exc)
 
-        if error is not None:
-            self.runs.fail_run(run.id, error)
-            trajectory.append("failed")
-            yield {"event": "final",
-                  "run": self._result(run.id, session_id, trajectory, decision=decision,
-                                      output="".join(chunks))}
-            return
-
-        result = {"output": "".join(chunks), **{k: v for k, v in last_meta.items()
-                                                 if k not in {"event", "status", "run_id", "runtime_adapter"}}}
-
-        if self.evaluator is not None:
-            verdict = self._avaliar(run, request, result, trajectory)
-            if not getattr(verdict, "passed", True):
-                self.runs.fail_run(run.id, f"quality gate: {getattr(verdict, 'reason', '')}")
-                trajectory.append("failed")
+            if error is not None:
+                # `_fail_se_nao_terminal`, não `fail_run`: no /stream dois
+                # escritores mexem no mesmo run — o gerador SSE e a thread órfã do
+                # turno. Se a thread conclui PRIMEIRO, um fail_run cru apagava o
+                # `completed` de um trabalho que deu certo. É a corrida medida no
+                # CI em 2026-07-30 e já resolvida em `_run_to_completion`.
+                self._fail_se_nao_terminal(run.id, error, trajectory)
                 yield {"event": "final",
                       "run": self._result(run.id, session_id, trajectory, decision=decision,
-                                          output=result.get("output"))}
+                                          output="".join(chunks))}
                 return
 
-        cost = self._extract_cost(result)
-        self.runs.complete_run(run.id, output={"output": result.get("output")},
-                               cost_estimate=cost,
-                               tool_calls_count=int(result.get("tool_calls_count") or 0))
-        trajectory.append("completed")
-        self._record_cost(run, cost)
+            result = {"output": "".join(chunks), **{k: v for k, v in meta.items()
+                                                     if k not in {"event", "status", "run_id", "runtime_adapter"}}}
+
+            # Dentro do pulso de propósito: os gates são a outra metade do
+            # problema. AcceptanceGate e TestsGate valem 600s cada por default —
+            # sozinhos passam do `max_age_s` do recovery, sem uma única transição
+            # de estado no meio.
+            if self.evaluator is not None:
+                verdict = self._avaliar(run, request, result, trajectory)
+                if not getattr(verdict, "passed", True):
+                    self._fail_se_nao_terminal(
+                        run.id, f"quality gate: {getattr(verdict, 'reason', '')}", trajectory)
+                    yield {"event": "final",
+                          "run": self._result(run.id, session_id, trajectory, decision=decision,
+                                              output=result.get("output"))}
+                    return
+
+            cost = self._extract_cost(result)
+            self.runs.complete_run(run.id, output={"output": result.get("output")},
+                                   cost_estimate=cost,
+                                   tool_calls_count=int(result.get("tool_calls_count") or 0))
+            trajectory.append("completed")
+            self._record_cost(run, cost)
+
         yield {"event": "final",
               "run": self._result(run.id, session_id, trajectory, decision=decision,
                                   output=result.get("output"))}
@@ -307,9 +351,10 @@ class BauerKernel:
         run = self._require_run(run_id)
         ensure_transition(run.status, "running")
         payload = {**(run.input or {}), **(extra_input or {}), "run_id": run.id}
-        return self._run_to_completion(run, payload, run.session_id, [run.status],
-                                       executor=executor, adapter=None,
-                                       decision=None, request=None)
+        with self._pulso(run.id):
+            return self._run_to_completion(run, payload, run.session_id, [run.status],
+                                           executor=executor, adapter=None,
+                                           decision=None, request=None)
 
     # ── aprovações (Sprint 3) ────────────────────────────────────────────────
 
@@ -329,8 +374,23 @@ class BauerKernel:
         try:
             return self.continue_run(record.run_id, extra_input=continue_with,
                                      executor=executor)
-        except Exception:  # noqa: BLE001 — sem payload executável fica queued
+        except KernelStateError:
+            # Run não está num estado continuável — desfecho DOCUMENTADO desta
+            # função: fica queued e alguém retoma depois.
             return resumed
+        except Exception as exc:  # noqa: BLE001 — ver abaixo: falha, não silêncio
+            # Qualquer outra coisa é bug nosso ou do executor. O `except
+            # Exception` que existia aqui engolia tudo e devolvia "queued" — o
+            # usuário aprovava, a API respondia sucesso, nada rodava, e o run
+            # ficava num estado não-terminal até o recover() de 15min convertê-lo
+            # em "stuck for more than 900s", que é a causa ERRADA. Aprovação
+            # humana virando no-op silencioso é o pior desfecho possível.
+            self._fail_se_nao_terminal(
+                record.run_id,
+                f"falha ao continuar após aprovação: {type(exc).__name__}: {exc}",
+                [],
+            )
+            raise
 
     def deny(self, approval_id: str) -> dict[str, Any]:
         """Nega a aprovação: waiting_approval → failed (policy denied)."""
@@ -546,9 +606,16 @@ class BauerKernel:
             self._publish("run.replanning", run, status="evaluating", message=reason,
                           data={"attempt": replans_used, "max_replans": max_replans})
             self._transition(run, "planning", trajectory)
+            # `request` é None quando se chega aqui por continue_run() — um run
+            # ADMITIDO (admit()) continuado por outra thread, que é como o /loop
+            # e o /v1 do serve funcionam. O resto da função já lê `request` por
+            # getattr pela mesma razão (max_retries/backoff/fallbacks acima);
+            # este acesso direto era o único que restava, e derrubava justamente
+            # o caminho que `continue_governed` documenta como completo.
             self._publish("run.planning.started", run, status="planning",
-                          data={"operation": request.operation, "replan": True,
-                                "attempt": replans_used})
+                          data={"operation": getattr(request, "operation",
+                                                     "runtime.execute"),
+                                "replan": True, "attempt": replans_used})
             self._transition(run, "policy_check", trajectory)
             self._transition(run, "queued", trajectory)
             payload = {**payload, "replan_feedback": reason,
@@ -622,6 +689,19 @@ class BauerKernel:
             return
         self.runs.fail_run(run_id, error)
         trajectory.append("failed")
+
+    def _cancelar_se_nao_terminal(self, run_id: str, motivo: str) -> None:
+        """`cancelled` que NÃO sobrescreve um desfecho já decidido.
+
+        Mesma regra de ``_fail_se_nao_terminal`` — quem chega primeiro ao
+        terminal decide — aplicada à desconexão do cliente SSE. O cliente
+        fechar a conexão depois de o trabalho concluir não desfaz o trabalho.
+        """
+        from ..runtime.run_manager import TERMINAL_RUN_STATUSES
+        atual = self.runs.get_run(run_id)
+        if atual is None or atual.status in TERMINAL_RUN_STATUSES:
+            return
+        self.runs.update_run(run_id, status="cancelled", error=motivo)
 
     def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
         current = self.runs.get_run(run.id).status
@@ -915,6 +995,8 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
         # transformaria uma indisponibilidade curta em fallback permanente.
         breaker=CircuitBreaker(failure_threshold=5, reset_timeout=120.0),
         evaluator=evaluator_from_config(cfg, workspace=workspace),
+        heartbeat_interval_s=getattr(getattr(cfg, "kernel", None),
+                                     "heartbeat_interval_s", None),
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
         budget=BudgetManager(root=root),
