@@ -1004,10 +1004,6 @@ def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | No
     return [single] if single is not None else None
 
 
-# Limite de chars do resultado de uma tool que vai para o contexto.
-# Evita overflow de contexto quando o modelo lê muitos arquivos grandes.
-_MAX_TOOL_RESULT_IN_CTX = 3000
-
 # ─── Compressão imediata de tool results grandes ───────────────────────────────
 # Resultados maiores que este limite são comprimidos na ingestão (antes de entrar
 # no contexto), não apenas no momento da compressão do histórico.
@@ -1026,22 +1022,67 @@ _LISTING_TOOLS = frozenset({
     "list_tasks", "skills_list", "memory",
 })
 
-# Tools de conteúdo → preserva mais linhas no preview
+# Tools de conteúdo → preserva linhas do início E do fim (ver _head_tail).
+# run_command/process entram aqui: antes caíam no ramo genérico e chegavam ao
+# modelo como os 300 primeiros chars, ou seja, só o banner do comando.
 _CONTENT_TOOLS = frozenset({
     "read_file", "execute_code", "delegate_task", "http_request",
+    "run_command", "process",
 })
+
+# Fração do orçamento reservada ao FIM do resultado. Exceção Python, mensagem
+# de erro de comando e o tally do pytest ficam sempre nas últimas linhas —
+# cortar só pela cabeça entregava ao modelo o preâmbulo e descartava a causa.
+# Medido em 2026-08-16 no ramo genérico anterior: `pytest` com 2 falhas chegava
+# como 350 chars de "bringing up nodes" + dots, cortado em "FAI", sem FAILED /
+# assert / tally; e um script que imprime progresso e quebra no fim chegava como
+# 6 linhas de "... ok", sem o RuntimeError. Ambos os casos: 0 de 5 sinais.
+_TAIL_SHARE = 0.6
+
+
+def _head_tail(text: str, budget: int) -> tuple[list[str], list[str], int]:
+    """Seleciona linhas do início e do fim de `text` cabendo em ~`budget` chars.
+
+    O fim é preenchido primeiro (recebe `_TAIL_SHARE` do orçamento) porque é
+    onde mora o erro; o que sobra vai para o início.
+
+    Returns:
+        (linhas_do_inicio, linhas_do_fim, n_linhas_omitidas)
+    """
+    lines = [l for l in text.splitlines() if l.strip()]
+    tail_budget = int(budget * _TAIL_SHARE)
+    head_budget = budget - tail_budget
+
+    tail: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        if used + len(line) + 1 > tail_budget:
+            break
+        tail.insert(0, line)
+        used += len(line) + 1
+
+    head: list[str] = []
+    used = 0
+    for line in lines[: len(lines) - len(tail)]:
+        if used + len(line) + 1 > head_budget:
+            break
+        head.append(line)
+        used += len(line) + 1
+
+    return head, tail, len(lines) - len(head) - len(tail)
 
 
 def _compress_tool_result_inline(action: str, result: str) -> str:
     """Comprime um resultado de tool grande para caber no contexto sem desperdiçar tokens.
 
     Estratégia por tipo de tool:
-    - Listagem (list_dir, glob_files): mostra contagem + primeiros N itens
-    - Conteúdo (read_file, execute_code): mostra contagem de linhas + primeiras N linhas
-    - Genérico: contagem de chars/linhas + preview do início
+    - Listagem (list_dir, glob_files): contagem + primeiros N itens (itens são
+      homogêneos, o fim não carrega sinal extra)
+    - Conteúdo (read_file, execute_code, run_command): contagem de linhas +
+      início E fim, porque a causa da falha fica nas últimas linhas
+    - Genérico: mesma política de início+fim, em chars
 
     Só deve ser chamada quando len(result) > _TOOL_RESULT_COMPRESS_THRESHOLD.
-    Preserva sempre a primeira linha (quase sempre a mais importante).
 
     Returns:
         String comprimida com ≤ _TOOL_RESULT_COMPRESSED_PREVIEW chars.
@@ -1058,29 +1099,46 @@ def _compress_tool_result_inline(action: str, result: str) -> str:
         summary = f"[{n_chars} chars — {n_lines} itens] " + ", ".join(preview_items)
         if extra > 0:
             summary += f" ... +{extra} mais"
-    elif action in _CONTENT_TOOLS:
-        # Para conteúdo: contagem de linhas + primeiras 6 linhas
-        n_preview = 6
-        preview_lines = lines[:n_preview]
-        extra = n_lines - n_preview
-        summary = f"[{n_chars} chars — {n_lines} linhas]\n" + "\n".join(preview_lines)
-        if extra > 0:
-            summary += f"\n... +{extra} linhas omitidas"
     else:
-        # Genérico: primeiros 300 chars + metadados
-        preview = result[:300].rstrip()
-        summary = f"[{n_chars} chars — {n_lines} linhas] {preview}"
-        if n_chars > 300:
-            summary += f"... [{n_chars - 300} chars omitidos]"
+        # Conteúdo e genérico: início + fim. O cabeçalho de metadados consome
+        # parte do orçamento, então é descontado antes de dividir head/tail.
+        header = f"[{n_chars} chars — {n_lines} linhas]"
+        budget = max(_TOOL_RESULT_COMPRESSED_PREVIEW - len(header) - 40, 80)
+        head, tail, omitted = _head_tail(result, budget)
 
-    # Garante que não ultrapassa o limite mesmo após formatação
+        if not head and not tail:
+            # Linha única gigante (JSON de uma linha, log sem quebras): não há
+            # como fatiar por linha — fatia por char, preservando as duas pontas.
+            half = budget // 2
+            summary = f"{header} {result[:half].rstrip()}"
+            summary += f"\n... [{max(n_chars - budget, 0)} chars omitidos] ...\n"
+            summary += result[-half:].lstrip()
+        else:
+            parts = [header]
+            parts.extend(head)
+            if omitted > 0:
+                parts.append(f"... +{omitted} linhas omitidas ...")
+            parts.extend(tail)
+            summary = "\n".join(parts)
+
+    # Garante que não ultrapassa o limite mesmo após formatação. O corte final
+    # tira do MEIO, não do fim, para nunca sacrificar as últimas linhas.
     if len(summary) > _TOOL_RESULT_COMPRESSED_PREVIEW:
-        summary = summary[:_TOOL_RESULT_COMPRESSED_PREVIEW - 1] + "…"
+        keep = _TOOL_RESULT_COMPRESSED_PREVIEW - 3
+        head_keep = keep // 2
+        summary = summary[:head_keep] + "..." + summary[-(keep - head_keep):]
     return summary
 
 
 def _ctx_result_for_context(action: str, result: str) -> tuple[str, bool]:
     """Decide como um resultado de tool deve entrar no contexto.
+
+    Acima do threshold há um único caminho: _compress_tool_result_inline.
+    Havia aqui um segundo ramo, com truncamento em _MAX_TOOL_RESULT_IN_CTX
+    (3000 chars), inalcançável desde sempre — qualquer resultado > 3000 também
+    é > 2000 e já tinha retornado acima. Removido em 2026-08-16 junto com o fix
+    de head+tail: ele truncava pela cabeça, o mesmo defeito que o fix corrigiu,
+    e reintroduziria o bug se alguém o tornasse alcançável.
 
     Returns:
         (ctx_result, was_compressed)
@@ -1089,12 +1147,6 @@ def _ctx_result_for_context(action: str, result: str) -> tuple[str, bool]:
     """
     if len(result) > _TOOL_RESULT_COMPRESS_THRESHOLD:
         return _compress_tool_result_inline(action, result), True
-    if len(result) > _MAX_TOOL_RESULT_IN_CTX:
-        truncated = result[:_MAX_TOOL_RESULT_IN_CTX]
-        return (
-            truncated + f"\n[... +{len(result) - _MAX_TOOL_RESULT_IN_CTX} chars omitidos]",
-            False,
-        )
     return result, False
 
 

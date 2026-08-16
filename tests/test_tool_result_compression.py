@@ -179,3 +179,87 @@ def test_compressed_contains_meaningful_info(action):
     # Deve ter pelo menos a primeira linha ou contagem
     has_content = "conteudo_relevante_0" in compressed or "50" in compressed
     assert has_content, f"Compressão de {action} não preservou info útil: {compressed}"
+
+
+# ─── Preservação do FIM do resultado (regressão 2026-08-16) ───────────────────
+#
+# A compressão cortava só pela cabeça. Como exceção Python, mensagem de erro de
+# comando e tally do pytest ficam nas ÚLTIMAS linhas, o modelo recebia o
+# preâmbulo e nunca a causa da falha. Medido antes do fix: uma run de pytest com
+# 2 falhas chegava como 350 chars de "bringing up nodes" + dots, cortada em
+# "FAI" — 0 de 5 sinais (FAILED/assert/KeyError/tally/short test summary).
+
+
+@pytest.mark.parametrize("action", ["run_command", "execute_code", "read_file"])
+def test_preserva_ultimas_linhas(action):
+    """O fim do resultado — onde mora o erro — nunca pode ser descartado."""
+    result = "linha de progresso irrelevante\n" * 200 + "ERRO_FINAL: causa raiz aqui"
+    compressed = _compress_tool_result_inline(action, result)
+    assert "ERRO_FINAL: causa raiz aqui" in compressed
+
+
+def test_traceback_preserva_excecao():
+    """Script que imprime muito e quebra no fim: a exceção deve chegar."""
+    saida = "".join(f"processando registro {i:04d} ... ok\n" for i in range(120))
+    saida += 'Traceback (most recent call last):\n  File "<string>", line 3\n'
+    saida += "RuntimeError: schema divergente na tabela pedidos"
+    compressed = _compress_tool_result_inline("execute_code", saida)
+    assert "RuntimeError" in compressed
+    assert "schema divergente" in compressed
+
+
+def test_pytest_preserva_tally_e_failed():
+    """Saída de pytest: FAILED e o tally final precisam sobreviver."""
+    saida = "bringing up nodes...\n" + "." * 72 + " [ 51%]\n"
+    saida += "=" * 30 + " FAILURES " + "=" * 30 + "\n"
+    saida += "detalhe do traceback\n" * 60
+    saida += "=" * 25 + " short test summary info " + "=" * 25 + "\n"
+    saida += "FAILED tests/test_x.py::test_um - KeyError: 'ausente'\n"
+    saida += "2 failed, 138 passed in 40.20s"
+    compressed = _compress_tool_result_inline("run_command", saida)
+    assert "FAILED" in compressed
+    assert "2 failed" in compressed
+
+
+def test_preserva_inicio_tambem():
+    """Início não pode ser sacrificado ao preservar o fim."""
+    result = "PRIMEIRA_LINHA: contexto\n" + "meio\n" * 300 + "ULTIMA_LINHA: erro"
+    compressed = _compress_tool_result_inline("run_command", result)
+    assert "PRIMEIRA_LINHA" in compressed
+    assert "ULTIMA_LINHA" in compressed
+
+
+def test_linha_unica_gigante_preserva_as_duas_pontas():
+    """Sem quebras de linha, o corte é por char — mas ainda pelas duas pontas."""
+    result = "INICIO_DO_JSON" + "x" * 5000 + "FIM_DO_JSON"
+    compressed = _compress_tool_result_inline("http_request", result)
+    assert len(compressed) <= _TOOL_RESULT_COMPRESSED_PREVIEW
+    assert "FIM_DO_JSON" in compressed
+
+
+def test_listagem_continua_priorizando_o_inicio():
+    """Listagens são homogêneas: o fim não carrega sinal, não deve regredir."""
+    result = "\n".join(f"arquivo_{i}.py" for i in range(200))
+    compressed = _compress_tool_result_inline("list_dir", result)
+    assert "arquivo_0.py" in compressed
+    assert len(compressed) <= _TOOL_RESULT_COMPRESSED_PREVIEW
+
+
+def test_run_command_nao_cai_no_ramo_generico():
+    """run_command precisa de tratamento por linha, não preview de 300 chars."""
+    from bauer.agent import _CONTENT_TOOLS
+    assert "run_command" in _CONTENT_TOOLS
+
+
+@pytest.mark.parametrize("tamanho", [2001, 3001, 10_000, 200_000])
+def test_acima_do_threshold_sempre_comprime(tamanho):
+    """Caminho único acima do threshold — não existe rota de truncamento cru.
+
+    Havia um segundo ramo em _ctx_result_for_context truncando pela cabeça em
+    3000 chars; era inalcançável e foi removido. Este teste trava a invariante:
+    qualquer resultado acima do threshold sai comprimido e dentro do preview.
+    """
+    result = "linha com conteudo\n" * (tamanho // 19 + 1)
+    ctx, compressed = _ctx_result_for_context("run_command", result)
+    assert compressed is True
+    assert len(ctx) <= _TOOL_RESULT_COMPRESSED_PREVIEW
