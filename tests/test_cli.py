@@ -113,25 +113,25 @@ def test_models_list(models_path: Path):
 
 def test_memory_init(tmp_path: Path):
     mem = tmp_path / "memory"
-    result = runner.invoke(app, ["memory", "init", "--dir", str(mem)])
+    result = runner.invoke(app, ["memory", "md", "init", "--dir", str(mem)])
     assert result.exit_code == 0
     assert mem.exists()
 
 
 def test_memory_list(mem_dir: Path):
-    result = runner.invoke(app, ["memory", "list", "--dir", str(mem_dir)])
+    result = runner.invoke(app, ["memory", "md", "list", "--dir", str(mem_dir)])
     assert result.exit_code == 0
     assert "MODEL_EXPERIENCE" in result.output or "arquivo" in result.output.lower()
 
 
 def test_memory_show_decisions(mem_dir: Path):
-    result = runner.invoke(app, ["memory", "show", "decisions", "--dir", str(mem_dir)])
+    result = runner.invoke(app, ["memory", "md", "show", "decisions", "--dir", str(mem_dir)])
     assert result.exit_code == 0
 
 
 def test_memory_add_decision(mem_dir: Path):
     result = runner.invoke(
-        app, ["memory", "add-decision", "Decisao teste", "Motivo teste", "--dir", str(mem_dir)]
+        app, ["memory", "md", "add-decision", "Decisao teste", "Motivo teste", "--dir", str(mem_dir)]
     )
     assert result.exit_code == 0
     content = (mem_dir / "DECISIONS.md").read_text(encoding="utf-8")
@@ -140,7 +140,7 @@ def test_memory_add_decision(mem_dir: Path):
 
 def test_memory_add_failure(mem_dir: Path):
     result = runner.invoke(
-        app, ["memory", "add-failure", "Falha teste", "Erro teste", "--dir", str(mem_dir)]
+        app, ["memory", "md", "add-failure", "Falha teste", "Erro teste", "--dir", str(mem_dir)]
     )
     assert result.exit_code == 0
     content = (mem_dir / "FAILED_ATTEMPTS.md").read_text(encoding="utf-8")
@@ -148,7 +148,7 @@ def test_memory_add_failure(mem_dir: Path):
 
 
 def test_memory_summarize(mem_dir: Path):
-    result = runner.invoke(app, ["memory", "summarize", "--dir", str(mem_dir)])
+    result = runner.invoke(app, ["memory", "md", "summarize", "--dir", str(mem_dir)])
     assert result.exit_code == 0
     assert "MODEL_EXPERIENCE" in result.output or "arquivo" in result.output.lower()
 

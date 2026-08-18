@@ -382,7 +382,7 @@ class TestStatusDoctorCLI:
 
         runner = CliRunner()
         result = runner.invoke(app, [
-            "memory", "search", "termoquenaoexiste",
+            "memory", "md", "search", "termoquenaoexiste",
             "--dir", str(tmp_path)
         ])
         assert result.exit_code == 0 or "Nenhum resultado" in result.output
@@ -398,7 +398,7 @@ class TestStatusDoctorCLI:
 
         runner = CliRunner()
         result = runner.invoke(app, [
-            "memory", "search", "autenticacao",
+            "memory", "md", "search", "autenticacao",
             "--dir", str(tmp_path)
         ])
         # Deve mostrar resultado

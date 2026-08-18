@@ -108,7 +108,8 @@ def test_runtime_memory_cli_add_search_revise_expire(tmp_path):
         app,
         [
             "memory",
-            "runtime-add",
+            "runtime",
+            "add",
             "project",
             "Scheduler runs daily review.",
             "--source",
@@ -122,7 +123,7 @@ def test_runtime_memory_cli_add_search_revise_expire(tmp_path):
 
     result = runner.invoke(
         app,
-        ["memory", "runtime-search", "daily", "--runtime-root", str(tmp_path)],
+        ["memory", "runtime", "search", "daily", "--runtime-root", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     assert "Busca runtime: daily" in result.output
@@ -132,7 +133,8 @@ def test_runtime_memory_cli_add_search_revise_expire(tmp_path):
         app,
         [
             "memory",
-            "runtime-revise",
+            "runtime",
+            "revise",
             memory_id,
             "--content",
             "Scheduler runs weekly review.",
@@ -144,7 +146,7 @@ def test_runtime_memory_cli_add_search_revise_expire(tmp_path):
 
     result = runner.invoke(
         app,
-        ["memory", "runtime-expire", memory_id, "--reason", "outdated", "--runtime-root", str(tmp_path)],
+        ["memory", "runtime", "expire", memory_id, "--reason", "outdated", "--runtime-root", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
 

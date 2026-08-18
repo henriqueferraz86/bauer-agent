@@ -630,7 +630,7 @@ class TestCliCommands:
         from bauer.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["memory", "init", "--dir", str(tmp_path / "memory")])
+        result = runner.invoke(app, ["memory", "md", "init", "--dir", str(tmp_path / "memory")])
         assert result.exit_code == 0
 
     def test_memory_init_already_exists(self, tmp_path: Path):
@@ -641,9 +641,9 @@ class TestCliCommands:
         mem_dir.mkdir()
         # First init
         runner = CliRunner()
-        runner.invoke(app, ["memory", "init", "--dir", str(mem_dir)])
+        runner.invoke(app, ["memory", "md", "init", "--dir", str(mem_dir)])
         # Second init (files already exist)
-        result = runner.invoke(app, ["memory", "init", "--dir", str(mem_dir)])
+        result = runner.invoke(app, ["memory", "md", "init", "--dir", str(mem_dir)])
         assert result.exit_code == 0
 
     def test_memory_list(self, tmp_path: Path):
@@ -652,8 +652,8 @@ class TestCliCommands:
 
         mem_dir = tmp_path / "memory"
         runner = CliRunner()
-        runner.invoke(app, ["memory", "init", "--dir", str(mem_dir)])
-        result = runner.invoke(app, ["memory", "list", "--dir", str(mem_dir)])
+        runner.invoke(app, ["memory", "md", "init", "--dir", str(mem_dir)])
+        result = runner.invoke(app, ["memory", "md", "list", "--dir", str(mem_dir)])
         assert result.exit_code == 0
 
     def test_memory_show(self, tmp_path: Path):
@@ -662,8 +662,8 @@ class TestCliCommands:
 
         mem_dir = tmp_path / "memory"
         runner = CliRunner()
-        runner.invoke(app, ["memory", "init", "--dir", str(mem_dir)])
-        result = runner.invoke(app, ["memory", "show", "memory", "--dir", str(mem_dir)])
+        runner.invoke(app, ["memory", "md", "init", "--dir", str(mem_dir)])
+        result = runner.invoke(app, ["memory", "md", "show", "memory", "--dir", str(mem_dir)])
         assert result.exit_code == 0
 
     def test_tools_list(self, tmp_path: Path):
@@ -779,7 +779,7 @@ class TestCliCommands:
         empty_dir = tmp_path / "empty_memory"
         # Não criar o diretório — arquivos de memória não existem
         runner = CliRunner()
-        result = runner.invoke(app, ["memory", "summarize", "--dir", str(empty_dir)])
+        result = runner.invoke(app, ["memory", "md", "summarize", "--dir", str(empty_dir)])
         assert result.exit_code == 0
         # Must show "0" entries for each missing file
         assert "0" in result.output

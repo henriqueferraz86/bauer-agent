@@ -1,4 +1,12 @@
-"""Comando bauer memory."""
+"""Comando bauer memory.
+
+Dois backends independentes, sem sincronia entre si (ver AGENTS.md):
+- `bauer memory md ...`      — Markdown (memory/*.md), a memoria automatica
+  que o agente le/escreve via MemoryProvider a cada turno.
+- `bauer memory runtime ...` — JSONL com escopo (user/company/project/agent/
+  skill) e validade, uso manual/auditavel; sem consumidor automatico no loop
+  do agente hoje.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +19,26 @@ import typer
 
 from ._common import _FILE_ALIASES, _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, console
 
-memory_app = typer.Typer(help="Operacoes com memoria Markdown")
+memory_app = typer.Typer(
+    help="Memoria do Bauer — 'md' (Markdown, automatica) e 'runtime' (JSONL, manual/auditavel)."
+)
+md_app = typer.Typer(
+    help="Memoria Markdown (memory/*.md) — a memoria automatica do agente "
+         "(FAILED_ATTEMPTS.md, DECISIONS.md, MODEL_EXPERIENCE.md, etc.), "
+         "lida/escrita via MemoryProvider a cada turno."
+)
+runtime_app = typer.Typer(
+    help="Memoria auditavel do runtime (JSONL, escopo user/company/project/"
+         "agent/skill, com validade e revisao) — uso manual, sem consumidor "
+         "automatico no loop do agente hoje."
+)
+memory_app.add_typer(md_app, name="md")
+memory_app.add_typer(runtime_app, name="runtime")
+
 _RUNTIME_MEMORY_DIR = _MEMORY_DIR / "runtime"
 
 
-@memory_app.command("init")
+@md_app.command("init")
 def memory_init(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
 ):
@@ -29,7 +52,7 @@ def memory_init(
         console.print(f"[dim]Todos os arquivos ja existem em {memory_dir}/[/dim]")
 
 
-@memory_app.command("list")
+@md_app.command("list")
 def memory_list(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
 ):
@@ -44,7 +67,7 @@ def memory_list(
     console.print(table)
 
 
-@memory_app.command("show")
+@md_app.command("show")
 def memory_show(
     file: str = typer.Argument(
         "memory",
@@ -59,7 +82,7 @@ def memory_show(
     console.print(content)
 
 
-@memory_app.command("add-decision")
+@md_app.command("add-decision")
 def memory_add_decision(
     title: str = typer.Argument(..., help="Titulo curto da decisao"),
     body: str = typer.Argument(..., help="Descricao da decisao"),
@@ -72,7 +95,7 @@ def memory_add_decision(
     console.print(f"[green]Decisao registrada em {p}[/green]")
 
 
-@memory_app.command("add-failure")
+@md_app.command("add-failure")
 def memory_add_failure(
     title: str = typer.Argument(..., help="Titulo curto do problema"),
     error: str = typer.Argument(..., help="Descricao do erro"),
@@ -85,7 +108,7 @@ def memory_add_failure(
     console.print(f"[green]Falha registrada em {p}[/green]")
 
 
-@memory_app.command("add-model-exp")
+@md_app.command("add-model-exp")
 def memory_add_model_exp(
     result: str = typer.Argument(..., help="Resultado: ok | slow | oom | error"),
     lesson: str = typer.Option("", "--lesson", help="Licao aprendida"),
@@ -116,7 +139,7 @@ def memory_add_model_exp(
     console.print(f"[green]Experiencia registrada em {p}[/green]")
 
 
-@memory_app.command("summarize")
+@md_app.command("summarize")
 def memory_summarize(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
 ):
@@ -145,11 +168,11 @@ def memory_summarize(
 
     console.print(table)
     console.print(
-        "\n[dim]Use 'bauer memory show <arquivo>' para ver o conteudo completo.[/dim]"
+        "\n[dim]Use 'bauer memory md show <arquivo>' para ver o conteudo completo.[/dim]"
     )
 
 
-@memory_app.command("add-note")
+@md_app.command("add-note")
 def memory_add_note(
     title: str = typer.Argument(..., help="Titulo da nota"),
     body: str = typer.Argument(..., help="Conteudo da nota"),
@@ -161,7 +184,7 @@ def memory_add_note(
     console.print(f"[green]Nota registrada em {p}[/green]")
 
 
-@memory_app.command("add-lesson")
+@md_app.command("add-lesson")
 def memory_add_lesson(
     decision: str = typer.Argument(..., help="Decisao automatica tomada"),
     reason: str = typer.Argument(..., help="Motivo da decisao"),
@@ -174,7 +197,7 @@ def memory_add_lesson(
     console.print(f"[green]Licao registrada em {p}[/green]")
 
 
-@memory_app.command("search")
+@md_app.command("search")
 def memory_search(
     query: str = typer.Argument(..., help="Texto a buscar na memoria"),
     top_k: int = typer.Option(5, "--top", "-n", help="Numero de resultados"),
@@ -220,7 +243,7 @@ def memory_search(
     console.print(table)
 
 
-@memory_app.command("runtime-add")
+@runtime_app.command("add")
 def runtime_memory_add(
     scope: str = typer.Argument(..., help="Escopo: user | company | project | agent | skill"),
     content: str = typer.Argument(..., help="Conteudo da memoria"),
@@ -245,7 +268,7 @@ def runtime_memory_add(
     console.print(f"[green]memoria registrada:[/green] {record.id}")
 
 
-@memory_app.command("runtime-list")
+@runtime_app.command("list")
 def runtime_memory_list(
     scope: str | None = typer.Option(None, "--scope", help="Filtra por escopo"),
     include_expired: bool = typer.Option(False, "--include-expired", help="Inclui memorias expiradas"),
@@ -261,7 +284,7 @@ def runtime_memory_list(
     _print_runtime_memory_table(records, title="Memoria runtime")
 
 
-@memory_app.command("runtime-search")
+@runtime_app.command("search")
 def runtime_memory_search(
     query: str = typer.Argument(..., help="Texto a buscar"),
     scope: str | None = typer.Option(None, "--scope", help="Filtra por escopo"),
@@ -278,7 +301,7 @@ def runtime_memory_search(
     _print_runtime_memory_table(records, title=f"Busca runtime: {query}")
 
 
-@memory_app.command("runtime-revise")
+@runtime_app.command("revise")
 def runtime_memory_revise(
     memory_id: str = typer.Argument(..., help="ID da memoria"),
     content: str | None = typer.Option(None, "--content", help="Novo conteudo"),
@@ -303,7 +326,7 @@ def runtime_memory_revise(
     console.print(f"[green]memoria revisada:[/green] {record.id}")
 
 
-@memory_app.command("runtime-expire")
+@runtime_app.command("expire")
 def runtime_memory_expire(
     memory_id: str = typer.Argument(..., help="ID da memoria"),
     reason: str = typer.Option("manual", "--reason", help="Motivo da expiracao"),
@@ -339,7 +362,7 @@ def _print_runtime_memory_table(records, *, title: str) -> None:
     console.print(table)
 
 
-@memory_app.command("index")
+@md_app.command("index")
 def memory_index_cmd(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
 ):
@@ -350,7 +373,7 @@ def memory_index_cmd(
     console.print(f"[green]Indice de memoria atualizado:[/green] {count} bloco(s)")
 
 
-@memory_app.command("skills-pending")
+@md_app.command("skills-pending")
 def memory_skills_pending_cmd(
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
 ):
@@ -374,7 +397,7 @@ def memory_skills_pending_cmd(
     console.print(table)
 
 
-@memory_app.command("skill-approve")
+@md_app.command("skill-approve")
 def memory_skill_approve_cmd(
     name: str = typer.Argument(..., help="Nome da skill sugerida"),
     workspace: Path = typer.Option(Path("workspace"), "--workspace"),
@@ -398,7 +421,7 @@ def memory_skill_approve_cmd(
     console.print(f"[green]Skill aprovada em[/green] {path}")
 
 
-@memory_app.command("cleanup")
+@md_app.command("cleanup")
 def memory_cleanup(
     days: int = typer.Option(90, "--days", "-d", help="Remover entradas mais antigas que N dias"),
     memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir", help="Diretorio de memoria"),
@@ -407,9 +430,9 @@ def memory_cleanup(
     """Remove entradas de memória mais antigas que N dias (padrão: 90).
 
     Exemplos:
-      bauer memory cleanup              # remove entradas >90 dias
-      bauer memory cleanup --days 30    # remove entradas >30 dias
-      bauer memory cleanup --dry-run    # conta sem apagar
+      bauer memory md cleanup              # remove entradas >90 dias
+      bauer memory md cleanup --days 30    # remove entradas >30 dias
+      bauer memory md cleanup --dry-run    # conta sem apagar
     """
     from rich.table import Table as RichTable
 

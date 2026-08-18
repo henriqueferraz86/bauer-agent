@@ -108,7 +108,7 @@ def test_memory_add_model_exp_no_state_file(mem_dir: Path, tmp_path: Path):
     result = runner.invoke(
         app,
         [
-            "memory", "add-model-exp", "ok",
+            "memory", "md", "add-model-exp", "ok",
             "--state-file", str(nonexistent),
             "--dir", str(mem_dir),
         ],
