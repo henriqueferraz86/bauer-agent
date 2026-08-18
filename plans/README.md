@@ -40,9 +40,9 @@ de STOP, e atualize sua linha de status ao concluir.
 | [025](025-system-prompt-os-aware.md) | System prompt reflete o SO real (não "Windows" fixo) em servidores Linux | P3 | P2 | S | — | TODO |
 | [026](026-tool-capability-detection.md) | Aviso claro quando modelo cai no bridge por não estar no registry (+ detecção via Ollama) | P1 | P2 | M | — | TODO |
 | [027](027-doctor-agentic-stack-checks.md) | `bauer doctor` valida a stack agêntica (factory tools, tool mode, gate) | DX | P2 | S-M | — | TODO |
-| [029](029-vector-store-dim-cache-invalidation.md) | Cache de dimensão do vector_store fica obsoleto após `delete()`/`delete_prefix()` (perda silenciosa de escrita) | P1 | P1 | S | — | TODO |
-| [030](030-ollama-embed-json-guard.md) | `_ollama_embed` pode lançar exceção no caminho de sucesso, quebrando o contrato "nunca lança" do `EmbeddingEngine` | P1 | P1 | S | — | TODO |
-| [031](031-tool-dedup-mutating-tools-fix.md) | `MUTATING_TOOLS` do dedup cita 5 tools inexistentes e falta ~17 tools mutantes reais (replay indevido) | P3 | P1 | S | — | TODO |
+| [029](029-vector-store-dim-cache-invalidation.md) | Cache de dimensão do vector_store fica obsoleto após `delete()`/`delete_prefix()` (perda silenciosa de escrita) | P1 | P1 | S | — | DONE (commit `4c24cb1`) |
+| [030](030-ollama-embed-json-guard.md) | `_ollama_embed` pode lançar exceção no caminho de sucesso, quebrando o contrato "nunca lança" do `EmbeddingEngine` | P1 | P1 | S | — | DONE (commit `8d80644`) |
+| [031](031-tool-dedup-mutating-tools-fix.md) | `MUTATING_TOOLS` do dedup cita 5 tools inexistentes e falta ~17 tools mutantes reais (replay indevido) | P3 | P1 | S | — | DONE (commit `b2492b1`) |
 | [032](032-delete-trigger-manager.md) | Deletar `trigger_manager.py` — 621 linhas, zero chamador fora do próprio teste | P4 | P2 | S | — | TODO |
 | [033](033-tier4-checkpoint-audit-observability-decision.md) | Decidir destino do "Tier 4" (checkpoint/audit_trail/observability) — testado mas nunca ligado ao daemon | P4 | P2 | M | — | TODO |
 | [034](034-delete-otel-traces.md) | Deletar `otel.py` + `bauer traces` — tracer OTLP morto, comando sempre vazio em produção | P4/DX | P2 | S | — | TODO |
