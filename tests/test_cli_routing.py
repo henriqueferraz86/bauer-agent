@@ -34,7 +34,8 @@ _PROFILES = {
 }
 
 
-def _run_session(tmp_path: Path, message: str, *, profiles=None, route_client_fn=None):
+def _run_session(tmp_path: Path, message: str, *, profiles=None, route_client_fn=None,
+                  profiles_by_provider=None, client_provider="openrouter"):
     from bauer.agent import run_agent_session
     from rich.console import Console
 
@@ -42,7 +43,7 @@ def _run_session(tmp_path: Path, message: str, *, profiles=None, route_client_fn
     ws.mkdir(exist_ok=True)
     router = ToolRouter(workspace=ws)
     seen: dict = {}
-    client = _capture_client(seen)
+    client = _capture_client(seen, provider=client_provider)
     console = Console(record=True, width=120)
 
     with patch("builtins.input", side_effect=[message, EOFError]), \
@@ -50,6 +51,7 @@ def _run_session(tmp_path: Path, message: str, *, profiles=None, route_client_fn
         run_agent_session(
             client, "primary-model", 4096, console, router,
             route_profiles=profiles, route_client_fn=route_client_fn,
+            route_profiles_by_provider=profiles_by_provider,
         )
     return seen, console.export_text()
 
@@ -132,6 +134,49 @@ def test_routed_client_not_sticky_across_turns(tmp_path: Path):
         )
     assert other_seen["models"] == ["qwen3-coder"]     # turno 1 roteado
     assert seen["models"] == ["primary-model"]         # turno 2 de volta na sessão
+
+
+# ─── route_profiles_by_provider: tiers seguem o provider ativo (/model) ──────
+#
+# Bug relatado em uso real: usuário trocava para openai via /model, mas os
+# tiers (fast/balanced/coding/heavy) continuavam TODOS configurados para
+# openrouter — o turno tentava rotear pro openrouter mesmo sem credencial lá,
+# e falhava com 401, mesmo o usuário nunca tendo pedido openrouter.
+
+
+def test_provider_specific_tiers_override_flat_profiles(tmp_path: Path):
+    """Provider ativo com entrada em profiles_by_provider usa ELA, não o
+    conjunto plano legado — mesmo que o plano também tivesse profile pro tier."""
+    flat = {"fast": ModelProfile(name="fast", provider="openrouter", model="from-flat-set")}
+    by_provider = {
+        "openai": {"fast": ModelProfile(name="fast", provider="openai", model="gpt-5.6-luna")},
+    }
+    seen, out = _run_session(tmp_path, "oi, tudo bem?", profiles=flat,
+                             profiles_by_provider=by_provider, client_provider="openai")
+    assert seen["models"] == ["gpt-5.6-luna"]
+    assert "from-flat-set" not in out
+
+
+def test_provider_without_entry_falls_back_to_flat_profiles(tmp_path: Path):
+    """Provider ativo SEM entrada em profiles_by_provider cai no conjunto
+    plano — comportamento de sempre, preservado para quem não usa a feature."""
+    flat = {"fast": ModelProfile(name="fast", provider="openrouter", model="deepseek/deepseek-v4-flash")}
+    by_provider = {"openai": {"fast": ModelProfile(name="fast", provider="openai", model="gpt-5.6-luna")}}
+    seen, _ = _run_session(tmp_path, "oi, tudo bem?", profiles=flat,
+                           profiles_by_provider=by_provider, client_provider="openrouter")
+    assert seen["models"] == ["deepseek/deepseek-v4-flash"]
+
+
+def test_provider_with_explicit_empty_entry_never_falls_back(tmp_path: Path):
+    """profiles_by_provider={"openai": {}} é DECLARADO, não ausente — não pode
+    cair no conjunto plano (que aponta pra outro provider sem credencial),
+    senão declarar "sem tiers dedicados" teria o mesmo efeito que não
+    declarar nada, e o bug relatado voltaria a acontecer silenciosamente."""
+    flat = {"fast": ModelProfile(name="fast", provider="openrouter", model="deepseek/deepseek-v4-flash")}
+    by_provider = {"openai": {}}
+    seen, _ = _run_session(tmp_path, "oi, tudo bem?", profiles=flat,
+                           profiles_by_provider=by_provider, client_provider="openai")
+    assert seen["models"] == ["primary-model"]
 
 
 # ─── Kernel 6c-3: turno interativo governado (kernel=... em run_agent_session) ─

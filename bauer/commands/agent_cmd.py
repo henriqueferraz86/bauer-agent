@@ -541,7 +541,7 @@ def agent(
 
     # Roteamento heurístico por turno (Fase 12) — mesmo comportamento do serve:
     # opt-in via model.router_enabled + model.profiles no config.yaml.
-    from ._runtime import heuristic_route_kit
+    from ._runtime import heuristic_route_kit, route_profiles_by_provider
     if local:
         # `--local` é um PEDIDO EXPLÍCITO de que nada saia da máquina. Fechar só
         # o roteamento faria a flag mentir: há três portas para a nuvem
@@ -564,6 +564,10 @@ def agent(
 
     _route_profiles, _route_client_fn = heuristic_route_kit(
         cfg, conjunto="local" if local else "default")
+    # Por-provider só faz sentido no conjunto "default" — misturar com --local
+    # arriscaria um provider de nuvem entrar pela porta dos fundos justamente
+    # na promessa de "nada sai desta máquina".
+    _route_profiles_by_provider = None if local else route_profiles_by_provider(cfg)
     if _route_profiles:
         console.print(
             f"[dim]Roteamento por turno ativo{' (LOCAL)' if local else ''} — tiers: "
@@ -643,6 +647,7 @@ def agent(
             learning_hints=_learning_hints,
             route_profiles=_route_profiles,
             route_client_fn=_route_client_fn,
+            route_profiles_by_provider=_route_profiles_by_provider,
             kernel=_kernel_inst,
             render_header=_render_cabecalho,
         )

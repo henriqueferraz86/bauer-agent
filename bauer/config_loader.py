@@ -583,6 +583,16 @@ class ModelSection(_StrictSection):
         default=False,
         description="Ativa o roteamento por tipo/complexidade de tarefa (usa profiles).",
     )
+    # Conjuntos de tiers por PROVIDER ativo. Quando o provider corrente (o que
+    # `/model` troca ao vivo) tem entrada aqui, ela substitui `profiles` só
+    # naquele turno. Existe porque `profiles` sozinho é um conjunto FIXO —
+    # trocar de provider via `/model` não mudava para onde os tiers apontavam,
+    # e um turno podia cair num provider sem credencial que o usuário nunca
+    # escolheu. Provider sem entrada aqui cai em `profiles` como sempre.
+    profiles_by_provider: dict[str, dict[str, ModelProfileSpec]] = Field(
+        default_factory=dict,
+        description="Perfis de tier por provider ativo (chave = model.provider).",
+    )
 
     @field_validator("minimum_context")
     @classmethod

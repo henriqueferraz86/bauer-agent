@@ -4982,6 +4982,7 @@ def run_agent_session(
     learning_hints: "str | None" = None,
     route_profiles: "dict | None" = None,
     route_client_fn: "Any | None" = None,
+    route_profiles_by_provider: "dict[str, dict] | None" = None,
     kernel: "Any | None" = None,
     render_header: "Any | None" = None,
 ) -> None:
@@ -5006,6 +5007,13 @@ def run_agent_session(
             igual ao serve. Tem precedência sobre o ModelRouter legado (LLM).
         route_client_fn: Callable(provider) -> client|None p/ providers ≠ do
             principal (com cache). None/falha → o turno usa o modelo padrão.
+        route_profiles_by_provider: dict[provider] -> profiles — conjunto de
+            tiers dedicado por provider ATIVO (`model.profiles_by_provider`).
+            Quando o provider corrente (que `/model` troca ao vivo) tem uma
+            entrada aqui, ela substitui `route_profiles` só naquele turno; sem
+            entrada, cai em `route_profiles` como sempre. Sem isto, trocar de
+            provider via `/model` não mudava os tiers — a sessão continuava
+            roteando turnos para o provider antigo, mesmo sem credencial nele.
         kernel: BauerKernel (Sprint 6c) — quando presente, cada turno roda
             via kernel.execute() com o corpo do turno como executor: run
             auditável + kill-switch/policy/budget antes da chamada LLM.
@@ -5119,10 +5127,26 @@ def run_agent_session(
     # laço do turno. `routing` é o ModelRouter legado, outro caminho: usá-lo
     # aqui deixaria o banner mudo justamente na configuração do usuário.
     # E os perfis são `ModelProfile` (objetos), não dicts — `.get()` quebraria.
+    def _resolve_tier_profiles(provider: str) -> "dict | None":
+        """`route_profiles_by_provider[provider]` se DECLARADO (mesmo vazio —
+        vazio é a forma explícita de dizer "sem tiers dedicados para este
+        provider, nunca desviar dele"), senão o `route_profiles` fixo do
+        boot. `in` em vez de `.get(...) or fallback`: um provider com `{}`
+        declarado não pode cair no fallback silenciosamente, ou declarar
+        "nenhum tier para openai" teria o mesmo efeito que não declarar nada
+        — e o turno voltaria a arriscar o provider errado."""
+        if route_profiles_by_provider is not None and provider in route_profiles_by_provider:
+            return route_profiles_by_provider[provider]
+        return route_profiles
+
     _linhas_extra: list[tuple[str, str]] = []
-    if route_profiles:
+    # Mesma resolução do laço de turno: se o provider de boot tem conjunto
+    # dedicado em `route_profiles_by_provider`, o banner mostra ELE — senão o
+    # banner mentiria sobre quais tiers valem já no primeiro turno.
+    _boot_tier_profiles = _resolve_tier_profiles(_provider)
+    if _boot_tier_profiles:
         _tiers = ", ".join(f"{k}: {getattr(v, 'model', '?')}"
-                           for k, v in sorted(route_profiles.items()))
+                           for k, v in sorted(_boot_tier_profiles.items()))
         _linhas_extra.append(("Roteando", _tiers))
 
     # Acento salvo pelo usuário (Ctrl+T / `/theme`) — aplicado ANTES do
@@ -5149,7 +5173,7 @@ def run_agent_session(
         return session_panel(
             "Bauer Agent",
             f"{model_name}  (padrão — o turno pode ir p/ outro tier)"
-            if route_profiles else model_name,
+            if _boot_tier_profiles else model_name,
             applied_context,
             provider=_provider or None,
             extra_rows=_linhas_extra,
@@ -5761,13 +5785,17 @@ def run_agent_session(
         _turn_client = client
         _hr_routed = False  # turno roteado pelo router heurístico (Fase 12)
         route_kind = "direct"
-        if route_profiles:
+        # `_provider` segue /model ao vivo — se o provider ativo tem um
+        # conjunto de tiers dedicado, ele vale neste turno; senão cai no
+        # `route_profiles` fixo do boot (comportamento de sempre).
+        _tier_profiles = _resolve_tier_profiles(_provider)
+        if _tier_profiles:
             # Router heurístico por tier (mesma decisão do serve) — precedência
             # sobre o ModelRouter legado. CONSERVADOR: tier sem profile, provider
             # sem client, ou falha → o turno segue no modelo padrão da sessão.
             try:
                 from .model_router import decide as _hr_decide
-                _d = _hr_decide(user_input, route_profiles)
+                _d = _hr_decide(user_input, _tier_profiles)
                 if _d.model:
                     if not _d.provider or _d.provider == _provider:
                         _c = client  # mesmo provider → reusa o client vivo da sessão

@@ -92,16 +92,16 @@ def test_banner_avisa_quando_o_padrao_nao_e_o_que_roda():
 
 
 def test_banner_gated_por_route_profiles_e_nao_por_routing():
-    """`route_profiles` é o gate REAL do router heurístico no laço do turno
-    (`if route_profiles:`). Gatear o banner por `routing` — o ModelRouter
-    legado, outro caminho — o deixaria mudo justamente na configuração que
-    produziu o bug."""
+    """`_boot_tier_profiles`/`_tier_profiles` (resolução por-provider de
+    `route_profiles`) é o gate REAL do router heurístico no laço do turno.
+    Gatear o banner por `routing` — o ModelRouter legado, outro caminho — o
+    deixaria mudo justamente na configuração que produziu o bug."""
     trecho = AGENT[AGENT.index("_linhas_extra: list"):AGENT.index("from .ascii_intro import session_panel")]
-    assert "if route_profiles:" in trecho
+    assert "if _boot_tier_profiles:" in trecho
     assert "routing and route_profiles" not in trecho
 
     laco = AGENT[AGENT.index("_hr_routed = False"):]
-    assert "if route_profiles:" in laco[:400], (
+    assert "if _tier_profiles:" in laco[:600], (
         "o gate do laço mudou — o do banner precisa acompanhar")
 
 

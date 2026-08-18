@@ -319,6 +319,44 @@ def validar_execucao_local(cfg, model_name: str = "") -> "list[str]":
     return problemas
 
 
+def profiles_by_provider_from_config(cfg) -> "dict[str, dict[str, ModelProfile]]":
+    """Lê `model.profiles_by_provider` — tiers dedicados por PROVIDER ativo.
+
+    Existe para o roteamento seguir o provider escolhido via `/model` ao vivo:
+    trocar de openai para openrouter (ou o inverso) também troca qual
+    conjunto de tiers vale, sem reiniciar a sessão. Provider sem entrada aqui
+    não tem tiers dedicados — o caller cai no `profiles` plano de sempre em
+    vez de arriscar rotear para um provider que o usuário não escolheu.
+
+    Formato esperado (config.yaml):
+        model:
+          profiles_by_provider:
+            openrouter:
+              fast:     {provider: openrouter, model: deepseek/deepseek-v4-flash}
+              balanced: {provider: openrouter, model: deepseek/deepseek-v3.2}
+            openai:
+              fast:     {provider: openai, model: gpt-5.6-mini}
+              heavy:    {provider: openai, model: gpt-5.6}
+    """
+    out: dict[str, dict[str, ModelProfile]] = {}
+    try:
+        section = getattr(cfg, "model", None) or getattr(cfg, "models", None)
+        raw = getattr(section, "profiles_by_provider", None) or {}
+        if isinstance(raw, dict):
+            for provider, tiers in raw.items():
+                if not isinstance(tiers, dict):
+                    continue
+                resolved: dict[str, ModelProfile] = {}
+                for name, spec in tiers.items():
+                    resolved[name] = ModelProfile(name=name, provider=_spec_field(spec, "provider"),
+                                                  model=_spec_field(spec, "model"))
+                out[str(provider)] = resolved
+    except Exception as exc:  # noqa: BLE001 — opcional; não quebra
+        from .logging_config import log_suppressed
+        log_suppressed("model_router.profiles_by_provider_from_config", exc)
+    return out
+
+
 def profiles_from_config(cfg, *, conjunto: str = "default") -> "dict[str, ModelProfile]":
     """Lê os tiers do config (best-effort). Vazio se ausente.
 

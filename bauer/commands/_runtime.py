@@ -1050,3 +1050,23 @@ def heuristic_route_kit(cfg, *, conjunto: str = "default"):
             return None
 
     return profiles, _client_for
+
+
+def route_profiles_by_provider(cfg) -> "dict[str, dict] | None":
+    """`model.profiles_by_provider` resolvido, ou None se ausente/desligado.
+
+    Único chamador é a sessão interativa (`bauer agent`) — é o único caminho
+    com troca de provider AO VIVO via `/model`; `bauer run`/`bauer serve`
+    fixam o provider por execução e não precisam disto. `None` faz o caller
+    cair no `route_profiles` fixo de sempre (mesmo comportamento de hoje).
+    """
+    try:
+        if not bool(getattr(cfg.model, "router_enabled", False)):
+            return None
+        from ..model_router import profiles_by_provider_from_config
+        by_provider = profiles_by_provider_from_config(cfg)
+        return by_provider or None
+    except Exception as exc:  # noqa: BLE001 — opcional; falha → off
+        from ..logging_config import log_suppressed
+        log_suppressed("cli.route_profiles_by_provider", exc)
+        return None

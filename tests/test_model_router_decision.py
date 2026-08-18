@@ -9,7 +9,13 @@ import json
 
 import pytest
 
-from bauer.model_router import ModelProfile, classify_task, decide, profiles_from_config
+from bauer.model_router import (
+    ModelProfile,
+    classify_task,
+    decide,
+    profiles_by_provider_from_config,
+    profiles_from_config,
+)
 
 
 class TestClassifyTask:
@@ -91,6 +97,59 @@ class TestDecideWithProfiles:
         class _Cfg:
             pass
         assert profiles_from_config(_Cfg()) == {}
+
+
+class TestProfilesByProvider:
+    """model.profiles_by_provider — tiers dedicados por provider ATIVO.
+
+    Existe para o roteamento seguir o provider trocado via /model ao vivo:
+    sem isto, trocar de provider não mudava para onde os tiers apontavam, e
+    um turno podia cair num provider sem credencial que o usuário nunca
+    escolheu (relatado em uso real: /model -> openai, tier "fast" continuava
+    mandando pro openrouter configurado, que não tinha api_key -> 401)."""
+
+    def test_resolves_nested_dict_specs(self):
+        class _Model:
+            profiles_by_provider = {
+                "openrouter": {"fast": {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}},
+                "openai": {"fast": {"provider": "openai", "model": "gpt-5.6-luna"}},
+            }
+
+        class _Cfg:
+            model = _Model()
+
+        by_provider = profiles_by_provider_from_config(_Cfg())
+        assert by_provider["openrouter"]["fast"].model == "deepseek/deepseek-v4-flash"
+        assert by_provider["openai"]["fast"].model == "gpt-5.6-luna"
+
+    def test_resolves_typed_specs(self):
+        from bauer.config_loader import ModelProfileSpec
+
+        class _Model:
+            profiles_by_provider = {
+                "openai": {"heavy": ModelProfileSpec(provider="openai", model="gpt-5.6-luna")},
+            }
+
+        class _Cfg:
+            model = _Model()
+
+        by_provider = profiles_by_provider_from_config(_Cfg())
+        assert by_provider["openai"]["heavy"].model == "gpt-5.6-luna"
+
+    def test_absent_is_empty(self):
+        class _Cfg:
+            pass
+        assert profiles_by_provider_from_config(_Cfg()) == {}
+
+    def test_provider_without_entry_is_absent_from_result(self):
+        class _Model:
+            profiles_by_provider = {"openai": {"fast": {"provider": "openai", "model": "gpt-5.6-luna"}}}
+
+        class _Cfg:
+            model = _Model()
+
+        by_provider = profiles_by_provider_from_config(_Cfg())
+        assert "groq" not in by_provider
 
 
 class TestRouteCli:
