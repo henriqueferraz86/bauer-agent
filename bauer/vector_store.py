@@ -85,6 +85,14 @@ class SearchResult:
         )
 
 
+#: Intervalo mínimo entre disparos de auto-cura em segundo plano. Sem
+#: cooldown, toda busca com linhas divergentes tentaria lançar uma thread
+#: nova — desperdício quando a anterior ainda está rodando (rebuild paga uma
+#: chamada de rede por linha) e ruído se algumas linhas nunca conseguem
+#: reindexar (ex.: texto que sempre estoura o engine).
+_AUTOHEAL_COOLDOWN_S = 300.0
+
+
 # ---------------------------------------------------------------------------
 # VectorStore
 # ---------------------------------------------------------------------------
@@ -115,6 +123,12 @@ class VectorStore:
         # Dimensão vigente do índice, resolvida sob demanda a partir da 1ª linha.
         # `-1` = ainda não resolvida; `0` = índice vazio (a 1ª escrita define).
         self._dim: int = -1
+        # Auto-cura em segundo plano (linhas puladas em busca por dimensão
+        # divergente): trava contra threads concorrentes + cooldown entre
+        # tentativas. Ver `_autoheal_divergentes`.
+        self._autoheal_lock = threading.Lock()
+        self._autoheal_em_andamento = False
+        self._last_autoheal_at: float = 0.0
 
         if self._db_path == ":memory:":
             self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -328,6 +342,38 @@ class VectorStore:
         ]
 
     # ------------------------------------------------------------------
+    # Health
+    # ------------------------------------------------------------------
+
+    def dimension_health(self) -> dict:
+        """Resumo do estado de dimensão do índice, para `bauer doctor`.
+
+        Lê `embedding` de toda linha só pra medir `len()` — aceitável aqui
+        porque é um comando de diagnóstico rodado manualmente, não um
+        caminho quente; a busca em si (`_score_rows`) já paga esse custo por
+        query de qualquer forma.
+        """
+        with self._connect() as conn:
+            rows = conn.execute("SELECT embedding FROM vectors").fetchall()
+        total = len(rows)
+        dims: dict[int, int] = {}
+        for (emb,) in rows:
+            try:
+                d = len(json.loads(emb))
+            except Exception:
+                d = -1
+            dims[d] = dims.get(d, 0) + 1
+        engine_dim = self._engine.dimension
+        divergentes = total - dims.get(engine_dim, 0)
+        return {
+            "total": total,
+            "engine_backend": self._engine.backend,
+            "engine_dim": engine_dim,
+            "dims": dims,
+            "divergentes": divergentes,
+        }
+
+    # ------------------------------------------------------------------
     # Rebuild (re-embed with current engine)
     # ------------------------------------------------------------------
 
@@ -426,34 +472,105 @@ class VectorStore:
         """Pontua linhas contra o vetor de consulta, pulando dimensão divergente.
 
         Um índice legado pode já conter dimensões misturadas (gravadas antes da
-        guarda em `store()`). Comparar essas linhas produziria score truncado
-        pelo zip() — pior que não retornar nada, porque entra no ranking como se
-        fosse resultado válido. Pular e avisar uma vez por busca.
+        guarda em `store()`, ou enquanto o engine estava degradado). Comparar
+        essas linhas produziria score truncado pelo zip() — pior que não
+        retornar nada, porque entra no ranking como se fosse resultado válido.
+        Pular e avisar uma vez por busca — e, se o engine estiver saudável
+        agora, disparar auto-cura em segundo plano (ver `_talvez_autocurar`).
         """
         dim = len(query_vec)
         scored: list[tuple[float, sqlite3.Row]] = []
-        ignoradas = 0
+        divergentes: list[sqlite3.Row] = []
         for row in rows:
             try:
                 emb = json.loads(row["embedding"])
             except Exception:
                 continue
             if len(emb) != dim:
-                ignoradas += 1
+                divergentes.append(row)
                 continue
             score = cosine_similarity(query_vec, emb)
             if score >= min_score:
                 scored.append((score, row))
-        if ignoradas:
+        if divergentes:
             log.warning(
                 "vector_store: %d de %d linhas ignoradas na busca — dimensão "
                 "divergente da consulta (%d). Causa: essas linhas foram gravadas "
-                "com outro engine de embedding. Ação: rodar rebuild_index() para "
-                "reindexar tudo com o engine atual (%r).",
-                ignoradas, len(rows), dim, self._engine.backend,
+                "com outro engine de embedding (provavelmente TF-IDF, enquanto "
+                "o Ollama estava fora do ar). Ação: rode `bauer doctor` para "
+                "diagnóstico e comandos de correção — se o Ollama já estiver "
+                "acessível agora (%r), a reindexação dessas linhas já foi "
+                "agendada automaticamente em segundo plano.",
+                len(divergentes), len(rows), dim, self._engine.backend,
             )
+            self._talvez_autocurar(divergentes)
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored
+
+    def _talvez_autocurar(self, divergentes: list[sqlite3.Row]) -> None:
+        """Agenda `_autoheal_divergentes` em thread própria, se elegível.
+
+        Elegível = engine saudável agora (senão reindexaria com o MESMO
+        engine degradado que causou o problema — reescreveria TF-IDF em cima
+        de TF-IDF), nenhuma auto-cura já rodando, e cooldown vencido. Existe
+        para o usuário nunca precisar saber que `rebuild_index()` existe —
+        era o "sem precisar rodar nada" que faltava depois do re-probe do
+        `EmbeddingEngine` (que só recupera a DETECÇÃO, não reindexa sozinho).
+        """
+        if self._engine.backend != "ollama":
+            return
+        agora = time.monotonic()
+        with self._autoheal_lock:
+            if self._autoheal_em_andamento:
+                return
+            if agora - self._last_autoheal_at < _AUTOHEAL_COOLDOWN_S:
+                return
+            self._autoheal_em_andamento = True
+            self._last_autoheal_at = agora
+        t = threading.Thread(
+            target=self._autoheal_divergentes,
+            args=(divergentes,),
+            name="vector_store-autoheal",
+            daemon=True,
+        )
+        t.start()
+
+    def _autoheal_divergentes(self, rows: list[sqlite3.Row]) -> None:
+        """Reindexa em segundo plano só as linhas puladas (não a base inteira).
+
+        Mesmo padrão de segurança do `rebuild_index`: embeda tudo primeiro,
+        grava numa transação só, e ABORTA sem gravar nada se o engine
+        degradar no meio (sinal de que a recuperação foi só um blip — melhor
+        tentar de novo depois do que gravar uma mistura nova)."""
+        try:
+            dim_alvo = self._engine.dimension
+            pendentes: list[tuple[str, str, str]] = []
+            for row in rows:
+                novo = self._engine.embed(row["text"])
+                if len(novo) != dim_alvo:
+                    log.warning(
+                        "vector_store: auto-cura abortada — engine degradou no "
+                        "meio do reprocessamento (esperava %d dims, veio %d). "
+                        "Nada foi gravado; tentará de novo na próxima busca com "
+                        "linhas divergentes.",
+                        dim_alvo, len(novo),
+                    )
+                    return
+                pendentes.append((json.dumps(novo), row["source_id"], row["source_type"]))
+            with self._connect() as conn:
+                conn.executemany(
+                    "UPDATE vectors SET embedding = ? WHERE source_id = ? AND source_type = ?",
+                    pendentes,
+                )
+            log.warning(
+                "vector_store: %d linha(s) reindexada(s) automaticamente em "
+                "segundo plano (estavam com dimensão divergente, agora em %d "
+                "dims) — nenhuma ação manual foi necessária.",
+                len(pendentes), dim_alvo,
+            )
+        finally:
+            with self._autoheal_lock:
+                self._autoheal_em_andamento = False
 
     def _fetch_rows(self, source_type: str | None) -> list[sqlite3.Row]:
         with self._connect() as conn:

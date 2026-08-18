@@ -328,6 +328,170 @@ def test_rebuild_index_vazio_nao_falha():
 
 
 # ---------------------------------------------------------------------------
+# dimension_health() — usado por `bauer doctor`
+# ---------------------------------------------------------------------------
+
+
+def test_dimension_health_indice_vazio():
+    store = VectorStore(":memory:", engine=_EngineControlavel(dim=8))
+    h = store.dimension_health()
+    assert h["total"] == 0
+    assert h["divergentes"] == 0
+
+
+def test_dimension_health_conta_divergentes():
+    import json
+
+    store = VectorStore(":memory:", engine=_EngineControlavel(dim=8))
+    store.store("a", "t", "ok", embedding=[1.0] * 8)
+    store.store("b", "t", "tambem ok", embedding=[1.0] * 8)
+    with store._connect() as conn:
+        conn.execute(
+            "INSERT INTO vectors (source_id, source_type, text, embedding, created_at)"
+            " VALUES ('legado', 't', 'lixo', ?, 0)",
+            (json.dumps([1.0] * 4096),),
+        )
+    h = store.dimension_health()
+    assert h["total"] == 3
+    assert h["divergentes"] == 1
+    assert h["dims"] == {8: 2, 4096: 1}
+    assert h["engine_dim"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Auto-cura em segundo plano — busca dispara reindexação das linhas
+# divergentes sozinha, sem o usuário precisar saber que `rebuild_index()`
+# existe. Espelha o gap real: um índice com linhas escritas em TF-IDF
+# enquanto o Ollama estava fora do ar ficava permanentemente incompleto pra
+# busca semântica, mesmo com o Ollama disponível de novo.
+# ---------------------------------------------------------------------------
+
+
+class _EngineControlavel:
+    """Engine cujo backend/dimension mudam em runtime — a auto-cura depende
+    do estado do engine NO MOMENTO da busca, não no momento da escrita."""
+
+    def __init__(self, dim: int, backend: str = "ollama") -> None:
+        self.dimension = dim
+        self.backend = backend
+        self.chamadas_embed: list[str] = []
+
+    def embed(self, text: str) -> list[float]:
+        self.chamadas_embed.append(text)
+        return [1.0] * self.dimension
+
+
+def _insere_linha_divergente(store: VectorStore, source_id: str, dim: int) -> None:
+    import json
+
+    with store._connect() as conn:
+        conn.execute(
+            "INSERT INTO vectors (source_id, source_type, text, embedding, created_at)"
+            " VALUES (?, 't', 'texto legado', ?, 0)",
+            (source_id, json.dumps([1.0] * dim)),
+        )
+
+
+def _espera_autoheal_terminar(store: VectorStore, timeout_s: float = 3.0) -> None:
+    import time as _time
+
+    fim = _time.monotonic() + timeout_s
+    while _time.monotonic() < fim:
+        with store._autoheal_lock:
+            if not store._autoheal_em_andamento:
+                return
+        _time.sleep(0.02)
+    raise AssertionError("auto-cura não terminou dentro do timeout do teste")
+
+
+def test_autoheal_dispara_e_corrige_quando_engine_saudavel():
+    import json
+
+    engine = _EngineControlavel(dim=8, backend="ollama")
+    store = VectorStore(":memory:", engine=engine)
+    store.store("bom", "t", "texto atual", embedding=[1.0] * 8)
+    _insere_linha_divergente(store, "legado", 4096)
+
+    store.search_by_vector([1.0] * 8, top_k=10)  # dispara a auto-cura
+    _espera_autoheal_terminar(store)
+
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT embedding FROM vectors WHERE source_id='legado'"
+        ).fetchone()
+    assert len(json.loads(row[0])) == 8
+
+
+def test_autoheal_nao_dispara_com_engine_degradado():
+    """Reindexar com o MESMO engine degradado reescreveria TF-IDF em cima de
+    TF-IDF — pior que não fazer nada, porque reseta o timestamp sem corrigir."""
+    import json
+
+    engine = _EngineControlavel(dim=8, backend="tfidf")
+    store = VectorStore(":memory:", engine=engine)
+    store.store("bom", "t", "texto atual", embedding=[1.0] * 8)
+    _insere_linha_divergente(store, "legado", 4096)
+
+    store.search_by_vector([1.0] * 8, top_k=10)
+
+    assert not store._autoheal_em_andamento
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT embedding FROM vectors WHERE source_id='legado'"
+        ).fetchone()
+    assert len(json.loads(row[0])) == 4096  # continua divergente — não mexeu
+
+
+def test_autoheal_respeita_cooldown():
+    engine = _EngineControlavel(dim=8, backend="ollama")
+    store = VectorStore(":memory:", engine=engine)
+    store.store("bom", "t", "texto atual", embedding=[1.0] * 8)
+    _insere_linha_divergente(store, "legado", 4096)
+
+    store.search_by_vector([1.0] * 8, top_k=10)
+    _espera_autoheal_terminar(store)
+    chamadas_apos_1a_cura = len(engine.chamadas_embed)
+
+    # Ainda dentro do cooldown (300s) — uma 2ª linha divergente não dispara de novo.
+    _insere_linha_divergente(store, "legado2", 4096)
+    store.search_by_vector([1.0] * 8, top_k=10)
+    import time
+    time.sleep(0.1)  # daria tempo de rodar se fosse disparar
+
+    assert len(engine.chamadas_embed) == chamadas_apos_1a_cura
+
+
+def test_autoheal_aborta_sem_gravar_se_engine_degrada_no_meio():
+    class _EngineQueDegradaNoMeio:
+        def __init__(self) -> None:
+            self.backend = "ollama"
+            self.dimension = 8
+            self._n = 0
+
+        def embed(self, text: str) -> list[float]:
+            self._n += 1
+            return [1.0] * (8 if self._n == 1 else 4096)  # degrada na 2ª chamada
+
+    import json
+
+    engine = _EngineQueDegradaNoMeio()
+    store = VectorStore(":memory:", engine=engine)
+    store.store("bom", "t", "texto atual", embedding=[1.0] * 8)
+    _insere_linha_divergente(store, "legado1", 4096)
+    _insere_linha_divergente(store, "legado2", 4096)
+
+    store.search_by_vector([1.0] * 8, top_k=10)
+    _espera_autoheal_terminar(store)
+
+    with store._connect() as conn:
+        rows = conn.execute(
+            "SELECT embedding FROM vectors WHERE source_id IN ('legado1','legado2')"
+        ).fetchall()
+    # Aborto no meio: nada deve ter sido gravado — continuam em 4096.
+    assert all(len(json.loads(r[0])) == 4096 for r in rows)
+
+
+# ---------------------------------------------------------------------------
 # get_default_store
 # ---------------------------------------------------------------------------
 

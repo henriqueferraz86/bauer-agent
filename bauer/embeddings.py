@@ -248,6 +248,12 @@ class EmbeddingEngine:
         return self._backend or "tfidf"
 
     @property
+    def model(self) -> str | None:
+        """Ollama embedding model in use, or ``None`` on TF-IDF."""
+        self._ensure_detected()
+        return self._ollama_model
+
+    @property
     def dimension(self) -> int:
         """Vector dimension: 768-1536 for Ollama, :data:`_VOCAB_SIZE` for TF-IDF."""
         self._ensure_detected()
@@ -344,12 +350,13 @@ class EmbeddingEngine:
             self._degradacao_avisada = True
         log.warning(
             "embeddings: usando TF-IDF (busca por palavra-chave) em vez de "
-            "embedding semântico — %s. Efeito: consultas escritas com palavras "
-            "diferentes do texto indexado deixam de encontrá-lo (similaridade "
-            "0.000 para paráfrase). Ação: subir o Ollama com um modelo de "
-            "embedding e apontar BAUER_OLLAMA_URL para ele; depois rodar "
-            "VectorStore.rebuild_index() para reindexar o que foi gravado "
-            "enquanto estava degradado.",
+            "embedding semântico — %s. Efeito: perguntas escritas com "
+            "palavras diferentes do texto indexado deixam de encontrá-lo "
+            "(similaridade 0.000 para paráfrase). Para corrigir: instale o "
+            "Ollama (https://ollama.com/download), rode `ollama pull bge-m3` "
+            "e reinicie o Bauer — a reindexação do que ficou pra trás "
+            "acontece sozinha depois disso, sem mais nenhum comando. "
+            "Diagnóstico completo: `bauer doctor`.",
             motivo,
         )
 

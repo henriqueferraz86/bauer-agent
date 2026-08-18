@@ -357,6 +357,54 @@ def doctor(
     except Exception as _web_exc:
         console.print(f"[dim]Web search: não foi possível detectar ({_web_exc})[/dim]")
 
+    # --- Memória semântica (embeddings + vector store) ----------------------------
+    # Diagnóstico dedicado para o problema mais opaco do Bauer: sem isto, um
+    # usuário via "vector_store: N linhas ignoradas" no log e não tinha como
+    # saber que Ollama estava envolvido, muito menos o comando pra corrigir.
+    try:
+        from .embeddings import get_default_engine
+        from .vector_store import get_default_store
+
+        _emb_engine = get_default_engine()
+        _emb_backend = _emb_engine.backend  # dispara a detecção ao vivo
+        _health = get_default_store().dimension_health()
+
+        _mt = Table(show_header=False, box=None, padding=(0, 1))
+        if _emb_backend == "ollama":
+            _mt.add_row(
+                "Engine:",
+                f"[green]ollama[/green] (modelo {_emb_engine.model}, "
+                f"{_emb_engine.dimension} dims)",
+            )
+        else:
+            _mt.add_row(
+                "Engine:",
+                "[yellow]TF-IDF[/yellow] (sem busca semântica — só palavra-chave)",
+            )
+        _mt.add_row("Índice:", f"{_health['total']} linha(s)")
+        if _health["divergentes"]:
+            extra = " — reindexação automática roda sozinha na próxima busca" \
+                if _emb_backend == "ollama" else ""
+            _mt.add_row(
+                "Divergentes:",
+                f"[yellow]{_health['divergentes']}[/yellow] linha(s) com "
+                f"dimensão diferente do engine atual{extra}",
+            )
+        else:
+            _mt.add_row("Divergentes:", "[green]0[/green]")
+        console.print(Panel(_mt, title="Memória semântica", border_style="cyan"))
+
+        if _emb_backend != "ollama":
+            console.print(
+                "  [dim]Sem embedding semântico — buscas caem pra palavra-chave "
+                "exata. Para corrigir: instale o Ollama "
+                "(https://ollama.com/download), rode `ollama pull bge-m3` e "
+                "reinicie o Bauer. A reindexação do que ficou pra trás acontece "
+                "sozinha depois disso, sem precisar rodar mais nada.[/dim]"
+            )
+    except Exception as _mem_exc:
+        console.print(f"[dim]Memória semântica: não foi possível diagnosticar ({_mem_exc})[/dim]")
+
     # --- Servidores MCP ----------------------------------------------------------
     # Faz o handshake de verdade em cada servidor configurado. Sem isto o usuário
     # só descobre que o servidor não sobe quando o agente tenta usá-lo no meio de
