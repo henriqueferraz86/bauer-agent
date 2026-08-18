@@ -12,6 +12,7 @@ nesta fase.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,8 @@ from typing import Any
 import httpx
 
 from .http_shared import shared_ssl_context
+
+log = logging.getLogger(__name__)
 
 
 class OllamaError(Exception):
@@ -38,10 +41,67 @@ class ModelfileParams:
     capabilities: list[str] = field(default_factory=list)
 
 
+def _resolver_read_timeout(explicito: float | None = None) -> float:
+    """Timeout de leitura: argumento > BAUER_OLLAMA_READ_TIMEOUT > padrão.
+
+    Valor inválido (não-numérico ou <= 0) cai no padrão em vez de explodir:
+    um erro de digitação na variável não deve derrubar o cliente inteiro.
+    """
+    import os
+
+    padrao = OllamaClient._READ_TIMEOUT_PADRAO
+    if explicito is not None and explicito > 0:
+        return float(explicito)
+    bruto = os.environ.get("BAUER_OLLAMA_READ_TIMEOUT", "").strip()
+    if not bruto:
+        return padrao
+    try:
+        valor = float(bruto)
+    except ValueError:
+        log.warning(
+            "BAUER_OLLAMA_READ_TIMEOUT=%r nao e um numero — usando o padrao de %.0fs.",
+            bruto, padrao,
+        )
+        return padrao
+    if valor <= 0:
+        log.warning(
+            "BAUER_OLLAMA_READ_TIMEOUT=%r precisa ser maior que zero — "
+            "usando o padrao de %.0fs.",
+            bruto, padrao,
+        )
+        return padrao
+    return valor
+
+
 class OllamaClient:
-    def __init__(self, host: str = "http://localhost:11434", timeout_seconds: int = 30, api_key: str = ""):
+    #: Timeout de LEITURA padrão do /api/chat, em segundos.
+    #:
+    #: Separado do `timeout` (que é de CONEXÃO) porque medem coisas diferentes:
+    #: conectar num Ollama vivo leva milissegundos, mas a primeira resposta pode
+    #: demorar minutos — o prefill de um prompt grande numa iGPU escala com o
+    #: tamanho do prompt, e só depois dele a geração começa.
+    #:
+    #: Era 300.0 fixo. Medido em 2026-08-04 no projeto finance-OS: o evento
+    #: persistido `provider_error` marcava elapsed=300.1s com `llm_calls: 0` —
+    #: o cliente desistia exatamente no teto, sem nunca receber resposta, e o
+    #: run inteiro morria sem executar uma única tool.
+    #:
+    #: Contrapartida de subir o teto: com um Ollama de fato travado, o erro só
+    #: aparece depois desse tempo. Por isso é configurável via
+    #: BAUER_OLLAMA_READ_TIMEOUT — quem roda modelo pequeno e quer falhar rápido
+    #: baixa o valor.
+    _READ_TIMEOUT_PADRAO = 1200.0
+
+    def __init__(
+        self,
+        host: str = "http://localhost:11434",
+        timeout_seconds: int = 30,
+        api_key: str = "",
+        read_timeout_seconds: float | None = None,
+    ):
         self.host = host.rstrip("/")
         self.timeout = timeout_seconds
+        self.read_timeout = _resolver_read_timeout(read_timeout_seconds)
         self._headers: dict[str, str] = (
             {"Authorization": f"Bearer {api_key}"} if api_key else {}
         )
@@ -267,7 +327,7 @@ class OllamaClient:
                 headers=self._headers,
                 timeout=httpx.Timeout(
                     connect=float(self.timeout),
-                    read=300.0,
+                    read=self.read_timeout,
                     write=10.0,
                     pool=5.0,
                 ),
@@ -356,7 +416,7 @@ class OllamaClient:
                 headers=self._headers,
                 timeout=httpx.Timeout(
                     connect=float(self.timeout),
-                    read=300.0,
+                    read=self.read_timeout,
                     write=10.0,
                     pool=5.0,
                 ),
@@ -447,7 +507,7 @@ class OllamaClient:
                 headers=self._headers,
                 timeout=httpx.Timeout(
                     connect=float(self.timeout),
-                    read=300.0,   # 5 min para respostas longas
+                    read=self.read_timeout,
                     write=10.0,
                     pool=5.0,
                 ),
