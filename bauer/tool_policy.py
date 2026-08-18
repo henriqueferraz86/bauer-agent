@@ -66,11 +66,12 @@ def default_tool_contexts() -> dict[str, ToolContextRule]:
     return {
         "supervisor": ToolContextRule(mode="allow_all"),
         "orchestrator": ToolContextRule(mode="allow_all"),
-        "chat": ToolContextRule(mode="allow_all", deny=frozenset({
-            "kanban_heartbeat",
-            "kanban_complete",
-            "kanban_block",
-        })),
+        # kanban_heartbeat/complete/block viraram acoes de kanban_write
+        # (2026-08-18) — o gate fino por acao (chat nao pode heartbeat/
+        # complete/block; worker nao pode create/unblock/link) mora agora
+        # em KanbanToolsMixin._kanban_write (bauer/tools/kanban.py), nao
+        # aqui. Este nivel so controla o nome da tool.
+        "chat": ToolContextRule(mode="allow_all"),
         "worker": ToolContextRule(mode="allowlist", allow=frozenset({
             "list_dir",
             "read_file",
@@ -87,8 +88,7 @@ def default_tool_contexts() -> dict[str, ToolContextRule]:
             "skill_view",
             "memory",
             "session_search",
-            "kanban_list",
-            "kanban_show",
+            "kanban_read",
             "process",
             "write_file",
             "append_file",
@@ -99,10 +99,7 @@ def default_tool_contexts() -> dict[str, ToolContextRule]:
             "execute_code",
             "run_command",
             "clarify",
-            "kanban_heartbeat",
-            "kanban_comment",
-            "kanban_complete",
-            "kanban_block",
+            "kanban_write",
         })),
     }
 

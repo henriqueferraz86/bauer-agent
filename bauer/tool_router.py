@@ -310,52 +310,6 @@ _TOOL_CONTEXT_ALIASES = {
     "dag": "orchestrator",
     "durable-worker": "worker",
 }
-_CHAT_CONTEXT_DENYLIST = frozenset({
-    "kanban_heartbeat",
-    "kanban_complete",
-    "kanban_block",
-})
-_WORKER_CONTEXT_ALLOWLIST = frozenset({
-    # Read/inspect the workspace and current state.
-    "list_dir",
-    "read_file",
-    "search_text",
-    "glob_files",
-    "regex_search",
-    "diff_files",
-    "calculate",
-    "datetime_now",
-    "json_query",
-    "encode_decode",
-    "todo",
-    "skills_list",
-    "skill_view",
-    "memory",
-    "session_search",
-    "kanban_list",
-    "kanban_show",
-    "process",
-    "code_symbols",
-    "find_definition",
-    "get_imports",
-    "find_usages",
-    "lsp",
-    # Mutate only the local workspace needed to complete the claimed task.
-    "write_file",
-    "append_file",
-    "patch",
-    "create_dir",
-    "move_file",
-    "delete_file",
-    "execute_code",
-    "run_command",
-    "clarify",
-    # Report lifecycle for the single claimed task.
-    "kanban_heartbeat",
-    "kanban_comment",
-    "kanban_complete",
-    "kanban_block",
-})
 
 # P4: limites de I/O movidos para tools/base.py (compartilhados com FsToolsMixin).
 # Re-importados aqui — usados nos schemas do __init__ e por testes que fazem
@@ -967,81 +921,38 @@ class ToolRouter(
         }
 
         # ── Kanban board ─────────────────────────────────────────────────────
-        self._tools["kanban_create"] = {
-            "fn": self._kanban_create,
-            "description": "Cria nova tarefa no board Kanban. Retorna o ID da tarefa.",
+        self._tools["kanban_read"] = {
+            "fn": self._kanban_read,
+            "description": "Le tarefas do board Kanban — listar ou exibir detalhes de uma tarefa.",
             "args": {
-                "title": "str — titulo da tarefa (obrigatorio)",
-                "description": "str — detalhes da tarefa (opcional)",
-                "assignee": "str — agente/usuario responsavel (opcional)",
-                "priority": "str — low | medium | high | critical (default: medium)",
-                "status": "str — todo | ready | in_progress | blocked | failed | done (default: todo)",
-                "parent_id": "str — ID da tarefa pai para sub-tarefas (opcional)",
+                "mode": "str — 'list' ou 'show' (obrigatorio)",
+                "task_id": "str — ID da tarefa (obrigatorio para mode=show)",
+                "status": "str — filtro de status para mode=list (opcional)",
+                "assignee": "str — filtro de responsavel para mode=list (opcional)",
+                "priority": "str — filtro de prioridade para mode=list (opcional)",
             },
         }
-        self._tools["kanban_list"] = {
-            "fn": self._kanban_list,
-            "description": "Lista tarefas do board com filtros por status, assignee ou prioridade.",
+        self._tools["kanban_write"] = {
+            "fn": self._kanban_write,
+            "description": (
+                "Modifica o board Kanban — criar, completar, bloquear, desbloquear, "
+                "enviar heartbeat, comentar ou linkar tarefas via 'action'."
+            ),
             "args": {
-                "status": "str — todo | ready | in_progress | blocked | failed | done | all (default: all)",
-                "assignee": "str — filtrar por responsavel (opcional)",
-                "priority": "str — low | medium | high | critical (opcional)",
-            },
-        }
-        self._tools["kanban_show"] = {
-            "fn": self._kanban_show,
-            "description": "Exibe detalhes completos de uma tarefa: descricao, historico, comentarios.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-            },
-        }
-        self._tools["kanban_complete"] = {
-            "fn": self._kanban_complete,
-            "description": "Marca tarefa como concluida com payload de handoff opcional.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "result": "str — resumo do resultado/handoff (opcional)",
-            },
-        }
-        self._tools["kanban_block"] = {
-            "fn": self._kanban_block,
-            "description": "Bloqueia tarefa registrando o motivo do bloqueio.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "reason": "str — motivo do bloqueio (obrigatorio)",
-            },
-        }
-        self._tools["kanban_unblock"] = {
-            "fn": self._kanban_unblock,
-            "description": "Remove bloqueio de tarefa, retornando-a ao status anterior.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "note": "str — nota sobre como o bloqueio foi resolvido (opcional)",
-            },
-        }
-        self._tools["kanban_heartbeat"] = {
-            "fn": self._kanban_heartbeat,
-            "description": "Envia update de progresso para tarefa em andamento (keep-alive).",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "progress": "str — descricao do progresso atual (obrigatorio)",
-            },
-        }
-        self._tools["kanban_comment"] = {
-            "fn": self._kanban_comment,
-            "description": "Adiciona comentario em tarefa sem alterar seu status.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "comment": "str — texto do comentario (obrigatorio)",
-                "author": "str — autor do comentario (default: agent)",
-            },
-        }
-        self._tools["kanban_link"] = {
-            "fn": self._kanban_link,
-            "description": "Cria dependencia parent-child entre duas tarefas.",
-            "args": {
-                "parent_id": "str — ID da tarefa pai (obrigatorio)",
-                "child_id": "str — ID da tarefa filha (obrigatorio)",
+                "action": "str — create | complete | block | unblock | heartbeat | comment | link (obrigatorio)",
+                "task_id": "str — ID da tarefa (obrigatorio, exceto action=create/link)",
+                "title": "str — titulo (action=create)",
+                "description": "str — detalhes (action=create, opcional)",
+                "assignee": "str — responsavel (action=create, opcional)",
+                "priority": "str — low|medium|high|critical (action=create, opcional)",
+                "parent_id": "str — tarefa pai (action=create para sub-tarefa, ou action=link)",
+                "child_id": "str — tarefa filha (action=link, obrigatorio)",
+                "result": "str — resumo do resultado (action=complete, opcional)",
+                "reason": "str — motivo do bloqueio (action=block, obrigatorio)",
+                "note": "str — nota de resolucao (action=unblock, opcional)",
+                "progress": "str — descricao do progresso (action=heartbeat, obrigatorio)",
+                "comment": "str — texto do comentario (action=comment, obrigatorio)",
+                "author": "str — autor do comentario (action=comment, opcional)",
             },
         }
 
