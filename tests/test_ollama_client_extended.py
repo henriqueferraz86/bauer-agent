@@ -263,3 +263,61 @@ def test_client_with_api_key():
     client = OllamaClient(host="http://localhost", api_key="mykey")
     assert "Authorization" in client._headers
     assert "mykey" in client._headers["Authorization"]
+
+
+# ─── read timeout configurável ───────────────────────────────────────────────
+#
+# O `read` do /api/chat era 300.0 fixo. Medido em 2026-08-04: o prefill de um
+# prompt grande numa iGPU passa de 300s (14k tokens já levam 111s, com a vazão
+# CAINDO de 263 para 127 tok/s conforme o prompt cresce), então o cliente
+# desistia durante a INGESTÃO, antes do primeiro token de saída — o run morria
+# com llm_calls=0 e ninguém sabia por quê.
+
+
+def test_read_timeout_padrao_e_generoso():
+    from bauer.ollama_client import OllamaClient as _OC
+
+    assert _client().read_timeout == _OC._READ_TIMEOUT_PADRAO
+    # Precisa cobrir o prefill de um contexto cheio — 300s não cobria.
+    assert _client().read_timeout > 300.0
+
+
+def test_read_timeout_explicito_vence():
+    assert OllamaClient(read_timeout_seconds=42.0).read_timeout == 42.0
+
+
+def test_read_timeout_por_variavel_de_ambiente(monkeypatch):
+    monkeypatch.setenv("BAUER_OLLAMA_READ_TIMEOUT", "900")
+    assert _client().read_timeout == 900.0
+
+
+def test_read_timeout_argumento_vence_ambiente(monkeypatch):
+    monkeypatch.setenv("BAUER_OLLAMA_READ_TIMEOUT", "900")
+    assert OllamaClient(read_timeout_seconds=60.0).read_timeout == 60.0
+
+
+@pytest.mark.parametrize("valor", ["abc", "", "0", "-5", "  "])
+def test_read_timeout_invalido_cai_no_padrao(monkeypatch, valor):
+    """Erro de digitação na variável não pode derrubar o cliente."""
+    from bauer.ollama_client import OllamaClient as _OC
+
+    monkeypatch.setenv("BAUER_OLLAMA_READ_TIMEOUT", valor)
+    assert _client().read_timeout == _OC._READ_TIMEOUT_PADRAO
+
+
+def test_read_timeout_chega_no_httpx(monkeypatch):
+    """O valor tem de ser USADO na requisição, não só guardado."""
+    capturado = {}
+
+    def _post_fake(url, **kwargs):
+        capturado["timeout"] = kwargs.get("timeout")
+        raise httpx.ConnectError("parando aqui — só quero inspecionar o timeout")
+
+    monkeypatch.setattr(httpx, "post", _post_fake)
+    client = OllamaClient(read_timeout_seconds=777.0)
+    with pytest.raises(OllamaError):
+        client.chat_with_tools("m", [{"role": "user", "content": "oi"}], [])
+
+    assert capturado["timeout"].read == 777.0
+    # O de CONEXÃO segue curto: Ollama vivo responde em milissegundos.
+    assert capturado["timeout"].connect == float(client.timeout)

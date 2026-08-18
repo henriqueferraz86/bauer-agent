@@ -58,6 +58,16 @@ os.environ["BAUER_AGENTS_FILE"] = str(
 # no CI — parecia flake de plataforma, era ambiente vazando para dentro do teste.
 for _k in [k for k in os.environ if k.startswith("MCP_SERVER_")]:
     del os.environ[_k]
+# Mesma hermeticidade para embeddings: com Ollama acessível, o EmbeddingEngine
+# troca o TF-IDF esparso por embedding denso — e denso dá similaridade NÃO-NULA
+# para qualquer par de textos. Testes que afirmam "esta busca não acha nada"
+# (test_sqlite_session_store::test_search_no_match, que procura "cobol") passam
+# em CI limpo e falham na máquina de quem tem Ollama rodando. Era flake
+# intermitente de aparência aleatória; é ambiente vazando para dentro do teste,
+# igual ao caso do MCP_SERVER_ acima. Endereço morto = probe falha rápido.
+# Quem quiser exercitar o caminho Ollama passa a URL explícita ou seta a var
+# por monkeypatch (override por-teste continua funcionando).
+os.environ["BAUER_OLLAMA_URL"] = "http://127.0.0.1:1"
 
 
 @pytest.fixture(autouse=True)

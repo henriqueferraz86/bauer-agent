@@ -30,15 +30,18 @@ useful when you switch from TF-IDF to Ollama embeddings.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
+from typing import Callable, Generator
 
 from .embeddings import EmbeddingEngine, cosine_similarity, get_default_engine
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +112,9 @@ class VectorStore:
         self._engine = engine or get_default_engine()
         self._mem_conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
+        # Dimensão vigente do índice, resolvida sob demanda a partir da 1ª linha.
+        # `-1` = ainda não resolvida; `0` = índice vazio (a 1ª escrita define).
+        self._dim: int = -1
 
         if self._db_path == ":memory:":
             self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -147,6 +153,28 @@ class VectorStore:
         """
         if embedding is None:
             embedding = self._engine.embed(text)
+
+        # Guarda de dimensão: `cosine_similarity` usa zip(), que TRUNCA no vetor
+        # mais curto em vez de falhar — misturar dimensões não gera erro, gera
+        # score sem significado. E misturar é fácil: `EmbeddingEngine` cai para
+        # TF-IDF (4096d esparso) em SILÊNCIO quando o Ollama some, então uma
+        # queda de rede no meio da indexação envenena o índice sem aviso.
+        # Recusar a escrita mantém o índice coerente; o log é o aviso que o
+        # fallback silencioso não dá.
+        dim = len(embedding)
+        vigente = self._store_dim()
+        if vigente and dim != vigente:
+            log.warning(
+                "vector_store: escrita recusada para %s/%s — o embedding novo tem "
+                "dimensão %d e o índice está em %d (backend atual=%r). Duas causas "
+                "possíveis: (a) o engine caiu para o fallback TF-IDF porque o Ollama "
+                "ficou inalcançável — ação: restaurar o acesso ao Ollama; ou (b) o "
+                "índice é anterior à troca de engine — ação: rodar rebuild_index() "
+                "para reindexar tudo com o engine atual.",
+                source_type, source_id, dim, vigente, self._engine.backend,
+            )
+            return 0
+
         emb_json = json.dumps(embedding)
         now = time.time()
 
@@ -159,6 +187,8 @@ class VectorStore:
                 """,
                 (source_id, source_type, text, emb_json, now),
             )
+        if not vigente:
+            self._dim = dim  # índice estava vazio: esta escrita define a dimensão
         return cur.lastrowid or 0
 
     def store_if_absent(
@@ -194,6 +224,8 @@ class VectorStore:
                 "DELETE FROM vectors WHERE source_id = ? AND source_type = ?",
                 (source_id, source_type),
             )
+        if cur.rowcount:
+            self._dim = -1
         return cur.rowcount
 
     def delete_prefix(self, source_id_prefix: str, source_type: str) -> int:
@@ -210,6 +242,8 @@ class VectorStore:
                 r"DELETE FROM vectors WHERE source_id LIKE ? ESCAPE '\' AND source_type = ?",
                 (like, source_type),
             )
+        if cur.rowcount:
+            self._dim = -1
         return cur.rowcount
 
     def list_source_ids(self, source_type: str) -> list[str]:
@@ -259,17 +293,7 @@ class VectorStore:
         """
         query_vec = self._engine.embed(query)
         rows = self._fetch_rows(source_type)
-        scored: list[tuple[float, sqlite3.Row]] = []
-        for row in rows:
-            try:
-                emb = json.loads(row["embedding"])
-            except Exception:
-                continue
-            score = cosine_similarity(query_vec, emb)
-            if score >= min_score:
-                scored.append((score, row))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored = self._score_rows(query_vec, rows, min_score)
         results = []
         for score, row in scored[:top_k]:
             results.append(SearchResult(
@@ -291,16 +315,7 @@ class VectorStore:
     ) -> list[SearchResult]:
         """Same as :meth:`search` but accepts a pre-computed query vector."""
         rows = self._fetch_rows(source_type)
-        scored: list[tuple[float, sqlite3.Row]] = []
-        for row in rows:
-            try:
-                emb = json.loads(row["embedding"])
-            except Exception:
-                continue
-            score = cosine_similarity(query_vec, emb)
-            if score >= min_score:
-                scored.append((score, row))
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored = self._score_rows(query_vec, rows, min_score)
         return [
             SearchResult(
                 source_id=row["source_id"],
@@ -316,26 +331,129 @@ class VectorStore:
     # Rebuild (re-embed with current engine)
     # ------------------------------------------------------------------
 
-    def rebuild_index(self, source_type: str | None = None) -> int:
+    def rebuild_index(
+        self,
+        source_type: str | None = None,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> int:
         """Re-embed all rows (useful when switching from TF-IDF to Ollama).
 
-        Returns the number of rows updated.
+        Em duas fases, de propósito:
+
+        1. **Embeda tudo** sem tocar no banco. É a fase lenta (uma chamada de
+           rede por linha) e a que pode falhar — falhar aqui não deixa rastro.
+        2. **Grava numa transação só.** `_connect()` faz rollback em exceção,
+           então um erro na fase 1 deixa o índice exatamente como estava.
+
+        A versão anterior abria uma transação por linha e re-embedava em
+        seguida: se o Ollama sumisse no meio, o `EmbeddingEngine` caía para
+        TF-IDF em silêncio e a metade restante era gravada com outra dimensão —
+        exatamente o índice misturado que a guarda de `store()` existe para
+        impedir. Aqui, qualquer divergência de dimensão aborta antes de gravar.
+
+        Args:
+            source_type: Limita o rebuild a um namespace. ``None`` = tudo.
+            progress: Callback opcional ``(feitos, total)`` para acompanhar.
+
+        Returns:
+            Número de linhas reindexadas.
+
+        Raises:
+            RuntimeError: Se o engine mudar de dimensão no meio do caminho
+                (sinal de que caiu para o fallback) — nada é gravado.
         """
         rows = self._fetch_rows(source_type)
-        count = 0
-        for row in rows:
-            new_emb = self._engine.embed(row["text"])
-            with self._connect() as conn:
-                conn.execute(
-                    "UPDATE vectors SET embedding = ? WHERE source_id = ? AND source_type = ?",
-                    (json.dumps(new_emb), row["source_id"], row["source_type"]),
+        total = len(rows)
+        if not total:
+            return 0
+
+        pendentes: list[tuple[str, str, str]] = []
+        dim_alvo = 0
+        for i, row in enumerate(rows, 1):
+            novo = self._engine.embed(row["text"])
+            if not dim_alvo:
+                dim_alvo = len(novo)
+            elif len(novo) != dim_alvo:
+                raise RuntimeError(
+                    f"rebuild_index abortado na linha {i}/{total}: dimensão mudou "
+                    f"de {dim_alvo} para {len(novo)} no meio do rebuild. Causa: o "
+                    f"EmbeddingEngine caiu para o fallback (backend atual="
+                    f"{self._engine.backend!r}) — provavelmente o Ollama ficou "
+                    f"inalcançável. Nada foi gravado; o índice segue intacto. "
+                    f"Ação: restaurar o acesso ao Ollama e rodar de novo."
                 )
-            count += 1
-        return count
+            pendentes.append((json.dumps(novo), row["source_id"], row["source_type"]))
+            if progress is not None:
+                progress(i, total)
+
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE vectors SET embedding = ? WHERE source_id = ? AND source_type = ?",
+                pendentes,
+            )
+        self._dim = dim_alvo  # a dimensão do índice acabou de mudar
+        return len(pendentes)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _store_dim(self) -> int:
+        """Dimensão dos vetores já gravados (0 se o índice estiver vazio).
+
+        Resolvida uma única vez e memorizada: `store()` roda a cada mensagem
+        indexada, e uma consulta por escrita seria desperdício.
+        """
+        if self._dim >= 0:
+            return self._dim
+        self._dim = 0
+        with self._connect() as conn:
+            row = conn.execute("SELECT embedding FROM vectors LIMIT 1").fetchone()
+        if row is not None:
+            try:
+                self._dim = len(json.loads(row[0]))
+            except Exception:
+                self._dim = 0
+        return self._dim
+
+    def _score_rows(
+        self,
+        query_vec: list[float],
+        rows: list[sqlite3.Row],
+        min_score: float,
+    ) -> list[tuple[float, sqlite3.Row]]:
+        """Pontua linhas contra o vetor de consulta, pulando dimensão divergente.
+
+        Um índice legado pode já conter dimensões misturadas (gravadas antes da
+        guarda em `store()`). Comparar essas linhas produziria score truncado
+        pelo zip() — pior que não retornar nada, porque entra no ranking como se
+        fosse resultado válido. Pular e avisar uma vez por busca.
+        """
+        dim = len(query_vec)
+        scored: list[tuple[float, sqlite3.Row]] = []
+        ignoradas = 0
+        for row in rows:
+            try:
+                emb = json.loads(row["embedding"])
+            except Exception:
+                continue
+            if len(emb) != dim:
+                ignoradas += 1
+                continue
+            score = cosine_similarity(query_vec, emb)
+            if score >= min_score:
+                scored.append((score, row))
+        if ignoradas:
+            log.warning(
+                "vector_store: %d de %d linhas ignoradas na busca — dimensão "
+                "divergente da consulta (%d). Causa: essas linhas foram gravadas "
+                "com outro engine de embedding. Ação: rodar rebuild_index() para "
+                "reindexar tudo com o engine atual (%r).",
+                ignoradas, len(rows), dim, self._engine.backend,
+            )
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
 
     def _fetch_rows(self, source_type: str | None) -> list[sqlite3.Row]:
         with self._connect() as conn:
