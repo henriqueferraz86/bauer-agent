@@ -85,7 +85,6 @@ from bauer.commands.daemon_cmd import daemon_app  # noqa: E402
 from bauer.commands.cost_cmd import cost_app  # noqa: E402
 from bauer.commands.runs_cmd import runs_app  # noqa: E402
 from bauer.commands.sessions_cmd import sessions_app  # noqa: E402
-from bauer.commands.events_cmd import events_app  # noqa: E402
 from bauer.commands.approvals_cmd import approvals_app  # noqa: E402
 from bauer.commands.skills_cmd import skills_app  # noqa: E402
 from bauer.commands.schedule_cmd import schedule_app  # noqa: E402
@@ -138,7 +137,6 @@ app.add_typer(schedule_app, name="schedule", rich_help_panel=PANEL_AUTO)
 # ── Observabilidade & custo ───────────────────────────────────────────────────
 app.add_typer(runs_app, name="runs", rich_help_panel=PANEL_OBS)
 app.add_typer(sessions_app, name="sessions", rich_help_panel=PANEL_OBS)
-app.add_typer(events_app, name="events", rich_help_panel=PANEL_OBS)
 app.add_typer(approvals_app, name="approvals", rich_help_panel=PANEL_OBS)
 app.add_typer(audit_app, name="audit", rich_help_panel=PANEL_OBS)
 app.add_typer(perf_app, name="perf", rich_help_panel=PANEL_OBS)

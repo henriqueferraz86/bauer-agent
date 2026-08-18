@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -75,12 +76,29 @@ def runs_cancel(
 
 @runs_app.command("events")
 def runs_events(
-    run_id: str = typer.Argument(...),
+    run_id: str = typer.Argument(None, help="Filtra por run especifica; omitido = todas as runs."),
     state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+    limit: int = typer.Option(50, "--limit", "-n", min=1, help="Maximo de eventos (ignorado apos a 1a leitura com --follow)."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Continua exibindo novos eventos."),
+    interval: float = typer.Option(1.0, "--interval", min=0.1, help="Intervalo de poll em segundos com --follow."),
 ):
-    events = EventBus(root=state_dir).list_events(run_id=run_id)
-    if not events:
-        console.print(f"[yellow]Nenhum evento para run:[/yellow] {run_id}")
-        return
-    for event in events:
-        console.print(json.dumps(asdict(event), ensure_ascii=False))
+    bus = EventBus(root=state_dir)
+    seen: set[str] = set()
+
+    def _print_new() -> None:
+        events = bus.list_events(run_id=run_id, limit=limit if not seen else None)
+        if not events and not seen and not follow:
+            console.print(
+                f"[yellow]Nenhum evento{f' para run: {run_id}' if run_id else ''}.[/yellow]"
+            )
+            return
+        for event in events:
+            if event.id in seen:
+                continue
+            seen.add(event.id)
+            console.print(json.dumps(asdict(event), ensure_ascii=False))
+
+    _print_new()
+    while follow:
+        time.sleep(interval)
+        _print_new()
