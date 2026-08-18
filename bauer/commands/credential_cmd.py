@@ -6,7 +6,16 @@ import typer
 
 from ._common import console
 
-credential_app = typer.Typer(help="Gerenciador seguro de credenciais (keychain → Fernet → config).")
+credential_app = typer.Typer(
+    help=(
+        "Gerenciador seguro de credenciais (keychain → Fernet → config). "
+        "Para credenciais de provider LLM (usadas em `bauer agent`/`bauer run`), "
+        "prefira `bauer auth login` — ele tem precedencia sobre este cofre "
+        "quando os dois tem valor para o mesmo provider. Este comando e o "
+        "cofre generico de segredos, usado como fallback — veja "
+        "`bauer auth status --all-sources` para ver qual fonte esta em uso."
+    )
+)
 
 
 @credential_app.command("set")

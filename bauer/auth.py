@@ -1605,6 +1605,75 @@ def cmd_status() -> None:
         auth.close()
 
 
+def cmd_status_all_sources() -> None:
+    """Comando: bauer auth status --all-sources
+
+    Mostra, por provider, quais das duas fontes de credencial tem valor
+    (bauer auth / bauer credential) e qual delas _build_client
+    (bauer/commands/_runtime.py) realmente usaria. Read-only — nao decodifica
+    nem imprime o segredo em si, so a proveniencia.
+
+    Precedencia (ver bauer/commands/_runtime.py:_build_client):
+      1. bauer auth — vence de cara se houver token nao-JWT para o provider.
+      2. Tokens JWT (Codex CLI) nao servem como API key: bauer auth e pulado.
+      3. bauer credential — sobrepoe o valor de config quando bauer auth nao
+         tem nada usavel.
+      4. Config/env cru (config.yaml / variavel de ambiente do provider).
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    auth = AuthManager()
+    try:
+        from .credential_pool import _cpool
+        pool = _cpool()
+    except Exception:
+        pool = None
+
+    try:
+        auth_providers = set(auth.store.list_providers())
+        pool_providers = set(pool.list_providers()) if pool is not None else set()
+        providers = sorted(auth_providers | pool_providers)
+
+        if not providers:
+            console.print(
+                "[yellow]Nenhum provider configurado em nenhuma fonte "
+                "(bauer auth / bauer credential).[/yellow]"
+            )
+            return
+
+        table = Table(title="Bauer Auth — Proveniencia por provider")
+        table.add_column("Provider", style="cyan")
+        table.add_column("bauer auth")
+        table.add_column("bauer credential")
+        table.add_column("Fonte em uso", style="bold green")
+
+        for provider in providers:
+            token = auth.store.load(provider)
+            has_auth = token is not None
+            is_jwt = has_auth and token.extra.get("type") == "jwt"
+            has_pool = bool(pool.get(provider)) if pool is not None else False
+
+            auth_cell = "-"
+            if has_auth:
+                auth_cell = "[red]presente (JWT, nao usavel como key)[/red]" if is_jwt else "[green]presente[/green]"
+            pool_cell = "[green]presente[/green]" if has_pool else "-"
+
+            if has_auth and not is_jwt:
+                fonte = "bauer auth"
+            elif has_pool:
+                fonte = "bauer credential"
+            else:
+                fonte = "config/env"
+
+            table.add_row(provider, auth_cell, pool_cell, fonte)
+
+        console.print(table)
+    finally:
+        auth.close()
+
+
 def cmd_logout(provider: str | None = None) -> None:
     """Comando: bauer auth logout"""
     from rich.console import Console

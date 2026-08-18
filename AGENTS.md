@@ -111,6 +111,26 @@ subgrupos explícitos: `bauer memory md ...` (Markdown, o que o agente lê) e
 um não aparece no outro — não são a mesma memória com duas interfaces, são
 duas memórias diferentes.
 
+### `bauer auth` vs `bauer credential` — precedência
+
+Dois cofres de credencial de provider independentes: `bauer auth`
+(`auth.py`, `~/.bauer/auth.json`, Fernet/PBKDF2, também guarda tokens
+OAuth) e `bauer credential` (`credential_pool.py`, keychain do SO →
+Fernet → fallback). `_build_client` (`commands/_runtime.py`) resolve
+assim, por provider:
+
+1. **`bauer auth`** vence de cara se houver token não-JWT — a função
+   retorna com o client já construído a partir dele, sem tocar em
+   `bauer credential`.
+2. Token **JWT** (Codex CLI) não serve como API key — pulado, cai pro
+   passo 3.
+3. **`bauer credential`** sobrepõe o valor de config quando `bauer auth`
+   não tem nada usável para aquele provider.
+4. Config/env cru (`config.yaml` ou variável de ambiente do provider).
+
+`bauer auth status --all-sources` mostra, por provider, qual fonte tem
+valor e qual delas está de fato em uso — sem imprimir o segredo.
+
 ## Harness — o que está medido
 
 `python -m evals.harness.medir` imprime o scorecard das 11 capacidades
