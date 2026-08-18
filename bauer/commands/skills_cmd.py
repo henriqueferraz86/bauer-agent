@@ -12,8 +12,12 @@ from rich.table import Table
 
 from ._common import console
 from ..core.skills import SkillMarketplace, SkillMarketplaceError, SkillRegistry
+from .skills_hub_cmd import skills_hub_app
+from .skills_bundle_cmd import skills_bundle_app
 
 skills_app = typer.Typer(help="Skill Registry formal: manifestos, capacidades e permissoes.")
+skills_app.add_typer(skills_hub_app, name="hub")
+skills_app.add_typer(skills_bundle_app, name="bundle")
 
 
 @skills_app.command("insights")

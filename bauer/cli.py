@@ -95,8 +95,6 @@ from bauer.commands.budget_cmd import budget_app, autonomy_app  # noqa: E402
 
 from bauer.commands.serve_cmd import serve_app  # noqa: E402
 
-from bauer.commands.telegram_cmd import telegram_app  # noqa: E402
-from bauer.commands.discord_cmd import discord_app  # noqa: E402
 from bauer.commands.gateway_cmd import gateway_app  # noqa: E402
 
 from bauer.commands.plugin_cmd import plugin_app  # noqa: E402
@@ -158,8 +156,6 @@ app.add_typer(skills_app, name="skills", rich_help_panel=PANEL_MEM)
 
 # ── Conectividade ─────────────────────────────────────────────────────────────
 app.add_typer(gateway_app, name="gateway", rich_help_panel=PANEL_CONN)
-app.add_typer(telegram_app, name="telegram", rich_help_panel=PANEL_CONN)
-app.add_typer(discord_app, name="discord", rich_help_panel=PANEL_CONN)
 
 # ── Config & sistema ──────────────────────────────────────────────────────────
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_SYS)
@@ -2317,11 +2313,6 @@ def skill_render_cmd(
 # Skills Hub — catálogo built-in de skills por categoria
 # ---------------------------------------------------------------------------
 
-from bauer.commands.skills_hub_cmd import skills_hub_app  # noqa: E402
-app.add_typer(skills_hub_app, name="skills-hub", rich_help_panel=PANEL_MEM)
-
-from bauer.commands.skills_bundle_cmd import skills_bundle_app  # noqa: E402
-app.add_typer(skills_bundle_app, name="skills-bundle", rich_help_panel=PANEL_MEM)
 
 
 
