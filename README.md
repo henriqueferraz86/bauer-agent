@@ -34,7 +34,7 @@ Principais comandos do beta:
 | Runs e sessions | `bauer runs list`, `bauer runs show <run_id>`, `bauer runs events <run_id>`, `bauer sessions list` |
 | Policy e approvals | `bauer approvals list`, `bauer approvals approve <id>`, `bauer approvals deny <id>` |
 | Skills | `bauer skills validate`, `bauer skills inspect <skill_id>`, `bauer skills find <capability>` |
-| Scheduler | `bauer schedule add`, `bauer schedule list`, `bauer schedule run <id>`, `bauer worker start`, `bauer worker status` |
+| Scheduler | `bauer cron create`, `bauer cron list`, `bauer cron run <id>`, `bauer runtime start` (supervisor always-on: dispatcher + cron + outbox + kanban) |
 | Observability | `GET /runs`, `GET /events`, `GET /audit`, dashboard local |
 
 Roteiro de demo fechado: [docs/BETA_CLOSED.md](docs/BETA_CLOSED.md).

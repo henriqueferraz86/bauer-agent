@@ -87,8 +87,6 @@ from bauer.commands.runs_cmd import runs_app  # noqa: E402
 from bauer.commands.sessions_cmd import sessions_app  # noqa: E402
 from bauer.commands.approvals_cmd import approvals_app  # noqa: E402
 from bauer.commands.skills_cmd import skills_app  # noqa: E402
-from bauer.commands.schedule_cmd import schedule_app  # noqa: E402
-from bauer.commands.worker_cmd import worker_app  # noqa: E402
 from bauer.commands.budget_cmd import budget_app, autonomy_app  # noqa: E402
 
 
@@ -129,10 +127,8 @@ app.add_typer(kernel_app, name="kernel", rich_help_panel=PANEL_AUTO)
 app.add_typer(orchestrate_app, name="orchestrate", rich_help_panel=PANEL_AUTO)
 app.add_typer(dispatch_app, name="dispatch", rich_help_panel=PANEL_AUTO)
 app.add_typer(daemon_app, name="daemon", rich_help_panel=PANEL_AUTO)
-app.add_typer(worker_app, name="worker", rich_help_panel=PANEL_AUTO)
 app.add_typer(runtime_app, name="runtime", rich_help_panel=PANEL_AUTO)
 app.add_typer(cron_app, name="cron", rich_help_panel=PANEL_AUTO)
-app.add_typer(schedule_app, name="schedule", rich_help_panel=PANEL_AUTO)
 
 # ── Observabilidade & custo ───────────────────────────────────────────────────
 app.add_typer(runs_app, name="runs", rich_help_panel=PANEL_OBS)
