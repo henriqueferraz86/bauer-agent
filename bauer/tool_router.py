@@ -187,13 +187,7 @@ _TOOL_SECURITY: dict[str, dict] = {
     "get_imports":    {"permission": "read",    "risk": "low",    "approval": False},
     "find_usages":    {"permission": "read",    "risk": "low",    "approval": False},
     # G15/G26: LSP tools
-    "lsp_hover":             {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_definitions":       {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_references":        {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_diagnostics":       {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_workspace_symbols": {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_completion":        {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_code_actions":      {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp":                   {"permission": "read",    "risk": "low",    "approval": False},
     "lsp_format":            {"permission": "write",   "risk": "medium", "approval": False},
     "lsp_rename":            {"permission": "write",   "risk": "high",   "approval": True},
     # Escrita local — workspace-scoped
@@ -345,13 +339,7 @@ _WORKER_CONTEXT_ALLOWLIST = frozenset({
     "find_definition",
     "get_imports",
     "find_usages",
-    "lsp_hover",
-    "lsp_definitions",
-    "lsp_references",
-    "lsp_diagnostics",
-    "lsp_workspace_symbols",
-    "lsp_completion",
-    "lsp_code_actions",
+    "lsp",
     # Mutate only the local workspace needed to complete the claimed task.
     "write_file",
     "append_file",
@@ -1367,65 +1355,23 @@ class ToolRouter(
         }
 
         # ── G15: LSP Tools ─────────────────────────────────────────────────────
-        self._tools["lsp_hover"] = {
-            "fn": self._lsp_hover,
-            "description": "Retorna informacao hover (tipo, doc) para o simbolo na posicao linha:coluna via LSP.",
+        self._tools["lsp"] = {
+            "fn": self._lsp,
+            "description": (
+                "Consulta o servidor LSP (hover, definicoes, referencias, "
+                "diagnosticos, simbolos do workspace, autocompletar, acoes de "
+                "codigo) via 'action'."
+            ),
             "args": {
-                "file": "str — caminho do arquivo (relativo ao workspace)",
-                "line": "int — numero da linha (0-indexed)",
-                "character": "int — numero da coluna (0-indexed)",
-            },
-        }
-        self._tools["lsp_definitions"] = {
-            "fn": self._lsp_definitions,
-            "description": "Encontra onde um simbolo e definido via LSP (go-to-definition).",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "line": "int — linha do simbolo (0-indexed)",
-                "character": "int — coluna do simbolo (0-indexed)",
-            },
-        }
-        self._tools["lsp_references"] = {
-            "fn": self._lsp_references,
-            "description": "Lista todas as referencias ao simbolo na posicao dada via LSP.",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "line": "int — linha (0-indexed)",
-                "character": "int — coluna (0-indexed)",
-            },
-        }
-        self._tools["lsp_diagnostics"] = {
-            "fn": self._lsp_diagnostics,
-            "description": "Retorna erros e warnings do arquivo via LSP (type checking, lint).",
-            "args": {
-                "file": "str — caminho do arquivo para inspecionar",
-            },
-        }
-        self._tools["lsp_workspace_symbols"] = {
-            "fn": self._lsp_workspace_symbols,
-            "description": "Busca símbolos (classes, funções, variáveis) em todo o workspace via LSP.",
-            "args": {
-                "query": "str — texto de busca parcial do símbolo",
-            },
-        }
-        self._tools["lsp_completion"] = {
-            "fn": self._lsp_completion,
-            "description": "Retorna sugestões de autocompletar na posição dada via LSP.",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "line": "int — linha (0-indexed)",
-                "character": "int — coluna (0-indexed)",
-            },
-        }
-        self._tools["lsp_code_actions"] = {
-            "fn": self._lsp_code_actions,
-            "description": "Retorna ações de código (quick-fixes, refatorações) para um intervalo via LSP.",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "start_line": "int — linha inicial do intervalo (0-indexed)",
-                "start_char": "int — coluna inicial (0-indexed)",
-                "end_line": "int — linha final do intervalo (0-indexed)",
-                "end_char": "int — coluna final (0-indexed)",
+                "action": "str — um de: hover, definitions, references, diagnostics, workspace_symbols, completion, code_actions",
+                "file": "str — caminho do arquivo (nao usado para action=workspace_symbols)",
+                "line": "int — linha 0-indexed (nao usado para workspace_symbols/code_actions)",
+                "character": "int — coluna 0-indexed (nao usado para workspace_symbols/code_actions)",
+                "query": "str — texto de busca (somente action=workspace_symbols)",
+                "start_line": "int — linha inicial do intervalo (somente action=code_actions)",
+                "start_char": "int — coluna inicial (somente action=code_actions)",
+                "end_line": "int — linha final (somente action=code_actions)",
+                "end_char": "int — coluna final (somente action=code_actions)",
             },
         }
         self._tools["lsp_format"] = {
