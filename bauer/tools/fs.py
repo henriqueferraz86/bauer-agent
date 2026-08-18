@@ -213,40 +213,19 @@ class FsToolsMixin:
         return result
 
     def _search_text(self, args: dict) -> str:
-        path = args.get("path", ".")
+        """Busca por substring plana — delega para _regex_search com o padrao
+        escapado (re.escape) e case-insensitive. As duas tinham a mesma
+        implementacao de busca duplicada (walk + match + limite de
+        resultados); so a semantica do match (substring vs. regex) diferia."""
         pattern = args.get("pattern")
-
         if not pattern:
             raise ToolError("search_text requer 'pattern'.")
+        path = args.get("path", ".")
 
-        p = self._sandbox(str(path))
-        if not p.exists():
-            raise ToolError(f"Nao encontrado: '{path}'")
-
-        files = [p] if p.is_file() else sorted(p.rglob("*"))
-        results: list[str] = []
-
-        for f in files:
-            if not f.is_file():
-                continue
-            try:
-                text = f.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for i, line in enumerate(text.splitlines(), 1):
-                if pattern.lower() in line.lower():
-                    try:
-                        rel = f.relative_to(self.workspace)
-                    except ValueError:
-                        rel = f
-                    results.append(f"{rel}:{i}: {line.strip()}")
-                    if len(results) >= _MAX_SEARCH_RESULTS:
-                        results.append(f"... (limite de {_MAX_SEARCH_RESULTS} resultados atingido)")
-                        return "\n".join(results)
-
-        if not results:
+        result = self._regex_search({"pattern": re.escape(str(pattern)), "path": path, "flags": "i"})
+        if result.startswith("Nenhum resultado para regex"):
             return f"Nenhum resultado para '{pattern}' em '{path}'"
-        return "\n".join(results)
+        return result
 
     def _create_dir(self, args: dict) -> str:
         path = args.get("path")

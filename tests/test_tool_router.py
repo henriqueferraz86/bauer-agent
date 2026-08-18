@@ -327,6 +327,23 @@ def test_search_text_no_results(router: ToolRouter):
     assert "Nenhum resultado" in result
 
 
+def test_search_text_no_results_mensagem_original_preservada(router: ToolRouter):
+    """search_text delega para regex_search (2026-08-18) — a mensagem de
+    'sem resultado' precisa continuar sem a palavra 'regex' (contrato
+    original de search_text, distinto do de regex_search)."""
+    result = router.execute({"action": "search_text", "args": {"path": ".", "pattern": "xyz_nao_existe"}})
+    assert result == "Nenhum resultado para 'xyz_nao_existe' em '.'"
+
+
+def test_search_text_pattern_com_metacaracteres_de_regex(router: ToolRouter, ws: Path):
+    """search_text delega pra regex_search com re.escape — um pattern com
+    caracteres especiais de regex (. ( ) [ ]) tem que casar como substring
+    literal, nao como regex."""
+    (ws / "config.txt").write_text("veja config.yaml para detalhes\n")
+    result = router.execute({"action": "search_text", "args": {"path": ".", "pattern": "config.yaml"}})
+    assert "config.yaml" in result
+
+
 def test_search_text_missing_pattern_raises(router: ToolRouter):
     with pytest.raises(ToolError, match="requer 'pattern'"):
         router.execute({"action": "search_text", "args": {"path": "."}})
