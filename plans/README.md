@@ -43,10 +43,10 @@ de STOP, e atualize sua linha de status ao concluir.
 | [029](029-vector-store-dim-cache-invalidation.md) | Cache de dimensão do vector_store fica obsoleto após `delete()`/`delete_prefix()` (perda silenciosa de escrita) | P1 | P1 | S | — | DONE (commit `4c24cb1`) |
 | [030](030-ollama-embed-json-guard.md) | `_ollama_embed` pode lançar exceção no caminho de sucesso, quebrando o contrato "nunca lança" do `EmbeddingEngine` | P1 | P1 | S | — | DONE (commit `8d80644`) |
 | [031](031-tool-dedup-mutating-tools-fix.md) | `MUTATING_TOOLS` do dedup cita 5 tools inexistentes e falta ~17 tools mutantes reais (replay indevido) | P3 | P1 | S | — | DONE (commit `b2492b1`) |
-| [032](032-delete-trigger-manager.md) | Deletar `trigger_manager.py` — 621 linhas, zero chamador fora do próprio teste | P4 | P2 | S | — | TODO |
+| [032](032-delete-trigger-manager.md) | Deletar `trigger_manager.py` — 621 linhas, zero chamador fora do próprio teste | P4 | P2 | S | — | DONE (commit `980776f`) |
 | [033](033-tier4-checkpoint-audit-observability-decision.md) | Decidir destino do "Tier 4" (checkpoint/audit_trail/observability) — testado mas nunca ligado ao daemon | P4 | P2 | M | — | TODO |
-| [034](034-delete-otel-traces.md) | Deletar `otel.py` + `bauer traces` — tracer OTLP morto, comando sempre vazio em produção | P4/DX | P2 | S | — | TODO |
-| [035](035-delete-feedback-store.md) | Deletar `feedback_store.py` — wrapper sem chamador real fora do próprio teste | P3 | P3 | S | — | TODO |
+| [034](034-delete-otel-traces.md) | Deletar `otel.py` + `bauer traces` — tracer OTLP morto, comando sempre vazio em produção | P4/DX | P2 | S | — | DONE (commit `94a6f15`) |
+| [035](035-delete-feedback-store.md) | Deletar `feedback_store.py` — wrapper sem chamador real fora do próprio teste | P3 | P3 | S | — | DONE (commit `c348dca`) |
 | [036](036-unify-memory-managers.md) | Reconciliar `MemoryManager` (Markdown) e `RuntimeMemoryManager` (JSONL) — dois stores irmãos sem sincronia sob `bauer memory` | P3 | P2 | M | — | TODO |
 | [037](037-consolidate-scheduler-engines.md) | Consolidar `bauer schedule`/`worker` (zero teste de CLI) no stack supervisionado `cron`/`dispatch`/`runtime` | P4 | P2 | L | 032 (fazer 032 primeiro, aquecimento sem decisão) | TODO |
 | [038](038-nest-thin-command-groups.md) | Aninhar `telegram`/`discord` sob `gateway` e `skills-hub`/`skills-bundle` sob `skills` | DX | P2 | S | — | TODO |
@@ -55,9 +55,9 @@ de STOP, e atualize sua linha de status ao concluir.
 | [041](041-unify-auth-credential-stores.md) | Documentar precedência `bauer auth` vs `bauer credential` + `auth status --all-sources` | P5/DX | P3 | M | — | TODO |
 | [042](042-collapse-lsp-tools.md) | Unificar as 7 tools `lsp_*` de leitura numa tool `lsp(action=...)` — `lsp_format`/`lsp_rename` ficam separadas | P3 | P3 | S | — | TODO |
 | [043](043-multiplex-kanban-tools.md) | Multiplexar as 9 tools `kanban_*` em `kanban_read`/`kanban_write` (padrão já usado por `cronjob`/`process`) | P3 | P3 | M | 044 (fazer 044 primeiro, código morto no mesmo arquivo) | TODO |
-| [044](044-delete-legacy-kanban-methods.md) | Deletar os 8 métodos `_legacy_kanban_*` — 124 linhas mortas em `tools/kanban.py` | P3 | P2 | S | — | TODO |
+| [044](044-delete-legacy-kanban-methods.md) | Deletar os 8 métodos `_legacy_kanban_*` — 124 linhas mortas em `tools/kanban.py` | P3 | P2 | S | — | DONE (commit `f5dd4a6`) |
 | [045](045-collapse-search-text-regex-search.md) | `search_text` passa a delegar para `regex_search` (implementação duplicada em `tools/fs.py`) | P3 | P3 | S | — | TODO |
-| [046](046-fix-stale-tools-yaml.md) | Deletar `tools.yaml` — cobre 7 de 84 tools, efeito zero em runtime hoje | DX | P3 | S | — | TODO |
+| [046](046-fix-stale-tools-yaml.md) | Deletar `tools.yaml` — cobre 7 de 84 tools, efeito zero em runtime hoje | DX | P3 | S | — | DONE (commit `3089c49`) |
 | [047](047-merge-channel-social-mixins.md) | Fundir `SocialToolsMixin` em `ChannelToolsMixin` — dois mixins pequenos pro mesmo domínio (mensageria) | P6 | P4 | S | — | TODO |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`

@@ -201,7 +201,6 @@ module = [
     "bauer.memory_provider",
     "bauer.migrate",
     "bauer.openai_client",
-    "bauer.otel",
     "bauer.scope_boundary",
     "bauer.self_tuner",
     "bauer.server",

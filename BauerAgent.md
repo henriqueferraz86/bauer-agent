@@ -90,7 +90,6 @@ Falhas anteriores = ajustes melhores na próxima execução.
 bauer-agent/
 ├── config.yaml
 ├── models.yaml
-├── tools.yaml
 ├── bauer/
 │   ├── main.py
 │   ├── cli.py

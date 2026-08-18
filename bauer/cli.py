@@ -82,7 +82,6 @@ from bauer.commands.migrate_cmd import migrate_app  # noqa: E402
 from bauer.commands.boards_cmd import boards_app  # noqa: E402
 from bauer.commands.daemon_cmd import daemon_app  # noqa: E402
 
-from bauer.commands.traces_cmd import traces_app  # noqa: E402
 from bauer.commands.cost_cmd import cost_app  # noqa: E402
 from bauer.commands.runs_cmd import runs_app  # noqa: E402
 from bauer.commands.sessions_cmd import sessions_app  # noqa: E402
@@ -145,7 +144,6 @@ app.add_typer(events_app, name="events", rich_help_panel=PANEL_OBS)
 app.add_typer(approvals_app, name="approvals", rich_help_panel=PANEL_OBS)
 app.add_typer(audit_app, name="audit", rich_help_panel=PANEL_OBS)
 app.add_typer(perf_app, name="perf", rich_help_panel=PANEL_OBS)
-app.add_typer(traces_app, name="traces", rich_help_panel=PANEL_OBS)
 app.add_typer(benchmark_app, name="benchmark", rich_help_panel=PANEL_OBS)
 app.add_typer(ops_app, name="ops", rich_help_panel=PANEL_OBS)
 app.add_typer(cost_app, name="cost", rich_help_panel=PANEL_OBS)
