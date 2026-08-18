@@ -129,7 +129,7 @@ Lançamento inicial. Principais capacidades:
 - Loop fingerprint (args_sig MD5[:8]) + task ledger (TASKS.md no system prompt)
 - Gateway Telegram/Discord com suporte a mídia, streaming e botões
 - Desktop Tauri v2: SPA 8 telas + auto-update via GitHub Releases
-- Autonomia: IterationBudget, CheckpointManager, MetricsRegistry, AuditTrail
+- Autonomia: IterationBudget
 - Kanban SQLite com DAG, swarm e decomposição por LLM
 - Memory providers: vetorial com isolamento por workspace
 - 5110+ testes
