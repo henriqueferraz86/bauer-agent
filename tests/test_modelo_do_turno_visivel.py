@@ -88,16 +88,17 @@ def test_banner_avisa_quando_o_padrao_nao_e_o_que_roda():
     como "Modelo" sem ressalva foi o que fez um GGUF local aparecer como o
     modelo da sessão enquanto todo turno ia para a nuvem."""
     assert "o turno pode ir p/ outro tier" in AGENT
-    assert '_linhas_extra.append(("Roteando"' in AGENT
+    assert '[("Roteando", _fmt_tiers(_boot_tier_profiles))]' in AGENT
 
 
 def test_banner_gated_por_route_profiles_e_nao_por_routing():
     """`_boot_tier_profiles`/`_tier_profiles` (resolução por-provider de
-    `route_profiles`) é o gate REAL do router heurístico no laço do turno.
-    Gatear o banner por `routing` — o ModelRouter legado, outro caminho — o
-    deixaria mudo justamente na configuração que produziu o bug."""
-    trecho = AGENT[AGENT.index("_linhas_extra: list"):AGENT.index("from .ascii_intro import session_panel")]
-    assert "if _boot_tier_profiles:" in trecho
+    `route_profiles`, via `_resolve_tier_profiles`) é o gate REAL do router
+    heurístico no laço do turno. Gatear o banner por `routing` — o
+    ModelRouter legado, outro caminho — o deixaria mudo justamente na
+    configuração que produziu o bug."""
+    trecho = AGENT[AGENT.index("def _resolve_tier_profiles"):AGENT.index("from .ascii_intro import session_panel")]
+    assert "if _boot_tier_profiles else []" in trecho
     assert "routing and route_profiles" not in trecho
 
     laco = AGENT[AGENT.index("_hr_routed = False"):]
@@ -108,9 +109,21 @@ def test_banner_gated_por_route_profiles_e_nao_por_routing():
 def test_perfis_sao_objetos_nao_dicionarios():
     """`profiles_from_config` devolve `dict[str, ModelProfile]`. Um `.get()` no
     valor levantaria AttributeError e derrubaria o banner inteiro."""
-    trecho = AGENT[AGENT.index("_linhas_extra: list"):AGENT.index("from .ascii_intro import session_panel")]
+    trecho = AGENT[AGENT.index("def _resolve_tier_profiles"):AGENT.index("from .ascii_intro import session_panel")]
     assert "getattr(v, 'model'" in trecho
     assert ".get('model'" not in trecho
+
+
+def test_troca_de_provider_via_model_atualiza_o_banner():
+    """Bug relatado em uso real: trocar de provider via /model funcionava no
+    laço do turno, mas o banner "Roteando" só refletia o provider novo depois
+    de fechar e reabrir o Bauer. O handler de /model precisa recalcular o
+    mesmo estado que o boot calcula, não só o client/model_name."""
+    handler = AGENT[AGENT.index("if user_input.lower() in _MODEL_CMDS"):
+                    AGENT.index("if user_input.lower() in _SESSIONS_CMDS")]
+    assert "_atualizar_linha_de_roteamento()" in handler, (
+        "troca de /model precisa recalcular _boot_tier_profiles/_linhas_extra, "
+        "senão o banner fica preso ao provider do boot até reiniciar a sessão")
 
 
 # ─── comportamento, não só texto ─────────────────────────────────────────────

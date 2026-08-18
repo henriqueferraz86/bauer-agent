@@ -5139,15 +5139,23 @@ def run_agent_session(
             return route_profiles_by_provider[provider]
         return route_profiles
 
+    def _fmt_tiers(profiles: "dict | None") -> str:
+        return ", ".join(f"{k}: {getattr(v, 'model', '?')}" for k, v in sorted((profiles or {}).items()))
+
+    def _atualizar_linha_de_roteamento() -> "dict | None":
+        """Recalcula `_boot_tier_profiles`/`_linhas_extra` para o provider AO
+        VIVO. Chamada no boot e de novo a cada troca de `/model` — sem isto o
+        banner "Roteando" e o "(padrão — o turno pode ir p/ outro tier)"
+        ficavam presos ao provider do boot até reiniciar a sessão, mesmo o
+        roteamento em si (laço do turno) já seguindo o provider certo."""
+        nonlocal _boot_tier_profiles
+        _boot_tier_profiles = _resolve_tier_profiles(_provider)
+        _linhas_extra[:] = [("Roteando", _fmt_tiers(_boot_tier_profiles))] if _boot_tier_profiles else []
+        return _boot_tier_profiles
+
     _linhas_extra: list[tuple[str, str]] = []
-    # Mesma resolução do laço de turno: se o provider de boot tem conjunto
-    # dedicado em `route_profiles_by_provider`, o banner mostra ELE — senão o
-    # banner mentiria sobre quais tiers valem já no primeiro turno.
-    _boot_tier_profiles = _resolve_tier_profiles(_provider)
-    if _boot_tier_profiles:
-        _tiers = ", ".join(f"{k}: {getattr(v, 'model', '?')}"
-                           for k, v in sorted(_boot_tier_profiles.items()))
-        _linhas_extra.append(("Roteando", _tiers))
+    _boot_tier_profiles: "dict | None" = None
+    _atualizar_linha_de_roteamento()
 
     # Acento salvo pelo usuário (Ctrl+T / `/theme`) — aplicado ANTES do
     # primeiro render, senão o logo e o painel de sessão sairiam no padrão e
@@ -5525,6 +5533,18 @@ def run_agent_session(
                     _provider = getattr(_new_client, "_provider", None) or "openai"
                     stats.provider = _provider
                     ctx._provider = _provider
+                    # Recalcula o banner/tiers para o provider NOVO — sem isto
+                    # "Roteando" ficava mostrando o conjunto do provider antigo
+                    # até reiniciar a sessão, mesmo o roteamento em si (laço do
+                    # turno) já respeitando a troca a partir da mensagem seguinte.
+                    _novos_tiers = _atualizar_linha_de_roteamento()
+                    if route_profiles_by_provider is not None or route_profiles:
+                        console.print(
+                            f"[dim]  Roteando ({_provider}): "
+                            + (_fmt_tiers(_novos_tiers) if _novos_tiers
+                               else "sem tiers dedicados — turno sempre usa o modelo ativo")
+                            + "[/dim]"
+                        )
                     # L8: persiste preferência explícita do usuário (sobrepõe SelfTuner)
                     try:
                         import json as _json_l8
