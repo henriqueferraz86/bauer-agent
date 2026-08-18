@@ -254,6 +254,27 @@ def test_busca_ignora_linha_de_dimensao_divergente():
     assert "legado" not in achados
 
 
+def test_store_apos_delete_todos_aceita_nova_dimensao():
+    """delete() deve resetar a dimensão vigente — índice vazio aceita qualquer nova dimensão."""
+    store = VectorStore(":memory:", engine=_EngineFixo(8))
+    store.store("a", "t", "texto", embedding=[1.0] * 5)
+    assert store.delete("a", "t") == 1
+    assert store.count() == 0
+    # Índice vazio: uma nova dimensão não deve ser recusada.
+    assert store.store("b", "t", "outro", embedding=[1.0] * 9) > 0
+    assert store.count() == 1
+
+
+def test_store_apos_delete_prefix_todos_aceita_nova_dimensao():
+    """delete_prefix() deve resetar a dimensão vigente do mesmo jeito que delete()."""
+    store = VectorStore(":memory:", engine=_EngineFixo(8))
+    store.store("sess:user:0", "session", "texto", embedding=[1.0] * 5)
+    assert store.delete_prefix("sess:", "session") == 1
+    assert store.count() == 0
+    assert store.store("outra:user:0", "session", "outro", embedding=[1.0] * 9) > 0
+    assert store.count() == 1
+
+
 # ---------------------------------------------------------------------------
 # rebuild_index — atomicidade
 # ---------------------------------------------------------------------------

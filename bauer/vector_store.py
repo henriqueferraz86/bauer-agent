@@ -224,6 +224,8 @@ class VectorStore:
                 "DELETE FROM vectors WHERE source_id = ? AND source_type = ?",
                 (source_id, source_type),
             )
+        if cur.rowcount:
+            self._dim = -1
         return cur.rowcount
 
     def delete_prefix(self, source_id_prefix: str, source_type: str) -> int:
@@ -240,6 +242,8 @@ class VectorStore:
                 r"DELETE FROM vectors WHERE source_id LIKE ? ESCAPE '\' AND source_type = ?",
                 (like, source_type),
             )
+        if cur.rowcount:
+            self._dim = -1
         return cur.rowcount
 
     def list_source_ids(self, source_type: str) -> list[str]:
