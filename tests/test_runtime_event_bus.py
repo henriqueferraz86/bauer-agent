@@ -66,7 +66,7 @@ def test_tool_router_parse_failure_does_not_emit_tool_event(tmp_path: Path):
     assert events == []
 
 
-def test_events_cli_tail_and_runs_events(tmp_path: Path):
+def test_runs_events_sem_filtro_e_com_filtro(tmp_path: Path):
     runner = CliRunner()
     manager = RunManager(root=tmp_path)
     run = manager.create_run(
@@ -77,7 +77,9 @@ def test_events_cli_tail_and_runs_events(tmp_path: Path):
         status="running",
     )
 
-    result = runner.invoke(app, ["events", "tail", "--state-dir", str(tmp_path), "--limit", "10"])
+    # `bauer events tail` foi fundido em `bauer runs events` (2026-08-18) —
+    # run_id omitido tem o mesmo efeito de "mostrar tudo" que `events tail` tinha.
+    result = runner.invoke(app, ["runs", "events", "--state-dir", str(tmp_path), "--limit", "10"])
     assert result.exit_code == 0
     assert "run.created" in result.output
 

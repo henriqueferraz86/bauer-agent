@@ -254,44 +254,39 @@ class TestLspClientEncoding:
 
 
 class TestToolRouterLspNewTools:
+    """2026-08-18: lsp_workspace_symbols/completion/code_actions foram
+    unificadas na tool "lsp" (args['action'] escolhe a operacao)."""
+
     def _make_router(self, tmp_path):
         from bauer.tool_router import ToolRouter
         return ToolRouter(workspace=tmp_path)
 
-    def test_lsp_workspace_symbols_registered(self, tmp_path):
+    def test_lsp_registered(self, tmp_path):
         router = self._make_router(tmp_path)
-        assert "lsp_workspace_symbols" in router.available_tools()
-
-    def test_lsp_completion_registered(self, tmp_path):
-        router = self._make_router(tmp_path)
-        assert "lsp_completion" in router.available_tools()
-
-    def test_lsp_code_actions_registered(self, tmp_path):
-        router = self._make_router(tmp_path)
-        assert "lsp_code_actions" in router.available_tools()
+        assert "lsp" in router.available_tools()
 
     def test_lsp_workspace_symbols_no_query_raises(self, tmp_path):
         from bauer.tool_router import ToolError
         router = self._make_router(tmp_path)
         with pytest.raises((ToolError, Exception)):
-            router.execute({"action": "lsp_workspace_symbols", "args": {"query": ""}})
+            router.execute({"action": "lsp", "args": {"action": "workspace_symbols", "query": ""}})
 
     def test_lsp_completion_no_file_raises(self, tmp_path):
         from bauer.tool_router import ToolError
         router = self._make_router(tmp_path)
         with pytest.raises((ToolError, Exception)):
-            router.execute({"action": "lsp_completion", "args": {"file": ""}})
+            router.execute({"action": "lsp", "args": {"action": "completion", "file": ""}})
 
     def test_lsp_code_actions_no_file_raises(self, tmp_path):
         from bauer.tool_router import ToolError
         router = self._make_router(tmp_path)
         with pytest.raises((ToolError, Exception)):
-            router.execute({"action": "lsp_code_actions", "args": {"file": ""}})
+            router.execute({"action": "lsp", "args": {"action": "code_actions", "file": ""}})
 
     def test_lsp_workspace_symbols_no_server_returns_error(self, tmp_path):
         router = self._make_router(tmp_path)
         with patch("bauer.tool_router.ToolRouter._lsp_call", return_value=None):
-            result = router.execute({"action": "lsp_workspace_symbols", "args": {"query": "Foo"}})
+            result = router.execute({"action": "lsp", "args": {"action": "workspace_symbols", "query": "Foo"}})
         data = json.loads(result)
         assert "error" in data
 
@@ -300,7 +295,7 @@ class TestToolRouterLspNewTools:
         f = tmp_path / "x.py"
         f.write_text("x = 1\n")
         with patch("bauer.tool_router.ToolRouter._lsp_call", return_value=None):
-            result = router.execute({"action": "lsp_completion", "args": {"file": "x.py"}})
+            result = router.execute({"action": "lsp", "args": {"action": "completion", "file": "x.py"}})
         data = json.loads(result)
         assert "error" in data
 
@@ -310,8 +305,8 @@ class TestToolRouterLspNewTools:
         f.write_text("x = 1\n")
         with patch("bauer.tool_router.ToolRouter._lsp_call", return_value=None):
             result = router.execute({
-                "action": "lsp_code_actions",
-                "args": {"file": "x.py", "start_line": 0, "start_char": 0},
+                "action": "lsp",
+                "args": {"action": "code_actions", "file": "x.py", "start_line": 0, "start_char": 0},
             })
         data = json.loads(result)
         assert "error" in data
@@ -320,7 +315,7 @@ class TestToolRouterLspNewTools:
         router = self._make_router(tmp_path)
         fake_symbols = [{"name": "Foo", "kind": 5}]
         with patch("bauer.tool_router.ToolRouter._lsp_call", return_value=fake_symbols):
-            result = router.execute({"action": "lsp_workspace_symbols", "args": {"query": "Foo"}})
+            result = router.execute({"action": "lsp", "args": {"action": "workspace_symbols", "query": "Foo"}})
         data = json.loads(result)
         assert data == fake_symbols
 
@@ -331,15 +326,14 @@ class TestToolRouterLspNewTools:
         fake_items = [{"label": "print"}]
         with patch("bauer.tool_router.ToolRouter._lsp_call", return_value=fake_items):
             result = router.execute({
-                "action": "lsp_completion",
-                "args": {"file": "x.py", "line": 0, "character": 0},
+                "action": "lsp",
+                "args": {"action": "completion", "file": "x.py", "line": 0, "character": 0},
             })
         data = json.loads(result)
         assert data == fake_items
 
-    def test_all_lsp_tools_have_low_risk(self, tmp_path):
+    def test_lsp_has_low_risk(self, tmp_path):
         from bauer.tool_router import _TOOL_SECURITY
-        for tool in ("lsp_workspace_symbols", "lsp_completion", "lsp_code_actions"):
-            meta = _TOOL_SECURITY.get(tool, {})
-            assert meta.get("risk") == "low", f"{tool} should have low risk"
-            assert meta.get("approval") is False, f"{tool} should not need approval"
+        meta = _TOOL_SECURITY.get("lsp", {})
+        assert meta.get("risk") == "low"
+        assert meta.get("approval") is False

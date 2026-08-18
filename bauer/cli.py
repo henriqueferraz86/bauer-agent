@@ -85,7 +85,6 @@ from bauer.commands.daemon_cmd import daemon_app  # noqa: E402
 from bauer.commands.cost_cmd import cost_app  # noqa: E402
 from bauer.commands.runs_cmd import runs_app  # noqa: E402
 from bauer.commands.sessions_cmd import sessions_app  # noqa: E402
-from bauer.commands.events_cmd import events_app  # noqa: E402
 from bauer.commands.approvals_cmd import approvals_app  # noqa: E402
 from bauer.commands.skills_cmd import skills_app  # noqa: E402
 from bauer.commands.schedule_cmd import schedule_app  # noqa: E402
@@ -95,8 +94,6 @@ from bauer.commands.budget_cmd import budget_app, autonomy_app  # noqa: E402
 
 from bauer.commands.serve_cmd import serve_app  # noqa: E402
 
-from bauer.commands.telegram_cmd import telegram_app  # noqa: E402
-from bauer.commands.discord_cmd import discord_app  # noqa: E402
 from bauer.commands.gateway_cmd import gateway_app  # noqa: E402
 
 from bauer.commands.plugin_cmd import plugin_app  # noqa: E402
@@ -140,7 +137,6 @@ app.add_typer(schedule_app, name="schedule", rich_help_panel=PANEL_AUTO)
 # ── Observabilidade & custo ───────────────────────────────────────────────────
 app.add_typer(runs_app, name="runs", rich_help_panel=PANEL_OBS)
 app.add_typer(sessions_app, name="sessions", rich_help_panel=PANEL_OBS)
-app.add_typer(events_app, name="events", rich_help_panel=PANEL_OBS)
 app.add_typer(approvals_app, name="approvals", rich_help_panel=PANEL_OBS)
 app.add_typer(audit_app, name="audit", rich_help_panel=PANEL_OBS)
 app.add_typer(perf_app, name="perf", rich_help_panel=PANEL_OBS)
@@ -158,8 +154,6 @@ app.add_typer(skills_app, name="skills", rich_help_panel=PANEL_MEM)
 
 # ── Conectividade ─────────────────────────────────────────────────────────────
 app.add_typer(gateway_app, name="gateway", rich_help_panel=PANEL_CONN)
-app.add_typer(telegram_app, name="telegram", rich_help_panel=PANEL_CONN)
-app.add_typer(discord_app, name="discord", rich_help_panel=PANEL_CONN)
 
 # ── Config & sistema ──────────────────────────────────────────────────────────
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_SYS)
@@ -2317,11 +2311,6 @@ def skill_render_cmd(
 # Skills Hub — catálogo built-in de skills por categoria
 # ---------------------------------------------------------------------------
 
-from bauer.commands.skills_hub_cmd import skills_hub_app  # noqa: E402
-app.add_typer(skills_hub_app, name="skills-hub", rich_help_panel=PANEL_MEM)
-
-from bauer.commands.skills_bundle_cmd import skills_bundle_app  # noqa: E402
-app.add_typer(skills_bundle_app, name="skills-bundle", rich_help_panel=PANEL_MEM)
 
 
 

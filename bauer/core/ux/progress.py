@@ -32,6 +32,7 @@ _EXACT: dict[str, ToolPhase] = {
     "regex_search": ToolPhase("Procurando no código", "search"),
     "code_symbols": ToolPhase("Analisando o código", "code"),
     "get_imports": ToolPhase("Analisando o código", "code"),
+    "lsp": ToolPhase("Analisando o código", "code"),
     "write_file": ToolPhase("Escrevendo arquivo", "file-pencil"),
     "append_file": ToolPhase("Escrevendo arquivo", "file-pencil"),
     "create_dir": ToolPhase("Criando pasta", "folder-plus"),

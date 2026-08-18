@@ -7,8 +7,11 @@ Mantém um único `console` para formatação consistente em toda a CLI.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import typer
 from rich.console import Console
 
 from ..paths import get_bauer_home, memory_dir, runtime_state_path
@@ -54,6 +57,22 @@ def _loaded_config_path(config: Path) -> Path:
         return resolve_config_path(config).resolve()
     except ConfigError:
         return config.resolve()
+
+
+def _parse_last(last: str) -> "datetime | None":
+    """'24h' / '7d' / '30m' / '2w' → datetime de corte UTC-aware. Vazio → None.
+
+    UTC (não naive local): os timestamps das runs são UTC; usar now() local
+    erraria o corte da janela pelo offset do fuso."""
+    if not last:
+        return None
+    m = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", last.lower())
+    if not m:
+        raise typer.BadParameter("Use formatos como 24h, 7d, 30m, 2w.")
+    n, unit = int(m.group(1)), m.group(2)
+    delta = {"m": timedelta(minutes=n), "h": timedelta(hours=n),
+             "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
+    return datetime.now(timezone.utc) - delta
 
 
 # Aliases curtos → nome de arquivo Markdown de memória.

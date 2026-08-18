@@ -735,18 +735,27 @@ class TestKanbanWorkflow:
         assert "worker.protocol_violation" in {event.event_type for event in events}
 
     def test_worker_context_filters_available_tools(self, ws):
+        # 2026-08-18: kanban_heartbeat/complete/block/unblock/comment/create/
+        # link viraram acoes de kanban_write — o contexto worker permite a
+        # TOOL kanban_write (nivel de nome), mas so algumas ACOES dela (ver
+        # test_worker_context_denies_kanban_create_action abaixo).
         router = ToolRouter(workspace=ws, tool_context="worker")
         tools = router.available_tools()
         schemas = router.get_tool_schemas()
         schema_names = {schema["function"]["name"] for schema in schemas}
 
-        assert "kanban_heartbeat" in tools
-        assert "kanban_complete" in tools
+        assert "kanban_write" in tools
         assert "write_file" in tools
-        assert "kanban_create" not in tools
         assert "delegate_task" not in tools
         assert "browser_cdp" not in tools
-        assert "kanban_create" not in schema_names
+        assert "delegate_task" not in schema_names
+
+    def test_worker_context_denies_kanban_create_action(self, ws):
+        """create/unblock/link continuam vetadas para worker mesmo com
+        kanban_write liberada — o gate fino mora dentro do dispatcher."""
+        router = ToolRouter(workspace=ws, tool_context="worker")
+        with pytest.raises(ToolError, match="tool denied"):
+            router._kanban_write({"action": "create", "title": "not allowed"})
 
     def test_denied_worker_tool_records_event(self, ws, monkeypatch):
         wm = get_workspace_manager(ws)
@@ -762,13 +771,15 @@ class TestKanbanWorkflow:
 
         router = ToolRouter(workspace=ws, tool_context="worker")
         with pytest.raises(ToolError, match="tool denied"):
-            router.execute({"action": "kanban_create", "args": {"title": "not allowed"}})
+            router.execute({"action": "kanban_write", "args": {"action": "create", "title": "not allowed"}})
 
         store = KanbanStore(ws)
         events = store.list_events(task_id=task.id, limit=20)
         run = store.get_run(claimed.metadata["run_id"])
         assert "tool.denied" in {event.event_type for event in events}
         assert run is not None
+        # Nome virtual "kanban_create" preserva a trilha de auditoria de quando
+        # cada acao era uma tool com nome proprio (ver KanbanToolsMixin._kanban_write).
         assert run.metadata["last_denied_tool"] == "kanban_create"
 
     def test_workspace_tool_policy_can_override_contexts(self, ws):
@@ -782,7 +793,7 @@ contexts:
     deny: [write_file]
   worker:
     mode: allowlist
-    allow: [kanban_heartbeat]
+    allow: [kanban_write]
 """.strip(),
             encoding="utf-8",
         )
@@ -793,7 +804,7 @@ contexts:
         assert "write_file" not in supervisor.available_tools()
         assert supervisor.tool_info("write_file")["policy_source"].endswith("tool_policy.yaml")
         worker_tools = worker.available_tools()
-        assert "kanban_heartbeat" in worker_tools
+        assert "kanban_write" in worker_tools
         assert "read_file" not in worker_tools
         with pytest.raises(ToolError, match="tool denied"):
             supervisor.execute({"action": "write_file", "args": {"path": "x.txt", "content": "x"}})
@@ -1037,12 +1048,10 @@ class TestRegistro57Tools:
         assert "text_to_speech" in router._tools
 
     def test_kanban_tools_registradas(self, ws):
+        # 2026-08-18: as 9 tools kanban_* viraram kanban_read (list/show) e
+        # kanban_write (create/complete/block/unblock/heartbeat/comment/link).
         router = ToolRouter(workspace=ws)
-        kanban_tools = [
-            "kanban_create", "kanban_list", "kanban_show", "kanban_complete",
-            "kanban_block", "kanban_unblock", "kanban_heartbeat", "kanban_comment", "kanban_link",
-        ]
-        for name in kanban_tools:
+        for name in ("kanban_read", "kanban_write"):
             assert name in router._tools, f"{name} não registrada"
 
     def test_browser_tools_registradas(self, ws):
@@ -1062,9 +1071,9 @@ class TestRegistro57Tools:
         assert "description" in info
         assert "args" in info
 
-    def test_tool_info_kanban_create(self, ws):
+    def test_tool_info_kanban_write(self, ws):
         router = ToolRouter(workspace=ws)
-        info = router.tool_info("kanban_create")
+        info = router.tool_info("kanban_write")
         assert "title" in info["args"]
 
 

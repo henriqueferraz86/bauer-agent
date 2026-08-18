@@ -184,19 +184,24 @@ class TestLspToolsInRouter:
         from bauer.tool_router import ToolRouter
         return ToolRouter(workspace=tmp_path)
 
-    @pytest.mark.parametrize("tool", ["lsp_hover", "lsp_definitions", "lsp_references", "lsp_diagnostics"])
-    def test_lsp_tool_registered(self, router, tool):
-        assert tool in router._tools
+    # 2026-08-18: lsp_hover/definitions/references/diagnostics/workspace_symbols/
+    # completion/code_actions foram unificadas na tool "lsp", com a acao
+    # especifica no args['action']. lsp_format/lsp_rename continuam separadas.
 
-    @pytest.mark.parametrize("tool", ["lsp_hover", "lsp_definitions", "lsp_references", "lsp_diagnostics"])
-    def test_lsp_tool_has_description(self, router, tool):
-        entry = router._tools[tool]
+    def test_lsp_tool_registered(self, router):
+        assert "lsp" in router._tools
+
+    def test_lsp_tool_has_description(self, router):
+        entry = router._tools["lsp"]
         assert len(entry.get("description", "")) > 5
 
-    @pytest.mark.parametrize("tool", ["lsp_hover", "lsp_definitions", "lsp_references"])
-    def test_lsp_tool_returns_error_when_no_server(self, router, tmp_path, tool):
+    @pytest.mark.parametrize("lsp_action", ["hover", "definitions", "references"])
+    def test_lsp_tool_returns_error_when_no_server(self, router, tmp_path, lsp_action):
         (tmp_path / "test.py").write_text("def foo():\n    pass\n")
-        result = router.execute({"action": tool, "args": {"file": "test.py", "line": 0, "character": 0}})
+        result = router.execute({
+            "action": "lsp",
+            "args": {"action": lsp_action, "file": "test.py", "line": 0, "character": 0},
+        })
         assert isinstance(result, str)
         # Should return a JSON error, not crash
         parsed = json.loads(result)
@@ -204,29 +209,32 @@ class TestLspToolsInRouter:
 
     def test_lsp_diagnostics_returns_error_when_no_server(self, router, tmp_path):
         (tmp_path / "test.py").write_text("x: str = 123\n")
-        result = router.execute({"action": "lsp_diagnostics", "args": {"file": "test.py"}})
+        result = router.execute({"action": "lsp", "args": {"action": "diagnostics", "file": "test.py"}})
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert "error" in parsed
 
-    @pytest.mark.parametrize("tool", ["lsp_hover", "lsp_definitions"])
-    def test_lsp_tool_requires_file_arg(self, router, tool):
+    @pytest.mark.parametrize("lsp_action", ["hover", "definitions"])
+    def test_lsp_tool_requires_file_arg(self, router, lsp_action):
         from bauer.tool_router import ToolError
         # Sem 'file' → ToolError (execute propaga, nao retorna string).
         with pytest.raises(ToolError, match="requer"):
-            router.execute({"action": tool, "args": {}})
+            router.execute({"action": "lsp", "args": {"action": lsp_action}})
 
-    @pytest.mark.parametrize("tool", ["lsp_hover", "lsp_definitions", "lsp_references", "lsp_diagnostics"])
-    def test_lsp_tool_not_requires_approval(self, tool):
+    def test_lsp_tool_invalid_action_raises(self, router):
+        from bauer.tool_router import ToolError
+        with pytest.raises(ToolError, match="invalido"):
+            router.execute({"action": "lsp", "args": {"action": "bogus"}})
+
+    def test_lsp_tool_not_requires_approval(self):
         from bauer.tool_router import _TOOL_SECURITY
-        perm = _TOOL_SECURITY.get(tool)
-        assert perm is not None, f"{tool} not in _TOOL_SECURITY"
+        perm = _TOOL_SECURITY.get("lsp")
+        assert perm is not None, "lsp not in _TOOL_SECURITY"
         assert perm["approval"] is False
 
-    @pytest.mark.parametrize("tool", ["lsp_hover", "lsp_definitions", "lsp_references", "lsp_diagnostics"])
-    def test_lsp_tool_risk_level_is_low(self, tool):
+    def test_lsp_tool_risk_level_is_low(self):
         from bauer.tool_router import _TOOL_SECURITY
-        perm = _TOOL_SECURITY.get(tool)
+        perm = _TOOL_SECURITY.get("lsp")
         assert perm is not None
         assert perm["risk"] == "low"
 

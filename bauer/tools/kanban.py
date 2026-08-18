@@ -569,3 +569,54 @@ class KanbanToolsMixin:
             f"[kanban] {self._kanban_public_id(child.id)} vinculado como filho de "
             f"{self._kanban_public_id(parent_workspace_id)}."
         )
+
+    def _kanban_read(self, args: dict) -> str:
+        mode = str(args.get("mode", "")).strip()
+        if mode == "list":
+            return self._kanban_list(args)
+        if mode == "show":
+            return self._kanban_show(args)
+        raise ToolError(f"kanban_read: 'mode' invalido {mode!r}. Use 'list' ou 'show'.")
+
+    # Antes da unificacao em kanban_write (2026-08-18), tool_policy.py's
+    # default_tool_contexts() negava/permitia por NOME de tool: contexto
+    # 'chat' negava kanban_heartbeat/complete/block; contexto 'worker' so
+    # permitia kanban_heartbeat/comment/complete/block (nao create/unblock/
+    # link). Um unico nome de tool nao expressa mais essa granularidade —
+    # o gate por acao move pra dentro do dispatcher.
+    _WRITE_ACTIONS_DENIED_IN_CHAT = frozenset({"heartbeat", "complete", "block"})
+    _WRITE_ACTIONS_ALLOWED_IN_WORKER = frozenset({"heartbeat", "comment", "complete", "block"})
+
+    def _kanban_write(self, args: dict) -> str:
+        action = str(args.get("action", "")).strip()
+        handlers = {
+            "create": self._kanban_create,
+            "complete": self._kanban_complete,
+            "block": self._kanban_block,
+            "unblock": self._kanban_unblock,
+            "heartbeat": self._kanban_heartbeat,
+            "comment": self._kanban_comment,
+            "link": self._kanban_link,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ToolError(
+                f"kanban_write: 'action' invalido {action!r}. "
+                f"Use um de: {', '.join(sorted(handlers))}."
+            )
+        context = getattr(self, "tool_context", None)
+        denied = (context == "chat" and action in self._WRITE_ACTIONS_DENIED_IN_CHAT) or (
+            context == "worker" and action not in self._WRITE_ACTIONS_ALLOWED_IN_WORKER
+        )
+        if denied:
+            # Nome virtual "kanban_<action>" preserva a trilha de auditoria
+            # (evento tool.denied + last_denied_tool no run) que existia
+            # quando cada acao era uma tool de nome proprio.
+            virtual_name = f"kanban_{action}"
+            record_denied = getattr(self, "_record_tool_denied", None)
+            if record_denied is not None:
+                record_denied(virtual_name, args)
+            raise ToolError(
+                f"tool denied: '{virtual_name}' nao permitido no contexto '{context}'."
+            )
+        return handler(args)

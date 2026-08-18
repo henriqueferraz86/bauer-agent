@@ -8,33 +8,17 @@ Read-only: agrega runs + duração de tools já persistidas. Não otimiza, só m
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 from rich.table import Table
 
-from ._common import console
+from ._common import _parse_last, console
 
 perf_app = typer.Typer(help="Baseline de performance: latência por run e gargalos.")
 
 _DEFAULT_STATE_DIR = Path("memory/runtime")
-
-
-def _parse_last(last: str) -> "datetime | None":
-    # UTC-aware: os timestamps das runs são UTC; usar naive local erraria o
-    # corte da janela pelo offset do fuso.
-    if not last:
-        return None
-    m = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", last.lower())
-    if not m:
-        raise typer.BadParameter("Use formatos como 24h, 7d, 30m, 2w.")
-    n, unit = int(m.group(1)), m.group(2)
-    delta = {"m": timedelta(minutes=n), "h": timedelta(hours=n),
-             "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
-    return datetime.now(timezone.utc) - delta
 
 
 def _emit_json(payload: dict, output: "Path | None") -> None:

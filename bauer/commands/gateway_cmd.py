@@ -10,6 +10,8 @@ import typer
 
 from ._common import console
 from ._runtime import _kill_bridge_processes
+from .telegram_cmd import telegram_app
+from .discord_cmd import discord_app
 
 gateway_app = typer.Typer(help="Bauer Gateway — todos os canais de chat + entrega do outbox")
 
@@ -18,6 +20,8 @@ gateway_service_app = typer.Typer(
 )
 
 gateway_app.add_typer(gateway_service_app, name="service")
+gateway_app.add_typer(telegram_app, name="telegram")
+gateway_app.add_typer(discord_app, name="discord")
 
 
 def _gateway_pid_file(workspace: Path) -> Path:

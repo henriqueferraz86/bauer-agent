@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import typer
 from rich.table import Table
 
-from ._common import console
+from ._common import _parse_last, console
 from ..core.skills import SkillMarketplace, SkillMarketplaceError, SkillRegistry
+from .skills_hub_cmd import skills_hub_app
+from .skills_bundle_cmd import skills_bundle_app
 
 skills_app = typer.Typer(help="Skill Registry formal: manifestos, capacidades e permissoes.")
+skills_app.add_typer(skills_hub_app, name="hub")
+skills_app.add_typer(skills_bundle_app, name="bundle")
 
 
 @skills_app.command("insights")
@@ -62,20 +64,6 @@ def skills_insights_cmd(
         console.print("\n[bold]Sugestoes (exigem aprovacao humana)[/bold]")
         for item in insights.suggestions:
             console.print(f"  {item.suggested_id}: {item.reason}")
-
-
-def _parse_last(value: str) -> datetime:
-    match = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", value.lower())
-    if not match:
-        raise typer.BadParameter("Use formatos como 24h, 7d, 2w.")
-    amount, unit = int(match.group(1)), match.group(2)
-    delta = {
-        "m": timedelta(minutes=amount),
-        "h": timedelta(hours=amount),
-        "d": timedelta(days=amount),
-        "w": timedelta(weeks=amount),
-    }[unit]
-    return datetime.now() - delta
 
 
 def _print_skill_metrics(title, items, render) -> None:

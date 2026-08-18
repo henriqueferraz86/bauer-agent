@@ -13,11 +13,15 @@ class TestToolPhase:
         assert tool_phase("run_command").label == "Executando comando"
         assert tool_phase("read_file").label == "Lendo arquivos"
         assert tool_phase("write_file").label == "Escrevendo arquivo"
+        # lsp_hover/definitions/etc. viraram a tool unica "lsp" (2026-08-18) —
+        # precisa de match exato, "lsp_" nao e mais prefixo de tool real.
+        assert tool_phase("lsp").label == "Analisando o código"
 
     def test_prefix_match(self):
         assert tool_phase("browser_navigate").label == "Navegando na web"
         assert tool_phase("kanban_create").label == "Atualizando o Kanban"
-        assert tool_phase("lsp_hover").label == "Analisando o código"
+        # lsp_format/lsp_rename continuam tools separadas, casam pelo prefixo.
+        assert tool_phase("lsp_format").label == "Analisando o código"
 
     def test_default_for_unknown(self):
         assert tool_phase("alguma_tool_nova").label == "Trabalhando"

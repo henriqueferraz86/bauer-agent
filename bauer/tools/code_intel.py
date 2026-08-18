@@ -160,84 +160,53 @@ class CodeIntelToolsMixin:
         except Exception:
             return None
 
-    def _lsp_hover(self, args: dict) -> str:
-        file_rel = str(args.get("file", "")).strip()
-        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
-        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
-        if not file_rel:
-            raise ToolError("lsp_hover requer 'file'.")
-        result = self._lsp_call("hover", file_rel, line, char)
-        if result is None:
+    _LSP_READ_ACTIONS = {
+        "hover": "hover",
+        "definitions": "definitions",
+        "references": "references",
+        "diagnostics": "diagnostics",
+        "workspace_symbols": "workspace_symbols",
+        "completion": "completion",
+        "code_actions": "code_actions",
+    }
+
+    def _lsp(self, args: dict) -> str:
+        action = str(args.get("action", "")).strip()
+        if action not in self._LSP_READ_ACTIONS:
+            raise ToolError(
+                f"lsp: 'action' invalido {action!r}. "
+                f"Use um de: {', '.join(sorted(self._LSP_READ_ACTIONS))}."
+            )
+        method = self._LSP_READ_ACTIONS[action]
+
+        if method == "workspace_symbols":
+            query = str(args.get("query", "")).strip()
+            if not query:
+                raise ToolError("lsp action=workspace_symbols requer 'query'.")
+            result = self._lsp_call("workspace_symbols", query, 0, 0)
+            hint = {"hint": "pip install pyright"}
+        else:
+            file_rel = str(args.get("file", "")).strip()
+            if not file_rel:
+                raise ToolError(f"lsp action={action} requer 'file'.")
             server_hint = "pyright" if file_rel.endswith(".py") else "typescript-language-server"
-            return json.dumps({"error": "LSP server not running", "hint": f"pip/npm install {server_hint}"})
-        return json.dumps(result, indent=2, ensure_ascii=False)
+            hint = {"hint": f"pip/npm install {server_hint}"}
+            if method == "code_actions":
+                start_line = self._coerce_int(args.get("start_line", 0), default=0, minimum=0)
+                start_char = self._coerce_int(args.get("start_char", 0), default=0, minimum=0)
+                end_line = self._coerce_int(args.get("end_line", start_line), default=start_line, minimum=0)
+                end_char = self._coerce_int(args.get("end_char", start_char), default=start_char, minimum=0)
+                result = self._lsp_call(
+                    "code_actions", file_rel, start_line, start_char,
+                    end_line=end_line, end_char=end_char,
+                )
+            else:
+                line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
+                char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
+                result = self._lsp_call(method, file_rel, line, char)
 
-    def _lsp_definitions(self, args: dict) -> str:
-        file_rel = str(args.get("file", "")).strip()
-        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
-        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
-        if not file_rel:
-            raise ToolError("lsp_definitions requer 'file'.")
-        result = self._lsp_call("definitions", file_rel, line, char)
         if result is None:
-            return json.dumps({"error": "LSP server not running"})
-        return json.dumps(result, indent=2, ensure_ascii=False)
-
-    def _lsp_references(self, args: dict) -> str:
-        file_rel = str(args.get("file", "")).strip()
-        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
-        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
-        if not file_rel:
-            raise ToolError("lsp_references requer 'file'.")
-        result = self._lsp_call("references", file_rel, line, char)
-        if result is None:
-            return json.dumps({"error": "LSP server not running"})
-        return json.dumps(result, indent=2, ensure_ascii=False)
-
-    def _lsp_diagnostics(self, args: dict) -> str:
-        file_rel = str(args.get("file", "")).strip()
-        if not file_rel:
-            raise ToolError("lsp_diagnostics requer 'file'.")
-        result = self._lsp_call("diagnostics", file_rel, 0, 0)
-        if result is None:
-            return json.dumps({"error": "LSP server not running"})
-        return json.dumps(result, indent=2, ensure_ascii=False)
-
-    def _lsp_workspace_symbols(self, args: dict) -> str:
-        query = str(args.get("query", "")).strip()
-        if not query:
-            raise ToolError("lsp_workspace_symbols requer 'query'.")
-        # file_rel is repurposed as query string for workspace_symbols
-        result = self._lsp_call("workspace_symbols", query, 0, 0)
-        if result is None:
-            return json.dumps({"error": "LSP server not running", "hint": "pip install pyright"})
-        return json.dumps(result, indent=2, ensure_ascii=False)
-
-    def _lsp_completion(self, args: dict) -> str:
-        file_rel = str(args.get("file", "")).strip()
-        line = self._coerce_int(args.get("line", 0), default=0, minimum=0)
-        char = self._coerce_int(args.get("character", 0), default=0, minimum=0)
-        if not file_rel:
-            raise ToolError("lsp_completion requer 'file'.")
-        result = self._lsp_call("completion", file_rel, line, char)
-        if result is None:
-            return json.dumps({"error": "LSP server not running"})
-        return json.dumps(result, indent=2, ensure_ascii=False)
-
-    def _lsp_code_actions(self, args: dict) -> str:
-        file_rel = str(args.get("file", "")).strip()
-        if not file_rel:
-            raise ToolError("lsp_code_actions requer 'file'.")
-        start_line = self._coerce_int(args.get("start_line", 0), default=0, minimum=0)
-        start_char = self._coerce_int(args.get("start_char", 0), default=0, minimum=0)
-        end_line = self._coerce_int(args.get("end_line", start_line), default=start_line, minimum=0)
-        end_char = self._coerce_int(args.get("end_char", start_char), default=start_char, minimum=0)
-        result = self._lsp_call(
-            "code_actions", file_rel, start_line, start_char,
-            end_line=end_line, end_char=end_char,
-        )
-        if result is None:
-            return json.dumps({"error": "LSP server not running"})
+            return json.dumps({"error": "LSP server not running", **hint})
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     def _lsp_format(self, args: dict) -> str:

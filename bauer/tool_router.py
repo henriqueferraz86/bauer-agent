@@ -66,7 +66,6 @@ logger = logging.getLogger(__name__)
 from .tool_policy import load_tool_policy
 from .tools.agent_misc import MiscToolsMixin
 from .tools.browser import BrowserToolsMixin
-from .tools.channel import ChannelToolsMixin
 from .tools.code_intel import CodeIntelToolsMixin
 from .tools.cronjob import CronjobToolsMixin
 from .tools.execution import ExecToolsMixin
@@ -77,11 +76,11 @@ from .tools.mcp import McpToolsMixin
 from .tools.media import MediaToolsMixin
 from .tools.media import _looks_multimodal  # noqa: F401 — re-export p/ testes
 from .tools.memory import MemoryToolsMixin
+from .tools.messaging import MessagingToolsMixin
 from .tools.session import SessionToolsMixin
 from .tools.skills import SkillsToolsMixin
 from .tools.sqlite import _DEFAULT_ROWS as _SQLITE_DEFAULT_ROWS
 from .tools.sqlite import SqliteToolsMixin
-from .tools.social import SocialToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
@@ -187,13 +186,7 @@ _TOOL_SECURITY: dict[str, dict] = {
     "get_imports":    {"permission": "read",    "risk": "low",    "approval": False},
     "find_usages":    {"permission": "read",    "risk": "low",    "approval": False},
     # G15/G26: LSP tools
-    "lsp_hover":             {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_definitions":       {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_references":        {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_diagnostics":       {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_workspace_symbols": {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_completion":        {"permission": "read",    "risk": "low",    "approval": False},
-    "lsp_code_actions":      {"permission": "read",    "risk": "low",    "approval": False},
+    "lsp":                   {"permission": "read",    "risk": "low",    "approval": False},
     "lsp_format":            {"permission": "write",   "risk": "medium", "approval": False},
     "lsp_rename":            {"permission": "write",   "risk": "high",   "approval": True},
     # Escrita local — workspace-scoped
@@ -316,58 +309,6 @@ _TOOL_CONTEXT_ALIASES = {
     "dag": "orchestrator",
     "durable-worker": "worker",
 }
-_CHAT_CONTEXT_DENYLIST = frozenset({
-    "kanban_heartbeat",
-    "kanban_complete",
-    "kanban_block",
-})
-_WORKER_CONTEXT_ALLOWLIST = frozenset({
-    # Read/inspect the workspace and current state.
-    "list_dir",
-    "read_file",
-    "search_text",
-    "glob_files",
-    "regex_search",
-    "diff_files",
-    "calculate",
-    "datetime_now",
-    "json_query",
-    "encode_decode",
-    "todo",
-    "skills_list",
-    "skill_view",
-    "memory",
-    "session_search",
-    "kanban_list",
-    "kanban_show",
-    "process",
-    "code_symbols",
-    "find_definition",
-    "get_imports",
-    "find_usages",
-    "lsp_hover",
-    "lsp_definitions",
-    "lsp_references",
-    "lsp_diagnostics",
-    "lsp_workspace_symbols",
-    "lsp_completion",
-    "lsp_code_actions",
-    # Mutate only the local workspace needed to complete the claimed task.
-    "write_file",
-    "append_file",
-    "patch",
-    "create_dir",
-    "move_file",
-    "delete_file",
-    "execute_code",
-    "run_command",
-    "clarify",
-    # Report lifecycle for the single claimed task.
-    "kanban_heartbeat",
-    "kanban_comment",
-    "kanban_complete",
-    "kanban_block",
-})
 
 # P4: limites de I/O movidos para tools/base.py (compartilhados com FsToolsMixin).
 # Re-importados aqui — usados nos schemas do __init__ e por testes que fazem
@@ -388,7 +329,6 @@ def _normalize_tool_context(value: str | None) -> str:
 
 class ToolRouter(
     BrowserToolsMixin,
-    ChannelToolsMixin,
     CodeIntelToolsMixin,
     CronjobToolsMixin,
     ExecToolsMixin,
@@ -398,10 +338,10 @@ class ToolRouter(
     McpToolsMixin,
     MediaToolsMixin,
     MemoryToolsMixin,
+    MessagingToolsMixin,
     MiscToolsMixin,
     SessionToolsMixin,
     SkillsToolsMixin,
-    SocialToolsMixin,
     SqliteToolsMixin,
     UtilityToolsMixin,
     WebToolsMixin,
@@ -979,81 +919,38 @@ class ToolRouter(
         }
 
         # ── Kanban board ─────────────────────────────────────────────────────
-        self._tools["kanban_create"] = {
-            "fn": self._kanban_create,
-            "description": "Cria nova tarefa no board Kanban. Retorna o ID da tarefa.",
+        self._tools["kanban_read"] = {
+            "fn": self._kanban_read,
+            "description": "Le tarefas do board Kanban — listar ou exibir detalhes de uma tarefa.",
             "args": {
-                "title": "str — titulo da tarefa (obrigatorio)",
-                "description": "str — detalhes da tarefa (opcional)",
-                "assignee": "str — agente/usuario responsavel (opcional)",
-                "priority": "str — low | medium | high | critical (default: medium)",
-                "status": "str — todo | ready | in_progress | blocked | failed | done (default: todo)",
-                "parent_id": "str — ID da tarefa pai para sub-tarefas (opcional)",
+                "mode": "str — 'list' ou 'show' (obrigatorio)",
+                "task_id": "str — ID da tarefa (obrigatorio para mode=show)",
+                "status": "str — filtro de status para mode=list (opcional)",
+                "assignee": "str — filtro de responsavel para mode=list (opcional)",
+                "priority": "str — filtro de prioridade para mode=list (opcional)",
             },
         }
-        self._tools["kanban_list"] = {
-            "fn": self._kanban_list,
-            "description": "Lista tarefas do board com filtros por status, assignee ou prioridade.",
+        self._tools["kanban_write"] = {
+            "fn": self._kanban_write,
+            "description": (
+                "Modifica o board Kanban — criar, completar, bloquear, desbloquear, "
+                "enviar heartbeat, comentar ou linkar tarefas via 'action'."
+            ),
             "args": {
-                "status": "str — todo | ready | in_progress | blocked | failed | done | all (default: all)",
-                "assignee": "str — filtrar por responsavel (opcional)",
-                "priority": "str — low | medium | high | critical (opcional)",
-            },
-        }
-        self._tools["kanban_show"] = {
-            "fn": self._kanban_show,
-            "description": "Exibe detalhes completos de uma tarefa: descricao, historico, comentarios.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-            },
-        }
-        self._tools["kanban_complete"] = {
-            "fn": self._kanban_complete,
-            "description": "Marca tarefa como concluida com payload de handoff opcional.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "result": "str — resumo do resultado/handoff (opcional)",
-            },
-        }
-        self._tools["kanban_block"] = {
-            "fn": self._kanban_block,
-            "description": "Bloqueia tarefa registrando o motivo do bloqueio.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "reason": "str — motivo do bloqueio (obrigatorio)",
-            },
-        }
-        self._tools["kanban_unblock"] = {
-            "fn": self._kanban_unblock,
-            "description": "Remove bloqueio de tarefa, retornando-a ao status anterior.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "note": "str — nota sobre como o bloqueio foi resolvido (opcional)",
-            },
-        }
-        self._tools["kanban_heartbeat"] = {
-            "fn": self._kanban_heartbeat,
-            "description": "Envia update de progresso para tarefa em andamento (keep-alive).",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "progress": "str — descricao do progresso atual (obrigatorio)",
-            },
-        }
-        self._tools["kanban_comment"] = {
-            "fn": self._kanban_comment,
-            "description": "Adiciona comentario em tarefa sem alterar seu status.",
-            "args": {
-                "task_id": "str — ID da tarefa (obrigatorio)",
-                "comment": "str — texto do comentario (obrigatorio)",
-                "author": "str — autor do comentario (default: agent)",
-            },
-        }
-        self._tools["kanban_link"] = {
-            "fn": self._kanban_link,
-            "description": "Cria dependencia parent-child entre duas tarefas.",
-            "args": {
-                "parent_id": "str — ID da tarefa pai (obrigatorio)",
-                "child_id": "str — ID da tarefa filha (obrigatorio)",
+                "action": "str — create | complete | block | unblock | heartbeat | comment | link (obrigatorio)",
+                "task_id": "str — ID da tarefa (obrigatorio, exceto action=create/link)",
+                "title": "str — titulo (action=create)",
+                "description": "str — detalhes (action=create, opcional)",
+                "assignee": "str — responsavel (action=create, opcional)",
+                "priority": "str — low|medium|high|critical (action=create, opcional)",
+                "parent_id": "str — tarefa pai (action=create para sub-tarefa, ou action=link)",
+                "child_id": "str — tarefa filha (action=link, obrigatorio)",
+                "result": "str — resumo do resultado (action=complete, opcional)",
+                "reason": "str — motivo do bloqueio (action=block, obrigatorio)",
+                "note": "str — nota de resolucao (action=unblock, opcional)",
+                "progress": "str — descricao do progresso (action=heartbeat, obrigatorio)",
+                "comment": "str — texto do comentario (action=comment, obrigatorio)",
+                "author": "str — autor do comentario (action=comment, opcional)",
             },
         }
 
@@ -1367,65 +1264,23 @@ class ToolRouter(
         }
 
         # ── G15: LSP Tools ─────────────────────────────────────────────────────
-        self._tools["lsp_hover"] = {
-            "fn": self._lsp_hover,
-            "description": "Retorna informacao hover (tipo, doc) para o simbolo na posicao linha:coluna via LSP.",
+        self._tools["lsp"] = {
+            "fn": self._lsp,
+            "description": (
+                "Consulta o servidor LSP (hover, definicoes, referencias, "
+                "diagnosticos, simbolos do workspace, autocompletar, acoes de "
+                "codigo) via 'action'."
+            ),
             "args": {
-                "file": "str — caminho do arquivo (relativo ao workspace)",
-                "line": "int — numero da linha (0-indexed)",
-                "character": "int — numero da coluna (0-indexed)",
-            },
-        }
-        self._tools["lsp_definitions"] = {
-            "fn": self._lsp_definitions,
-            "description": "Encontra onde um simbolo e definido via LSP (go-to-definition).",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "line": "int — linha do simbolo (0-indexed)",
-                "character": "int — coluna do simbolo (0-indexed)",
-            },
-        }
-        self._tools["lsp_references"] = {
-            "fn": self._lsp_references,
-            "description": "Lista todas as referencias ao simbolo na posicao dada via LSP.",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "line": "int — linha (0-indexed)",
-                "character": "int — coluna (0-indexed)",
-            },
-        }
-        self._tools["lsp_diagnostics"] = {
-            "fn": self._lsp_diagnostics,
-            "description": "Retorna erros e warnings do arquivo via LSP (type checking, lint).",
-            "args": {
-                "file": "str — caminho do arquivo para inspecionar",
-            },
-        }
-        self._tools["lsp_workspace_symbols"] = {
-            "fn": self._lsp_workspace_symbols,
-            "description": "Busca símbolos (classes, funções, variáveis) em todo o workspace via LSP.",
-            "args": {
-                "query": "str — texto de busca parcial do símbolo",
-            },
-        }
-        self._tools["lsp_completion"] = {
-            "fn": self._lsp_completion,
-            "description": "Retorna sugestões de autocompletar na posição dada via LSP.",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "line": "int — linha (0-indexed)",
-                "character": "int — coluna (0-indexed)",
-            },
-        }
-        self._tools["lsp_code_actions"] = {
-            "fn": self._lsp_code_actions,
-            "description": "Retorna ações de código (quick-fixes, refatorações) para um intervalo via LSP.",
-            "args": {
-                "file": "str — caminho do arquivo",
-                "start_line": "int — linha inicial do intervalo (0-indexed)",
-                "start_char": "int — coluna inicial (0-indexed)",
-                "end_line": "int — linha final do intervalo (0-indexed)",
-                "end_char": "int — coluna final (0-indexed)",
+                "action": "str — um de: hover, definitions, references, diagnostics, workspace_symbols, completion, code_actions",
+                "file": "str — caminho do arquivo (nao usado para action=workspace_symbols)",
+                "line": "int — linha 0-indexed (nao usado para workspace_symbols/code_actions)",
+                "character": "int — coluna 0-indexed (nao usado para workspace_symbols/code_actions)",
+                "query": "str — texto de busca (somente action=workspace_symbols)",
+                "start_line": "int — linha inicial do intervalo (somente action=code_actions)",
+                "start_char": "int — coluna inicial (somente action=code_actions)",
+                "end_line": "int — linha final (somente action=code_actions)",
+                "end_char": "int — coluna final (somente action=code_actions)",
             },
         }
         self._tools["lsp_format"] = {

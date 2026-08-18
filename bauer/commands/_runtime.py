@@ -666,7 +666,9 @@ _LOCAL_DEFAULT_ALLOWLIST = [
     # para o modelo local — o setup existe e não é alcançável.
     "mcp_call", "mcp_list_tools", "mcp_list_servers",
     # Kanban: o board do /task e o ledger que o /loop lê entre turnos.
-    "kanban_create", "kanban_list", "kanban_complete",
+    # kanban_create/list/complete viraram acoes de kanban_read/kanban_write
+    # (2026-08-18) — as duas tools ja cobrem as 3 operacoes originais.
+    "kanban_read", "kanban_write",
     # `clarify` é o único jeito de o agente fazer uma pergunta ao usuário;
     # `delegate_task` é a porta para os especialistas.
     "clarify", "delegate_task",
