@@ -266,14 +266,14 @@ def test_spec_context_with_specs(specs_dir: Path):
 
 def test_memory_add_note(mem_dir: Path):
     result = runner.invoke(
-        app, ["memory", "add-note", "Nota de teste", "Corpo da nota aqui", "--dir", str(mem_dir)]
+        app, ["memory", "md", "add-note", "Nota de teste", "Corpo da nota aqui", "--dir", str(mem_dir)]
     )
     assert result.exit_code == 0
 
 
 def test_memory_add_lesson(mem_dir: Path):
     result = runner.invoke(
-        app, ["memory", "add-lesson", "Licao teste", "Motivo da licao", "--dir", str(mem_dir)]
+        app, ["memory", "md", "add-lesson", "Licao teste", "Motivo da licao", "--dir", str(mem_dir)]
     )
     assert result.exit_code == 0
 
@@ -291,7 +291,7 @@ def test_memory_add_model_exp(mem_dir: Path, tmp_path: Path):
 
     result = runner.invoke(
         app,
-        ["memory", "add-model-exp", "ok",
+        ["memory", "md", "add-model-exp", "ok",
          "--lesson", "funcionou bem",
          "--state-file", str(state_file),
          "--dir", str(mem_dir)],
@@ -440,8 +440,8 @@ def test_config_show_invalid(tmp_path: Path):
 
 
 def test_memory_summarize_with_note(mem_dir: Path):
-    runner.invoke(app, ["memory", "add-note", "nota importante", "Detalhes da nota importante", "--dir", str(mem_dir)])
-    result = runner.invoke(app, ["memory", "summarize", "--dir", str(mem_dir)])
+    runner.invoke(app, ["memory", "md", "add-note", "nota importante", "Detalhes da nota importante", "--dir", str(mem_dir)])
+    result = runner.invoke(app, ["memory", "md", "summarize", "--dir", str(mem_dir)])
     assert result.exit_code == 0
 
 

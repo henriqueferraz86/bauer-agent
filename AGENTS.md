@@ -53,7 +53,8 @@ uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
 | Contrato e isolamento | `core/task/contract.py` (`.bauer/task.yaml`), `core/workspace/isolation.py` (worktree) |
 | Capacidade do runtime | `runtime_capability.py` — modo de tool calling (nativo × bridge) por provider |
 | Harness (medição) | `evals/harness/` — `medir.py` (scorecard), `runner.py` + `scenarios/` (cenários de comportamento) |
-| Memória | `decision_memory.py`, `sqlite_session_store.py`, `memory_context.py` (prefetch/sync por turno), `embeddings.py` |
+| Memória (sessão/decisão) | `decision_memory.py`, `sqlite_session_store.py`, `memory_context.py` (prefetch/sync por turno), `embeddings.py` |
+| Memória (`bauer memory`) | `memory_manager.py` (Markdown, `memory/*.md` — a memória automática, ver abaixo) + `memory_provider.py` (ABC `MemoryProvider`, 6 implementações, hooks por turno) + `core/runtime/memory.py` (`RuntimeMemoryManager`, JSONL com escopo/validade — só manual/CLI hoje) |
 | Config | `config_loader.py` (Pydantic v2, seções estritas), `env_loader.py`, `paths.py` (`$BAUER_HOME`, default `~/.bauer/`) |
 | Servidor | `server.py` (FastAPI: `/chat`, `/stream`, `/v1/chat/completions`, `/loop`, `/transcribe`), `web/` (dispatcher do chat web) |
 | Canais | `channel_base.py`, `telegram_bridge.py`, `discord_bridge.py`, `gateway*.py` |
@@ -97,6 +98,38 @@ O runtime (`core/runtime/`) tem `scheduler` persistente + `run_manager` (estado
 em JSONL sob `$BAUER_HOME/memory/runtime/`) + `autonomy` (budget/kill-switch).
 Ainda **convive** com `orchestrator.py` (a geração anterior) — migração em
 andamento, mas os caminhos de execução já passam pelo Kernel.
+
+### `bauer memory` — dois backends que NÃO sincronizam
+
+`MemoryManager` (Markdown, `memory/*.md`) é a memória automática de verdade
+— plugada como `MemoryProvider` e lida em cada turno do agente
+(`agent.py`). `RuntimeMemoryManager` (JSONL, escopo `user/company/project/
+agent/skill`, com `revise`/`expire`) é só manual/CLI hoje — nenhum
+consumidor automático no loop do agente. Por isso `bauer memory` tem dois
+subgrupos explícitos: `bauer memory md ...` (Markdown, o que o agente lê) e
+`bauer memory runtime ...` (JSONL, auditável, escrita manual). Escrever via
+um não aparece no outro — não são a mesma memória com duas interfaces, são
+duas memórias diferentes.
+
+### `bauer auth` vs `bauer credential` — precedência
+
+Dois cofres de credencial de provider independentes: `bauer auth`
+(`auth.py`, `~/.bauer/auth.json`, Fernet/PBKDF2, também guarda tokens
+OAuth) e `bauer credential` (`credential_pool.py`, keychain do SO →
+Fernet → fallback). `_build_client` (`commands/_runtime.py`) resolve
+assim, por provider:
+
+1. **`bauer auth`** vence de cara se houver token não-JWT — a função
+   retorna com o client já construído a partir dele, sem tocar em
+   `bauer credential`.
+2. Token **JWT** (Codex CLI) não serve como API key — pulado, cai pro
+   passo 3.
+3. **`bauer credential`** sobrepõe o valor de config quando `bauer auth`
+   não tem nada usável para aquele provider.
+4. Config/env cru (`config.yaml` ou variável de ambiente do provider).
+
+`bauer auth status --all-sources` mostra, por provider, qual fonte tem
+valor e qual delas está de fato em uso — sem imprimir o segredo.
 
 ## Harness — o que está medido
 

@@ -22,6 +22,7 @@ from bauer.auth import (
     cmd_login,
     cmd_logout,
     cmd_status,
+    cmd_status_all_sources,
     cmd_list_providers,
     _switch_config_to_provider,
     _parse_pasted_callback,
@@ -1060,6 +1061,60 @@ class TestCmdStatus:
         }
         with patch("bauer.auth.AuthManager", return_value=mock_auth):
             cmd_status()
+
+        mock_auth.close.assert_called_once()
+
+
+class TestCmdStatusAllSources:
+    """bauer auth status --all-sources (Plano 041) — proveniencia, sem imprimir segredo."""
+
+    def test_no_providers_configured_anywhere(self):
+        mock_auth = MagicMock()
+        mock_auth.store.list_providers.return_value = []
+        mock_pool = MagicMock()
+        mock_pool.list_providers.return_value = []
+
+        with patch("bauer.auth.AuthManager", return_value=mock_auth), \
+             patch("bauer.credential_pool._cpool", return_value=mock_pool):
+            cmd_status_all_sources()  # não deve lançar
+
+        mock_auth.close.assert_called_once()
+
+    def test_shows_provenance_bauer_auth_wins(self):
+        """Provider com token nao-JWT em bauer auth: fonte em uso = bauer auth,
+        mesmo que bauer credential tambem tenha valor (precedencia real de
+        _build_client)."""
+        mock_auth = MagicMock()
+        mock_auth.store.list_providers.return_value = ["groq"]
+        mock_auth.store.load.return_value = AuthToken(
+            provider="groq", access_token="", api_key="gsk-xxx",
+        )
+        mock_pool = MagicMock()
+        mock_pool.list_providers.return_value = ["groq"]
+        mock_pool.get.return_value = "pool-value"
+
+        with patch("bauer.auth.AuthManager", return_value=mock_auth), \
+             patch("bauer.credential_pool._cpool", return_value=mock_pool):
+            cmd_status_all_sources()
+
+        mock_auth.close.assert_called_once()
+
+    def test_jwt_token_falls_through_to_credential(self):
+        """Token JWT (Codex) nao serve como API key — fonte em uso deve cair
+        para bauer credential, nao bauer auth."""
+        mock_auth = MagicMock()
+        mock_auth.store.list_providers.return_value = ["openai-api"]
+        mock_auth.store.load.return_value = AuthToken(
+            provider="openai-api", access_token="jwt-token",
+            extra={"type": "jwt"},
+        )
+        mock_pool = MagicMock()
+        mock_pool.list_providers.return_value = []
+        mock_pool.get.return_value = "pool-value"
+
+        with patch("bauer.auth.AuthManager", return_value=mock_auth), \
+             patch("bauer.credential_pool._cpool", return_value=mock_pool):
+            cmd_status_all_sources()
 
         mock_auth.close.assert_called_once()
 

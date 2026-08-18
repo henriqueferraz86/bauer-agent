@@ -5,7 +5,16 @@ from __future__ import annotations
 import typer
 
 
-auth_app = typer.Typer(help="Autenticacao com providers cloud (OAuth/API Key)")
+auth_app = typer.Typer(
+    help=(
+        "Autenticacao com providers cloud (OAuth/API Key). "
+        "Para segredos genericos (nao-LLM-provider) ou para preferir o OS "
+        "keychain, veja `bauer credential`. Se ambos estiverem configurados "
+        "para o mesmo provider, `bauer auth` tem precedencia (exceto tokens "
+        "JWT do Codex CLI, que nao servem como API key e caem para "
+        "`bauer credential`/config) — veja `bauer auth status --all-sources`."
+    )
+)
 
 
 @auth_app.command("login")
@@ -48,11 +57,19 @@ def auth_login(
 
 
 @auth_app.command("status")
-def auth_status():
+def auth_status(
+    all_sources: bool = typer.Option(
+        False, "--all-sources",
+        help="Mostra proveniencia (bauer auth vs bauer credential) por provider.",
+    ),
+):
     """Mostra providers autenticados e status dos tokens."""
-    from ..auth import cmd_status
+    from ..auth import cmd_status, cmd_status_all_sources
 
-    cmd_status()
+    if all_sources:
+        cmd_status_all_sources()
+    else:
+        cmd_status()
 
 
 @auth_app.command("logout")

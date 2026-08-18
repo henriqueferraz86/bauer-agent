@@ -1138,6 +1138,15 @@ policy:
 2. Criar persistência de tarefas.
 3. Criar CLI:
 
+> **Nota (2026-08-18):** `bauer schedule`/`bauer worker` foram implementados
+> conforme este plano, mas nunca ficaram sob supervisão de produção — o
+> `bauer runtime start` supervisiona `dispatcher`+`cron`+`outbox`, não o
+> `Scheduler` daqui. A camada CLI (`schedule_cmd.py`/`worker_cmd.py`) foi
+> removida por ter zero cobertura de teste e zero uso real (nenhum script
+> automático a invocava); `bauer cron` + `bauer runtime start` é o caminho
+> agendado suportado hoje. A classe `Scheduler` (`core/runtime/scheduler.py`)
+> continua existindo — só alimenta um widget read-only do Desktop.
+
 ```bash
 bauer schedule add
 bauer schedule list

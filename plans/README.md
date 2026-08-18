@@ -44,15 +44,15 @@ de STOP, e atualize sua linha de status ao concluir.
 | [030](030-ollama-embed-json-guard.md) | `_ollama_embed` pode lançar exceção no caminho de sucesso, quebrando o contrato "nunca lança" do `EmbeddingEngine` | P1 | P1 | S | — | DONE (commit `8d80644`) |
 | [031](031-tool-dedup-mutating-tools-fix.md) | `MUTATING_TOOLS` do dedup cita 5 tools inexistentes e falta ~17 tools mutantes reais (replay indevido) | P3 | P1 | S | — | DONE (commit `b2492b1`) |
 | [032](032-delete-trigger-manager.md) | Deletar `trigger_manager.py` — 621 linhas, zero chamador fora do próprio teste | P4 | P2 | S | — | DONE (commit `980776f`) |
-| [033](033-tier4-checkpoint-audit-observability-decision.md) | Decidir destino do "Tier 4" (checkpoint/audit_trail/observability) — testado mas nunca ligado ao daemon | P4 | P2 | M | — | TODO |
+| [033](033-tier4-checkpoint-audit-observability-decision.md) | Decidir destino do "Tier 4" (checkpoint/audit_trail/observability) — testado mas nunca ligado ao daemon | P4 | P2 | M | — | DONE (commit `c3f927e`, Path B nos 3) |
 | [034](034-delete-otel-traces.md) | Deletar `otel.py` + `bauer traces` — tracer OTLP morto, comando sempre vazio em produção | P4/DX | P2 | S | — | DONE (commit `94a6f15`) |
 | [035](035-delete-feedback-store.md) | Deletar `feedback_store.py` — wrapper sem chamador real fora do próprio teste | P3 | P3 | S | — | DONE (commit `c348dca`) |
-| [036](036-unify-memory-managers.md) | Reconciliar `MemoryManager` (Markdown) e `RuntimeMemoryManager` (JSONL) — dois stores irmãos sem sincronia sob `bauer memory` | P3 | P2 | M | — | TODO |
-| [037](037-consolidate-scheduler-engines.md) | Consolidar `bauer schedule`/`worker` (zero teste de CLI) no stack supervisionado `cron`/`dispatch`/`runtime` | P4 | P2 | L | 032 (fazer 032 primeiro, aquecimento sem decisão) | TODO |
+| [036](036-unify-memory-managers.md) | Reconciliar `MemoryManager` (Markdown) e `RuntimeMemoryManager` (JSONL) — dois stores irmãos sem sincronia sob `bauer memory` | P3 | P2 | M | — | DONE (commit `d8fb91d`, Path B: `memory md`/`memory runtime`) |
+| [037](037-consolidate-scheduler-engines.md) | Consolidar `bauer schedule`/`worker` (zero teste de CLI) no stack supervisionado `cron`/`dispatch`/`runtime` | P4 | P2 | L | 032 (fazer 032 primeiro, aquecimento sem decisão) | DONE (commit `9f80b8b`) |
 | [038](038-nest-thin-command-groups.md) | Aninhar `telegram`/`discord` sob `gateway` e `skills-hub`/`skills-bundle` sob `skills` | DX | P2 | S | — | DONE (commit `71cba8c`) |
 | [039](039-dedupe-report-commands-helper.md) | Unificar `_parse_last` triplicado em `audit`/`perf`/`skills_cmd` (corrige bug de timezone no `skills_cmd`) | P1/DX | P2 | M | — | DONE (commit `c8fc8ae`) |
 | [040](040-merge-events-into-runs.md) | Fundir `bauer events tail` em `bauer runs events` (mesma API `EventBus`, features complementares) | DX | P3 | S | — | DONE (commit `c5158f9`) |
-| [041](041-unify-auth-credential-stores.md) | Documentar precedência `bauer auth` vs `bauer credential` + `auth status --all-sources` | P5/DX | P3 | M | — | TODO |
+| [041](041-unify-auth-credential-stores.md) | Documentar precedência `bauer auth` vs `bauer credential` + `auth status --all-sources` | P5/DX | P3 | M | — | DONE (commit `f699a5c`) |
 | [042](042-collapse-lsp-tools.md) | Unificar as 7 tools `lsp_*` de leitura numa tool `lsp(action=...)` — `lsp_format`/`lsp_rename` ficam separadas | P3 | P3 | S | — | DONE (commit `028c6b2`) |
 | [043](043-multiplex-kanban-tools.md) | Multiplexar as 9 tools `kanban_*` em `kanban_read`/`kanban_write` (padrão já usado por `cronjob`/`process`) | P3 | P3 | M | 044 (fazer 044 primeiro, código morto no mesmo arquivo) | DONE (commit `1b8f3c6`) |
 | [044](044-delete-legacy-kanban-methods.md) | Deletar os 8 métodos `_legacy_kanban_*` — 124 linhas mortas em `tools/kanban.py` | P3 | P2 | S | — | DONE (commit `f5dd4a6`) |
@@ -96,9 +96,26 @@ bom ponto de partida. Os planos de decisão (033, 036, 037, 041) têm um
 passo de investigação embutido — não pulem para a implementação sem
 concluí-lo.
 
-**Execução 029–031, 032/034/035/044/046 e 038/039/040/042/043/045/047
-concluída em 2026-08-18** (PRs #115, #116 e branch
-`chore/038-039-040-042-043-045-047-consolidation`). Achado relevante durante
+**Todos os 19 planos da rodada 6 concluídos em 2026-08-18** — 029–031,
+032/034/035/044/046, 038/039/040/042/043/045/047 (PRs #115, #116, #117) e
+033/036/037/041 (branch `feat/033-036-037-041-arch-decisions`, os 4 de
+decisão arquitetural). Resumo dos 4 últimos: **033** — Tier 4
+(checkpoint/audit_trail/observability) removido, Path B nos 3: o daemon já
+tem seu próprio modelo de resiliência (kanban board + `DaemonStateDB`), o
+`EventBus` já é o log estruturado vivo, e `server.py` já tinha sua própria
+classe `_Metrics` (nunca usou `observability.py`). **036** — `bauer memory`
+virou `memory md`/`memory runtime` explícitos: investigação mostrou que
+`MemoryManager` (Markdown) já era automática (plugada em `MemoryProvider`,
+lida por `agent.py`) enquanto `RuntimeMemoryManager` (JSONL) tinha zero
+consumidor automático — nenhuma das duas premissas do plano batia
+exatamente, optou-se por explicitar em vez de forçar uma unificação sem
+evidência. **037** — `bauer schedule`/`worker` removidos (zero cobertura de
+teste, nunca supervisionados por `bauer runtime start`); `Scheduler` em si
+sobrevive só para o desktop. **041** — `bauer auth status --all-sources`
+novo, documentando a precedência real (mais fina que "auth sempre vence":
+token JWT do Codex cai para `bauer credential`).
+
+Achado relevante durante
 o plano 043 (kanban multiplex): a granularidade por ação (contexto `chat`
 não pode `heartbeat`/`complete`/`block`; contexto `worker` só pode
 `heartbeat`/`comment`/`complete`/`block`, não `create`/`unblock`/`link`) **não
