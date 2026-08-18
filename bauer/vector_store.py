@@ -37,7 +37,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
+from typing import Callable, Generator
 
 from .embeddings import EmbeddingEngine, cosine_similarity, get_default_engine
 
@@ -335,7 +335,7 @@ class VectorStore:
         self,
         source_type: str | None = None,
         *,
-        progress: "callable | None" = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> int:
         """Re-embed all rows (useful when switching from TF-IDF to Ollama).
 
