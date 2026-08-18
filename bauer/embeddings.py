@@ -28,6 +28,7 @@ import math
 import os
 import re
 import threading
+import time
 from collections import Counter
 from typing import Sequence
 
@@ -73,6 +74,14 @@ _STOP_WORDS = frozenset(
 )
 
 _VOCAB_SIZE = 4096  # fixed vocabulary size for TF-IDF sparse vectors
+
+#: Intervalo mínimo entre re-tentativas de reconectar ao Ollama depois de
+#: degradado para TF-IDF. Sem cooldown, cada `embed()` pagaria um timeout de
+#: rede contra um servidor morto — justamente quando ele está fora do ar e
+#: mais mensagens estão chegando. Medido: um processo que degrada ANTES do
+#: Ollama subir travava em TF-IDF pelo resto da vida do processo (sem re-probe
+#: nenhum) — este cooldown troca "nunca" por "no máximo 1x por minuto".
+_REPROBE_COOLDOWN_S = 60.0
 
 
 def _tokenize(text: str) -> list[str]:
@@ -225,6 +234,8 @@ class EmbeddingEngine:
         # force_backend="tfidf" é escolha explícita de quem chama (testes,
         # ambientes sem Ollama) — não é degradação e não merece aviso.
         self._degradacao_avisada = force_backend is not None
+        # 0.0 = nunca tentou ainda; primeira chamada em TF-IDF sempre re-testa.
+        self._last_probe_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Public
@@ -248,6 +259,10 @@ class EmbeddingEngine:
         Never raises — falls back to TF-IDF on any Ollama error.
         """
         self._ensure_detected()
+        if self._backend == "tfidf" and self._force_backend != "tfidf":
+            # Degradado, mas não por escolha explícita — tenta se recuperar
+            # (respeitando o cooldown) antes de aceitar TF-IDF para este turno.
+            self._tentar_reprobe()
         if self._backend == "ollama" and self._ollama_model:
             vec = _ollama_embed(text, self._ollama_model, self._base_url)
             if vec is not None:
@@ -257,6 +272,10 @@ class EmbeddingEngine:
             with self._lock:
                 self._backend = "tfidf"
                 self._dim = _VOCAB_SIZE
+                # Conta como a 1ª tentativa pro cooldown do re-probe — sem
+                # isto, o PRÓXIMO embed() re-testaria na hora, pagando outro
+                # timeout de rede logo depois deste ter acabado de falhar.
+                self._last_probe_at = time.monotonic()
             self._avisar_degradacao(
                 f"o Ollama parou de responder no meio da sessão (modelo "
                 f"{self._ollama_model!r} em {self._base_url})"
@@ -365,8 +384,48 @@ class EmbeddingEngine:
                 )
             self._backend = "tfidf"
             self._dim = _VOCAB_SIZE
+            # Conta como a 1ª tentativa: sem isto, o 1º embed() logo em
+            # seguida re-testaria de novo na hora, duplicando o custo da
+            # detecção inicial que acabou de falhar.
+            self._last_probe_at = time.monotonic()
         # Fora do lock: logging pode ser lento e não precisa de exclusão mútua.
         self._avisar_degradacao(motivo)
+
+    def _tentar_reprobe(self) -> None:
+        """Retesta o Ollama depois de degradado, no máximo 1x por cooldown.
+
+        Sem isto, um processo que degradou ANTES do Ollama subir (ou durante
+        um blip transitório) ficava preso em TF-IDF pelo resto da vida do
+        processo — nunca havia novo teste. Silencioso quando não recupera
+        (o motivo já foi avisado por `_avisar_degradacao`); avisa quando
+        recupera, porque a troca de volta também é uma mudança de estado que
+        quem lê o log precisa saber.
+        """
+        agora = time.monotonic()
+        with self._lock:
+            if agora - self._last_probe_at < _REPROBE_COOLDOWN_S:
+                return
+            self._last_probe_at = agora
+        model = _probe_ollama_embeddings(self._base_url)
+        if not model:
+            return
+        vec = _ollama_embed("test", model, self._base_url)
+        if not (vec and len(vec) > 0):
+            return
+        with self._lock:
+            self._backend = "ollama"
+            self._ollama_model = model
+            self._dim = len(vec)
+            # Recuperou: uma queda FUTURA é uma transição nova e merece um
+            # aviso novo, não silêncio por já ter avisado uma vez no passado.
+            self._degradacao_avisada = False
+        log.warning(
+            "embeddings: Ollama voltou a responder em %s — engine recuperado "
+            "para embedding semântico (modelo %r, %d dims). Mensagens gravadas "
+            "durante a degradação continuam em TF-IDF; rode "
+            "VectorStore.rebuild_index() para reindexá-las.",
+            self._base_url, model, len(vec),
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -493,6 +493,111 @@ def test_avisa_quando_ollama_cai_no_meio(monkeypatch, caplog):
     assert any("parou de responder" in r.getMessage() for r in caplog.records)
 
 
+# ---------------------------------------------------------------------------
+# Re-probe com cooldown
+#
+# Gap medido em uso real: um processo cujo EmbeddingEngine degradou para
+# TF-IDF (Ollama fora do ar na primeira detecção, ou caiu no meio) ficava
+# preso nisso pelo resto da vida do processo — sem re-probe algum, mesmo com
+# o Ollama voltando a responder minutos depois. Só um restart do processo
+# resolvia. Corrigido: re-teste automático, limitado por cooldown.
+# ---------------------------------------------------------------------------
+
+
+def test_reprobe_recupera_para_ollama_quando_volta(monkeypatch):
+    import bauer.embeddings as mod
+
+    engine = EmbeddingEngine(ollama_base_url="http://127.0.0.1:1")
+    engine.embed("primeira mensagem")  # degrada; _last_probe_at fica setado
+    assert engine.backend == "tfidf"
+
+    # Ollama "volta" — simula sem tocar rede de verdade.
+    monkeypatch.setattr(mod, "_probe_ollama_embeddings", lambda base_url: "bge-m3")
+    monkeypatch.setattr(mod, "_ollama_embed", lambda *a, **k: [0.1] * 1024)
+    # Pula o cooldown manualmente — em uso real isto é o tempo passando.
+    engine._last_probe_at = 0.0
+
+    vec = engine.embed("segunda mensagem, depois da recuperacao")
+    assert engine.backend == "ollama"
+    assert len(vec) == 1024
+
+
+def test_reprobe_respeita_cooldown_nao_retesta_toda_chamada(monkeypatch):
+    import bauer.embeddings as mod
+
+    engine = EmbeddingEngine(ollama_base_url="http://127.0.0.1:1")
+    engine.embed("primeira mensagem")
+    assert engine.backend == "tfidf"
+
+    chamadas = []
+    monkeypatch.setattr(mod, "_probe_ollama_embeddings",
+                        lambda base_url: chamadas.append(1) or None)
+
+    for _ in range(10):
+        engine.embed("mensagem repetida ainda dentro do cooldown")
+
+    assert chamadas == [], "cooldown ainda não passou — não devia re-testar"
+
+
+def test_reprobe_avisa_recuperacao_no_log(monkeypatch, caplog):
+    import logging
+
+    import bauer.embeddings as mod
+
+    engine = EmbeddingEngine(ollama_base_url="http://127.0.0.1:1")
+    engine.embed("primeira mensagem")
+
+    monkeypatch.setattr(mod, "_probe_ollama_embeddings", lambda base_url: "bge-m3")
+    monkeypatch.setattr(mod, "_ollama_embed", lambda *a, **k: [0.1] * 1024)
+    engine._last_probe_at = 0.0
+
+    with caplog.at_level(logging.WARNING, logger="bauer.embeddings"):
+        engine.embed("mensagem apos recuperacao")
+
+    assert any("voltou a responder" in r.getMessage() for r in caplog.records)
+
+
+def test_reprobe_reseta_aviso_para_proxima_queda(monkeypatch, caplog):
+    """Recuperar zera `_degradacao_avisada` — uma queda FUTURA merece aviso
+    novo, não silêncio por já ter avisado uma vez, meses atrás."""
+    import logging
+
+    import bauer.embeddings as mod
+
+    engine = EmbeddingEngine(ollama_base_url="http://127.0.0.1:1")
+    engine.embed("primeira mensagem")  # avisa 1x
+
+    monkeypatch.setattr(mod, "_probe_ollama_embeddings", lambda base_url: "bge-m3")
+    monkeypatch.setattr(mod, "_ollama_embed", lambda *a, **k: [0.1] * 1024)
+    engine._last_probe_at = 0.0
+    engine.embed("recupera")
+    assert engine.backend == "ollama"
+
+    # Cai de novo — precisa avisar de novo, não ficar mudo.
+    monkeypatch.setattr(mod, "_ollama_embed", lambda *a, **k: None)
+    with caplog.at_level(logging.WARNING, logger="bauer.embeddings"):
+        engine.embed("cai de novo")
+
+    avisos = [r for r in caplog.records if "parou de responder" in r.getMessage()]
+    assert len(avisos) == 1
+
+
+def test_force_backend_tfidf_nunca_reprobe(monkeypatch):
+    """Escolha explícita não é degradação — não deve tentar reconectar."""
+    import bauer.embeddings as mod
+
+    chamadas = []
+    monkeypatch.setattr(mod, "_probe_ollama_embeddings",
+                        lambda base_url: chamadas.append(1) or None)
+
+    engine = EmbeddingEngine(force_backend="tfidf")
+    for _ in range(3):
+        engine.embed("texto")
+
+    assert chamadas == []
+    assert engine.backend == "tfidf"
+
+
 def test_suite_e_hermetica_quanto_ao_ollama():
     """O conftest tem de apontar a URL para um endereço morto.
 
