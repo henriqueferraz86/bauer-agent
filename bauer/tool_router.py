@@ -66,7 +66,6 @@ logger = logging.getLogger(__name__)
 from .tool_policy import load_tool_policy
 from .tools.agent_misc import MiscToolsMixin
 from .tools.browser import BrowserToolsMixin
-from .tools.channel import ChannelToolsMixin
 from .tools.code_intel import CodeIntelToolsMixin
 from .tools.cronjob import CronjobToolsMixin
 from .tools.execution import ExecToolsMixin
@@ -77,11 +76,11 @@ from .tools.mcp import McpToolsMixin
 from .tools.media import MediaToolsMixin
 from .tools.media import _looks_multimodal  # noqa: F401 — re-export p/ testes
 from .tools.memory import MemoryToolsMixin
+from .tools.messaging import MessagingToolsMixin
 from .tools.session import SessionToolsMixin
 from .tools.skills import SkillsToolsMixin
 from .tools.sqlite import _DEFAULT_ROWS as _SQLITE_DEFAULT_ROWS
 from .tools.sqlite import SqliteToolsMixin
-from .tools.social import SocialToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
@@ -330,7 +329,6 @@ def _normalize_tool_context(value: str | None) -> str:
 
 class ToolRouter(
     BrowserToolsMixin,
-    ChannelToolsMixin,
     CodeIntelToolsMixin,
     CronjobToolsMixin,
     ExecToolsMixin,
@@ -340,10 +338,10 @@ class ToolRouter(
     McpToolsMixin,
     MediaToolsMixin,
     MemoryToolsMixin,
+    MessagingToolsMixin,
     MiscToolsMixin,
     SessionToolsMixin,
     SkillsToolsMixin,
-    SocialToolsMixin,
     SqliteToolsMixin,
     UtilityToolsMixin,
     WebToolsMixin,
