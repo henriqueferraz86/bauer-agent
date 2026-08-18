@@ -28,9 +28,15 @@ from collections import OrderedDict
 # o cache quando executam.
 MUTATING_TOOLS = frozenset({
     "write_file", "patch", "append_file", "delete_file", "move_file",
-    "copy_file", "create_dir", "shell", "cronjob", "process",
-    "browser_click", "browser_fill", "browser_navigate",
-    "kanban_create", "kanban_update", "kanban_claim", "kanban_comment",
+    "create_dir", "cronjob", "process", "run_command",
+    "browser_click", "browser_type", "browser_navigate", "browser_press",
+    "browser_dialog", "browser_cdp",
+    "kanban_create", "kanban_complete", "kanban_block", "kanban_unblock",
+    "kanban_heartbeat", "kanban_comment", "kanban_link",
+    "skill_manage", "app_factory_init", "lsp_format", "lsp_rename",
+    "verify_app", "mixture_of_agents", "image_generate", "text_to_speech",
+    "video_analyze", "vision_analyze", "video_generate",
+    "channel_send", "send_message", "social_post",
     "memory", "todo", "mcp_call", "http_request", "delegate_task",
 })
 

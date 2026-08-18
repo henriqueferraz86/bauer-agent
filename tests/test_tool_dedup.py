@@ -104,8 +104,29 @@ class TestMutacao:
         assert d.check("read_file", {"path": "x.py"}) is None
 
     def test_mutating_cobre_tools_de_arquivo(self):
-        for tool in ("write_file", "patch", "delete_file", "move_file", "shell"):
+        for tool in ("write_file", "patch", "delete_file", "move_file", "run_command"):
             assert tool in MUTATING_TOOLS
+
+    def test_mutating_tools_sao_todas_reais(self):
+        """Nenhum nome fantasma: toda entrada de MUTATING_TOOLS precisa existir
+        no catalogo real de tools (_TOOL_SECURITY). Trava contra o bug de
+        2026-08-18: 5 nomes fantasmas (copy_file, shell, kanban_update,
+        kanban_claim, browser_fill) ficaram anos na lista sem nunca terem
+        sido tools de verdade."""
+        from bauer.tool_router import _TOOL_SECURITY
+
+        fantasmas = MUTATING_TOOLS - set(_TOOL_SECURITY)
+        assert not fantasmas, f"nomes de tool que nao existem em _TOOL_SECURITY: {fantasmas}"
+
+    def test_run_command_nunca_e_dedupado(self):
+        d = ToolCallDeduper()
+        d.record("run_command", {"cmd": "date"}, "Mon Aug 18")
+        assert d.check("run_command", {"cmd": "date"}) is None
+
+    def test_browser_type_nunca_e_dedupado(self):
+        d = ToolCallDeduper()
+        d.record("browser_type", {"ref": "ref_1", "text": "hello"}, "ok")
+        assert d.check("browser_type", {"ref": "ref_1", "text": "hello"}) is None
 
 
 class TestLimitesEThreads:
