@@ -11,35 +11,17 @@ Read-only: agrega dados já persistidos pelo runtime. Não altera execução.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 from rich.table import Table
 
-from ._common import console
+from ._common import _parse_last, console
 
 audit_app = typer.Typer(help="Auditoria de runs: relatório geral, detalhe e score.")
 
 _DEFAULT_STATE_DIR = Path("memory/runtime")
-
-
-def _parse_last(last: str) -> "datetime | None":
-    """'24h' / '7d' / '30m' / '2w' → datetime de corte UTC-aware. Vazio → None.
-
-    UTC (não naive local): os timestamps das runs são UTC; usar now() local
-    erraria o corte da janela pelo offset do fuso."""
-    if not last:
-        return None
-    m = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", last.lower())
-    if not m:
-        raise typer.BadParameter("Use formatos como 24h, 7d, 30m, 2w.")
-    n, unit = int(m.group(1)), m.group(2)
-    delta = {"m": timedelta(minutes=n), "h": timedelta(hours=n),
-             "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
-    return datetime.now(timezone.utc) - delta
 
 
 def _emit(payload: dict, fmt: str, output: "Path | None") -> None:
