@@ -176,7 +176,10 @@ def _ollama_embed(text: str, model: str, base_url: str) -> list[float] | None:
         except Exception:
             return None  # servidor inalcançável: fallback é legítimo
         if resp.status_code == 200:
-            return resp.json().get("embedding")
+            try:
+                return resp.json().get("embedding")
+            except Exception:
+                return None  # 200 com corpo inválido: fallback é legítimo
         try:
             erro = str(resp.json().get("error", "")).lower()
         except Exception:

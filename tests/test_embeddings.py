@@ -349,6 +349,46 @@ def test_ollama_embed_sucesso_direto_nao_encurta(monkeypatch):
     assert tamanhos == [len("texto normal")]  # texto preservado inteiro
 
 
+class _Resposta200JsonInvalido:
+    """Simula um 200 cujo corpo não é JSON válido (proxy, stream truncado)."""
+
+    def __init__(self) -> None:
+        self.status_code = 200
+
+    def json(self):
+        raise ValueError("corpo nao e JSON valido")
+
+
+def test_ollama_embed_200_com_corpo_invalido_retorna_none(monkeypatch):
+    from bauer.embeddings import _ollama_embed
+
+    tamanhos = _instala_post_fake(monkeypatch, lambda prompt: _Resposta200JsonInvalido())
+    assert _ollama_embed("texto", "bge-m3", "http://fake") is None
+    # 200 não é erro de tamanho: uma tentativa só, sem retry.
+    assert tamanhos == [len("texto")]
+
+
+def test_engine_embed_nao_propaga_excecao_com_200_invalido(monkeypatch):
+    """embed() deve honrar 'nunca lança' mesmo quando o servidor devolve 200 quebrado."""
+    from bauer.embeddings import EmbeddingEngine
+    import bauer.embeddings as mod
+
+    _instala_post_fake(monkeypatch, lambda prompt: _Resposta200JsonInvalido())
+
+    engine = EmbeddingEngine()
+    # Simula detecção bem-sucedida, sem tocar na rede (mesmo padrão do teste
+    # de degradação em runtime acima).
+    engine._detected = True
+    engine._backend = "ollama"
+    engine._ollama_model = "bge-m3"
+    engine._dim = 1024
+
+    vec = engine.embed("texto")  # não deve lançar
+
+    assert len(vec) == mod._VOCAB_SIZE  # caiu para TF-IDF
+    assert engine.backend == "tfidf"
+
+
 # ---------------------------------------------------------------------------
 # resolve_ollama_url — Ollama remoto + hermeticidade da suíte
 # ---------------------------------------------------------------------------
