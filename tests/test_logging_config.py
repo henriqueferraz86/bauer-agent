@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 import logging
+from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from bauer.logging_config import get_logger, setup_logging
+import pytest
+
+from bauer.logging_config import _SafeStreamHandler, get_logger, setup_logging
+
+
+@pytest.fixture(autouse=True)
+def _fecha_handlers_do_bauer_apos_o_teste():
+    """Não deixe StreamHandlers presos ao ``stderr`` capturado pelo pytest.
+
+    A suíte usa workers de longa duração. Sem a limpeza, um teste que chama
+    ``setup_logging()`` deixa no logger global um handler ligado ao capture
+    temporário daquele teste; testes posteriores escrevem num stream já
+    fechado e geram ``Logging error`` espúrio no CI.
+    """
+    yield
+    logger = logging.getLogger("bauer")
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
 
 
 def test_setup_logging_returns_logger():
@@ -77,6 +96,18 @@ def test_get_logger_custom_name():
     assert logger.name == "bauer.submodule"
 
 
+def test_stream_handler_ignora_stream_fechado_sem_emitir_erro():
+    stream = StringIO()
+    handler = _SafeStreamHandler(stream)
+    stream.close()
+    record = logging.LogRecord("bauer", logging.INFO, __file__, 1, "evento", (), None)
+
+    with patch.object(logging.StreamHandler, "handleError") as handle_error:
+        handler.emit(record)
+
+    handle_error.assert_not_called()
+
+
 def test_setup_logging_ignores_non_path_file(tmp_path, monkeypatch):
     """Regressão: file_path truthy não-caminho (ex.: cfg.logging.file de um
     MagicMock, ou config malformado) NÃO deve criar diretórios de lixo no CWD
@@ -101,9 +132,6 @@ def test_setup_logging_ignores_non_path_file(tmp_path, monkeypatch):
 # `./logs` do cwd pertencia ao root, entao FileHandler estourava PermissionError
 # e derrubava `bauer doctor` inteiro com traceback. Log e caminho ACESSORIO:
 # tem que degradar para so-console, nunca quebrar o comando (AGENTS.md).
-
-import pytest  # noqa: E402
-
 
 _FileHandlerReal = logging.FileHandler  # antes de qualquer monkeypatch
 

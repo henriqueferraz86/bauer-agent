@@ -393,15 +393,10 @@ def _insere_linha_divergente(store: VectorStore, source_id: str, dim: int) -> No
 
 
 def _espera_autoheal_terminar(store: VectorStore, timeout_s: float = 3.0) -> None:
-    import time as _time
-
-    fim = _time.monotonic() + timeout_s
-    while _time.monotonic() < fim:
-        with store._autoheal_lock:
-            if not store._autoheal_em_andamento:
-                return
-        _time.sleep(0.02)
-    raise AssertionError("auto-cura não terminou dentro do timeout do teste")
+    assert store._autoheal_done.wait(timeout_s), (
+        "auto-cura não terminou dentro do timeout do teste"
+    )
+    assert store._last_autoheal_error is None
 
 
 def test_autoheal_dispara_e_corrige_quando_engine_saudavel():
