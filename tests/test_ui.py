@@ -39,7 +39,7 @@ class TestResponseHeader:
 class TestToolLine:
     def test_status_primeiro_em_colchetes(self):
         out = ui.render_str(ui.tool_line("read_file", "x.py", status="ok", elapsed_ms=90), 60)
-        assert out.strip().startswith("[")
+        assert "[" in out and "┃" in out
         assert ui.GLYPH_OK in out and "read_file" in out and "90ms" in out
 
     def test_fail_tem_x(self):

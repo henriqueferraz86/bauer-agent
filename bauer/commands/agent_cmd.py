@@ -179,27 +179,17 @@ def _agent_session_header(
     local: bool,
     resumed: bool,
 ):
-    """Cabeçalho compacto e consistente para a sessão interativa.
+    """HUD de abertura da sessão interativa, sem repetir o painel de boot."""
+    from ..ui import agent_hud_header
 
-    O painel de boot detalha a saúde da máquina; este bloco deixa inequívoco,
-    logo no começo, qual sessão foi aberta. Assim ``bauer agent`` usa a mesma
-    linguagem visual de ``bauer run`` antes de imprimir diagnósticos extras.
-    """
-    from ..ui import session_header
-
-    execution = "execução local" if local else "execução cloud"
-    session_state = "sessão retomada" if resumed else "nova sessão"
-    return session_header(
-        "bauer agent",
+    return agent_hud_header(
         workspace=str(workspace),
         model=model,
         provider=provider,
-        meta=(
-            f"{tool_count} tools · {tool_mode}",
-            execution,
-            session_state,
-            "Ctrl+C encerra",
-        ),
+        tool_count=tool_count,
+        tool_mode=tool_mode,
+        local=local,
+        resumed=resumed,
     )
 
 
@@ -255,8 +245,6 @@ def agent(
     # checagens, quando a máquina já se declarou pronta. Anunciar a marca antes
     # de saber se o modelo existe é o que fazia um erro de config aparecer
     # DEPOIS de uma tela de boas-vindas.
-    _mostrar_intro = not resume and not no_intro
-
     cfg, reg = _load_or_die(config, models)
     setup_logging(cfg.logging.level, cfg.logging.file)
 
@@ -625,10 +613,8 @@ def agent(
     try:
         from ..runtime_capability import modo_de_tool_calling as _modo_tc
         from ..ui_boot import aplicar_preferencia_de_cor as _aplicar_cor
-        from ..ui_boot import boot_panel as _boot_panel
 
-        # ANTES do primeiro render: o logo é a primeira coisa desenhada, e ele
-        # decide entre gradiente e cor sólida pelo `color_system` do console.
+        # Antes do primeiro render: aplica a preferência ao HUD compacto.
         _aplicar_cor(console, cfg.ui)
 
         _tools_carregadas = list(router.available_tools())
@@ -636,11 +622,7 @@ def agent(
         _tool_mode_boot = _modo_tc(client)
 
         def _render_cabecalho() -> None:  # noqa: F811 — nome reusado de propósito
-            """Logo + checagens. Passado à sessão para que a troca de tema
-            possa REIMPRIMIR tudo no acento novo — texto já impresso é
-            scrollback e não pode ser recolorido."""
-            if _mostrar_intro:
-                play_intro(console)
+            """HUD de sessão, reimpresso ao trocar o acento do tema."""
             console.print(_agent_session_header(
                 workspace=workspace,
                 model=model_name,
@@ -649,13 +631,6 @@ def agent(
                 tool_mode=_tool_mode_boot,
                 local=_e_local,
                 resumed=resume,
-            ))
-            console.print(_boot_panel(
-                state,
-                tool_mode=_tool_mode_boot,
-                tools=_tools_carregadas,
-                local=_e_local,
-                console=console,
             ))
             console.print()
 

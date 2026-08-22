@@ -44,6 +44,24 @@ def test_session_header_compacto_vira_uma_linha_legivel():
     assert "modelo: qwen (ollama)" in out
 
 
+def test_agent_hud_header_concentra_identidade_e_estado_da_sessao():
+    out = ui.render_str(ui.agent_hud_header(
+        workspace="BauerAgent",
+        model="qwen3-coder:30b",
+        provider="ollama",
+        tool_count=71,
+        tool_mode="bridge",
+        local=True,
+        resumed=False,
+    ), 120)
+    assert "BAUER AGENT" in out
+    assert "INTERATIVO" in out
+    assert "online" in out
+    assert "ollama / qwen3-coder:30b" in out
+    assert "workspace" in out and "BauerAgent" in out
+    assert "71 tools · bridge · local" in out
+
+
 def test_result_card_nunca_fabrica_metricas():
     out = ui.render_str(ui.result_card("Tarefa concluída", "2 rodadas · 4 tools"), 80)
     assert "2 rodadas · 4 tools" in out

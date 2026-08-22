@@ -219,6 +219,73 @@ def session_header(
     )
 
 
+def agent_hud_header(
+    *,
+    workspace: str,
+    model: str,
+    provider: str,
+    tool_count: int,
+    tool_mode: str,
+    local: bool,
+    resumed: bool,
+) -> RenderableType:
+    """HUD compacto do ``bauer agent``: identidade, estado e contexto útil.
+
+    Diferentemente de ``session_header`` (feito para o resumo de um ``run``),
+    a conversa interativa precisa de uma única faixa discreta no topo. O
+    diagnóstico completo continua disponível em ``bauer status``/``doctor``;
+    não deve empurrar a primeira mensagem do usuário para baixo.
+    """
+    if _MODE in {"compact", "plain"}:
+        location = workspace or "workspace atual"
+        state = "retomada" if resumed else "nova sessão"
+        return status_line(
+            "bauer agent",
+            f"online · {provider} / {model} · {location} · {state}",
+            kind="running",
+        )
+
+    unicode = _ACTIVE is not theme.ASCII
+    sparkle = "✦" if unicode else "*"
+    online = "●" if unicode else "*"
+    folder = "⌂" if unicode else "@"
+    runtime = "local" if local else "cloud"
+    session_state = "retomada" if resumed else "nova sessão"
+
+    grid = Table.grid(expand=True, padding=(0, 1))
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1)
+
+    brand = Text()
+    brand.append(f"{sparkle}  BAUER AGENT", style=f"bold {theme.ACCENT_TEXT}")
+    brand.append("  ·  INTERATIVO", style=f"bold {theme.ACCENT_TEXT}")
+    grid.add_row(brand, Text(""), Text(""))
+
+    connection = Text()
+    connection.append(f"{online} ", style=theme.OK)
+    connection.append("online  ", style=theme.DIM)
+    connection.append(f"{provider} / {model}", style=theme.WHITE)
+
+    place = Text()
+    place.append(f"{folder} ", style=theme.ACCENT)
+    place.append("workspace  ", style=theme.DIM)
+    place.append(workspace or "atual", style=theme.WHITE)
+
+    execution = Text()
+    execution.append("◎ ", style=theme.ACCENT)
+    execution.append(f"{tool_count} tools · {tool_mode} · {runtime}", style=theme.DIM)
+    execution.append(f" · {session_state}", style=theme.FAINT)
+    grid.add_row(connection, place, execution)
+
+    return Panel(
+        grid,
+        border_style=theme.ACCENT,
+        box=theme.box_style(_ACTIVE),
+        padding=(0, 1),
+    )
+
+
 def progress_line(round_number: int, *, tools: int, tools_limit: int, elapsed: str, cost: str) -> Text:
     """Progresso de execução autônoma, sempre com os mesmos campos e ordem."""
     return status_line(
@@ -256,7 +323,7 @@ def tool_line(
     elapsed_ms: int | None = None,
     rail: bool = False,     # compat de assinatura (ignorado no tema Minimal)
 ) -> Text:
-    """Uma ação do agente:  ``  [✓] read_file      auth/login.py   90ms``
+    """Uma ação do agente em trilho: ``  ┃ [✓] read_file  auth/login.py``.
 
     Status primeiro em colchetes (verde/vermelho); nome alinhado em coluna;
     args e tempo esmaecidos. Calma e escaneável de cima a baixo.
@@ -267,6 +334,7 @@ def tool_line(
     }.get(status, (GLYPH_RUNNING, theme.DIM))
 
     t = Text("  ")
+    t.append(f"{_ACTIVE.rail}  ", style=theme.FAINT)
     t.append("[", style=theme.FAINT)
     t.append(glyph, style=gstyle)
     t.append("] ", style=theme.FAINT)

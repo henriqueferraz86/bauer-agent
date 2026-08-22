@@ -220,7 +220,7 @@ try:
     #: imediatamente, sem recriar a PromptSession.
     _PT_STYLE = DynamicStyle(_build_pt_style)
 
-    _PROMPT_FRAGMENTS = [("class:prompt", "❯ ")]
+    _PROMPT_FRAGMENTS = [("class:prompt", "bauer ❯ ")]
 
     def _make_slash_kb(ao_trocar_tema=None) -> "KeyBindings":
         """Key bindings do prompt: '/' abre completions, Ctrl+T cicla o acento.
@@ -5212,14 +5212,16 @@ def run_agent_session(
                 # agent_cmd. Reconstruir aqui daria um segundo caminho que
                 # divergiria do primeiro com o tempo.
                 render_header()
-            console.print(_montar_cabecalho())
+            else:
+                console.print(_montar_cabecalho())
             console.print()
         except Exception as _exc:  # noqa: BLE001 — redesenho nunca derruba a sessão
             from .logging_config import log_suppressed
             log_suppressed("theme.redesenhar_cabecalho", _exc)
 
-    console.print(_montar_cabecalho())
-    console.print()
+    if render_header is None:
+        console.print(_montar_cabecalho())
+        console.print()
 
     # Plugin hooks — session_start
     try:
@@ -5415,10 +5417,16 @@ def run_agent_session(
                     except Exception:
                         _pt_session = None
                         _set_blink_underline()
-                        user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
+                        _prompt = _ui_kit.active_glyphs().prompt
+                        user_input = console.input(
+                            f"[bold {_theme_mod.ACCENT_TEXT}]bauer {_prompt}[/] "
+                        ).strip()
                 else:
                     _set_blink_underline()
-                    user_input = console.input("[bold #00d4aa]❯[/bold #00d4aa] ").strip()
+                    _prompt = _ui_kit.active_glyphs().prompt
+                    user_input = console.input(
+                        f"[bold {_theme_mod.ACCENT_TEXT}]bauer {_prompt}[/] "
+                    ).strip()
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[dim]Sessao encerrada.[/dim]")
                 try:
