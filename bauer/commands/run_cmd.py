@@ -65,7 +65,12 @@ def run(
       bauer run "refatore o modulo Y" --max-minutes 15 --approval yolo
     """
     if not task.strip():
-        console.print("[red]Erro:[/red] informe a tarefa. Ex: [bold]bauer run \"faca X\"[/bold]")
+        from ..ui import notice
+        console.print(notice(
+            "informe a tarefa.",
+            kind="error",
+            hint='Exemplo: bauer run "faca X"',
+        ))
         raise typer.Exit(code=1)
 
     from ..paths import config_path as _canonical_config, get_bauer_home
@@ -73,10 +78,13 @@ def run(
 
     ws = (workspace or Path.cwd()).resolve()
     if is_sensitive_dir(ws):
-        console.print(
-            f"[red]Recusando rodar em pasta sensível:[/red] {ws}\n"
-            "[dim]Entre na pasta de um projeto (não a raiz do disco, sua home ou ~/.bauer).[/dim]"
-        )
+        from ..ui import notice
+        console.print(notice(
+            "Recusando rodar em pasta sensível",
+            str(ws),
+            kind="blocked",
+            hint="Entre na pasta de um projeto (não a raiz, sua home ou ~/.bauer).",
+        ))
         raise typer.Exit(code=1)
 
     cfg_path = config or _canonical_config()
@@ -91,8 +99,18 @@ def run(
     except typer.Exit:
         raise
     except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Falha ao carregar config:[/red] {exc}")
+        from ..ui import notice
+        console.print(notice("Falha ao carregar a configuração", str(exc), kind="error"))
         raise typer.Exit(code=1)
+
+    # A preferência é aplicada depois da configuração efetiva ser conhecida e
+    # antes de qualquer banner. Assim `bauer run` não volta a ter visual próprio.
+    try:
+        from ..ui_boot import aplicar_preferencia_de_cor
+        aplicar_preferencia_de_cor(console, cfg.ui)
+    except Exception:
+        # Interface é melhor esforço; o run não pode perder governança por isso.
+        pass
 
     # Limites: CLI é dona da máquina → override SUBSTITUI o config (clamp=False).
     from ..serve_loop import resolve_loop_limits
@@ -101,7 +119,8 @@ def run(
     try:
         limits = resolve_loop_limits(cfg.loop, overrides, clamp_to_config=False)
     except ValueError as exc:
-        console.print(f"[red]Limite inválido:[/red] {exc}")
+        from ..ui import notice
+        console.print(notice("Limite inválido", str(exc), kind="error"))
         raise typer.Exit(code=1)
 
     # Isolamento (S12 nível 1): quando o contrato pede `isolation: worktree`, o
@@ -128,7 +147,8 @@ def run(
     _contrato = contrato_do_workspace(ws)
     _iso = _preparar_ambiente(ws, _contrato, run_id=_run_slug, bus=_bus)
     if _iso.aviso:
-        console.print(f"[yellow]⚠ {_iso.aviso}[/yellow]")
+        from ..ui import status_line
+        console.print(status_line(str(_iso.aviso), kind="warning"))
     if _iso.isolado:
         console.print(f"[dim]worktree:[/dim] {_iso.worktree.branch} "
                       f"[dim]({_iso.workspace})[/dim]")
@@ -270,7 +290,8 @@ def run(
             # Avisa, não interrompe: quem para o laço é o orçamento. Um detector
             # heurístico com poder de matar a tarefa erraria contra refatoração
             # grande, que passa por estados intermediários iguais a estes.
-            console.print(f"[yellow]⚠ {_aviso.message}[/yellow]")
+            from ..ui import status_line
+            console.print(status_line(_aviso.message, kind="warning"))
             ctx.add_user(_aviso.message)
         _print_round(n, budget, tl)
 
@@ -323,7 +344,8 @@ def run(
                            autonomous=True)
         if gov.blocked_before_start:
             motivo = gov.error or gov.policy_reason or gov.status
-            console.print(f"[red]⛔ Bloqueado antes de iniciar:[/red] {motivo}")
+            from ..ui import notice
+            console.print(notice("Bloqueado antes de iniciar", str(motivo), kind="blocked"))
             stop_reason = "bloqueado"
         elif gov.status == CANCELLED and stop_reason == "completed":
             stop_reason = "interrupted"
@@ -331,7 +353,8 @@ def run(
             # o veredito do Kernel VENCE o do laço: gate reprovado derruba um
             # "completed" que o laço achava que tinha conquistado
             stop_reason = "validacao_reprovou"
-            console.print(f"[yellow]⚠ Validação reprovou:[/yellow] {gov.error or ''}")
+            from ..ui import notice
+            console.print(notice("Validação reprovou", str(gov.error or ""), kind="warning"))
     finally:
         cost_sink.reset(_cost_token)
         router._approval_callback = None
@@ -353,49 +376,61 @@ def run(
 
 
 def _banner(ws: Path, model: str, provider: str, limits, governed: bool) -> None:
-    from rich.panel import Panel
-    body = (
-        f"[bold]Pasta:[/bold] {ws}\n"
-        f"[bold]Modelo:[/bold] {model} [dim]({provider})[/dim]\n"
-        f"[bold]Aprovação:[/bold] {limits.approval_mode}"
-        f"{'  ·  governado pelo Kernel' if governed else ''}\n"
-        f"[bold]Limites:[/bold] {limits.banner_pt()}.\n"
-        f"[dim]Ctrl+C interrompe. Custo é ESTIMADO (depende de uso + tabela de preços).[/dim]"
-    )
-    console.print(Panel(body, title="▶ bauer run", border_style="cyan"))
+    from ..ui import session_header
+
+    meta = [
+        f"aprovação: {limits.approval_mode}",
+        "Kernel ativo" if governed else "Kernel desativado",
+        f"limites: {limits.banner_pt()}",
+        "Ctrl+C interrompe · custo estimado",
+    ]
+    console.print(session_header(
+        "bauer run",
+        workspace=str(ws),
+        model=model,
+        provider=provider,
+        meta=meta,
+    ))
 
 
 def _print_round(n: int, budget, tool_log: list) -> None:
+    from ..ui import progress_line
+
     snap = budget.snapshot()
     mins, secs = divmod(int(snap.elapsed_seconds), 60)
-    console.print(
-        f"[dim][rodada {n}] {snap.tool_calls}/{snap.max_tool_calls} tools · "
-        f"{mins}m{secs:02d}s/{budget.max_wall_seconds // 60}m · "
-        f"~US$ {snap.cost_usd:.3f}/{snap.max_cost_usd:.2f}[/dim]"
-    )
+    console.print(progress_line(
+        n,
+        tools=snap.tool_calls,
+        tools_limit=snap.max_tool_calls,
+        elapsed=f"{mins}m{secs:02d}s/{budget.max_wall_seconds // 60}m",
+        cost=f"~US$ {snap.cost_usd:.3f}/{snap.max_cost_usd:.2f}",
+    ))
 
 
 def _summary(stop_reason: str, rounds: int, budget) -> None:
+    from ..ui import result_card
+
     labels = {
-        "completed": "[green]✓ Tarefa concluída[/green]",
-        "budget_exhausted": "[yellow]⏱ Orçamento esgotado[/yellow]",
-        "kill_switch": "[red]■ Interrompido pelo kill-switch[/red]",
-        "cancelled": "[red]■ Cancelado[/red]",
-        "provider_error": "[red]✗ Erro de provider[/red]",
-        "empty_response": "[yellow]Resposta vazia — parei[/yellow]",
-        "max_rounds": "[yellow]Teto de rodadas atingido[/yellow]",
-        "interrupted": "[red]■ Interrompido (Ctrl+C)[/red]",
-        # o laço achou que terminou; o gate do Kernel discordou
-        "validacao_reprovou": "[red]✗ Validação reprovou o resultado[/red]",
-        # governança barrou no preflight — o executor nunca rodou
-        "bloqueado": "[red]⛔ Bloqueado pela governança[/red]",
+        "completed": ("Tarefa concluída", "success", ""),
+        "budget_exhausted": ("Orçamento esgotado", "warning", "Aumente um limite e execute novamente."),
+        "kill_switch": ("Interrompido pelo kill-switch", "blocked", "Verifique o estado com: bauer runtime status"),
+        "cancelled": ("Execução cancelada", "error", ""),
+        "provider_error": ("Erro do provider", "error", "Execute bauer doctor para diagnosticar o ambiente."),
+        "empty_response": ("Resposta vazia", "warning", "Revise o modelo ou tente novamente."),
+        "max_rounds": ("Teto de rodadas atingido", "warning", "Ajuste os limites se a tarefa precisar continuar."),
+        "interrupted": ("Interrompido pelo usuário", "error", ""),
+        "validacao_reprovou": ("Validação reprovou o resultado", "error", "Leia o feedback acima e execute novamente."),
+        "bloqueado": ("Bloqueado pela governança", "blocked", "Revise policy, aprovações ou o kill-switch."),
     }
     snap = budget.snapshot()
-    console.print(
-        f"\n{labels.get(stop_reason, stop_reason)} "
-        f"[dim]· {rounds} rodadas · {snap.tool_calls} tools · "
-        f"~US$ {snap.cost_usd:.3f} estimado[/dim]"
-    )
+    title, kind, hint = labels.get(stop_reason, (stop_reason, "warning", ""))
+    console.print()
+    console.print(result_card(
+        title,
+        f"{rounds} rodadas · {snap.tool_calls} tools · ~US$ {snap.cost_usd:.3f} estimado",
+        kind=kind,
+        hint=hint,
+    ))
 
 
 # _finalize_run REMOVIDO: era o caller decidindo o desfecho do run

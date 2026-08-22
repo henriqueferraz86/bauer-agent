@@ -170,6 +170,14 @@ def test_banner_says_estimated_cost(tmp_path: Path):
     assert "15 min" in result.output and "40" in result.output
 
 
+def test_run_uses_shared_visual_summary(tmp_path: Path):
+    proj = tmp_path / "p"; proj.mkdir()
+    result, _ = _run(["faca X"], _cfg(), [("fim", []), ("confirmo", [])], proj)
+    assert result.exit_code == 0
+    assert "Tarefa concluída" in result.output
+    assert "rodadas" in result.output and "tools" in result.output
+
+
 def test_exit_code_completed_is_0(tmp_path: Path):
     proj = tmp_path / "p"; proj.mkdir()
     result, _ = _run(["faca X"], _cfg(), [("fim", []), ("confirmo", [])], proj)

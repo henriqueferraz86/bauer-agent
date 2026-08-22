@@ -16,13 +16,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
-from rich import box
-
-# Paleta consistente com o logo/painel do agent.
-_ACCENT = "#00d4aa"
-_BLUE = "#3b82f6"
-_PURPLE = "#7c3aed"
-_DIM = "#6b7280"
+from . import theme, ui
 
 # Providers que rodam sem API key (estado "pronto" imediato).
 _NO_KEY_PROVIDERS = {"ollama", "opencode"}
@@ -93,10 +87,10 @@ def _logo(console: Console) -> None:
         console.print()
         for row in _logo_rows("BAUER"):
             console.print(Align.center(row))
-        console.print(Align.center(Text(_SUBTITLE, style=f"italic {_DIM}")))
+        console.print(Align.center(Text(_SUBTITLE, style=f"italic {theme.DIM}")))
         console.print()
     except Exception:
-        console.print(Text("\n  BAUER — adaptive LLM runtime\n", style=f"bold {_ACCENT}"))
+        console.print(Text("\n  BAUER — runtime adaptativo para LLMs\n", style=f"bold {theme.ACCENT_TEXT}"))
 
 
 def _steps_panel(title: str, steps: list[tuple[str, str]], *, border: str) -> Panel:
@@ -104,22 +98,24 @@ def _steps_panel(title: str, steps: list[tuple[str, str]], *, border: str) -> Pa
     for i, (cmd, desc) in enumerate(steps):
         if i:
             body.append("\n")
-        body.append(f"  {i + 1}. ", style=_DIM)
-        body.append(cmd, style=f"bold {_PURPLE}")
-        body.append(f"   {desc}", style="white")
-    return Panel(body, title=Text(title, style=f"bold {_ACCENT}"),
-                 title_align="left", border_style=border, box=box.ROUNDED, padding=(1, 2))
+        body.append(f"  {i + 1}. ", style=theme.DIM)
+        body.append(cmd, style=f"bold {theme.ACCENT_TEXT}")
+        body.append(f"   {desc}", style=theme.WHITE)
+    return Panel(body, title=Text(title, style=f"bold {theme.ACCENT_TEXT}"),
+                 title_align="left", border_style=border,
+                 box=theme.box_style(ui.active_glyphs()), padding=(1, 2))
 
 
 def welcome_screen(console: Console | None = None, config_path: str | Path = "config.yaml") -> None:
     """Tela de boas-vindas inteligente — orienta conforme o estado atual."""
     con = console or Console()
+    ui.use_glyphs(stream=getattr(con, "file", None))
     cfg_path = Path(config_path)
     info = detect_state(cfg_path)
     _logo(con)
 
     if info["state"] == "fresh":
-        con.print(Text("  Bem-vindo! Vamos configurar em 1 passo.", style="bold white"))
+        con.print(ui.status_line("Bem-vindo! Vamos configurar em 1 passo.", kind="info"))
         con.print(_steps_panel(
             "Comece aqui",
             [
@@ -127,14 +123,14 @@ def welcome_screen(console: Console | None = None, config_path: str | Path = "co
                 ("bauer doctor", "checar se o ambiente está ok"),
                 ("bauer agent", "conversar com o agente (com tools)"),
             ],
-            border=_ACCENT,
+            border=theme.ACCENT,
         ))
         con.print(
-            f"  [dim]Sem cartão? Escolha[/dim] [bold {_ACCENT}]Groq[/bold {_ACCENT}] "
-            f"[dim]ou[/dim] [bold {_ACCENT}]OpenCode[/bold {_ACCENT}] [dim]no init (grátis).[/dim]"
+            f"  [dim]Sem cartão? Escolha[/dim] [bold {theme.ACCENT_TEXT}]Groq[/bold {theme.ACCENT_TEXT}] "
+            f"[dim]ou[/dim] [bold {theme.ACCENT_TEXT}]OpenCode[/bold {theme.ACCENT_TEXT}] [dim]no init (grátis).[/dim]"
         )
     elif info["state"] == "almost":
-        con.print(Text("  Quase lá — falta só a credencial.", style="bold yellow"))
+        con.print(ui.status_line("Quase lá — falta só a credencial.", kind="warning"))
         if info["hint"]:
             con.print(f"  [yellow]→[/yellow] {info['hint']}")
         con.print(_steps_panel(
@@ -144,14 +140,13 @@ def welcome_screen(console: Console | None = None, config_path: str | Path = "co
                 ("bauer doctor", "confirmar conectividade"),
                 ("bauer agent", "começar a usar"),
             ],
-            border="yellow",
+            border=theme.WARN,
         ))
     else:  # ready
         prov = info["provider"] or "?"
         model = info["model"] or "?"
         con.print(
-            f"  [bold {_ACCENT}]⚡ Você está pronto![/bold {_ACCENT}]  "
-            f"[dim]{model} ({prov})[/dim]"
+            ui.status_line("Pronto para começar", f"{model} ({prov})", kind="success")
         )
         con.print(_steps_panel(
             "O que fazer agora",
@@ -161,7 +156,7 @@ def welcome_screen(console: Console | None = None, config_path: str | Path = "co
                 ("bauer model", "trocar de provider/modelo"),
                 ("bauer guide", "tour rápido dos modos"),
             ],
-            border=_ACCENT,
+            border=theme.ACCENT,
         ))
 
     con.print(
@@ -283,13 +278,15 @@ _TOUR: list[tuple[str, str]] = [
 def guide_tour(console: Console | None = None, *, interactive: bool = True) -> None:
     """Tour curto pelos modos do Bauer. Enter avança; q sai."""
     con = console or Console()
+    ui.use_glyphs(stream=getattr(con, "file", None))
     _logo(con)
     total = len(_TOUR)
     for idx, (title, body) in enumerate(_TOUR, 1):
         con.print(Panel(
             Text(body, style="white"),
-            title=Text(f"{idx}/{total}  {title}", style=f"bold {_ACCENT}"),
-            title_align="left", border_style=_BLUE, box=box.ROUNDED, padding=(1, 2),
+            title=Text(f"{idx}/{total}  {title}", style=f"bold {theme.ACCENT_TEXT}"),
+            title_align="left", border_style=theme.ACCENT,
+            box=theme.box_style(ui.active_glyphs()), padding=(1, 2),
         ))
         if interactive and idx < total:
             try:
@@ -300,6 +297,6 @@ def guide_tour(console: Console | None = None, *, interactive: bool = True) -> N
             if ans in ("q", "quit", "sair"):
                 return
     con.print(
-        f"\n  [bold {_ACCENT}]Pronto![/bold {_ACCENT}] Comece com "
-        f"[bold {_PURPLE}]bauer agent[/bold {_PURPLE}].\n"
+        f"\n  [bold {theme.ACCENT_TEXT}]Pronto![/bold {theme.ACCENT_TEXT}] Comece com "
+        f"[bold {theme.ACCENT_TEXT}]bauer agent[/bold {theme.ACCENT_TEXT}].\n"
     )

@@ -59,6 +59,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [045](045-collapse-search-text-regex-search.md) | `search_text` passa a delegar para `regex_search` (implementação duplicada em `tools/fs.py`) | P3 | P3 | S | — | DONE (commit `42aabe6`) |
 | [046](046-fix-stale-tools-yaml.md) | Deletar `tools.yaml` — cobre 7 de 84 tools, efeito zero em runtime hoje | DX | P3 | S | — | DONE (commit `3089c49`) |
 | [047](047-merge-channel-social-mixins.md) | Fundir `SocialToolsMixin` em `ChannelToolsMixin` — dois mixins pequenos pro mesmo domínio (mensageria) | P6 | P4 | S | — | DONE (commit `3b5398b`) |
+| [048](048-cli-visual-2.md) | Bauer CLI Visual 2.0 — linguagem textual, resultados e fluxos principais | DX | P2 | M | 028 | DONE |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 

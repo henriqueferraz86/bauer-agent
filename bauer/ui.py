@@ -12,6 +12,7 @@ CSS do SPA. Ver plano 028 — três paletas divergentes foi o que motivou isso.
 from __future__ import annotations
 
 from rich.console import Group, RenderableType
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -56,17 +57,40 @@ _NAME_COL = 15
 #: olhando o console real. Resolver por chamada olharia `sys.stdout`, que não é
 #: necessariamente o destino do render (Rich escreve no `file` do Console).
 _ACTIVE: theme.Glyphs = theme.UNICODE
+_MODE = "rich"
+_EMOJIS = True
 
 
 def use_glyphs(g: "theme.Glyphs | None" = None, *, stream=None) -> theme.Glyphs:
     """Fixa o conjunto de glifos da sessão. Sem argumento, detecta pelo stream."""
     global _ACTIVE
-    _ACTIVE = g if g is not None else theme.glyphs(stream=stream)
+    if _MODE == "plain" or not _EMOJIS:
+        _ACTIVE = theme.ASCII
+    else:
+        _ACTIVE = g if g is not None else theme.glyphs(stream=stream)
     return _ACTIVE
 
 
 def active_glyphs() -> theme.Glyphs:
     return _ACTIVE
+
+
+def configure(*, mode: str = "rich", emojis: bool = True, stream=None) -> theme.Glyphs:
+    """Aplica a preferência visual da sessão sem alterar variáveis do SO.
+
+    ``plain`` é uma escolha explícita do usuário: suprime cor e glifos
+    decorativos nos renderizadores do Bauer. ``compact`` preserva a semântica,
+    mas faz cards virarem linhas para caber em terminais menores. O fallback de
+    encoding continua sendo responsabilidade de ``theme.glyphs``.
+    """
+    global _MODE, _EMOJIS
+    _MODE = mode if mode in {"rich", "compact", "plain"} else "rich"
+    _EMOJIS = bool(emojis)
+    return use_glyphs(stream=stream)
+
+
+def visual_mode() -> str:
+    return _MODE
 
 
 # ── Gradiente (helpers, não usados pelo tema Minimal) ───────────────────────
@@ -108,6 +132,111 @@ def response_header(model: str = "", cost: str = "", elapsed: str = "") -> Rende
     right = Text(" · ".join(meta_parts), style=theme.DIM) if meta_parts else Text()
     grid.add_row(left, right)
     return grid
+
+
+# ── Linguagem textual compartilhada ─────────────────────────────────────────
+_STATUS = {
+    "success": ("ok", theme.OK),
+    "running": ("running", theme.ACCENT),
+    "info": ("bot", theme.ACCENT),
+    "warning": ("warn", theme.WARN),
+    "error": ("fail", theme.BAD),
+    "blocked": ("fail", theme.BAD),
+}
+
+
+def status_line(label: str, detail: str = "", *, kind: str = "info") -> Text:
+    """Linha semântica, legível também no conjunto ASCII.
+
+    Não aceita markup de chamadores: títulos, detalhes e paths vindos do runtime
+    são sempre texto. Isso evita uma saída de tool acidentalmente virar estilo
+    Rich e mantém a aparência uniforme entre comandos.
+    """
+    glyph_name, color = _STATUS.get(kind, _STATUS["info"])
+    glyph = getattr(_ACTIVE, glyph_name)
+    text = Text("  ")
+    text.append("[", style=theme.FAINT)
+    text.append(glyph, style=color)
+    text.append("] ", style=theme.FAINT)
+    text.append(label, style=f"bold {theme.WHITE}" if kind in {"error", "blocked"} else theme.WHITE)
+    if detail:
+        text.append("  ", style=theme.FAINT)
+        text.append(detail, style=theme.DIM)
+    return text
+
+
+def notice(title: str, detail: str = "", *, kind: str = "info", hint: str = "") -> RenderableType:
+    """Aviso, erro ou confirmação com o mesmo contrato visual em toda a CLI."""
+    line = status_line(title, detail, kind=kind)
+    if _MODE in {"compact", "plain"}:
+        return Group(line, Text(f"     {hint}", style=theme.FAINT)) if hint else line
+
+    _, color = _STATUS.get(kind, _STATUS["info"])
+    body: list[RenderableType] = [line]
+    if hint:
+        body.append(Text(f"  {hint}", style=theme.FAINT))
+    return Panel(
+        Group(*body),
+        border_style=color,
+        box=theme.box_style(_ACTIVE),
+        padding=(0, 1),
+    )
+
+
+def session_header(
+    title: str,
+    *,
+    workspace: str = "",
+    model: str = "",
+    provider: str = "",
+    meta: "list[str] | tuple[str, ...]" = (),
+) -> RenderableType:
+    """Resumo inicial de uma sessão ou execução sem repetir uma parede de texto."""
+    rows: list[tuple[str, str]] = []
+    if workspace:
+        rows.append(("workspace", workspace))
+    if model:
+        rows.append(("modelo", model + (f" ({provider})" if provider else "")))
+    if meta:
+        rows.append(("execução", " · ".join(item for item in meta if item)))
+
+    if _MODE in {"compact", "plain"}:
+        detail = " · ".join(f"{label}: {value}" for label, value in rows)
+        return status_line(title, detail, kind="running")
+
+    grid = Table.grid(padding=(0, 1), expand=True)
+    grid.add_column(style=theme.DIM, no_wrap=True)
+    grid.add_column(style=theme.WHITE, overflow="fold")
+    for label, value in rows:
+        grid.add_row(label, value)
+    return Panel(
+        grid,
+        title=Text(title, style=f"bold {theme.ACCENT_TEXT}"),
+        title_align="left",
+        border_style=theme.ACCENT,
+        box=theme.box_style(_ACTIVE),
+        padding=(0, 1),
+    )
+
+
+def progress_line(round_number: int, *, tools: int, tools_limit: int, elapsed: str, cost: str) -> Text:
+    """Progresso de execução autônoma, sempre com os mesmos campos e ordem."""
+    return status_line(
+        f"rodada {round_number}",
+        f"{tools}/{tools_limit} tools · {elapsed} · {cost}",
+        kind="running",
+    )
+
+
+def result_card(
+    title: str,
+    detail: str,
+    *,
+    kind: str = "success",
+    hint: str = "",
+) -> RenderableType:
+    """Fechamento de uma operação; nunca inventa métricas ausentes."""
+    return notice(title, detail, kind=kind, hint=hint)
 
 
 # ── Linha de tool (status-primeiro) ─────────────────────────────────────────

@@ -46,6 +46,19 @@ def test_load_valid_config(tmp_path: Path):
     assert cfg.runtime.safety_margin_mb == 1024
 
 
+def test_ui_visual_preferences_are_strict_and_have_safe_defaults(tmp_path: Path):
+    p = tmp_path / "config.yaml"
+    p.write_text(VALID_CONFIG + "\nui:\n  mode: compact\n  emojis: false\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.ui.mode == "compact"
+    assert cfg.ui.emojis is False
+
+    invalid = tmp_path / "invalid.yaml"
+    invalid.write_text(VALID_CONFIG + "\nui:\n  mode: neon\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="mode"):
+        load_config(invalid)
+
+
 def test_missing_file(tmp_path: Path, monkeypatch):
     # Isola BAUER_HOME: load_config faz fallback para ~/.bauer/config.yaml
     # quando o path não existe. Sem isolar, o teste falha em máquinas que têm

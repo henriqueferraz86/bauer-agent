@@ -5996,11 +5996,16 @@ def run_agent_session(
                 # remove o input pendurado do contexto e volta ao prompt
                 del ctx.messages[_base_msgs - 1:]
                 _blocked = _kout.error or _kout.policy_reason or _kout.status
-                console.print(f"[red]⛔ {_blocked}[/red]")
+                from .ui import notice as _notice
+                _hint = ""
                 if _kout.status == "waiting_approval" and _kout.approval_id:
-                    console.print(
-                        f"[dim]aprove com: bauer kernel approve {_kout.approval_id}[/dim]"
-                    )
+                    _hint = f"Aprove com: bauer kernel approve {_kout.approval_id}"
+                console.print(_notice(
+                    "Turno bloqueado pela governança",
+                    str(_blocked),
+                    kind="blocked",
+                    hint=_hint,
+                ))
                 continue
         else:
             outcome = _invoke_turn_com_quadro()
