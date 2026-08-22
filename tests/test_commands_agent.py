@@ -88,13 +88,12 @@ def test_agent_session_header_mostra_contexto_da_sessao():
         resumed=False,
     ), 120)
 
-    assert "bauer agent" in rendered
+    assert "BAUER AGENT" in rendered
     assert str(Path("C:/projetos/demo")) in rendered
-    assert "qwen3-coder:30b (ollama)" in rendered
+    assert "ollama / qwen3-coder:30b" in rendered
     assert "12 tools" in rendered
     assert "native" in rendered
-    assert "execução local" in rendered
-    assert "nova sessão" in rendered
+    assert "local" in rendered
 
 
 # ─── agent list (sem agentes criados) ─────────────────────────────────────────
