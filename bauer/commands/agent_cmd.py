@@ -169,6 +169,40 @@ def _resolve_cwd_project(*, interactive: bool, cwd: "Path | None" = None) -> "Pa
         return None
 
 
+def _agent_session_header(
+    *,
+    workspace: Path,
+    model: str,
+    provider: str,
+    tool_count: int,
+    tool_mode: str,
+    local: bool,
+    resumed: bool,
+):
+    """Cabeçalho compacto e consistente para a sessão interativa.
+
+    O painel de boot detalha a saúde da máquina; este bloco deixa inequívoco,
+    logo no começo, qual sessão foi aberta. Assim ``bauer agent`` usa a mesma
+    linguagem visual de ``bauer run`` antes de imprimir diagnósticos extras.
+    """
+    from ..ui import session_header
+
+    execution = "execução local" if local else "execução cloud"
+    session_state = "sessão retomada" if resumed else "nova sessão"
+    return session_header(
+        "bauer agent",
+        workspace=str(workspace),
+        model=model,
+        provider=provider,
+        meta=(
+            f"{tool_count} tools · {tool_mode}",
+            execution,
+            session_state,
+            "Ctrl+C encerra",
+        ),
+    )
+
+
 @agent_app.callback(invoke_without_command=True)
 def agent(
     ctx: typer.Context,
@@ -607,6 +641,15 @@ def agent(
             scrollback e não pode ser recolorido."""
             if _mostrar_intro:
                 play_intro(console)
+            console.print(_agent_session_header(
+                workspace=workspace,
+                model=model_name,
+                provider=cfg.model.provider,
+                tool_count=len(_tools_carregadas),
+                tool_mode=_tool_mode_boot,
+                local=_e_local,
+                resumed=resume,
+            ))
             console.print(_boot_panel(
                 state,
                 tool_mode=_tool_mode_boot,
