@@ -21,6 +21,7 @@ há três dias é tão enganoso quanto não mostrar nada.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 
 from rich.console import Group, RenderableType
 from rich.table import Table
@@ -142,8 +143,8 @@ def boot_lines(
     return linhas
 
 
-def aplicar_preferencia_de_cor(console) -> str:
-    """Aplica `ui.truecolor` do config ao console. Devolve o modo em uso.
+def aplicar_preferencia_de_cor(console, ui_config=None) -> str:
+    """Aplica as preferências visuais do config. Devolve a cor em uso.
 
     O Rich fixa o `color_system` na construção do `Console`; trocar depois é
     mexer no atributo interno `_color_system`. Feito aqui, num lugar só, e com
@@ -155,11 +156,24 @@ def aplicar_preferencia_de_cor(console) -> str:
 
         from .config_loader import load_config
 
-        pref = str(getattr(load_config().ui, "truecolor", "auto") or "auto").lower()
+        ui_config = ui_config or load_config().ui
+        pref = str(getattr(ui_config, "truecolor", "auto") or "auto").lower()
         if pref == "sim":
             console._color_system = ColorSystem.TRUECOLOR
         elif pref == "nao":
             console._color_system = ColorSystem.STANDARD
+        modo = str(getattr(ui_config, "mode", "rich") or "rich").lower()
+        # Variáveis de ambiente são o escape hatch para CI/pipes e vencem a
+        # preferência persistida, como já faziam antes de existir `ui.mode`.
+        if os.environ.get("BAUER_UI", "").strip().lower() == "plain":
+            modo = "plain"
+        if modo == "plain":
+            console._color_system = None
+        ui.configure(
+            mode=modo,
+            emojis=bool(getattr(ui_config, "emojis", True)),
+            stream=getattr(console, "file", None),
+        )
     except Exception as exc:  # noqa: BLE001 — preferência ilegível: mantém o auto
         from .logging_config import log_suppressed
         log_suppressed("ui.preferencia_de_cor", exc)

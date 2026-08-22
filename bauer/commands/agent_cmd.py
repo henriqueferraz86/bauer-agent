@@ -595,7 +595,7 @@ def agent(
 
         # ANTES do primeiro render: o logo é a primeira coisa desenhada, e ele
         # decide entre gradiente e cor sólida pelo `color_system` do console.
-        _aplicar_cor(console)
+        _aplicar_cor(console, cfg.ui)
 
         _tools_carregadas = list(router.available_tools())
         _e_local = bool(local) or cfg.model.provider == "ollama"
@@ -654,11 +654,19 @@ def agent(
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):
             _session_result = "interrupted"
-            console.print("\n[dim]Sessao encerrada pelo usuario.[/dim]")
+            from ..ui import notice
+            console.print()
+            console.print(notice("Sessão encerrada pelo usuário.", kind="info"))
         else:
             _session_result = "error"
-            console.print(f"\n[red]Erro inesperado:[/red] {exc}")
-            console.print("[dim]Execute 'bauer doctor' para verificar o ambiente.[/dim]")
+            from ..ui import notice
+            console.print()
+            console.print(notice(
+                "Erro inesperado",
+                str(exc),
+                kind="error",
+                hint="Execute 'bauer doctor' para verificar o ambiente.",
+            ))
         raise typer.Exit(code=1)
     finally:
         # L5: grava outcome da sessão automaticamente no MODEL_EXPERIENCE.md

@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import pytest
+
 from bauer import ui
+
+
+@pytest.fixture(autouse=True)
+def _visual_padrao():
+    """Os modos visuais são estado de sessão; cada teste começa neutro."""
+    anterior_mode = ui.visual_mode()
+    anterior_glyphs = ui.active_glyphs()
+    ui.configure(mode="rich", emojis=True)
+    yield
+    ui.configure(mode=anterior_mode, emojis=anterior_glyphs is not ui.theme.ASCII)
+    ui.use_glyphs(anterior_glyphs)
 
 
 class TestResponseHeader:

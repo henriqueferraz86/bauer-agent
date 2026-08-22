@@ -393,15 +393,10 @@ def _insere_linha_divergente(store: VectorStore, source_id: str, dim: int) -> No
 
 
 def _espera_autoheal_terminar(store: VectorStore, timeout_s: float = 3.0) -> None:
-    import time as _time
-
-    fim = _time.monotonic() + timeout_s
-    while _time.monotonic() < fim:
-        with store._autoheal_lock:
-            if not store._autoheal_em_andamento:
-                return
-        _time.sleep(0.02)
-    raise AssertionError("auto-cura não terminou dentro do timeout do teste")
+    assert store._autoheal_done.wait(timeout_s), (
+        "auto-cura não terminou dentro do timeout do teste"
+    )
+    assert store._last_autoheal_error is None
 
 
 def test_autoheal_dispara_e_corrige_quando_engine_saudavel():
@@ -420,6 +415,21 @@ def test_autoheal_dispara_e_corrige_quando_engine_saudavel():
             "SELECT embedding FROM vectors WHERE source_id='legado'"
         ).fetchone()
     assert len(json.loads(row[0])) == 8
+
+
+def test_autoheal_primeira_execucao_ignora_cooldown_do_boot(monkeypatch):
+    """A 1ª cura não pode ser bloqueada só porque o host acabou de iniciar."""
+    monkeypatch.setattr("bauer.vector_store.time.monotonic", lambda: 1.0)
+
+    engine = _EngineControlavel(dim=8, backend="ollama")
+    store = VectorStore(":memory:", engine=engine)
+    store.store("bom", "t", "texto atual", embedding=[1.0] * 8)
+    _insere_linha_divergente(store, "legado", 4096)
+
+    store.search_by_vector([1.0] * 8, top_k=10)
+    _espera_autoheal_terminar(store)
+
+    assert engine.chamadas_embed == ["texto legado"]
 
 
 def test_autoheal_nao_dispara_com_engine_degradado():

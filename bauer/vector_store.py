@@ -128,7 +128,17 @@ class VectorStore:
         # tentativas. Ver `_autoheal_divergentes`.
         self._autoheal_lock = threading.Lock()
         self._autoheal_em_andamento = False
-        self._last_autoheal_at: float = 0.0
+        # Evento de conclusão e referência da thread tornam o ciclo de vida
+        # observável (inclusive para shutdown/testes) sem transformar a busca
+        # síncrona em uma operação bloqueante.
+        self._autoheal_done = threading.Event()
+        self._autoheal_done.set()
+        self._autoheal_thread: threading.Thread | None = None
+        self._last_autoheal_error: Exception | None = None
+        # ``None`` significa que nenhuma tentativa ocorreu ainda. Usar 0.0
+        # aqui faria a primeira auto-cura respeitar indevidamente o cooldown
+        # quando o processo inicia menos de _AUTOHEAL_COOLDOWN_S após o boot.
+        self._last_autoheal_at: float | None = None
 
         if self._db_path == ":memory:":
             self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -519,23 +529,44 @@ class VectorStore:
         """
         if self._engine.backend != "ollama":
             return
+        # ``sqlite3.Row`` pertence ao cursor que leu a busca. Copiamos os
+        # campos necessários antes de cruzar a fronteira da thread, para que a
+        # auto-cura não dependa do ciclo de vida daquele cursor/conexão.
+        pendentes = [
+            (row["source_id"], row["source_type"], row["text"])
+            for row in divergentes
+        ]
         agora = time.monotonic()
         with self._autoheal_lock:
             if self._autoheal_em_andamento:
                 return
-            if agora - self._last_autoheal_at < _AUTOHEAL_COOLDOWN_S:
+            if (
+                self._last_autoheal_at is not None
+                and agora - self._last_autoheal_at < _AUTOHEAL_COOLDOWN_S
+            ):
                 return
             self._autoheal_em_andamento = True
+            self._autoheal_done.clear()
+            self._last_autoheal_error = None
             self._last_autoheal_at = agora
-        t = threading.Thread(
-            target=self._autoheal_divergentes,
-            args=(divergentes,),
-            name="vector_store-autoheal",
-            daemon=True,
-        )
-        t.start()
+            self._autoheal_thread = threading.Thread(
+                target=self._autoheal_divergentes,
+                args=(pendentes,),
+                name="vector_store-autoheal",
+                daemon=True,
+            )
+            thread = self._autoheal_thread
+        try:
+            thread.start()
+        except Exception:
+            # Falhar ao criar uma thread não pode deixar o store para sempre
+            # marcado como "em andamento".
+            with self._autoheal_lock:
+                self._autoheal_em_andamento = False
+                self._autoheal_done.set()
+            raise
 
-    def _autoheal_divergentes(self, rows: list[sqlite3.Row]) -> None:
+    def _autoheal_divergentes(self, rows: list[tuple[str, str, str]]) -> None:
         """Reindexa em segundo plano só as linhas puladas (não a base inteira).
 
         Mesmo padrão de segurança do `rebuild_index`: embeda tudo primeiro,
@@ -545,8 +576,8 @@ class VectorStore:
         try:
             dim_alvo = self._engine.dimension
             pendentes: list[tuple[str, str, str]] = []
-            for row in rows:
-                novo = self._engine.embed(row["text"])
+            for source_id, source_type, text in rows:
+                novo = self._engine.embed(text)
                 if len(novo) != dim_alvo:
                     log.warning(
                         "vector_store: auto-cura abortada — engine degradou no "
@@ -556,7 +587,7 @@ class VectorStore:
                         dim_alvo, len(novo),
                     )
                     return
-                pendentes.append((json.dumps(novo), row["source_id"], row["source_type"]))
+                pendentes.append((json.dumps(novo), source_id, source_type))
             with self._connect() as conn:
                 conn.executemany(
                     "UPDATE vectors SET embedding = ? WHERE source_id = ? AND source_type = ?",
@@ -568,9 +599,19 @@ class VectorStore:
                 "dims) — nenhuma ação manual foi necessária.",
                 len(pendentes), dim_alvo,
             )
+        except Exception as exc:
+            # A busca que disparou a correção já devolveu seu resultado. Uma
+            # falha acessória nunca deve derrubá-la nem ficar silenciosa em uma
+            # thread daemon (onde seria muito difícil diagnosticar).
+            self._last_autoheal_error = exc
+            log.exception(
+                "vector_store: auto-cura falhou; o índice foi preservado e uma "
+                "nova busca poderá tentar de novo."
+            )
         finally:
             with self._autoheal_lock:
                 self._autoheal_em_andamento = False
+                self._autoheal_done.set()
 
     def _fetch_rows(self, source_type: str | None) -> list[sqlite3.Row]:
         with self._connect() as conn:

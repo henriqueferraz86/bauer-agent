@@ -178,6 +178,24 @@ agent:
 
 
 # =============================================================================
+# INTERFACE — aparência do terminal
+# =============================================================================
+
+ui:
+  # rich (padrão) usa cards e detalhes; compact reduz cards a linhas;
+  # plain remove cor e glifos decorativos. BAUER_UI=plain continua vencendo
+  # automaticamente quando configurado no ambiente.
+  mode: rich
+
+  # Mostra glifos Unicode quando o terminal suporta. false preserva toda a
+  # informação com os equivalentes ASCII (OK, XX, >, #).
+  emojis: true
+
+  # auto detecta o terminal; sim força 24 bits em SSH; nao testa a paleta ANSI.
+  truecolor: auto
+
+
+# =============================================================================
 # OLLAMA — LLM local (padrão)
 # =============================================================================
 

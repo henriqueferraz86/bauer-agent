@@ -247,7 +247,9 @@ class TestPreferenciaDeCor:
 
     @staticmethod
     def _cfg(valor):
-        return type("C", (), {"ui": type("U", (), {"truecolor": valor})()})()
+        return type("C", (), {"ui": type("U", (), {
+            "truecolor": valor, "mode": "rich", "emojis": True,
+        })()})()
 
     def _aplicar(self, pref, sistema="standard"):
         from unittest.mock import patch
@@ -296,6 +298,20 @@ class TestPreferenciaDeCor:
             "ensinar `export COLORTERM` no rc afirma a capacidade para todo "
             "programa e fica fixa quando o terminal muda"
         )
+
+    def test_plain_do_config_remove_cor_e_usa_ascii(self):
+        from bauer import ui
+        from bauer.ui_boot import aplicar_preferencia_de_cor
+
+        con = self._console("truecolor")
+        cfg = type("U", (), {"truecolor": "auto", "mode": "plain", "emojis": False})()
+        anterior = ui.active_glyphs()
+        try:
+            assert aplicar_preferencia_de_cor(con, cfg) == "None"
+            assert ui.active_glyphs().ok == "OK"
+        finally:
+            ui.configure(mode="rich", emojis=True)
+            ui.use_glyphs(anterior)
 
 
 class TestServePanel:

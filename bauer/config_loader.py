@@ -1007,6 +1007,8 @@ class UiSection(_StrictSection):
     """
 
     truecolor: Literal["auto", "sim", "nao"] = "auto"
+    mode: Literal["rich", "compact", "plain"] = "rich"
+    emojis: bool = True
 
 
 class BauerConfig(_StrictSection):

@@ -19,6 +19,23 @@ _LEVELS = {
 }
 
 
+class _SafeStreamHandler(logging.StreamHandler):
+    """Stream handler que tolera a captura de stderr já encerrada.
+
+    Threads best-effort podem terminar depois que um runner de teste (ou um
+    host embutido) troca/fecha seu stream temporário. O logging padrão captura
+    o ``ValueError`` mas imprime um segundo ``Logging error`` no stderr, que
+    encobre o evento original. Em stream fechado não há destino possível;
+    descartamos somente esse caso, preservando os demais erros de logging.
+    """
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (OSError, ValueError)) and getattr(self.stream, "closed", False):
+            return
+        super().handleError(record)
+
+
 def setup_logging(level: str = "info", file_path: str | None = None) -> logging.Logger:
     """Configura o logger raiz do Bauer. Idempotente."""
     logger = logging.getLogger("bauer")
@@ -34,7 +51,7 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    stream = logging.StreamHandler(sys.stderr)
+    stream = _SafeStreamHandler(sys.stderr)
     stream.setFormatter(fmt)
     logger.addHandler(stream)
 

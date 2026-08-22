@@ -55,9 +55,8 @@ app = typer.Typer(
     add_completion=False,
     help="Bauer Agent — runtime adaptativo para LLMs locais e cloud.",
     epilog=(
-        "COMECE AQUI:  bauer run \"tarefa\" (faz de ponta a ponta na pasta atual)  ·  "
-        "bauer agent (conversar)  ·  bauer serve (UI web)  ·  bauer init (configurar)  ·  "
-        "bauer doctor (checar).  Rode 'bauer guide' para o tour; os demais comandos sao avancados."
+        "COMECE AQUI: bauer run \"tarefa\" · bauer agent · bauer serve · bauer init. "
+        "Use 'bauer guide' para o tour e 'bauer <área> --help' para comandos avançados."
     ),
 )
 
