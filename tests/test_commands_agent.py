@@ -72,6 +72,31 @@ def test_agent_subcommands_registered():
     assert "delete" in output_lower
 
 
+def test_agent_session_header_mostra_contexto_da_sessao():
+    """O chat interativo deve expor o novo cabeçalho, não só o `bauer run`."""
+    from bauer import ui
+    from bauer.commands.agent_cmd import _agent_session_header
+
+    ui.configure(mode="rich", emojis=True)
+    rendered = ui.render_str(_agent_session_header(
+        workspace=Path("C:/projetos/demo"),
+        model="qwen3-coder:30b",
+        provider="ollama",
+        tool_count=12,
+        tool_mode="native",
+        local=True,
+        resumed=False,
+    ), 120)
+
+    assert "bauer agent" in rendered
+    assert str(Path("C:/projetos/demo")) in rendered
+    assert "qwen3-coder:30b (ollama)" in rendered
+    assert "12 tools" in rendered
+    assert "native" in rendered
+    assert "execução local" in rendered
+    assert "nova sessão" in rendered
+
+
 # ─── agent list (sem agentes criados) ─────────────────────────────────────────
 
 
