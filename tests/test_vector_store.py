@@ -422,6 +422,21 @@ def test_autoheal_dispara_e_corrige_quando_engine_saudavel():
     assert len(json.loads(row[0])) == 8
 
 
+def test_autoheal_primeira_execucao_ignora_cooldown_do_boot(monkeypatch):
+    """A 1ª cura não pode ser bloqueada só porque o host acabou de iniciar."""
+    monkeypatch.setattr("bauer.vector_store.time.monotonic", lambda: 1.0)
+
+    engine = _EngineControlavel(dim=8, backend="ollama")
+    store = VectorStore(":memory:", engine=engine)
+    store.store("bom", "t", "texto atual", embedding=[1.0] * 8)
+    _insere_linha_divergente(store, "legado", 4096)
+
+    store.search_by_vector([1.0] * 8, top_k=10)
+    _espera_autoheal_terminar(store)
+
+    assert engine.chamadas_embed == ["texto legado"]
+
+
 def test_autoheal_nao_dispara_com_engine_degradado():
     """Reindexar com o MESMO engine degradado reescreveria TF-IDF em cima de
     TF-IDF — pior que não fazer nada, porque reseta o timestamp sem corrigir."""

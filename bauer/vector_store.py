@@ -128,7 +128,10 @@ class VectorStore:
         # tentativas. Ver `_autoheal_divergentes`.
         self._autoheal_lock = threading.Lock()
         self._autoheal_em_andamento = False
-        self._last_autoheal_at: float = 0.0
+        # ``None`` significa que nenhuma tentativa ocorreu ainda. Usar 0.0
+        # aqui faria a primeira auto-cura respeitar indevidamente o cooldown
+        # quando o processo inicia menos de _AUTOHEAL_COOLDOWN_S após o boot.
+        self._last_autoheal_at: float | None = None
 
         if self._db_path == ":memory:":
             self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -523,7 +526,10 @@ class VectorStore:
         with self._autoheal_lock:
             if self._autoheal_em_andamento:
                 return
-            if agora - self._last_autoheal_at < _AUTOHEAL_COOLDOWN_S:
+            if (
+                self._last_autoheal_at is not None
+                and agora - self._last_autoheal_at < _AUTOHEAL_COOLDOWN_S
+            ):
                 return
             self._autoheal_em_andamento = True
             self._last_autoheal_at = agora
