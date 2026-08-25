@@ -62,6 +62,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [048](048-cli-visual-2.md) | Bauer CLI Visual 2.0 — linguagem textual, resultados e fluxos principais | DX | P2 | M | 028 | DONE |
 | [050](050-p1-governance-hard-limits.md) | Tornar efetivos os limites de governança e aprovações | Segurança/correção | P1 | L | 049 | DONE (merge `af40d4b`; commit `74af4c4`) |
 | [051](051-p2-resource-boundaries.md) | Impor limites a timeout de tools e tarefas de memória | Confiabilidade | P2 | M | 050 | DONE (merge `0bb8ae4`; commit `98932ac`) |
+| [052](052-p3-docs-command-parity.md) | Alinhar roteiro beta e setup de desenvolvimento | Documentação/DX | P3 | S | 051 | DONE (merge `c1f75d2`; commit `ad2b59b`) |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
