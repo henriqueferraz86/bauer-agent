@@ -1,0 +1,249 @@
+id: skills-refinement-mcp-server
+title: "Refinamento observável de Skills e Bauer como servidor MCP"
+status: draft
+kind: architecture-spike
+planned_at: "2026-07-07"
+completed_spike_at: "2026-08-25"
+
+executive_summary:
+  initiative_a_skills:
+    verdict: "FAZER em observação e rebaixamento reversível; ADIAR geração automática."
+    rationale: >-
+      Já existe auto-injeção, estatística best-effort por skill e feedback humano,
+      portanto não se deve criar outro coletor. Porém a escrita ocorre só no loop
+      interativo e o sucesso heurístico mede o turno, não causalidade da skill.
+      A primeira entrega completa a cobertura e oferece revisão/rebaixamento
+      opt-in; criar ou instalar skills sem revisão permanece fora de escopo.
+  initiative_b_mcp_server:
+    verdict: >-
+      ADIAR servidor MCP público/remoto até identidade/autorização remota e
+      taint de conteúdo externo terem enforcement. Como experimento futuro,
+      só considerar stdio local opt-in, com allowlist estática de tools de baixo
+      risco e sem descoberta dinâmica. Não iniciar implementação neste plano.
+    rationale: >-
+      O produto é hoje cliente MCP, não servidor: fala JSON-RPC diretamente
+      pela stdlib, inicia subprocessos configurados e também consome HTTP. O
+      ToolRouter tem allowlist/contexto, mas mcp_call é medium sem aprovação e
+      a aprovação atual para tools high-risk é LLM/fail-open. Expor ferramentas
+      remotas antes da fronteira de identidade e da proveniência ampliaria essa
+      superfície sem um ponto seguro de decisão.
+
+evidence:
+  - question: "Que telemetria de Skills existe de fato?"
+    references:
+      - "bauer/skill_stats.py:1-17"
+      - "bauer/skill_stats.py:55-69"
+      - "bauer/skill_stats.py:72-85"
+      - "bauer/agent.py:5768-5838"
+      - "bauer/agent.py:6094-6118"
+    answer: >-
+      skill_stats.json agrega uses/good/bad/neutral/thumbs_up/thumbs_down e
+      last_used por nome. O loop interativo registra um resultado heurístico e
+      atribui thumbs à última skill injetada. É telemetria Nível 1, best-effort,
+      sem ação automática. Não há evidência, nestes pontos, de evento equivalente
+      para as rotas HTTP/stream; a fatia 0 deve provar e fechar essa cobertura.
+  - question: "Como é feita a seleção e injeção atual?"
+    references:
+      - "bauer/config_loader.py:706-716"
+      - "bauer/skill_match.py:1-20"
+      - "bauer/skill_match.py:130-191"
+      - "bauer/agent.py:5392-5399"
+      - "bauer/agent.py:5908-5935"
+    answer: >-
+      agent.skill_auto_inject vem ligado por default; match_skill escolhe no
+      máximo uma skill por overlap de tokens, threshold 0.30, cache de catálogo
+      e conteúdo limitado. A skill vira system efêmero. O score é relevância
+      lexical, não qualidade histórica; qualquer rebaixamento deve ser aplicado
+      depois desse match e deixar a invocação manual disponível.
+  - question: "Já há aprendizado ou geração de rascunhos?"
+    references:
+      - "bauer/skill_learning.py:1-16"
+      - "bauer/skill_learning.py:38-80"
+      - "bauer/skill_learning.py:83-108"
+      - "bauer/commands/learning_cmd.py:253-308"
+    answer: >-
+      skill_learning agrupa pedidos repetidos de ao menos duas sessões e gera
+      YAML determinístico para revisão/instalação via CLI. Ele não usa
+      skill_stats nem prova que uma skill existente falhou; é uma fonte distinta
+      de candidatos. Preservar revisão humana e não conectar esse draft a uma
+      instalação automática é a decisão segura.
+  - question: "Que contrato de schema e guardas o ToolRouter oferece?"
+    references:
+      - "bauer/tool_router.py:155-250"
+      - "bauer/tool_router.py:415-441"
+      - "bauer/tool_router.py:1319-1325"
+      - "bauer/tool_router.py:1438-1490"
+      - "bauer/tool_router.py:1585-1641"
+      - "bauer/tool_router.py:1718-1744"
+    answer: >-
+      O Router expõe schemas OpenAI gerados de descrições de argumentos, aplica
+      allowlist/context policy antes de executar e possui metadados de risco e
+      aprovação. O schema não deve ser espelhado cegamente como MCP inputSchema:
+      tipos e required são inferidos de texto. Para mcp_call/list_tools os
+      riscos são network low/medium e approval=false; o G4 de tools high-risk
+      é condicional a LLM e falha aberto em erro técnico.
+  - question: "O que é o MCP atual e qual é o STOP do SDK?"
+    references:
+      - "bauer/mcp_client.py:1-34"
+      - "bauer/mcp_client.py:93-132"
+      - "bauer/mcp_client.py:181-237"
+      - "bauer/mcp_client.py:240-365"
+      - "bauer/mcp_client.py:381-520"
+      - "bauer/mcp_http_client.py:48-62"
+      - "bauer/tools/mcp.py:1-55"
+    answer: >-
+      McpClient implementa cliente stdio JSON-RPC 2.0 com subprocess/stdin/stdout,
+      initialize, tools/list e tools/call usando stdlib; McpManager também cria
+      cliente HTTP para servidores remotos. Não há base para assumir que o SDK
+      Python 'mcp' está instalado ou que há um servidor Bauer pronto. STOP:
+      escolher/validar transporte e compatibilidade de protocolo antes de
+      introduzir dependência ou implementar servidor.
+  - question: "Como o HTTP Bauer existente autentica e lista tools?"
+    references:
+      - "bauer/server.py:18-20"
+      - "bauer/server.py:1321-1341"
+      - "bauer/server.py:1331-1338"
+      - "bauer/server.py:1436-1438"
+    answer: >-
+      A API FastAPI aceita X-API-Key ou Bearer quando serve.api_key está
+      configurada e /tools devolve router.tool_info para as tools disponíveis.
+      Essa autenticação HTTP não autentica automaticamente um processo stdio
+      MCP nem cria identidade, escopo ou aprovação por chamada MCP.
+
+initiative_a_skills_refinement:
+  invariants:
+    - "Nunca gerar, instalar, editar ou remover uma Skill automaticamente."
+    - "Abaixo da amostra mínima, score não muda elegibilidade nem ranking."
+    - "Rebaixar só auto-injeção; Skill continua visível e invocável manualmente."
+    - "Eventos de telemetry não carregam prompt/resposta brutos nem segredos."
+  observation_event_v1:
+    fields:
+      event_id: "UUID por tentativa de seleção"
+      occurred_at: "UTC timestamp"
+      run_or_session_ref: "identificador pseudonimizado/rotativo, nunca texto"
+      channel: "agent_cli | server_chat | server_stream | other"
+      candidate_skill: "nome"
+      selection: "matched | injected | suppressed | manually_selected | none"
+      lexical_score: "0..1"
+      outcome: "good | bad | neutral | unavailable"
+      human_feedback: "up | down | absent"
+      reason_code: "threshold | policy_suppression | no_match | runtime_error"
+    privacy: >-
+      Não persistir user_input, conteúdo injetado, resposta do provider, headers
+      ou argumentos de tool. A correlação de sessão precisa expirar e ser usada
+      apenas para deduplicação/agregação local.
+  scoring_and_rebaixamento:
+    eligibility: >-
+      Só avaliar após pelo menos 20 injeções e 5 sinais humanos ou de outcome
+      não ausentes, em janela móvel configurável. Antes disso o efeito é
+      observe-only e o score lexical atual permanece intacto.
+    measure: >-
+      Publicar contagens e taxa suavizada separando thumbs de outcome heurístico;
+      não somar ambos como se fossem observações independentes. Comparar apenas
+      com a própria skill e registrar cobertura por canal antes de conclusão.
+    action: >-
+      Se a amostra passar o limiar e o limite inferior conservador ficar abaixo
+      do threshold configurado em duas janelas consecutivas, marcar
+      auto_inject_suppressed com razão e data. Uma avaliação boa sustentada pode
+      reverter; não apagar estatística nem conteúdo.
+    operator_experience: >-
+      Expor bauer skills-hub stats/review com contagem, cobertura, incerteza,
+      decisão e comando explícito para reativar. Mudança de estado deve ser
+      auditável localmente e requerer opt-in de configuração.
+  generation_boundary: >-
+    skill_learning continua a produzir apenas draft baseado em pedidos repetidos.
+    Uma futura correlação com baixa qualidade pode sugerir revisão, mas não pode
+    escrever YAML, alterar conteúdo ou chamar install sem revisão humana do
+    draft e uma trilha de proveniência do candidato.
+  slices:
+    - id: A0
+      goal: "Medir cobertura e qualidade do sinal sem mudar seleção."
+      deliverables:
+        - "Evento mínimo em CLI e todos os caminhos de chat/stream que injetem Skills."
+        - "Métricas de matched/injected/suppressed/feedback por canal e versão."
+        - "Testes de não persistência de conteúdo e de falha best-effort."
+      exit: "Uma execução de teste demonstra cobertura explícita ou marca unavailable; sem scoring ativo."
+    - id: A1
+      goal: "Oferecer revisão humana e rebaixamento reversível opt-in."
+      deliverables:
+        - "Store agregado com janelas, threshold, mínimo de amostra e hysteresis."
+        - "CLI read-only de revisão, reativação explícita e audit trail local."
+        - "Testes de amostra pequena, reversão, invocação manual e dados corrompidos."
+      exit: "Nenhuma Skill é suprimida sem limites configurados e estado explicável."
+    - id: A2
+      goal: "Conectar sugestão de revisão a drafts já existentes, nunca a instalação."
+      deliverables:
+        - "Fila local de sugestões com links para evidência agregada e skill_learning."
+        - "Comando que abre/gera draft para revisão humana, sem side effect por default."
+        - "Avaliação de falsos positivos antes de qualquer proposta de geração."
+      exit: "Drafts são opt-in, revisáveis e não possuem caminho automático para install."
+  open_questions:
+    - "Quais rotas além de agent.py injetam Skills hoje, e como A0 prova cobertura sem instrumentação duplicada?"
+    - "Qual sinal de outcome é aceitável por canal quando não há thumbs explícitos?"
+    - "Qual janela, limite de confiança e TTL são adequados para catálogos pequenos versus grandes?"
+    - "Uma Skill builtin pode ser rebaixada localmente sem esconder atualização futura do pacote?"
+    - "Como diferenciar regressão da Skill de provider, ferramenta ou indisponibilidade de rede?"
+
+initiative_b_bauer_mcp_server:
+  security_invariants:
+    - "Nenhuma tool é publicada por descoberta dinâmica ou apenas por metadata do Router."
+    - "Identidade/autorização remota é avaliada por chamada antes de dispatch."
+    - "Conteúdo e argumentos remotos são tainted/unknown até uma política determinística permitir a ação."
+    - "A decisão efetiva nunca enfraquece allowlist, context policy, budget ou aprovação existente."
+    - "Logs MCP não expõem credenciais, headers, prompts ou argumentos sensíveis."
+  schema_boundary:
+    current: >-
+      get_tool_schemas produz OpenAI function schemas e infere JSON types/required
+      a partir de strings; tool_info inclui permission/risk/approval. McpClient
+      consome MCP tools/list com inputSchema. A adaptação futura deve usar uma
+      definição de ferramenta tipada canônica ou um conversor validado, não
+      converter descrições informalmente nos dois sentidos.
+    future_mcp_tool: >-
+      nome estável, descrição redigida, inputSchema JSON Schema validado e
+      annotations apenas informativas. permission/risk/approval permanecem
+      atributos internos de política, não autorização fornecida pelo cliente.
+  recommended_sequence:
+    - id: B0
+      decision: "STOP / design only"
+      scope: >-
+        Definir versão de protocolo, transporte, ciclo de vida, testes de
+        compatibilidade e ameaça. Confirmar se implementar stdio JSON-RPC com
+        stdlib é suficiente ou se uma dependência MCP deve entrar com lockfile.
+      exit: "Matriz de compatibilidade e threat model aceitos; nenhum listener público."
+    - id: B1
+      decision: "futuro experimento local, somente se B0 for aprovado"
+      scope: >-
+        Stdio opt-in sem endpoint HTTP, um conjunto estático de tools low-risk
+        (por exemplo health/status read-only após revisão), workspace fixado e
+        deny por default. tools/list não lê registro inteiro nem configurações.
+      exit: "Integração exercita allowlist/contexto e nega nomes/args fora do contrato."
+    - id: B2
+      decision: "bloqueado"
+      blocker: >-
+        Servidor HTTP/remoto, descoberta ampla, tools com side effect ou
+        delegation ficam bloqueados até existir identidade remota com escopo,
+        callback de aprovação humana não-bypassável e taint enforcement de
+        conteúdo/argumentos remotos (Planos 014/018 e verificação integrada).
+      exit: "Teste adversarial prova que origem/taint/approval não podem ser contornados."
+  open_questions:
+    - "Qual versão MCP e quais transportes são obrigatórios para os clientes-alvo, e como serão testados sem assumir o pacote mcp?"
+    - "Qual principal/autorização por chamada existe para stdio local e para HTTP remoto, incluindo rotação/revogação?"
+    - "Quais ferramentas podem ser chamadas remotamente sem revelar paths, configuração, nomes de servidores ou dados de sessão?"
+    - "Como uma aprovação humana é entregue, expira e correlacionada a uma chamada MCP sem um cliente repetir/reutilizar decisão?"
+    - "Como taint de instruções/argumentos/resultados MCP atravessa o Router e a memória sem vazar para prompts/logs?"
+    - "Qual isolamento de workspace/processo impede que um cliente MCP use uma tool low-risk como etapa de enumeração?"
+
+non_goals:
+  - "Não implementar server MCP, endpoint, pacote novo ou dependência mcp neste spike."
+  - "Não alterar a semântica atual de mcp_call nem elevar o G4 fail-open a controle de segurança."
+  - "Não usar telemetria agregada como prova causal nem como autorização para geração automática."
+
+validation_plan:
+  skills:
+    - "Testes por canal para evento de seleção e ausência de conteúdo sensível no store."
+    - "Testes determinísticos para thresholds, amostra mínima, hysteresis e recuperação de corrupção."
+    - "Avaliar taxa de falso rebaixamento antes de habilitar opt-in em qualquer perfil."
+  mcp:
+    - "Conformance tests contra transcript JSON-RPC versionado para initialize/tools/list/tools/call."
+    - "Testes de negação para tool fora de allowlist, argumentos inválidos, identidade ausente e taint unknown."
+    - "Threat-model review antes de qualquer transporte remoto ou tool com side effect."
