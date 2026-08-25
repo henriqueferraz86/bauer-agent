@@ -47,3 +47,26 @@ def test_both_modes_list_tool_names():
     for mode in ("native", "bridge"):
         p = _prompt(mode)
         assert "write_file" in p and "run_command" in p and "list_dir" in p
+
+
+def test_prompt_describes_linux_with_unix_constraints(monkeypatch):
+    import bauer.agent as agent
+
+    monkeypatch.setattr(agent.platform, "system", lambda: "Linux")
+    prompt = _prompt("native")
+
+    assert "roda em **Windows**" not in prompt
+    assert "roda em **Linux** (Unix)" in prompt
+    assert "`/tmp/...` ou `/home/...`" in prompt
+    assert "NAO use: `ls` (use tool list_dir)" in prompt
+
+
+def test_prompt_keeps_windows_constraints(monkeypatch):
+    import bauer.agent as agent
+
+    monkeypatch.setattr(agent.platform, "system", lambda: "Windows")
+    prompt = _prompt("native")
+
+    assert "Voce roda em **Windows** com Python no venv. Subprocess usa `shell=False`." in prompt
+    assert "`C:/...` ou `/Users/...`" in prompt
+    assert "NAO use: `dir` (use tool list_dir)" in prompt

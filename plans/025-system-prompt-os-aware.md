@@ -15,6 +15,8 @@
 - **Depends on**: none (toca a mesma função do plano 023 — se ambos forem executados, faça 023 antes e re-aplique o excerto)
 - **Category**: bug
 - **Planned at**: commit `ced7dc2`, 2026-07-18
+- **Executed at**: 2026-08-25 — drift remapeado para `agent.py:768-780`;
+  Windows preservado e Unix torna-se derivado de `platform.system()`.
 
 ## Why this matters
 

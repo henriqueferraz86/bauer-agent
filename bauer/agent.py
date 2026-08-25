@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import sys
 import time
@@ -748,6 +749,40 @@ def _build_system_prompt(
             "Responda sempre em portugues.\n\n"
         )
 
+    _platform_name = platform.system()
+    if _platform_name == "Windows":
+        _environment_line = (
+            "- Voce roda em **Windows** com Python no venv. Subprocess usa `shell=False`.\n"
+        )
+        _absolute_path_examples = "`C:/...` ou `/Users/...`"
+        _avoid_shell_commands = (
+            "- Em run_command NAO use: `dir` (use tool list_dir), "
+            "`cat`/`head`/`tail` (use read_file).\n"
+        )
+    else:
+        _environment_line = (
+            f"- Voce roda em **{_platform_name}** (Unix) com Python no venv. "
+            "Subprocess usa `shell=False`.\n"
+        )
+        _absolute_path_examples = "`/tmp/...` ou `/home/...`"
+        _avoid_shell_commands = (
+            "- Em run_command NAO use: `ls` (use tool list_dir), "
+            "`cat`/`head`/`tail` (use read_file).\n"
+        )
+
+    _environment_constraints = (
+        "# CONSTRAINTS DO AMBIENTE (LEIA — evita erros recorrentes)\n"
+        + _environment_line
+        + "- TODAS as tools de arquivo (read_file, write_file, list_dir, etc) trabalham\n"
+        "  em paths RELATIVOS ao workspace. Nunca passe paths absolutos do tipo\n"
+        f"  {_absolute_path_examples}. Use `.`, `subdir/arquivo.py`, etc.\n"
+        "- `..` e permitido se o path resolvido ficar dentro do workspace. `../fora` e BLOQUEADO.\n"
+        + _avoid_shell_commands
+        + "- `pip install`, `npm install`, `git push`, `rm` precisam `confirm: true` no args.\n"
+        "- Antes de `python script.py`, LEIA o script para descobrir se exige argumentos.\n"
+        "  Muitos scripts saem com 'Uso: python X.py <arg>' — read_file primeiro evita isso.\n\n"
+    )
+
     return (
         "Voce e o Bauer Agent, assistente de desenvolvimento local e agente autonomo.\n\n"
         f"Data e hora atual: {timestamp}\n\n"
@@ -765,17 +800,8 @@ def _build_system_prompt(
         "  b) A acao e DESTRUTIVA e irreversivel (ex: deletar dados de producao).\n"
         "  c) O usuario pediu explicitamente para voce confirmar antes.\n"
         "Em todos os outros casos: AGE. Nao pergunta.\n\n"
-        "# CONSTRAINTS DO AMBIENTE (LEIA — evita erros recorrentes)\n"
-        "- Voce roda em **Windows** com Python no venv. Subprocess usa `shell=False`.\n"
-        "- TODAS as tools de arquivo (read_file, write_file, list_dir, etc) trabalham\n"
-        "  em paths RELATIVOS ao workspace. Nunca passe paths absolutos do tipo\n"
-        "  `C:/...` ou `/Users/...`. Use `.`, `subdir/arquivo.py`, etc.\n"
-        "- `..` e permitido se o path resolvido ficar dentro do workspace. `../fora` e BLOQUEADO.\n"
-        "- Em run_command NAO use: `dir` (use tool list_dir), `cat`/`head`/`tail` (use read_file).\n"
-        "- `pip install`, `npm install`, `git push`, `rm` precisam `confirm: true` no args.\n"
-        "- Antes de `python script.py`, LEIA o script para descobrir se exige argumentos.\n"
-        "  Muitos scripts saem com 'Uso: python X.py <arg>' — read_file primeiro evita isso.\n\n"
-        f"{tool_protocol_block}"
+        + _environment_constraints
+        + f"{tool_protocol_block}"
         + TOOL_USE_ENFORCEMENT
         + (("\n" + MINIMAL_CODE_LADDER) if _minimal_code_mode_enabled() else "")
         + (("\n" + KANBAN_WORKER_GUIDANCE) if os.environ.get("BAUER_KANBAN_TASK") else "")
