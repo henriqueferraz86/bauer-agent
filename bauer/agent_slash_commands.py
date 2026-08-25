@@ -244,8 +244,8 @@ def _handle_agent_cmd(user_input: str, console) -> None:  # type: ignore[type-ar
         if not nome:
             console.print("[yellow]Uso: [bold]/agent delete <nome>[/bold][/yellow]")
             return
-        ag = registry.get(nome)
-        if ag is None:
+        target = registry.get(nome)
+        if target is None:
             console.print(f"[red]Agent '[cyan]{nome}[/cyan]' nao encontrado.[/red]")
             agents = registry.list_agents()
             if agents:
