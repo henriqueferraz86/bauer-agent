@@ -1758,6 +1758,14 @@ def kanban_migrate_cmd(
         False, "--dry-run",
         help="Le e mostra o que seria migrado, sem escrever no SQLite",
     ),
+    activate: bool = typer.Option(
+        False, "--activate",
+        help="Ativa SQLite no config somente depois de migrar e validar",
+    ),
+    config: Path = typer.Option(
+        Path("config.yaml"), "--config",
+        help="Config a atualizar quando usar --activate",
+    ),
 ):
     """Migra workspace/TASKS.md para o store SQLite kanban_db.
 
@@ -1779,9 +1787,17 @@ def kanban_migrate_cmd(
     # lugar e o sistema lia de outro — as tarefas "sumiam".
     from .workspace_manager_factory import board_for_workspace
 
-    target = board or board_for_workspace(workspace)
+    workspace_board = board_for_workspace(workspace)
+    target = board or workspace_board
     if not tasks_md.exists():
         console.print(f"[yellow]TASKS.md nao encontrado em {tasks_md}.[/yellow]")
+        raise typer.Exit(code=1)
+
+    if activate and target != workspace_board:
+        console.print(
+            "[red]--activate exige o board derivado do workspace; "
+            "remova --board.[/red]"
+        )
         raise typer.Exit(code=1)
 
     if dry_run:
@@ -1801,7 +1817,30 @@ def kanban_migrate_cmd(
         console.print(tbl)
         console.print(f"[dim]Use sem --dry-run para escrever no board "
                        f"'{target}' (board do projeto {workspace}).[/dim]")
+        if activate:
+            console.print(
+                "[dim]Tambem criaria backups de TASKS.md e do config, validaria "
+                f"os {len(parsed)} IDs no board '{workspace_board}' e ativaria "
+                f"agent.task_backend: sqlite em {config}.[/dim]"
+            )
         return
+
+    if activate:
+        if not config.is_file():
+            console.print(
+                f"[red]Config para ativacao nao encontrado: {config}. "
+                "Nada foi alterado.[/red]"
+            )
+            raise typer.Exit(code=1)
+        try:
+            tasks_backup = _create_kanban_migration_backup(tasks_md)
+            config_backup = _create_kanban_migration_backup(config)
+        except OSError as exc:
+            console.print(f"[red]Nao foi possivel criar backup: {exc}. Nada foi ativado.[/red]")
+            raise typer.Exit(code=1) from exc
+        console.print(
+            f"[dim]Backups criados: {tasks_backup} e {config_backup}[/dim]"
+        )
 
     report = migrate_tasks_md(tasks_md, board=target)
     console.print(f"[green]Migracao concluida:[/green] {report.summary()}")
@@ -1813,6 +1852,97 @@ def kanban_migrate_cmd(
         for tid, err in report.errors:
             tbl.add_row(tid, err[:80])
         console.print(tbl)
+        if activate:
+            console.print("[yellow]SQLite nao foi ativado; os backups foram preservados.[/yellow]")
+        raise typer.Exit(code=1)
+
+    if not activate:
+        return
+
+    parsed = read_tasks_md(tasks_md)
+    source_ids = {task.id for task in parsed if task.id}
+    missing_ids = _missing_kanban_migration_ids(target, source_ids)
+    if missing_ids:
+        console.print(
+            "[red]Validacao falhou; SQLite nao foi ativado. IDs ausentes: "
+            f"{', '.join(sorted(missing_ids))}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        _set_sqlite_task_backend(config)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Nao foi possivel ativar SQLite: {exc}. Nada foi ativado.[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[green]SQLite ativado em {config} apos validar {len(source_ids)} task(s).[/green]"
+    )
+    console.print(
+        "[yellow]Rollback:[/yellow] restaure agent.task_backend: markdown no config "
+        f"(backup: {config_backup}). TASKS.md foi preservado (backup: {tasks_backup}); "
+        "tarefas criadas no SQLite depois da ativacao permanecem no SQLite."
+    )
+
+
+def _create_kanban_migration_backup(path: Path) -> Path:
+    """Copy ``path`` to a unique recoverable migration backup without overwriting."""
+    import shutil
+
+    for index in range(10_000):
+        suffix = ".before-sqlite.bak" if index == 0 else f".before-sqlite.bak.{index}"
+        backup = path.with_name(f"{path.name}{suffix}")
+        try:
+            with path.open("rb") as source, backup.open("xb") as destination:
+                shutil.copyfileobj(source, destination)
+            return backup
+        except FileExistsError:
+            continue
+    raise OSError(f"nao foi possivel reservar backup unico para {path}")
+
+
+def _missing_kanban_migration_ids(board: str, source_ids: set[str]) -> set[str]:
+    """Return source task IDs absent from the board after migration."""
+    from . import kanban_db as kb
+
+    with kb.connect(board) as conn:
+        kb.init_db(conn)
+        return {task_id for task_id in source_ids if kb.get_task_or_none(conn, task_id) is None}
+
+
+def _set_sqlite_task_backend(config_path: Path) -> None:
+    """Atomically opt one explicitly selected config into the SQLite backend."""
+    import os
+    import tempfile
+
+    import yaml
+
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"YAML invalido em {config_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"config em {config_path} deve ser um mapeamento YAML")
+    agent = raw.setdefault("agent", {})
+    if not isinstance(agent, dict):
+        raise ValueError("secao agent do config deve ser um mapeamento")
+    agent["task_backend"] = "sqlite"
+    content = yaml.safe_dump(
+        raw, allow_unicode=True, sort_keys=False, default_flow_style=False,
+    )
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{config_path.name}.", suffix=".tmp", dir=config_path.parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        os.replace(temporary, config_path)
+    except OSError:
+        try:
+            Path(temporary).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 

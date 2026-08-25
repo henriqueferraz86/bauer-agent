@@ -216,6 +216,7 @@ class MigrationReport:
     inserted: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)    # task already present
     links: list[tuple[str, str]] = field(default_factory=list)
+    comments_added: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -225,7 +226,8 @@ class MigrationReport:
     def summary(self) -> str:
         return (
             f"{len(self.inserted)} inserted, {len(self.skipped)} already present, "
-            f"{len(self.links)} parent/child links, {len(self.errors)} errors"
+            f"{len(self.links)} parent/child links, {self.comments_added} comments, "
+            f"{len(self.errors)} errors"
         )
 
 
@@ -237,9 +239,8 @@ def migrate_tasks_md(
     """Read `tasks_md_path` and write everything into the kanban_db board.
 
     Idempotent: tasks already present in the DB (matched by id) are skipped,
-    not duplicated or overwritten. Links and comments are also dedup-friendly
-    (links via INSERT OR IGNORE; comments are append-only — re-running the
-    migration adds them again, so the caller should only do that knowingly).
+    not duplicated or overwritten. Links use ``INSERT OR IGNORE`` and legacy
+    comments are inserted only until their source count is represented.
 
     Args:
         tasks_md_path: Path to a TASKS.md file.
@@ -256,16 +257,21 @@ def migrate_tasks_md(
     with kb.connect(board) as conn:
         kb.init_db(conn)
 
-        # Pass 1 — insert tasks. Skip those already in the DB.
+        # Pass 1 — insert tasks. Existing tasks keep their fields and events,
+        # but receive any legacy comments that are not already represented.
         for task in parsed:
             if not task.id or not task.title:
                 report.errors.append((task.id or "(no-id)", "missing id or title"))
                 continue
             if kb.get_task_or_none(conn, task.id) is not None:
                 report.skipped.append(task.id)
+                try:
+                    report.comments_added += _ensure_legacy_comments(conn, task)
+                except kb.KanbanDbError as exc:
+                    report.errors.append((task.id, str(exc)))
                 continue
             try:
-                _insert_one(conn, task)
+                report.comments_added += _insert_one(conn, task)
                 report.inserted.append(task.id)
             except kb.KanbanDbError as exc:
                 report.errors.append((task.id, str(exc)))
@@ -291,7 +297,7 @@ def migrate_tasks_md(
     return report
 
 
-def _insert_one(conn, task: ParsedTask) -> None:
+def _insert_one(conn, task: ParsedTask) -> int:
     """Write a single ParsedTask into kanban_db tables.
 
     Splits the work:
@@ -336,5 +342,35 @@ def _insert_one(conn, task: ParsedTask) -> None:
             payload={"value": legacy_created},
         )
 
+    return _ensure_legacy_comments(conn, task)
+
+
+def _ensure_legacy_comments(conn, task: ParsedTask) -> int:
+    """Insert only the missing occurrences of Markdown legacy comments.
+
+    ``task_comments`` deliberately has no uniqueness constraint because normal
+    task discussion may repeat text.  Migration comments have a stable author
+    marker, so count existing occurrences per body and add only the delta.
+    This preserves duplicate bullets in the source while making re-runs safe.
+    """
+    existing = {
+        row["body"]: row["count"]
+        for row in conn.execute(
+            """
+            SELECT body, COUNT(*) AS count
+            FROM task_comments
+            WHERE task_id = ? AND author = ?
+            GROUP BY body
+            """,
+            (task.id, "legacy-md"),
+        )
+    }
+    added = 0
     for comment in task.comments:
+        count = int(existing.get(comment, 0))
+        if count:
+            existing[comment] = count - 1
+            continue
         kb.add_comment(conn, task.id, comment, author="legacy-md")
+        added += 1
+    return added

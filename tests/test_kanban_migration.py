@@ -252,6 +252,8 @@ parent: 001
     )
     report = migrate_tasks_md(md)
     assert ("001", "002") in report.links
+    rerun = migrate_tasks_md(md)
+    assert rerun.links == []
 
     with kb.connect() as conn:
         assert kb.children_of(conn, "001") == ["002"]
@@ -320,7 +322,10 @@ priority: medium
 ---
 """,
     )
-    migrate_tasks_md(md)
+    first = migrate_tasks_md(md)
+    second = migrate_tasks_md(md)
+    assert first.comments_added == 3
+    assert second.comments_added == 0
     with kb.connect() as conn:
         comments = kb.list_comments(conn, "001")
         bodies = [c["body"] for c in comments]
@@ -329,6 +334,33 @@ priority: medium
         assert "third thought" in bodies
         # All carry the legacy author marker so they're distinguishable.
         assert all(c["author"] == "legacy-md" for c in comments)
+        assert len(comments) == 3
+
+
+def test_migrate_preserves_duplicate_source_comment_without_readding(
+    tmp_path: Path, bauer_home: Path,
+):
+    """Two equal Markdown bullets are valid, but a second run adds neither."""
+    md = _write(
+        tmp_path / "TASKS.md",
+        """## [TODO] X
+id: 001
+
+- repeated note
+- repeated note
+
+---
+""",
+    )
+    migrate_tasks_md(md)
+    report = migrate_tasks_md(md)
+    assert report.skipped == ["001"]
+    assert report.comments_added == 0
+    with kb.connect() as conn:
+        comments = kb.list_comments(conn, "001")
+        assert [comment["body"] for comment in comments] == [
+            "repeated note", "repeated note",
+        ]
 
 
 def test_migrate_records_legacy_metadata_event(tmp_path: Path, bauer_home: Path):
@@ -344,10 +376,11 @@ worker_pid: 12345
 """,
     )
     migrate_tasks_md(md)
+    migrate_tasks_md(md)
     with kb.connect() as conn:
         events = kb.list_events(conn, "001")
         kinds = [e["kind"] for e in events]
-        assert "legacy_metadata" in kinds
+        assert kinds.count("legacy_metadata") == 1
         # Payload survives intact.
         meta_event = next(e for e in events if e["kind"] == "legacy_metadata")
         assert meta_event["payload"].get("claim_id") == "old-uuid"
