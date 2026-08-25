@@ -20,6 +20,8 @@
   ela é a rede de segurança deste refactor)
 - **Category**: tech-debt
 - **Planned at**: commit `2c9d86f`, 2026-07-06
+- **Executed at**: 2026-08-25 — drift remapeado para os oito
+  handlers contíguos em `agent.py:2825-3647`; extração mecânica validada.
 
 ## Why this matters
 
