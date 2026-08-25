@@ -15,6 +15,10 @@
 - **Depends on**: none (o build se beneficia de 011 — testes de budget verdes)
 - **Category**: direction
 - **Planned at**: commit `2c9d86f`, 2026-07-07
+- **Outcome (2026-08-25)**: DONE (SPIKE) — design draft at
+  `docs/architecture/learned-provider-profiles.yaml`. The investigation found
+  no persisted `observed_cap`; `runtime_state.py` is not safe for concurrent
+  learned-profile updates, so the draft recommends a dedicated locked file.
 
 ## Why this matters (a visão 20/10)
 
@@ -84,12 +88,12 @@ modelo? opt-out?).
 
 ## Done criteria
 
-- [ ] `docs/architecture/learned-provider-profiles.yaml` existe (status draft)
-- [ ] 5 perguntas de Investigation respondidas com `file:line`
-- [ ] Plano de build fatiado (2-3 fatias)
-- [ ] ≥4 open questions
-- [ ] Nenhum código de produção alterado (`git status`)
-- [ ] Status atualizado em `plans/README.md`
+- [x] `docs/architecture/learned-provider-profiles.yaml` existe (status draft)
+- [x] 5 perguntas de Investigation respondidas com `file:line`
+- [x] Plano de build fatiado (2-3 fatias)
+- [x] ≥4 open questions
+- [x] Nenhum código de produção alterado (`git status`)
+- [x] Status atualizado em `plans/README.md`
 
 ## STOP conditions
 

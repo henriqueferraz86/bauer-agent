@@ -26,7 +26,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [012](012-agents-md-claude-md.md) | Escrever `AGENTS.md` + `CLAUDE.md` para execução por agentes | DX | P2 | S | — | DONE |
 | [013](013-agent-extract-slash-commands.md) | Extrair handlers de slash-command do `agent.py` (−800 linhas do god object) | P3 | P3 | M | — | TODO |
 | [014](014-spike-autonomous-daemon-24-7.md) | SPIKE: Funcionário 24/7 — daemon → /loop → aprovação/relatório via gateway | P4 | P1 | M | — | DONE (spec: docs/architecture/autonomous-daemon-v2.yaml; achou GAP-1 ⚠) |
-| [015](015-spike-learned-provider-profiles.md) | SPIKE: Runtime que aprende — perfis de provider por telemetria real | P1 | P2 | S | — | TODO |
+| [015](015-spike-learned-provider-profiles.md) | SPIKE: Runtime que aprende — perfis de provider por telemetria real | P1 | P2 | S | — | DONE (draft: `docs/architecture/learned-provider-profiles.yaml`) |
 | [016](016-spike-policy-router-cost-ledger.md) | SPIKE: Policy router por tarefa + ledger de custo real | P2 | P2 | M | 015 (recomendado) | TODO |
 | [017](017-spike-memory-consolidation-feedback-loop.md) | SPIKE: Consolidação episódica→semântica + feedback que age | P3 | P2 | M | — | TODO |
 | [018](018-spike-taint-tracking-accountability.md) | SPIKE: Taint tracking de conteúdo externo + digest de prestação de contas | P5 | P1 | M | — | REVISE (spec escrito e de boa qualidade em worktree agent-af2e8284; falta: quotar ~6 linhas de schema-notation p/ YAML parsear + commit; cortado pelo rate limit) |
