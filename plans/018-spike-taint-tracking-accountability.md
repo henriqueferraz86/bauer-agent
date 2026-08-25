@@ -14,6 +14,10 @@
 - **Depends on**: none (o build da parte de relatório conversa com 014)
 - **Category**: direction / security
 - **Planned at**: commit `2c9d86f`, 2026-07-07
+- **Spike outcome (2026-08-25)**: DONE — a especificação está em
+  `docs/architecture/taint-tracking-accountability.yaml`. O recon confirmou
+  que `ContextBuilder` já separa instrução confiável de conteúdo e é usado por
+  `channel_base`; o desenho o evolui com sidecar compatível, sem duplicá-lo.
 
 ## Why this matters (a visão 20/10)
 
@@ -98,13 +102,13 @@ bloquear? como o usuário marca exceções? interação com o /loop yolo?).
 
 ## Done criteria
 
-- [ ] `docs/architecture/taint-tracking-accountability.yaml` existe (draft)
-- [ ] 5 perguntas respondidas com `file:line`
-- [ ] Matriz origem × risco desenhada
-- [ ] Plano de build em 3 fatias (observação primeiro, enforcement por último)
-- [ ] ≥5 open questions
-- [ ] Nenhum código de produção alterado
-- [ ] Status atualizado em `plans/README.md`
+- [x] `docs/architecture/taint-tracking-accountability.yaml` existe (draft)
+- [x] 5 perguntas respondidas com `file:line`
+- [x] Matriz origem × risco desenhada
+- [x] Plano de build em 3 fatias (observação primeiro, enforcement por último)
+- [x] ≥5 open questions
+- [x] Nenhum código de produção alterado
+- [x] Status atualizado em `plans/README.md`
 
 ## STOP conditions
 

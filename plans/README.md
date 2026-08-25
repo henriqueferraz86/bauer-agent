@@ -29,7 +29,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [015](015-spike-learned-provider-profiles.md) | SPIKE: Runtime que aprende — perfis de provider por telemetria real | P1 | P2 | S | — | DONE (draft: `docs/architecture/learned-provider-profiles.yaml`) |
 | [016](016-spike-policy-router-cost-ledger.md) | SPIKE: Policy router por tarefa + ledger de custo real | P2 | P2 | M | 015 (recomendado) | DONE (draft: `docs/architecture/policy-router-cost-ledger.yaml`) |
 | [017](017-spike-memory-consolidation-feedback-loop.md) | SPIKE: Consolidação episódica→semântica + feedback que age | P3 | P2 | M | — | TODO |
-| [018](018-spike-taint-tracking-accountability.md) | SPIKE: Taint tracking de conteúdo externo + digest de prestação de contas | P5 | P1 | M | — | REVISE (spec escrito e de boa qualidade em worktree agent-af2e8284; falta: quotar ~6 linhas de schema-notation p/ YAML parsear + commit; cortado pelo rate limit) |
+| [018](018-spike-taint-tracking-accountability.md) | SPIKE: Taint tracking de conteúdo externo + digest de prestação de contas | P5 | P1 | M | — | DONE (draft: `docs/architecture/taint-tracking-accountability.yaml`; preserva/evolui o ContextBuilder existente) |
 | [019](019-spike-self-improving-skills-mcp-server.md) | SPIKE: Skills que se refinam por telemetria + Bauer como servidor MCP | P6 | P3 | M | — | TODO |
 | [020](020-spike-proactive-agent-unified-identity.md) | SPIKE: Agente proativo (briefing/alertas) + identidade unificada | P7 | P2 | M | 014 (recomendado) | TODO |
 | [021](021-bauer-run-autonomous-entrypoint.md) | Criar `bauer run` como entrada autônoma única para tarefas de ponta a ponta | DX | P1 | L | — (isolado do 013) | SUPERSEDED (022) |
