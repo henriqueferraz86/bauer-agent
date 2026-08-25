@@ -218,3 +218,84 @@ def test_kanban_migrate_idempotent(bauer_home: Path, runner: CliRunner,
         tasks = kb.list_tasks(conn)
         ids = sorted(t.id for t in tasks)
         assert ids == ["001", "002"]   # exactly 2, not 4
+
+
+def test_kanban_migrate_dry_run_activate_has_no_side_effects(
+    bauer_home: Path, runner: CliRunner, tmp_path: Path,
+):
+    """Previewing activation neither creates the workspace board nor a backup."""
+    from bauer.workspace_manager_factory import board_for_workspace
+
+    ws = tmp_path / "ws-dry-activate"
+    _write_sample_tasks_md(ws)
+    config = ws / "config.yaml"
+    config.write_text("agent:\n  task_backend: markdown\n", encoding="utf-8")
+    board = board_for_workspace(ws)
+    assert not kb.board_path(board).exists()
+
+    result = runner.invoke(app, [
+        "kanban-migrate", "--workspace", str(ws), "--activate", "--dry-run",
+        "--config", str(config),
+    ])
+
+    assert result.exit_code == 0
+    assert "ativaria" in result.stdout
+    assert not kb.board_path(board).exists()
+    assert config.read_text(encoding="utf-8") == "agent:\n  task_backend: markdown\n"
+    assert not list(ws.glob("*.before-sqlite.bak*"))
+
+
+def test_kanban_migrate_activate_backs_up_and_sets_explicit_config(
+    bauer_home: Path, runner: CliRunner, tmp_path: Path,
+):
+    from bauer.workspace_manager_factory import board_for_workspace
+
+    ws = tmp_path / "ws-activate"
+    _write_sample_tasks_md(ws)
+    config = ws / "chosen-config.yaml"
+    original = "model:\n  provider: ollama\nagent:\n  task_backend: markdown\n"
+    config.write_text(original, encoding="utf-8")
+    board = board_for_workspace(ws)
+
+    result = runner.invoke(app, [
+        "kanban-migrate", "--workspace", str(ws), "--activate", "--config", str(config),
+    ])
+
+    assert result.exit_code == 0, result.stdout
+    assert "SQLite ativado" in result.stdout
+    assert config.read_text(encoding="utf-8").find("task_backend: sqlite") >= 0
+    assert (ws / "TASKS.md.before-sqlite.bak").read_text(encoding="utf-8") == (
+        ws / "TASKS.md"
+    ).read_text(encoding="utf-8")
+    assert config.with_name("chosen-config.yaml.before-sqlite.bak").read_text(
+        encoding="utf-8"
+    ) == original
+    with kb.connect(board) as conn:
+        assert {task.id for task in kb.list_tasks(conn)} == {"001", "002"}
+
+    repeat = runner.invoke(app, [
+        "kanban-migrate", "--workspace", str(ws), "--activate", "--config", str(config),
+    ])
+    assert repeat.exit_code == 0, repeat.stdout
+    assert config.with_name("chosen-config.yaml.before-sqlite.bak").read_text(
+        encoding="utf-8"
+    ) == original
+    assert config.with_name("chosen-config.yaml.before-sqlite.bak.1").exists()
+
+
+def test_kanban_migrate_activate_fails_without_config_and_preserves_markdown(
+    bauer_home: Path, runner: CliRunner, tmp_path: Path,
+):
+    ws = tmp_path / "ws-no-config"
+    source = _write_sample_tasks_md(ws)
+    config = ws / "missing.yaml"
+
+    result = runner.invoke(app, [
+        "kanban-migrate", "--workspace", str(ws), "--activate", "--config", str(config),
+    ])
+
+    assert result.exit_code != 0
+    assert "Nada foi alterado" in result.stdout
+    assert source.exists()
+    assert not config.exists()
+    assert not list(ws.glob("*.before-sqlite.bak*"))
