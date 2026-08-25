@@ -1,0 +1,154 @@
+schema: bauer.architecture/v1
+id: memory-consolidation-loop
+status: blocked_pending_memory_scope_decision
+plan: "017"
+updated: "2026-08-25"
+
+summary: >-
+  Design-only spike for turning finished SQLite sessions into durable semantic
+  memory and for promoting repeated human feedback into reviewable directives.
+  Production implementation is intentionally blocked until the tenant/company
+  scope is chosen.
+
+evidence:
+  feedback_capture:
+    source: bauer/agent.py:5022-5077
+    current_behavior:
+      - '"/thumbsup" and "/thumbsdown" read the latest user and assistant messages.'
+      - 'FEEDBACK.md receives only rating, model, machine_id, and truncated question/answer.'
+      - 'DecisionMemory receives a good/bad outcome for the latest session decision.'
+      - 'skill_stats receives a best-effort rating for the last injected skill.'
+    limitation: >-
+      There is no stable pattern fingerprint, tenant/company identifier, full-turn
+      provenance, or explicit approval queue in the feedback record.
+  durable_memory:
+    source: bauer/memory_provider.py:172-260
+    current_behavior:
+      - LocalMemoryProvider reads workspace/memory/*.md and injects a 2000-character block.
+      - MemoryManager appends timestamped Markdown entries (bauer/memory_manager.py:69-145).
+      - The nudge mechanism asks the model to write memory; it is not a consolidator.
+  episodic_store:
+    source: bauer/sqlite_session_store.py:81-100
+    current_behavior:
+      - sessions is keyed only by session_id and stores timestamps, count, and summary.
+      - messages stores role/content/index/timestamp and is FTS5/vector indexed.
+      - There is no company_id, user_id, agent_id, or consolidated_at column.
+  runtime_memory:
+    source: bauer/core/runtime/memory.py:14-16,42-122
+    current_behavior:
+      - RuntimeMemoryManager supports user/company/project/agent/skill scopes.
+      - It is a separate JSONL backend and is not automatically injected by the agent loop.
+  scheduling:
+    source: bauer/commands/cron_cmd.py:84-203
+    current_behavior:
+      - Durable cron can enqueue and run a scheduled task.
+      - A consolidator should be an explicit task/command first, then an opt-in cron job.
+  auxiliary_model:
+    source: bauer/config_loader.py:843-884
+    current_behavior:
+      - auxiliary.compression_model is the existing auxiliary slot.
+      - A dedicated consolidation_model is not yet defined.
+
+stop_condition:
+  triggered: true
+  reason: >-
+    The session store has no tenant identity while runtime memory already exposes
+    a company scope. Consolidating workspace/session data into a company-scoped
+    directive would therefore have ambiguous ownership and a cross-company leak risk.
+  scope_options:
+    - id: workspace_only
+      description: >-
+        Consolidate only into the current workspace/project memory. No cross-workspace
+        or company promotion; safest first slice and requires no session migration.
+      tradeoff: >-
+        Shared user/company preferences remain unavailable until an identity contract exists.
+    - id: explicit_company
+      description: >-
+        Add company_id to session, feedback, and consolidation provenance, then enforce
+        company filtering before any read or write.
+      tradeoff: >-
+        Requires schema migration, caller propagation, access-control tests, and a
+        defined behavior for historical rows with no company_id.
+    - id: user_and_project
+      description: >-
+        Promote only user/project memories; keep company scope manual through
+        RuntimeMemoryManager until multi-tenant identity is implemented.
+      tradeoff: >-
+        Avoids leakage but duplicates some knowledge between projects.
+  decision_required: >-
+    Choose one scope before implementation. Recommended initial choice is
+    user_and_project (or workspace_only for a minimal MVP), with company scope
+    explicitly rejected until identity propagation is complete.
+
+pipeline_after_scope_decision:
+  trigger: "manual bauer memory consolidate [first]; opt-in cron later"
+  selection:
+    - select closed sessions older than a configurable age
+    - exclude sessions already marked consolidated
+    - enforce the selected scope before reading or writing
+    - redact secrets, credentials, tokens, and provider payloads
+  distillation:
+    model: "auxiliary.compression_model initially; dedicated consolidation_model later"
+    output:
+      - atomic fact/preference/lesson records
+      - source session ids and consolidation timestamp
+      - confidence and valid_until
+      - review_required: true for user-facing directives
+  write_path:
+    - "MemoryManager Markdown for the currently injected project memory"
+    - "RuntimeMemoryManager only when its explicit scope/id contract is supplied"
+  idempotency:
+    - add a consolidation ledger keyed by session_id plus scope
+    - write records atomically before marking the source window complete
+    - retry safely without duplicating facts
+
+feedback_schema:
+  required_fields:
+    - rating
+    - session_id
+    - turn_index
+    - user_message_digest
+    - assistant_message_digest
+    - model
+    - machine_id
+    - scope
+    - created_at
+  promotion_rule:
+    - group only by a stable fingerprint within the same scope
+    - require at least 3 negative signals across 2 distinct sessions
+    - apply temporal decay after 30 days
+    - create a draft "avoid/prefer" directive, never activate automatically
+    - require explicit user approval before prompt injection
+    - support revoke, expiry, and provenance back to all supporting feedback
+
+build_slices:
+  - id: 0
+    name: enrich_feedback_and_scope_contract
+    deliverable: >-
+      Persist full-turn provenance, digest, session/scope identity, and a redaction
+      decision; add tests proving company boundaries cannot be crossed.
+  - id: 1
+    name: manual_batch_consolidator
+    deliverable: >-
+      Add bauer memory consolidate with dry-run, budget, deterministic ledger,
+      review output, and no automatic prompt activation.
+  - id: 2
+    name: opt_in_scheduled_consolidation
+    deliverable: >-
+      Run the approved batch through the durable cron/runtime scheduler with
+      kill-switch, per-day token budget, metrics, and retry/backoff.
+  - id: 3
+    name: feedback_directives
+    deliverable: >-
+      Fingerprint repeated feedback, generate reviewable directives, and activate
+      only after explicit human approval with expiry/revocation.
+
+open_questions:
+  - Is consolidation opt-in per installation, workspace, or company?
+  - Which identity source supplies user_id and company_id for CLI, serve, and desktop?
+  - What data must never be consolidated (secrets, credentials, regulated/company data)?
+  - How long are raw episodic sessions retained after successful consolidation?
+  - Should a failed or partial consolidation be retried automatically, and under what budget?
+  - Does the user approve each directive or only a batch of proposed directives?
+  - How are model-generated facts corrected, expired, and audited?
+  - Should machine_id partition feedback, or may the same user span machines?
