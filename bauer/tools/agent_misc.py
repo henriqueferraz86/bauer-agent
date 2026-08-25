@@ -180,9 +180,9 @@ class MiscToolsMixin:
                 raise ToolError("process: 'command' é obrigatório para action=start.")
             cmd_str = str(command)
 
-            # SEGURANÇA: process start executa comando arbitrário (Popen com
-            # shell=True) — SEM o gate abaixo era um bypass total do run_command
-            # (allowlist/denylist/safe_mode/aprovação). Mesmas regras aqui:
+            # SEGURANÇA: process start executa comando arbitrário — SEM o gate
+            # abaixo seria um bypass total do run_command (allowlist/denylist/
+            # safe_mode/aprovação). Mesmas regras aqui:
             # 1. Encadeamento shell burlaria a allowlist do 1º token
             #    (`echo x && del ...`): operadores fora de aspas são bloqueados.
             import shlex as _shlex
@@ -207,15 +207,15 @@ class MiscToolsMixin:
                     "habilite tools.shell_enabled no config.yaml."
                 )
             try:
-                _runner.validate(cmd_str, confirm=bool(args.get("confirm", False)))
+                cmd_args = _runner.validate(cmd_str, confirm=bool(args.get("confirm", False)))
             except Exception as exc:  # Blocked/SafeMode/ShellError
                 raise ToolError(f"process start: {exc}") from exc
 
             label = str(args.get("label", cmd_str[:40]))
             try:
                 proc = subprocess.Popen(
-                    command,
-                    shell=True,
+                    cmd_args,
+                    shell=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     stdin=subprocess.PIPE,

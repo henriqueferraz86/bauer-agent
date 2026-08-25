@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 RouteKind = Literal["direct", "code", "reasoning", "tool", "orchestrate"]
 
@@ -269,8 +270,12 @@ def provider_e_local(provider: str, cfg: Any = None) -> bool:
         return True
     if p != "custom" or cfg is None:
         return False
-    host = str(getattr(getattr(cfg, "custom", None), "host", "") or "").lower()
-    return any(h in host for h in _HOSTS_LOCAIS)
+    endpoint = str(getattr(getattr(cfg, "custom", None), "host", "") or "").strip()
+    try:
+        hostname = (urlparse(endpoint).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    return hostname in _HOSTS_LOCAIS
 
 
 def validar_execucao_local(cfg, model_name: str = "") -> "list[str]":
