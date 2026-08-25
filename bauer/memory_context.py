@@ -38,6 +38,33 @@ _MAX_DECISION_CHARS = 300
 # Max chars from session snippets shown in context.
 _MAX_SNIPPET_CHARS = 200
 
+# Best-effort memory must never create one thread per turn indefinitely. These
+# slots count accepted prefetch and sync work across the process; saturation
+# simply omits memory for that turn instead of enqueueing more work.
+_MEMORY_WORKER_LIMIT = 4
+_MEMORY_PREFETCH_WAIT_S = 0.1
+_MEMORY_WORKER_SLOTS = threading.BoundedSemaphore(_MEMORY_WORKER_LIMIT)
+
+
+def _start_memory_worker(target) -> threading.Thread | None:
+    """Start *target* only when global memory capacity is immediately free."""
+    if not _MEMORY_WORKER_SLOTS.acquire(blocking=False):
+        return None
+
+    def _run() -> None:
+        try:
+            target()
+        finally:
+            _MEMORY_WORKER_SLOTS.release()
+
+    worker = threading.Thread(target=_run, daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        _MEMORY_WORKER_SLOTS.release()
+        raise
+    return worker
+
 
 def _safe_workspace(workspace: object) -> "str | bytes | Path | None":
     """Normaliza o workspace para um caminho válido ou None.
@@ -161,12 +188,12 @@ def prefetch_memory_context(
         except Exception as exc:
             logger.debug("prefetch_memory_context: session search error: %s", exc)
 
-    t1 = threading.Thread(target=_query_decisions, daemon=True)
-    t2 = threading.Thread(target=_query_sessions, daemon=True)
-    t1.start()
-    t2.start()
-    t1.join(timeout=2.0)
-    t2.join(timeout=2.0)
+    t1 = _start_memory_worker(_query_decisions)
+    t2 = _start_memory_worker(_query_sessions)
+    if t1 is not None:
+        t1.join(timeout=_MEMORY_PREFETCH_WAIT_S)
+    if t2 is not None:
+        t2.join(timeout=_MEMORY_PREFETCH_WAIT_S)
 
     parts: list[str] = []
 
@@ -279,6 +306,4 @@ def sync_memory_after_turn(
         except Exception as exc:
             logger.debug("sync_memory_after_turn: %s", exc)
 
-    t = threading.Thread(target=_sync, daemon=True)
-    t.start()
-    return t
+    return _start_memory_worker(_sync)

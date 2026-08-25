@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -260,3 +261,66 @@ class TestStoreInstanceCache:
         p = str(tmp_path / "decisions.db")
         assert mc._decision_memory_for(p) is mc._decision_memory_for(p)
         mc._reset_store_cache()
+
+
+class TestMemoryWorkerLimits:
+    def test_prefetch_saturation_returns_without_queuing_and_releases(self, tmp_path, monkeypatch):
+        from bauer import memory_context as mc
+
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = {"decision": 0, "session": 0}
+
+        class _DecisionStore:
+            def search(self, *_args, **_kwargs):
+                calls["decision"] += 1
+                started.set()
+                release.wait(timeout=5)
+                finished.set()
+                return []
+
+        monkeypatch.setattr(mc, "_MEMORY_WORKER_SLOTS", threading.BoundedSemaphore(1))
+        monkeypatch.setattr(mc, "_decision_memory_for", lambda _path: _DecisionStore())
+        monkeypatch.setattr(mc, "_session_store_for", lambda _path: calls.__setitem__("session", calls["session"] + 1))
+
+        first_started = time.monotonic()
+        assert mc.prefetch_memory_context("first", workspace=tmp_path) is None
+        assert time.monotonic() - first_started < 0.5
+        assert started.is_set()
+
+        second_started = time.monotonic()
+        assert mc.prefetch_memory_context("second", workspace=tmp_path) is None
+        assert time.monotonic() - second_started < 0.25
+        assert calls == {"decision": 1, "session": 0}
+
+        release.set()
+        assert finished.wait(timeout=1)
+        assert mc._MEMORY_WORKER_SLOTS.acquire(timeout=1)
+        mc._MEMORY_WORKER_SLOTS.release()
+        assert mc.prefetch_memory_context("third", workspace=tmp_path) is None
+        assert calls["decision"] == 2
+
+    def test_sync_saturation_returns_none_and_releases_capacity(self, tmp_path, monkeypatch):
+        from bauer import memory_context as mc
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _DecisionStore:
+            def record(self, **_kwargs):
+                started.set()
+                release.wait(timeout=5)
+
+        monkeypatch.setattr(mc, "_MEMORY_WORKER_SLOTS", threading.BoundedSemaphore(1))
+        monkeypatch.setattr(mc, "_decision_memory_for", lambda _path: _DecisionStore())
+
+        first = mc.sync_memory_after_turn("input", "x" * 50, [], workspace=tmp_path)
+        assert first is not None and started.wait(timeout=1)
+        assert mc.sync_memory_after_turn("another", "x" * 50, [], workspace=tmp_path) is None
+
+        release.set()
+        first.join(timeout=1)
+        second = mc.sync_memory_after_turn("after", "x" * 50, [], workspace=tmp_path)
+        assert second is not None
+        second.join(timeout=1)
