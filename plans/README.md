@@ -21,7 +21,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [007](007-auth-key-file-permissions.md) | Restringir `.auth_key` para 0o600 + corrigir docstring | P5 | P1 | S | — | DONE (PR #86) |
 | [008](008-webhook-ssrf-guard.md) | Aplicar guard SSRF (`url_safety`) na entrega de webhooks | P7 | P1 | S | — | TODO |
 | [009](009-server-request-body-limits.md) | Limitar tamanho do body em /chat e /v1/chat/completions | P7 | P2 | S | — | DONE |
-| [010](010-orchestrator-resume-robustness.md) | Robustez do orquestrador: validar StepResult no `--resume` + avisar DAG circular | P4 | P2 | S | — | TODO |
+| [010](010-orchestrator-resume-robustness.md) | Robustez do orquestrador: validar StepResult no `--resume` + avisar DAG circular | P4 | P2 | S | — | DONE |
 | [011](011-context-budget-regression-tests.md) | Testes de regressão para budget/tail/`shrink_budget` do ContextManager | P1 | P2 | S | — | TODO |
 | [012](012-agents-md-claude-md.md) | Escrever `AGENTS.md` + `CLAUDE.md` para execução por agentes | DX | P2 | S | — | TODO |
 | [013](013-agent-extract-slash-commands.md) | Extrair handlers de slash-command do `agent.py` (−800 linhas do god object) | P3 | P3 | M | — | TODO |

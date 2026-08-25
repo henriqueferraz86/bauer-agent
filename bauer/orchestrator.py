@@ -150,6 +150,46 @@ class StepResult:
     tool_log: list[dict] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)
 
+    @classmethod
+    def from_dict(cls, data: object) -> "StepResult":
+        """Lê progresso persistido sem aceitar estruturas incompatíveis.
+
+        Chaves desconhecidas são ignoradas para que arquivos escritos por uma
+        versão futura continuem recuperáveis. Campos estruturais não são
+        coercidos: em especial, ``True`` não é um id válido e ``tool_log``
+        precisa continuar sendo uma lista de objetos.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("StepResult deve ser um objeto JSON")
+
+        step_id = data.get("id")
+        if not isinstance(step_id, int) or isinstance(step_id, bool):
+            raise ValueError("id deve ser inteiro")
+
+        strings = {}
+        for name in ("goal", "model_used", "response"):
+            value = data.get(name, "")
+            if not isinstance(value, str):
+                raise ValueError(f"{name} deve ser texto")
+            strings[name] = value
+
+        tool_log = data.get("tool_log", [])
+        if not isinstance(tool_log, list) or not all(isinstance(entry, dict) for entry in tool_log):
+            raise ValueError("tool_log deve ser uma lista de objetos")
+
+        timestamp = data.get("timestamp", 0.0)
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            raise ValueError("timestamp deve ser número")
+
+        return cls(
+            id=step_id,
+            goal=strings["goal"],
+            model_used=strings["model_used"],
+            response=strings["response"],
+            tool_log=tool_log,
+            timestamp=float(timestamp),
+        )
+
 
 class AgentOrchestrator:
     """Orquestrador: planeja -> executa (DAG + paralelo) -> sintetiza.
@@ -327,6 +367,12 @@ class AgentOrchestrator:
             ]
             if not ready:
                 # Dependencia circular ou plano invalido — processa tudo restante em sequencia
+                stuck = [step["id"] for step in remaining]
+                if self.console:
+                    self.console.print(
+                        "[yellow]Aviso: DAG com dependência circular ou inválida nos "
+                        f"passos {stuck}; executando o restante em sequência.[/yellow]"
+                    )
                 batches.extend([[s] for s in remaining])
                 break
             batches.append(ready)
@@ -648,14 +694,20 @@ class AgentOrchestrator:
             )
 
     def load_progress(self, task: str) -> list[StepResult]:
-        """Carrega StepResults salvos. Retorna lista vazia se nao existir."""
+        """Carrega StepResults salvos, ignorando arquivos incompatíveis."""
         p = self._progress_path(task)
         if not p.exists():
             return []
         results = []
         for f in sorted(p.glob("step_*.json")):
-            d = json.loads(f.read_text(encoding="utf-8"))
-            results.append(StepResult(**d))
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                results.append(StepResult.from_dict(data))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                if self.console:
+                    self.console.print(
+                        f"[yellow]Aviso: ignorando progresso corrompido {f.name}: {exc}[/yellow]"
+                    )
         return results
 
     def clear_progress(self, task: str) -> None:
