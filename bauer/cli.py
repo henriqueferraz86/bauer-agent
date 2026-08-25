@@ -267,6 +267,53 @@ def _grafo_desatualizado(probe, nome: str) -> str:
     return ""
 
 
+def _agentic_doctor_notes(cfg, state) -> list[str]:
+    """Retorna diagnósticos best-effort da stack agêntica do doctor.
+
+    Só observa a configuração e o estado: não altera preflight, allowlist ou
+    projeto. Cada fonte acessória falha isoladamente para nunca derrubar doctor.
+    """
+    notes: list[str] = []
+
+    try:
+        from .commands._runtime import _effective_tool_allowlist
+
+        effective_allowlist = _effective_tool_allowlist(cfg)
+        factory_tools = {"app_factory_init", "app_factory_status"}
+        if effective_allowlist is not None and not factory_tools <= set(effective_allowlist):
+            notes.append(
+                "App Factory: as tools app_factory_init/status NÃO estão expostas ao modelo "
+                "(cortadas pelo tool_allowlist). Para conduzir Spec-Driven Development pelo chat, "
+                "inclua-as em tools.tool_allowlist."
+            )
+    except Exception:
+        pass
+
+    if getattr(state, "tool_mode", "") == "bridge":
+        notes.append(
+            "Tool mode = bridge (tool calls por prompt). Menos confiável em modelos locais "
+            "para tarefas multi-passo. Prefira um modelo com supports_tools: true no models.yaml "
+            "(ex.: qwen2.5:7b, qwen3-coder:30b) para tool calling nativo."
+        )
+
+    try:
+        from . import app_factory as _af
+
+        workspace = Path(getattr(cfg.agent, "workspace", ".") or ".")
+        project = _af.get_active_project(workspace)
+        if project is not None and _af.is_governed(project):
+            gate = _af.current_gate(project)
+            missing = _af.missing_planning_docs(project)
+            line = f"App Factory ativo: {project.name} | gate {gate.slug if gate else '?'}"
+            if missing:
+                line += f" | docs pendentes: {', '.join(missing)}"
+            notes.append(line)
+    except Exception:
+        pass
+
+    return notes
+
+
 @app.command(rich_help_panel=PANEL_START)
 def doctor(
     config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
@@ -453,6 +500,7 @@ def doctor(
             "o prompt pode truncar em modelos locais. Configure tools.tool_allowlist enxuto "
             "(só as essenciais: web_search, web_fetch, read_file, run_command, datetime_now)."
         )
+    notes.extend(_agentic_doctor_notes(cfg, report.state))
 
     if notes:
         console.print("\n[bold]Notas:[/bold]")

@@ -15,6 +15,8 @@
 - **Depends on**: none (complementa 024 e 026, mas independe deles)
 - **Category**: dx
 - **Planned at**: commit `ced7dc2`, 2026-07-18
+- **Executed at**: 2026-08-25 — drift confirmado em `cli.py:449`; notas
+  observam allowlist efetiva, tool mode e App Factory sem alterar preflight.
 
 ## Why this matters
 
