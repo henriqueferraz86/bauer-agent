@@ -67,6 +67,26 @@ def test_custom_depende_do_host():
     assert not provider_e_local("custom", None), "sem cfg não dá para saber — não assume"
 
 
+@pytest.mark.parametrize("host", [
+    "http://localhost:9000",
+    "http://127.0.0.1:8080",
+    "http://[::1]:9000",
+    "http://host.docker.internal:1234",
+])
+def test_custom_loopbacks_validos(host):
+    assert provider_e_local("custom", N(custom=N(host=host)))
+
+
+@pytest.mark.parametrize("host", [
+    "https://localhost.example.com",
+    "https://api-127.0.0.1.example.com",
+    "localhost:9000",
+    "not a url",
+])
+def test_custom_host_remoto_ou_invalido_nao_e_local(host):
+    assert not provider_e_local("custom", N(custom=N(host=host)))
+
+
 def test_lmstudio_conta():
     """Não é só Ollama. Quem roda LM Studio também está local, e excluí-lo faria
     a flag recusar uma configuração legítima."""

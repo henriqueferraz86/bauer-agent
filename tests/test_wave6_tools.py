@@ -251,6 +251,25 @@ class TestProcess:
         with pytest.raises(ToolError, match="allowlist"):
             router._process({"action": "start", "command": "comando_inexistente_xyz --foo"})
 
+    def test_start_uses_validated_arguments_without_shell(self, ws, monkeypatch):
+        """O processo recebe os args parseados pelo ShellRunner, nunca a string
+        que o shell interpretaria."""
+        from unittest.mock import MagicMock
+
+        router = self._shell_router(ws)
+        proc = MagicMock(pid=123, stdout=iter(()), stderr=iter(()))
+        popen = MagicMock(return_value=proc)
+        monkeypatch.setattr("subprocess.Popen", popen)
+
+        result = router._process({
+            "action": "start",
+            "command": "python -c \"print('safe')\"",
+        })
+
+        assert "PID 123" in result
+        assert popen.call_args.args[0] == ["python", "-c", "print('safe')"]
+        assert popen.call_args.kwargs["shell"] is False
+
     def test_start_encadeamento_shell_negado(self, ws):
         router = self._shell_router(ws)
         for cmd in ("echo a && echo b", "echo a; echo b", "echo a | echo b",
