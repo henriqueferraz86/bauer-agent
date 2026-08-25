@@ -36,18 +36,18 @@ Este beta demonstra que o Bauer ja funciona honestamente como Agent Runtime: ele
 
 ```powershell
 cd C:\Users\henri\Documents\PROJETOS\BauerAgent
-.\.venv\Scripts\activate
-python -m pip install -e ".[server,web]"
-python -m bauer.cli config check --config config.yaml
-python -m bauer.cli runtime list
-python -m bauer.cli skills validate
+uv sync --frozen --extra dev
+uv run bauer config check --config config.yaml
+uv run bauer runtime list
+uv run bauer skills validate
 ```
 
 Para Agno:
 
 ```powershell
-python -m pip install agno sqlalchemy
-python -m bauer.cli runtime test agno --config config.yaml
+# Agno e SQLAlchemy nao fazem parte do lock do Bauer. Este e um smoke opt-in
+# do adapter externo; `--with` mantem essas dependencias fora do ambiente do CI.
+uv run --with agno --with sqlalchemy bauer runtime test agno --config config.yaml
 ```
 
 ## Demo Repetivel em 5 Minutos
@@ -57,8 +57,7 @@ Use dois terminais.
 ### Terminal 1: API e dashboard
 
 ```powershell
-.\.venv\Scripts\activate
-python -m bauer.cli serve --config config.yaml --host 127.0.0.1 --port 8000
+uv run bauer serve --config config.yaml --host 127.0.0.1 --port 8000
 ```
 
 Abrir:
@@ -72,30 +71,30 @@ http://127.0.0.1:8000/
 1. Confirmar runtime e adapters.
 
 ```powershell
-python -m bauer.cli runtime list
-python -m bauer.cli runtime test agno --config config.yaml
+uv run bauer runtime list
+uv run --with agno --with sqlalchemy bauer runtime test agno --config config.yaml
 ```
 
 2. Rodar agent via Agno.
 
 ```powershell
-python -m bauer.cli runtime use agno --config config.yaml
-python -m bauer.cli agent run-one "Responda um smoke test curto do Bauer Runtime." --config config.yaml
+uv run bauer runtime use agno --config config.yaml
+uv run --with agno --with sqlalchemy bauer agent run-one "Responda um smoke test curto do Bauer Runtime." --config config.yaml
 ```
 
 3. Executar skill de arquivo / validar skill registry.
 
 ```powershell
-python -m bauer.cli skills validate
-python -m bauer.cli skills find filesystem.read
-python -m bauer.cli skills inspect bauer.coding
+uv run bauer skills validate
+uv run bauer skills find filesystem.read
+uv run bauer skills inspect bauer.coding
 ```
 
 4. Tentar comando PowerShell sensivel e verificar aprovacao.
 
 ```powershell
-python -m bauer.cli skills inspect windows.powershell_safe
-python -m bauer.cli approvals list
+uv run bauer skills inspect windows.powershell_safe
+uv run bauer approvals list
 ```
 
 No dashboard, abrir Approvals. A acao `shell.execute` deve aparecer como pendente quando solicitada por skill/tool governada.
@@ -103,15 +102,15 @@ No dashboard, abrir Approvals. A acao `shell.execute` deve aparecer como pendent
 5. Aprovar.
 
 ```powershell
-python -m bauer.cli approvals approve <approval_id>
+uv run bauer approvals approve <approval_id>
 ```
 
 6. Ver run, eventos e audit log.
 
 ```powershell
-python -m bauer.cli runs list
-python -m bauer.cli runs show <run_id>
-python -m bauer.cli runs events <run_id>
+uv run bauer runs list
+uv run bauer runs show <run_id>
+uv run bauer runs events <run_id>
 curl http://127.0.0.1:8000/events
 curl http://127.0.0.1:8000/audit
 ```
@@ -121,31 +120,33 @@ No dashboard, abrir Runs, Events, Approvals e Observability.
 7. Agendar tarefa.
 
 ```powershell
-python -m bauer.cli schedule add --id beta_smoke --name "Beta smoke" --agent-id default --runtime-adapter bauer_native --cron "* * * * *" --message "Execute um smoke test agendado curto."
-python -m bauer.cli schedule list
+uv run bauer cron create beta_smoke "Execute um smoke test agendado curto." --schedule "cron: * * * * *" --workspace workspace
+uv run bauer cron list --workspace workspace
 ```
 
-8. Worker executar sozinho.
+8. Subir o runtime supervisionado. Ele inicia dispatcher, cron, outbox e Kanban;
+o cron vencido entra na fila e o dispatcher o executa.
 
 ```powershell
-python -m bauer.cli worker start
+uv run bauer runtime start --workspace workspace
 ```
 
 Em outro terminal:
 
 ```powershell
-python -m bauer.cli worker status
-python -m bauer.cli schedule show beta_smoke
-python -m bauer.cli runs list
+uv run bauer runtime status --workspace workspace
+uv run bauer cron run beta_smoke --workspace workspace
+uv run bauer dispatch status --workspace workspace
+uv run bauer runs list
 ```
 
 9. Mostrar kill switch.
 
 ```powershell
-python -m bauer.cli runtime kill-switch on
-python -m bauer.cli runtime kill-switch status
-python -m bauer.cli schedule run beta_smoke
-python -m bauer.cli runtime kill-switch off
+uv run bauer runtime kill-switch on
+uv run bauer runtime kill-switch status
+uv run bauer cron run beta_smoke --workspace workspace
+uv run bauer runtime kill-switch off
 ```
 
 Com o kill switch ligado, novas execucoes devem ser bloqueadas, mas leitura/status e cancelamento continuam permitidos.
@@ -153,8 +154,9 @@ Com o kill switch ligado, novas execucoes devem ser bloqueadas, mas leitura/stat
 10. Limpar demo.
 
 ```powershell
-python -m bauer.cli schedule delete beta_smoke --yes
-python -m bauer.cli runtime use bauer_native --config config.yaml
+uv run bauer cron delete beta_smoke --yes --workspace workspace
+uv run bauer runtime stop --workspace workspace
+uv run bauer runtime use bauer_native --config config.yaml
 ```
 
 ## Checklist de Release

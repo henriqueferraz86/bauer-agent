@@ -15,12 +15,12 @@ Use o runtime quando quiser operar agentes com historico auditavel, aprovacao pa
 
 ```powershell
 # validar adapters disponiveis
-python -m bauer.cli runtime list
-python -m bauer.cli runtime test bauer_native
-python -m bauer.cli runtime test agno --config config.yaml
+uv run bauer runtime list
+uv run bauer runtime test bauer_native
+uv run --with agno --with sqlalchemy bauer runtime test agno --config config.yaml
 
 # iniciar API/dashboard local
-python -m bauer.cli serve --config config.yaml --host 127.0.0.1 --port 8000
+uv run bauer serve --config config.yaml --host 127.0.0.1 --port 8000
 
 # abrir dashboard
 # http://127.0.0.1:8000/
@@ -163,7 +163,10 @@ bauer start    # mesma tela, a qualquer momento
 bauer guide    # tour rápido pelos modos (chat / agent / model / gateway)
 ```
 
-### 🔧 Instalação manual (dev / contribuição)
+### 🔧 Instalação manual a partir do código-fonte
+
+> Esta é uma instalação para uso local a partir do source. Para contribuir ou
+> reproduzir o CI, use o setup com `uv` em [Desenvolvimento](#-desenvolvimento).
 
 ```bash
 git clone https://github.com/henriqueferraz86/bauer-agent.git
@@ -1059,12 +1062,12 @@ environment:
 
 ## 🧪 Desenvolvimento
 
-### Setup em 3 comandos (recomendado — usa uv)
+### Setup em 3 comandos (contribuição — igual ao CI)
 
 ```bash
-pip install uv          # instala o gerenciador de pacotes
-uv sync --all-extras    # instala todas as dependências (incluindo dev)
-uv run pytest           # roda a suite
+pip install uv                                  # instala o gerenciador de pacotes
+uv sync --frozen --extra dev                    # usa exatamente o uv.lock do CI
+uv run pytest tests/ -q --tb=short              # roda a suite
 ```
 
 > **Windows — conflito com `bauer.exe` em uso:** se `uv sync` falhar por permissão no executável,
@@ -1091,14 +1094,9 @@ bauer doctor
 bauer doctor --providers   # testa conectividade de todos os providers
 ```
 
-### Setup alternativo (sem uv)
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-pytest
-```
+> Para contribuição, não substitua este fluxo por `pip install -e ".[dev]"`:
+> ele resolve as constraints no momento da instalação, enquanto o CI usa o
+> `uv.lock` versionado.
 
 ---
 

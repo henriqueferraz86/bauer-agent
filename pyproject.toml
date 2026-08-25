@@ -114,12 +114,12 @@ ignore = ["E501", "W291", "W293", "E302", "E303"]
 # 213 modulos / 48.273 LOC (52% do codigo) ja passam limpos e estao travados.
 #
 # COMO REGERAR A LISTA DE DIVIDA — use o MESMO ambiente do CI:
-#     pip install -e ".[dev]"     (nao o python do sistema!)
-#     mypy bauer/
+#     uv sync --frozen --extra dev
+#     uv run mypy bauer/
 # Aprendido na marra: a primeira versao desta lista foi medida com o python do
-# sistema (pydantic 2.9.2) enquanto o CI instala o extra `dev` (pydantic
-# 2.13.4). As libs mudam os proprios stubs entre versoes, entao um modulo pode
-# passar num ambiente e falhar no outro — foi exatamente o que aconteceu com
+# sistema (pydantic 2.9.2) enquanto o CI usa o `uv.lock` com o extra `dev`.
+# As libs mudam os proprios stubs entre versoes, entao um modulo pode passar num
+# ambiente e falhar no outro — foi exatamente o que aconteceu com
 # config_loader.py.
 python_version = "3.11"
 ignore_missing_imports = true       # deps opcionais (fastapi, playwright, ddgs...)
