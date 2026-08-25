@@ -23,7 +23,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [009](009-server-request-body-limits.md) | Limitar tamanho do body em /chat e /v1/chat/completions | P7 | P2 | S | — | DONE |
 | [010](010-orchestrator-resume-robustness.md) | Robustez do orquestrador: validar StepResult no `--resume` + avisar DAG circular | P4 | P2 | S | — | DONE |
 | [011](011-context-budget-regression-tests.md) | Testes de regressão para budget/tail/`shrink_budget` do ContextManager | P1 | P2 | S | — | DONE (cobertura já existente, verificada em 2026-08-25) |
-| [012](012-agents-md-claude-md.md) | Escrever `AGENTS.md` + `CLAUDE.md` para execução por agentes | DX | P2 | S | — | TODO |
+| [012](012-agents-md-claude-md.md) | Escrever `AGENTS.md` + `CLAUDE.md` para execução por agentes | DX | P2 | S | — | DONE |
 | [013](013-agent-extract-slash-commands.md) | Extrair handlers de slash-command do `agent.py` (−800 linhas do god object) | P3 | P3 | M | — | TODO |
 | [014](014-spike-autonomous-daemon-24-7.md) | SPIKE: Funcionário 24/7 — daemon → /loop → aprovação/relatório via gateway | P4 | P1 | M | — | DONE (spec: docs/architecture/autonomous-daemon-v2.yaml; achou GAP-1 ⚠) |
 | [015](015-spike-learned-provider-profiles.md) | SPIKE: Runtime que aprende — perfis de provider por telemetria real | P1 | P2 | S | — | TODO |

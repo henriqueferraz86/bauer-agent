@@ -10,6 +10,10 @@
 
 ## Status
 
+- **Atualizado em 2026-08-25**: `AGENTS.md` já existia como guia completo e
+  permanece a fonte canônica; esta execução adiciona apenas o ponteiro curto
+  `CLAUDE.md`.
+
 - **Priority**: P2
 - **Effort**: S
 - **Risk**: LOW
