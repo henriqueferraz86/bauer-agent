@@ -1,0 +1,326 @@
+id: proactive-unified-identity
+title: "Agente proativo e identidade unificada entre canais"
+version: 1
+status: draft
+kind: architecture-spike
+planned_at: "2026-07-07"
+completed_spike_at: "2026-08-25"
+owner: bauer-gateway
+
+executive_summary:
+  proactive_verdict: >-
+    Viável, com uma mudança de fronteira explícita: o AutomationScheduler já
+    dispara trabalho governável, mas apenas cria uma task READY e sua entrega
+    atual avisa que a task foi enfileirada. O briefing v1 deve ser uma task
+    especializada cujo worker compõe o texto a partir de fontes fechadas e só
+    então usa GatewayOutbox; não deve passar dados operacionais como prompt
+    aberto para um agente nem criar outro scheduler.
+  identity_verdict: >-
+    Viável em fases, desde que identidade canônica seja uma camada de
+    autorização/configuração e não uma troca de session_key. A primeira
+    entrega une preferências e memória deliberadamente compartilhada por
+    pessoa, preserva o histórico por canal e oferece continuidade somente por
+    busca e resumo com consentimento explícito. Fusão automática de históricos
+    não é aprovada.
+  blocking_gap: >-
+    O scheduler/outbox não possui vínculo de entrega com a conclusão da task:
+    ele entrega automation.queued antes de o dispatcher executar. Portanto o
+    briefing v1 requer um produtor pós-execução ou uma task/worker dedicado;
+    configurar apenas cron --deliver não produz um briefing rico.
+  privacy_invariant: >-
+    Uma identidade só pode ler dados de sessões, memória e empresas que foram
+    explicitamente vinculados a ela. Um chat de grupo nunca herda identidade
+    por chat_id; ele permanece sem contexto pessoal até uma vinculação e um
+    comando explícito por um participante autorizado.
+
+evidence:
+  - question: "O scheduler consegue disparar a composição do briefing?"
+    references:
+      - "bauer/automation_scheduler.py:26-57"
+      - "bauer/automation_scheduler.py:67-122"
+      - "bauer/task_dispatcher.py:599-630"
+      - "docs/architecture/automation-scheduler.yaml:5-8,33-45"
+    answer: >-
+      Sim, indiretamente. AutomationScheduler transforma cada job vencido em
+      uma task Kanban READY; TaskDispatcher é o dono que depois a entrega ao
+      worker/orquestrador. O scheduler não executa modelos ou tools e este é o
+      desenho correto a preservar. Um briefing deve ser reconhecido por
+      metadata de task e composto por um worker/produtor fechado após a task
+      ser executada.
+  - question: "O que cron --deliver entrega hoje e por que não serve como briefing?"
+    references:
+      - "bauer/commands/cron_cmd.py:14-44"
+      - "bauer/automation_scheduler.py:124-149"
+      - "bauer/gateway_outbox.py:49-96,124-151,195-244"
+      - "bauer/gateway_runtime.py:151-169"
+    answer: >-
+      O comando apenas guarda delivery nos metadados. Ao enfileirar a task, o
+      scheduler manda ao outbox um payload automation.queued que inclui o
+      prompt cru, task_id e horário; o pump tenta entregar depois com até três
+      tentativas. Não há callback de TaskDispatcher para substituir esse
+      payload por resultado, resumo, custo ou analytics. Logo a configuração
+      atual é notificação de fila, não composição nem entrega pós-sucesso.
+  - question: "Qual é o caminho de mensagem reutilizável?"
+    references:
+      - "bauer/tools/messaging.py:19-57"
+      - "bauer/gateway_channels.py:45-97,148-167"
+      - "bauer/gateway_outbox.py:57-96,124-203"
+      - "bauer/gateway_runtime.py:151-169"
+    answer: >-
+      channel_send resolve um canal nomeado do workspace, cria uma mensagem
+      SQLite no GatewayOutbox e o pump chama GatewayDeliveryAdapter. O design
+      deve reutilizar esse transporte e seus canais registrados; o novo
+      produtor só recebe destinos já resolvidos e texto estruturado. A
+      idempotência de briefing precisa de message_id determinístico, pois
+      enqueue sem message_id gera UUID novo a cada chamada.
+  - question: "Quais fontes do briefing existem hoje?"
+    references:
+      - "bauer/automation_scheduler.py:78-111"
+      - "bauer/task_dispatcher.py:535-580"
+      - "bauer/core/runtime/autonomy.py:99-218"
+      - "bauer/postiz_client.py:54-127"
+    answer: >-
+      Kanban já conserva tasks e o dispatcher registra DONE/FAILED e resumo;
+      os custos ficam no BudgetManager/ledger de runtime quando o caminho
+      registra uma run. Postiz hoje só lista integrações/grupos/posts e cria
+      posts: não expõe métodos de analytics. Briefing v1 pode resumir tasks e
+      cobertura/custo disponíveis, deve marcar custo ausente como indisponível
+      e deixa analytics Postiz para uma fatia posterior com dois métodos novos
+      e testes contra respostas versionadas.
+  - question: "Como canais isolam sessões hoje?"
+    references:
+      - "bauer/channel_base.py:100-114"
+      - "bauer/channel_base.py:137-177,325-359"
+      - "bauer/channel_base.py:471-535,725-747"
+    answer: >-
+      ChannelMessage calcula session_key a partir de canal mais chat_id, não
+      user_id. AgentBackend carrega/salva ContextManager, locks, fila ocupada e
+      overrides de modelo por essa chave. Assim um DM e um grupo do mesmo
+      usuário não são a mesma sessão, e um grupo compartilhado não pode ser
+      tratado como identidade pessoal. Alterar session_key fundiria histórico,
+      locks e /model por acidente; está fora de escopo.
+  - question: "A busca entre sessões permite continuidade sem fundir histórico?"
+    references:
+      - "bauer/sqlite_session_store.py:81-100,324-372"
+      - "bauer/sqlite_session_store.py:388-438"
+      - "bauer/tools/session.py:92-116"
+    answer: >-
+      Sim dentro de um store. search_sessions retorna snippets por session_id
+      usando vetor, FTS5 ou LIKE; a busca vetorial confirma que cada resultado
+      existe no SQLite aberto para impedir vazamento entre workspaces/empresas.
+      A tool atual escolhe um banco em caminhos do workspace e não conhece
+      pessoa. O fluxo novo deve abrir apenas o store autorizado, buscar no
+      allowlist de sessões vinculadas, pedir confirmação de seleção e injetar
+      um resumo rotulado como contexto referenciado, nunca mensagens brutas.
+  - question: "Qual é a interação com companies e memória runtime?"
+    references:
+      - "bauer/commands/agent_cmd.py:913-931"
+      - "bauer/company_manager.py:453-480"
+      - "bauer/core/runtime/memory.py:14-16,42-123"
+      - "bauer/core/runtime/session_manager.py:18-72"
+    answer: >-
+      O CLI redireciona workspace e sessions para a empresa ativa, mas a
+      seleção de empresa é global no arquivo active_company. RuntimeMemory tem
+      escopos user/company porém seus registros não guardam person_id ou
+      company_id próprios; SessionManager tem company_id, mas o gateway ainda
+      usa SqliteSessionStore separado. Portanto identidade deve carregar
+      company_id explícito e não pode usar a empresa ativa global como prova de
+      autorização ou como chave de memória de canal.
+
+proactive_design:
+  event_types:
+    scheduled_briefing:
+      producer: "AutomationScheduler -> task metadata notification_kind=briefing"
+      trigger: "daily schedule, opt-in destination and quiet-hours policy"
+      delivery: "post-execution producer -> GatewayOutbox -> GatewayRuntime pump -> adapter"
+    task_alert:
+      producer: "TaskDispatcher completion/failure state transition"
+      trigger: "blocked/failed after configured threshold; never every retry"
+      delivery: "same outbox path, with dedup key per task/state/window"
+    provider_or_delivery_alert:
+      producer: "bounded operational event producer, not raw exception forwarding"
+      trigger: "sustained failure threshold only"
+      delivery: "same outbox path, sanitized fixed template"
+  briefing_v1_sources:
+    kanban:
+      source: "task/workspace manager plus TaskDispatcher terminal summaries"
+      fields: [ready_count, in_progress_count, blocked_count, completed_since_last_briefing]
+    cost:
+      source: "BudgetManager/ledger where company and run attribution exists"
+      rule: "report a labeled unavailable value rather than inventing a total"
+    postiz:
+      source: "not in v1"
+      gap: "PostizClient lacks analytics endpoints; add only after API contract and fixture tests."
+    ci_git:
+      source: "not in v1"
+      reason: "no validated project-wide source or privacy contract was found in this spike"
+  message_contract:
+    composition: >-
+      A deterministic formatter receives typed aggregate facts, a destination
+      and locale. It has no unrestricted tool access and cannot copy task
+      descriptions, prompts, raw errors, session content, secrets or user
+      identifiers into notifications.
+    payload: "{type, text, notification_id, source, generated_at}"
+    message_id: "briefing:{workspace_digest}:{destination}:{local_date}:{version}"
+    failure_behavior: >-
+      Persist one failed/queued notification in the outbox; retries reuse the
+      same id and payload. A producer failure records an operational event and
+      does not send an empty or partial briefing.
+  anti_spam:
+    required_controls:
+      - "notifications are opt-in by destination and event type"
+      - "quiet_hours are evaluated in the destination timezone before enqueue"
+      - "daily briefing dedups by destination/local-date/version"
+      - "task alerts dedup by task_id, terminal/state class and cooldown window"
+      - "collapse repeated provider/delivery failures into a bounded summary"
+      - "max notifications per destination per rolling hour/day; excess is summarized or dropped with an audit event"
+    initial_defaults:
+      briefing: "one per destination per local day"
+      task_alert_cooldown: "one per task/state per 6 hours"
+      hourly_cap: 3
+      daily_cap: 10
+  proposed_config_schema:
+    notifications:
+      destinations:
+        - id: "owner-telegram"
+          channel: "channel:alerts"
+          identity_id: "henrique"
+          company_id: "optional explicit company scope"
+          timezone: "America/Sao_Paulo"
+          enabled: true
+      subscriptions:
+        - destination_id: "owner-telegram"
+          event: "scheduled_briefing"
+          schedule: "daily 08:30"
+        - destination_id: "owner-telegram"
+          event: "task_alert"
+          states: [blocked, failed]
+      quiet_hours:
+        start: "22:00"
+        end: "07:30"
+      limits:
+        max_per_hour: 3
+        max_per_day: 10
+  non_goals:
+    - "A task/worker never sends free-form LLM output to a notification destination in v1."
+    - "No automatic analytics, CI or git collection in v1."
+    - "No notification is authorization to execute a task or bypass a tool approval."
+
+identity_design:
+  canonical_schema:
+    identities:
+      - id: "henrique"
+        display_name: "Henrique"
+        enabled: true
+        company_ids: ["personal"]
+        channel_principals:
+          telegram: ["602936016"]
+          slack: ["U0BF8RCSQ57"]
+          discord: []
+        cli:
+          local_profile: "explicit local owner binding, not inferred from CWD"
+        preferences:
+          locale: "pt-BR"
+          timezone: "America/Sao_Paulo"
+        memory:
+          sharing: "explicit_personal_only"
+  key_rules:
+    - "identity_id is stable and opaque; display_name is never an authorization key."
+    - "channel principal is (channel, user_id), never chat_id."
+    - "one channel principal maps to at most one enabled identity per company scope."
+    - "a binding is valid only when the bridge already accepted the channel user through its allowlist."
+    - "CLI binding requires a local authenticated/profile mechanism specified separately; OS username and current directory are insufficient."
+    - "identity_id and company_id travel together in authorization decisions; no implicit active-company fallback."
+  unified:
+    - "person-scoped preferences such as locale, timezone and notification subscriptions"
+    - "explicitly opted-in personal memory references, scoped by company"
+    - "authorized session registry used only to select candidates for session search"
+  remains_channel_scoped:
+    - "session_key, message history, ContextManager, lock and busy queue"
+    - "per-session /model override in AgentBackend"
+    - "chat/group membership and the destination of replies"
+    - "raw channel message audit/retry handling"
+  group_chat_policy: >-
+    Group chats are channel-scoped shared spaces. A message in a group may use
+    common workspace context only; it cannot read a participant's personal
+    memory, search personal sessions, or trigger a personal notification
+    destination merely because one participant has a linked identity.
+  memory_boundary: >-
+    RuntimeMemoryManager's user scope is not sufficient by itself because its
+    record schema lacks identity and company fields. Identity v1 uses a new
+    namespaced reference/index or an additive record envelope rather than
+    silently repurposing existing user records. If that requires migration of
+    durable memory contents, stop before implementation and present a
+    migration/consent plan.
+  session_search_without_merging:
+    flow:
+      - "User issues an explicit continue/context command in a direct channel."
+      - "Resolver authenticates the (channel, user_id) binding and selects the explicit company scope."
+      - "Registry returns only session ids belonging to that identity and company/store."
+      - "SqliteSessionStore.search_sessions searches only that authorized store; no global VectorStore result may bypass the SQLite membership check."
+      - "UI presents minimal title/date/snippet candidates and requires a selection or confirmation."
+      - "A bounded summarizer creates a short referenced-context item labeled with source session and date."
+      - "The current channel session receives that summary as contextual content; source session messages, session_key, locks and model overrides remain unchanged."
+    prohibitions:
+      - "never copy full history automatically"
+      - "never search other company/workspace stores"
+      - "never expose raw snippets to a group channel"
+      - "never treat lexical/vector similarity as identity proof"
+
+build_slices:
+  - slice: 1
+    title: "Briefing determinístico sobre o transporte existente"
+    scope:
+      - "Typed BriefingFacts collector for Kanban and available cost coverage."
+      - "Dedicated task/worker producer selected by automation metadata, plus deterministic formatter."
+      - "Notification policy with destination opt-in, quiet hours, per-destination caps and deterministic outbox ids."
+      - "No Postiz analytics, no free-form agent composition and no identity migration."
+    tests:
+      - "one due briefing produces one task then one deterministic outbox record after successful composition"
+      - "same destination/date/version is idempotent; retries retain payload"
+      - "quiet hours and caps defer/suppress with an audit reason"
+      - "raw task description, error and prompt cannot appear in text"
+  - slice: 2
+    title: "Identidade explícita e continuidade opt-in"
+    scope:
+      - "Validated config registry for identity/channel principal/company binding."
+      - "Direct-message resolver only; group chats always remain unlinked."
+      - "Authorized-session index and explicit session_search -> selected summary flow."
+      - "Person preferences and session references only; no automatic history merge or existing-memory migration."
+    tests:
+      - "same user_id on linked Telegram and Slack resolves to one identity, but their session keys stay distinct"
+      - "unlinked user, wrong company and group chat return no candidates"
+      - "search opens only authorized store/session ids and injects a bounded summary"
+      - "model override and history remain isolated after context import"
+  - slice: 3
+    title: "Fontes e alertas adicionais sob controle"
+    scope:
+      - "Postiz analytics client methods after documented API/fixture contract."
+      - "Task failure/blocked alert producer with cooldown and aggregation."
+      - "Optional additive identity-memory envelope only after consent and migration decision."
+      - "Operator inspection, unsubscribe and deletion flows with retention policy."
+    tests:
+      - "analytics failure marks the briefing field unavailable without failing Kanban delivery"
+      - "retries/failure flapping yield one alert per cooldown, then an aggregate"
+      - "identity deletion removes registry/index references without reading another identity's data"
+
+open_questions:
+  - "Which trusted CLI/Desktop authentication mechanism can bind local use to identity_id without relying on OS username, CWD or a shared config file?"
+  - "Does company scope belong to every identity binding, every notification destination, or both, and how are cross-company owners represented?"
+  - "Which TaskDispatcher worker boundary is allowed to invoke the deterministic briefing producer, and how is its completion linked atomically to the outbox record?"
+  - "Should a briefing missed during quiet hours be delivered at quiet-hours end, summarized into the next scheduled briefing, or discarded?"
+  - "What retention/deletion policy applies to authorized-session indexes, imported context summaries and notification audit records?"
+  - "What verified Postiz analytics response schema, permissions and rate limits apply to hosted and self-hosted installations?"
+  - "Can the existing runtime cost ledger consistently attribute cost to company before a briefing makes company-scoped claims?"
+  - "What UX proves consent before exposing a cross-channel session snippet, especially after an identity binding changes?"
+  - "Should a channel principal be allowed to map to multiple identities in separate companies, and what explicit selector prevents accidental crossover?"
+
+verification:
+  documentation_only:
+    - "uv run python -c \"import yaml, pathlib; yaml.safe_load(pathlib.Path('docs/architecture/proactive-unified-identity.yaml').read_text(encoding='utf-8'))\""
+    - "git diff --check"
+  future_build_gates:
+    - "uv sync --frozen --extra dev"
+    - "uv run pytest tests/ -q --tb=short"
+    - "uv run ruff check bauer/ --select E9,F63,F7,F82"
+    - "uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303"
