@@ -979,8 +979,14 @@ class PostizSection(_StrictSection):
 
 
 class GatewaySection(_StrictSection):
-    """Bauer Gateway — runtime unificado de canais + entrega do outbox."""
+    """Bauer Gateway — runtime unificado de canais + entrega do outbox.
+
+    ``allow_internal_webhooks`` is an explicit opt-in for trusted on-premise
+    receivers. It remains false by default to prevent SSRF through outbox
+    webhook targets.
+    """
     outbox_drain_interval_s: int = Field(ge=1, le=3600, default=15)
+    allow_internal_webhooks: bool = False
 
 
 class UiSection(_StrictSection):

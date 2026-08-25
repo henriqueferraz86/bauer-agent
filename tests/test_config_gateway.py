@@ -95,6 +95,10 @@ class TestGatewaySection:
         with pytest.raises(ValidationError):
             _minimal_config(gateway={"outbox_drain_interval_s": 0})
 
+    def test_internal_webhooks_require_explicit_opt_in(self):
+        assert _minimal_config().gateway.allow_internal_webhooks is False
+        assert _minimal_config(gateway={"allow_internal_webhooks": True}).gateway.allow_internal_webhooks is True
+
 
 class TestResolveToken:
     def test_env_tem_precedencia(self, monkeypatch):

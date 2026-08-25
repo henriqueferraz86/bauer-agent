@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -400,6 +401,39 @@ class TestEscalationEngine:
         # Should not raise
         events = await engine.escalate("reason", {})
         assert len(events) == 1
+
+    @pytest.mark.asyncio
+    async def test_private_webhook_is_blocked_before_urlopen(self):
+        engine = EscalationEngine(webhook_url="http://127.0.0.1/escalate")
+        engine.add_rule(EscalationRule(
+            "r1", reason_pattern=".*", channels=["webhook"], cooldown_seconds=0,
+        ))
+        with patch("urllib.request.urlopen") as urlopen:
+            await engine.escalate("reason", {})
+        urlopen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_public_escalation_webhook_proceeds_to_urlopen(self):
+        engine = EscalationEngine(webhook_url="https://8.8.8.8/escalate")
+        engine.add_rule(EscalationRule(
+            "r1", reason_pattern=".*", channels=["webhook"], cooldown_seconds=0,
+        ))
+        with patch("urllib.request.urlopen") as urlopen:
+            await engine.escalate("reason", {})
+        urlopen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_escalation_internal_webhook_requires_explicit_opt_in(self):
+        engine = EscalationEngine(
+            webhook_url="http://127.0.0.1/escalate",
+            allow_internal_webhooks=True,
+        )
+        engine.add_rule(EscalationRule(
+            "r1", reason_pattern=".*", channels=["webhook"], cooldown_seconds=0,
+        ))
+        with patch("urllib.request.urlopen") as urlopen:
+            await engine.escalate("reason", {})
+        urlopen.assert_called_once()
 
     # ── severity ──────────────────────────────────────────────────────────────
 
