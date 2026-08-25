@@ -1,0 +1,225 @@
+id: learned-provider-profiles
+version: 1
+status: draft
+owner: bauer-runtime
+summary: >
+  Design spike for a local, privacy-minimising store of facts learned from
+  provider calls. The first use case is a context-window cap reported by a
+  provider; later slices may retain coarse failure counts to improve fallback
+  ordering. This is an architecture decision only: no production reader or
+  writer exists yet.
+
+scope:
+  included:
+    - Per-installation observations keyed by provider and model.
+    - Reuse of a lower context cap on a later process.
+    - Coarse, bounded error-reason telemetry for advisory fallback ordering.
+  excluded:
+    - Prompts, completions, exception bodies, credentials, user identifiers, and request payloads.
+    - Changing configured provider/model selection or increasing an explicit context limit.
+    - Cross-machine synchronisation, provider probing, and remote telemetry.
+
+investigation:
+  question_1_observed_cap:
+    answer: >
+      The sole current discovery path is the interactive agent overflow
+      recovery. It classifies an exception, parses a numeric cap from the
+      exception text, then calls ContextManager.shrink_budget before
+      compression. At that point the turn state has active_model and client,
+      and the ContextManager has provider, so a (normalised provider,
+      active_model) key can be assembled at the caller. The parser itself only
+      receives text and therefore must not be made the persistence boundary.
+    evidence:
+      - "bauer/agent.py:4095-4125: overflow recovery classifies, parses, and shrinks."
+      - "bauer/agent.py:4089-4094: state carries client and active_model for the active call."
+      - "bauer/agent.py:1570-1592: parser returns only an integer or None."
+      - "bauer/context_manager.py:118-137: shrink_budget mutates only in-memory context state."
+    conclusion: >
+      Sufficient identity is available at the agent call site, subject to an
+      explicit provider-normalisation helper. The observation must be rejected
+      when provider/model is empty, cap is non-positive, or it would increase
+      the current effective context.
+
+  question_2_error_classification:
+    answer: >
+      classify_api_error is a pure classifier: it produces a FailReason and
+      recovery flags from an exception, with no provider/model identity and no
+      persistence. It is reached in streaming retry, primary/fallback flows,
+      the interactive overflow flow, channel rendering, and retry_utils.
+      Counting at every classifier invocation would overcount retries and
+      cannot safely key an observation. A cheap observer should instead be
+      called once at the terminal per-provider attempt, where provider/model
+      and attempt outcome are known. It must be best-effort and never alter
+      recovery.
+    evidence:
+      - "bauer/error_classifier.py:258-354: pure classification API and all FailReason outcomes."
+      - "bauer/error_classifier.py:18-36: bounded FailReason vocabulary."
+      - "bauer/agent.py:1367-1369, 1956-1958, 2732-2733, 4106-4112, 4140-4142: independent agent call sites."
+      - "bauer/retry_utils.py:94-125: one provider operation may classify once per retry."
+      - "bauer/channel_base.py:439-443: channel error display also classifies an exception."
+    conclusion: >
+      Do not add a global side effect to classify_api_error. Add a narrowly
+      scoped observation call in governed provider-attempt boundaries, with
+      deduplication by attempt identifier where one exists.
+
+  question_3_store_and_concurrency:
+    answer: >
+      runtime_state is unsuitable for learned profiles. Its write path directly
+      overwrites JSON and its reader merely ignores invalid JSON; neither has a
+      lock, read-modify-write merge, atomic replacement, versioning, nor a
+      schema for observations. The JSONL runtime store only coordinates threads
+      in one process, so it does not solve CLI plus server concurrency. The
+      recommended design is a dedicated file under BAUER_HOME, named
+      learned_provider_profiles.json, guarded by a dedicated interprocess lock
+      file. The existing O_EXCL scheduler lock is a useful local precedent, but
+      its stale-lock policy must be reviewed for this data before reuse.
+    evidence:
+      - "bauer/runtime_state.py:52-66: direct write_text overwrite and unlocked read."
+      - "bauer/paths.py:21-29, 51-53: BAUER_HOME is canonical and already owns runtime state."
+      - "bauer/core/runtime/state_store.py:11-27, 42-51: JSONL locks are threading.RLock only."
+      - "bauer/automation_scheduler.py:152-194: existing cross-process O_EXCL lock pattern with timeout/staleness."
+      - "bauer/models_dev.py:205-212: temp-and-replace is used for a cache but has no lock."
+    store_schema:
+      path: "$BAUER_HOME/learned_provider_profiles.json"
+      top_level:
+        version: 1
+        profiles: "mapping keyed by canonical '<provider>/<model>'"
+      profile_fields:
+        observed_context_cap: "positive integer; only a provider-reported lower cap"
+        cap_observed_at: "UTC ISO-8601 timestamp"
+        cap_expires_at: "UTC ISO-8601 timestamp"
+        error_windows: "bounded mapping FailReason value -> rolling-bucket counts"
+        last_seen_at: "UTC ISO-8601 timestamp"
+        schema_version: "integer for per-record migration"
+    write_protocol:
+      - "Acquire an interprocess lock with bounded wait; on timeout skip the observation and log DEBUG."
+      - "Re-read and validate the full document while holding the lock; merge only the affected profile."
+      - "Write a validated temporary file in the same directory, flush it, then replace the target atomically while holding the lock."
+      - "Keep the prior file on validation or replacement failure; best-effort observation must not fail a user turn."
+      - "Reject malformed records individually and report only a sanitized DEBUG diagnostic."
+    conclusion: >
+      A dedicated file plus interprocess lock is recommended rather than
+      extending runtime_state. The exact Windows/POSIX lock implementation,
+      stale-lock ownership proof, and fsync policy remain decisions for the
+      implementation slice; this spike does not assume they are solved by a
+      thread lock or by os.replace alone.
+
+  question_4_consumption_and_precedence:
+    answer: >
+      Doctor/preflight produces an applied context and writes it to runtime
+      state; ContextManager prefers that applied value, otherwise a static
+      provider default. Cloud resolution can intentionally raise a small
+      requested context to a static provider default. A learned cap must only
+      reduce the already selected effective value, never raise it or silently
+      reroute a provider. It is read once when a provider/model ContextManager
+      is constructed, and again after a fallback changes the active
+      provider/model. A stale or malformed observation is ignored.
+    evidence:
+      - "bauer/preflight.py:218-246: cloud requested context is resolved before an applied value is produced."
+      - "bauer/commands/_runtime.py:73-88: doctor state is refreshed and persisted on staleness."
+      - "bauer/context_manager.py:100-111, 155-157: applied context wins over static provider defaults."
+      - "bauer/provider_profile.py:440-452: static default context source."
+      - "bauer/provider_profile.py:506-528: cloud resolver can use max(requested, provider default)."
+      - "bauer/agent.py:4146-4159: fallback changes client and active_model."
+    precedence:
+      highest: "Explicitly applied runtime/local safety constraint from doctor or configuration."
+      next: "Fresh learned observed_context_cap, applied as min(current effective context, learned cap)."
+      fallback: "Current static provider/model context resolution."
+      invariants:
+        - "A learned value never increases context or overrides a local RAM/num_ctx decision."
+        - "A learned observation never changes configured provider/model; failure counts are advisory only."
+        - "Provider and model must be canonicalised before lookup; no provider-only fallback for an exact-model observation."
+    ttl_and_decay:
+      observed_context_cap: >
+        Fresh for 30 days from cap_observed_at. At expiry it is ignored rather
+        than gradually increased: successful calls do not prove a higher hard
+        ceiling. A newly observed lower cap replaces a higher cap immediately;
+        reset removes it explicitly.
+      error_windows: >
+        Keep fixed hourly buckets for seven days and discard older buckets on
+        read/write. Use the resulting count only as a tie-breaker among already
+        eligible fallbacks; it cannot disable a provider. Exact bucket width and
+        scoring threshold require product calibration.
+
+  question_5_user_experience:
+    answer: >
+      The existing learning command group already owns human-readable learned
+      data and uses confirmation before destructive reset. Doctor already owns
+      runtime state presentation. The proposed compatible UX is a focused
+      subcommand rather than silently mixing profile data into existing memory
+      files: 'bauer learning providers show [--provider P] [--model M]' and
+      'bauer learning providers reset [--provider P] [--model M] --confirm'.
+      Doctor should display a one-line non-sensitive summary (fresh profiles,
+      expired profiles, and store health) with an explicit opt-in detail flag.
+      These command names are a proposal pending CLI UX review, not existing
+      behavior.
+    evidence:
+      - "bauer/cli.py:144-148: learning is the registered CLI namespace for adaptive learning."
+      - "bauer/commands/learning_cmd.py:12-24: learning show is the existing summary pattern."
+      - "bauer/commands/learning_cmd.py:166-193: learning reset requires confirmation and preserves a backup."
+      - "bauer/cli.py:270-340: doctor presents applied runtime context and state location."
+    inspect_output:
+      - "canonical provider/model key, fresh/expired state, observed cap, last-seen timestamp, and coarse reason counts"
+      - "never raw exception text, prompts, credentials, endpoint URLs, or user/session identifiers"
+    reset_contract:
+      - "default reset requires an explicit provider/model selector or --all plus --confirm"
+      - "under the same interprocess lock, create a timestamped backup and atomically replace the store"
+      - "a reset of a missing profile is successful and reports zero records changed"
+
+security_and_privacy:
+  data_minimisation:
+    - "Persist only canonical provider/model identifiers, bounded numeric caps, FailReason values, timestamps, and counters."
+    - "Never persist raw exception text: classifier output truncates it today, but it can still contain provider-controlled or sensitive data."
+  filesystem:
+    - "Use BAUER_HOME through bauer.paths, reject traversal in the profile key, and retain restrictive user-only permissions where the platform supports them."
+    - "Validate type, bounds, timestamps, schema version, and maximum profile/bucket counts before accepting a file."
+  failure_mode:
+    - "Store failures, lock timeouts, and corrupt records are DEBUG-only best effort; they must not block a provider call or change its safety posture."
+
+read_write_points:
+  writes:
+    - "Slice 1: agent overflow path immediately after a trusted numeric cap is parsed and before/alongside ContextManager.shrink_budget (bauer/agent.py:4104-4125)."
+    - "Slice 2: terminal provider-attempt boundaries after classification, not classify_api_error itself (bauer/error_classifier.py:258-354; bauer/retry_utils.py:94-125)."
+  reads:
+    - "Slice 1: ContextManager construction after the normal applied context is known (bauer/context_manager.py:100-111)."
+    - "Slice 1: fallback transition rebinds learned context for the new active provider/model (bauer/agent.py:4146-4159)."
+    - "Slice 3: doctor summary and learning providers show/reset commands (bauer/cli.py:270-340; bauer/commands/learning_cmd.py:12-24)."
+
+build_slices:
+  - slice: 1
+    title: "Persist and reuse only observed context caps"
+    scope:
+      - "Dedicated validated store, interprocess lock, atomic merge/replace, expiry, and unit tests including concurrent-writer simulation."
+      - "Read fresh cap at ContextManager setup and record a trusted lower cap from the agent overflow path."
+    acceptance:
+      - "A later process starts with a fresh lower cap and never raises the normal effective context."
+      - "Concurrent writers preserve both distinct profile observations; corrupt data is ignored without breaking a turn."
+  - slice: 2
+    title: "Add bounded failure-reason windows for advisory fallback ordering"
+    scope:
+      - "Observe terminal per-provider attempts with explicit provider/model identity and bounded rolling buckets."
+      - "Use counts only as a tie-breaker among current fallback candidates; preserve configured order when no signal exists."
+    acceptance:
+      - "Retries do not inflate a terminal-attempt count, and no raw exception text is stored."
+      - "An error-heavy candidate is not selected ahead of an otherwise equal healthy candidate."
+  - slice: 3
+    title: "Expose, reset, and document the learned data"
+    scope:
+      - "Add proposed learning providers show/reset commands and concise doctor health output."
+      - "Add confirmation, filtered reset, atomic backup, and operator documentation."
+    acceptance:
+      - "Inspect is non-sensitive and reset is scoped, confirmed, recoverable, and safe during an active writer."
+
+verification_for_build:
+  - "uv sync --frozen --extra dev"
+  - "uv run pytest tests/ -q --tb=short"
+  - "uv run ruff check bauer/ --select E9,F63,F7,F82"
+  - "uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303"
+
+open_questions:
+  - "Should the learned-cap TTL be 30 days, a provider-specific value, or configurable without growing public configuration?"
+  - "How should provider aliases and custom endpoint/model identifiers be canonicalised without exposing endpoint URLs in the store?"
+  - "Which cross-platform interprocess lock primitive gives acceptable stale-lock recovery on Windows and POSIX, and what ownership proof is required before deleting a lock?"
+  - "Should the profile file use JSON plus lock as proposed, or SQLite if future per-attempt accounting requires stronger transactions?"
+  - "What minimum sample size and scoring formula make error counts useful without causing fallback churn?"
+  - "Should users have a global opt-out, and if so is an environment variable adequate without a public config schema change?"
