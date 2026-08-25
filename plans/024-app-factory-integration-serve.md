@@ -17,6 +17,10 @@
 - **Depends on**: plans/023 (recomendado — o factory depende das tools executarem de fato)
 - **Category**: dx / direction
 - **Planned at**: commit `ced7dc2`, 2026-07-18
+- **Outcome (2026-08-25)**: DONE — implemented in `0318b59`. The serve path
+  exposes the factory tools and appends the best-effort factory state section
+  to the request-scoped system prompt; dedicated tests pass. A pre-existing
+  `E702` remains in `_runtime.py` outside this plan's diff.
 
 ## Why this matters
 
