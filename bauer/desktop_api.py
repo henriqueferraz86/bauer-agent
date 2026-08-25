@@ -992,21 +992,34 @@ def build_desktop_router(
     def approve_policy_request(approval_id: str):
         from dataclasses import asdict
 
+        from .core.events import EventBus
+        from .core.kernel import BauerKernel
         from .core.policy import ApprovalManager
+        from .core.runtime.run_manager import RunManager
 
         try:
-            return asdict(ApprovalManager(root=_runtime_root).approve(approval_id))
+            bus = EventBus(root=_runtime_root)
+            result = BauerKernel(
+                runs=RunManager(root=_runtime_root, event_bus=bus), bus=bus,
+                approvals=ApprovalManager(root=_runtime_root, event_bus=bus),
+            ).approve(approval_id)
+            return asdict(result) if hasattr(result, "__dataclass_fields__") else result
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 
     @router.post("/approvals/{approval_id}/deny")
     def deny_policy_request(approval_id: str):
-        from dataclasses import asdict
-
+        from .core.events import EventBus
+        from .core.kernel import BauerKernel
         from .core.policy import ApprovalManager
+        from .core.runtime.run_manager import RunManager
 
         try:
-            return asdict(ApprovalManager(root=_runtime_root).deny(approval_id))
+            bus = EventBus(root=_runtime_root)
+            return BauerKernel(
+                runs=RunManager(root=_runtime_root, event_bus=bus), bus=bus,
+                approvals=ApprovalManager(root=_runtime_root, event_bus=bus),
+            ).deny(approval_id)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 

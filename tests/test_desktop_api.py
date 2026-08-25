@@ -628,6 +628,21 @@ class TestRuntimeDashboardEndpoints:
         missing = env["client"].post("/api/approvals/nope/deny")
         assert missing.status_code == 404
 
+    def test_denial_finalizes_waiting_kernel_run(self, env):
+        from bauer.core.events import EventBus
+        from bauer.core.policy import ApprovalManager
+        from bauer.core.runtime.run_manager import RunManager
+
+        bus = EventBus(root=env["runtime_root"])
+        runs = RunManager(root=env["runtime_root"], event_bus=bus)
+        run = runs.create_run(session_id="s", agent_id="a", runtime_adapter="x", status="waiting_approval")
+        approval = ApprovalManager(root=env["runtime_root"], event_bus=bus).request(
+            operation="shell.execute", tool_name="t", reason="test", risk_level="high", run_id=run.id,
+        )
+        response = env["client"].post(f"/api/approvals/{approval.id}/deny")
+        assert response.status_code == 200 and response.json()["status"] == "denied"
+        assert runs.get_run(run.id).status == "failed"
+
 
 class TestBauerOsCommandEndpoint:
     def test_os_command_navigates_to_runs(self, env):

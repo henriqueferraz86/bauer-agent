@@ -163,6 +163,7 @@ class BauerKernel:
         decision = self._evaluate_policy(request, run)
         if decision is not None and decision.action == "deny":
             self.runs.fail_run(run.id, f"policy deny: {decision.reason}")
+            self._release_budget(run.id)
             trajectory.append("failed")
             return decision, self._result(run.id, session_id, trajectory, decision=decision)
         if decision is not None and decision.action == "ask":
@@ -371,6 +372,10 @@ class BauerKernel:
         if not record.run_id:
             return {"approval_id": approval_id, "status": "approved", "run_id": None}
         resumed = self.resume(record.run_id)
+        # Public approval endpoints do not have an executor to recover. Keep a
+        # faithful queued state for a worker instead of pretending to resume.
+        if executor is None and continue_with is None:
+            return resumed
         try:
             return self.continue_run(record.run_id, extra_input=continue_with,
                                      executor=executor)
@@ -401,6 +406,7 @@ class BauerKernel:
             run = self.runs.get_run(record.run_id)
             if run is not None and run.status == "waiting_approval":
                 self.runs.fail_run(record.run_id, f"aprovação negada: {record.reason}")
+                self._release_budget(record.run_id)
         return {"approval_id": approval_id, "status": "denied", "run_id": record.run_id}
 
     # ── operações de ciclo de vida (Sprint 2) ────────────────────────────────
@@ -430,6 +436,7 @@ class BauerKernel:
         """Cancela o run (idempotente em terminais) e avisa o adapter."""
         run = self._require_run(run_id)
         cancelled = self.runs.cancel_run(run_id)
+        self._release_budget(run_id)
         adapter_result: dict[str, Any] = {}
         try:
             adapter_result = dict(self._adapter_for(run).stop_run(run_id))
@@ -451,7 +458,11 @@ class BauerKernel:
         if recovery is None:
             from ..runtime.resilience import RuntimeRecovery
             recovery = RuntimeRecovery(store=self.runs.store)
-        return recovery.recover_stuck_runs(max_age_s=max_age_s)
+        recovered = recovery.recover_stuck_runs(max_age_s=max_age_s)
+        for item in recovered:
+            if str(item.get("status") or "") in {"failed", "cancelled"}:
+                self._release_budget(str(item.get("run_id") or item.get("id") or ""))
+        return recovered
 
     # ── fase de execução (compartilhada por execute e continue_run) ──────────
 
@@ -507,6 +518,7 @@ class BauerKernel:
                             # contra o circuito: o executor não falhou.
                             self.runs.update_run(run.id, status="cancelled",
                                                  error=str(result.get("error") or "cancelado"))
+                            self._release_budget(run.id)
                             trajectory.append("cancelled")
                             return self._result(run.id, session_id, trajectory,
                                                 decision=decision, output=result.get("output"))
@@ -596,6 +608,7 @@ class BauerKernel:
                 extra = (f" (replan {replans_used} devolveu a mesma saída — o "
                          f"feedback não foi incorporado)" if esteril else "")
                 self.runs.fail_run(run.id, f"quality gate: {reason}{extra}")
+                self._release_budget(run.id)
                 trajectory.append("failed")
                 return self._result(run.id, session_id, trajectory, decision=decision,
                                     output=result.get("output"))
@@ -688,6 +701,7 @@ class BauerKernel:
             trajectory.append(atual.status)
             return
         self.runs.fail_run(run_id, error)
+        self._release_budget(run_id)
         trajectory.append("failed")
 
     def _cancelar_se_nao_terminal(self, run_id: str, motivo: str) -> None:
@@ -702,6 +716,7 @@ class BauerKernel:
         if atual is None or atual.status in TERMINAL_RUN_STATUSES:
             return
         self.runs.update_run(run_id, status="cancelled", error=motivo)
+        self._release_budget(run_id)
 
     def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
         current = self.runs.get_run(run.id).status
@@ -715,7 +730,8 @@ class BauerKernel:
     def _evaluate_policy(self, request: KernelRequest, run: Any):
         if self.policy is None:
             return None
-        payload = {"agent_id": request.agent_id, **request.metadata}
+        payload = {**request.metadata, **request.input,
+                   "agent_id": run.agent_id, "run_id": run.id}
         decision = self.policy.evaluate(request.operation, payload)
         self._publish(
             "policy.evaluated", run, status=decision.action, message=decision.reason,
@@ -739,8 +755,8 @@ class BauerKernel:
                 operation=request.operation, tool_name="kernel",
                 reason=motivo, risk_level=str(
                     getattr(self.contract, "risk_level", "") or "medium"),
-                payload={"agent_id": request.agent_id, "origem": "task_contract",
-                         **request.metadata},
+                payload={**request.metadata, **request.input,
+                         "agent_id": run.agent_id, "origem": "task_contract"},
                 run_id=run.id, session_id=run.session_id,
             )
             return record.id
@@ -755,7 +771,8 @@ class BauerKernel:
             record = self.approvals.request(
                 operation=request.operation, tool_name="kernel",
                 reason=decision.reason, risk_level=decision.risk_level,
-                payload={"agent_id": request.agent_id, **request.metadata},
+                payload={**request.metadata, **request.input,
+                         "agent_id": run.agent_id, "run_id": run.id},
                 run_id=run.id, session_id=run.session_id,
             )
             return record.id
@@ -771,15 +788,24 @@ class BauerKernel:
             return None
 
     def _record_cost(self, run: Any, cost: float | None) -> None:
-        if self.budget is None or not cost:
+        if self.budget is None:
             return
         try:
             self.budget.record_run_cost(run_id=run.id, agent_id=run.agent_id,
-                                        company_id=None, cost_usd=cost,
+                                        company_id=None, cost_usd=cost or 0.0,
                                         metadata={"source": "kernel"})
         except Exception as exc:  # noqa: BLE001 — contabilidade nunca derruba o run
             from ...logging_config import log_suppressed
             log_suppressed("kernel.record_cost", exc)
+
+    def _release_budget(self, run_id: str) -> None:
+        if self.budget is None or not run_id:
+            return
+        try:
+            self.budget.release_run_reservation(run_id)
+        except Exception as exc:  # noqa: BLE001 — accounting must not change outcome
+            from ...logging_config import log_suppressed
+            log_suppressed("kernel.release_budget", exc)
 
     def _publish(self, event_type: str, run: Any, *, status: str | None = None,
                  message: str | None = None, data: dict | None = None) -> None:
