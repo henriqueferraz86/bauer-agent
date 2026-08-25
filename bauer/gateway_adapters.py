@@ -7,20 +7,40 @@ payload mapping and HTTP/file delivery.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .url_safety import UrlSafetyConfig, is_safe_url
+
 
 SUPPORTED_GATEWAY_CHANNELS = frozenset({"file", "webhook", "telegram", "discord", "slack", "whatsapp"})
+logger = logging.getLogger(__name__)
 
 
 class GatewayDeliveryAdapter:
-    """Deliver sanitized outbox payloads to supported outbound platforms."""
+    """Deliver sanitized outbox payloads to supported outbound platforms.
 
-    def __init__(self, workspace: str | Path = "workspace"):
+    User-configured webhook destinations reject private and internal addresses
+    by default.  Trusted deployments that intentionally use an internal
+    receiver can opt in with ``allow_internal_webhooks=True`` or
+    ``gateway.allow_internal_webhooks: true`` in the Bauer config.
+    """
+
+    def __init__(
+        self,
+        workspace: str | Path = "workspace",
+        *,
+        allow_internal_webhooks: bool | None = None,
+    ):
         self.workspace = Path(workspace).resolve()
+        self._allow_internal_webhooks = (
+            _allow_internal_webhooks_from_config()
+            if allow_internal_webhooks is None
+            else bool(allow_internal_webhooks)
+        )
 
     def deliver(
         self,
@@ -61,7 +81,7 @@ class GatewayDeliveryAdapter:
 
     def _deliver_webhook(self, target: str, payload: dict[str, Any], *, metadata: dict[str, Any]) -> None:
         headers = _metadata_headers(metadata)
-        _post_json(target, payload, headers=headers, timeout=_metadata_timeout(metadata))
+        self._post_webhook(target, payload, headers=headers, timeout=_metadata_timeout(metadata))
 
     def _deliver_telegram(self, target: str, payload: dict[str, Any], *, metadata: dict[str, Any]) -> None:
         token = _required_env(str(metadata.get("token_env") or "TELEGRAM_BOT_TOKEN"))
@@ -80,11 +100,11 @@ class GatewayDeliveryAdapter:
         username = str(metadata.get("username") or "").strip()
         if username:
             body["username"] = username
-        _post_json(target, body, timeout=_metadata_timeout(metadata))
+        self._post_webhook(target, body, timeout=_metadata_timeout(metadata))
 
     def _deliver_slack(self, target: str, payload: dict[str, Any], *, metadata: dict[str, Any]) -> None:
         body: dict[str, Any] = {"text": _payload_text(payload)}
-        _post_json(target, body, timeout=_metadata_timeout(metadata))
+        self._post_webhook(target, body, timeout=_metadata_timeout(metadata))
 
     def _deliver_whatsapp(self, target: str, payload: dict[str, Any], *, metadata: dict[str, Any]) -> None:
         token = _required_env(str(metadata.get("token_env") or "WHATSAPP_ACCESS_TOKEN"))
@@ -105,7 +125,12 @@ class GatewayDeliveryAdapter:
             "type": "text",
             "text": {"body": _payload_text(payload)},
         }
-        _post_json(url, body, headers={"Authorization": f"Bearer {token}"}, timeout=_metadata_timeout(metadata))
+        self._post_webhook(
+            url,
+            body,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_metadata_timeout(metadata),
+        )
 
     def _target_path(self, target: str) -> Path:
         raw = target[7:] if target.startswith("file://") else target
@@ -113,6 +138,17 @@ class GatewayDeliveryAdapter:
         if not path.is_absolute():
             path = self.workspace / path
         return path.resolve()
+
+    def _post_webhook(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 15,
+    ) -> None:
+        _validate_webhook_url(url, allow_internal=self._allow_internal_webhooks)
+        _post_json(url, payload, headers=headers, timeout=timeout)
 
 
 def _post_json(
@@ -132,6 +168,23 @@ def _post_json(
         status = int(getattr(resp, "status", getattr(resp, "code", 200)) or 200)
         if status >= 400:
             raise RuntimeError(f"gateway returned HTTP {status}")
+
+
+def _validate_webhook_url(url: str, *, allow_internal: bool) -> None:
+    """Validate a user-controlled webhook destination before opening it."""
+    config = UrlSafetyConfig(block_private_ips=not allow_internal)
+    is_safe_url(url, config=config)
+
+
+def _allow_internal_webhooks_from_config() -> bool:
+    """Read the explicit opt-in, failing closed if config cannot be loaded."""
+    try:
+        from .config_loader import load_config
+
+        return bool(load_config().gateway.allow_internal_webhooks)
+    except Exception as exc:
+        logger.debug("gateway webhook policy unavailable; denying internal URLs: %s", exc)
+        return False
 
 
 def _payload_text(payload: dict[str, Any]) -> str:

@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable
 
+from .url_safety import UrlSafetyConfig, is_safe_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -155,6 +157,9 @@ class EscalationEngine:
     webhook_url:
         Optional URL for the ``"webhook"`` channel.  If None and webhook
         is in channels, the webhook step is skipped.
+    allow_internal_webhooks:
+        Set only for a trusted, intentionally internal receiver. Private and
+        internal webhook destinations are denied by default.
     default_cooldown_seconds:
         Default cooldown applied when a rule doesn't specify one.
     """
@@ -164,11 +169,13 @@ class EscalationEngine:
         callback: EscalationCallback | None = None,
         *,
         webhook_url: str | None = None,
+        allow_internal_webhooks: bool = False,
         default_cooldown_seconds: float = 60.0,
     ) -> None:
         self._rules: list[EscalationRule] = []
         self._callback = callback
         self._webhook_url = webhook_url
+        self._allow_internal_webhooks = bool(allow_internal_webhooks)
         self._default_cooldown = default_cooldown_seconds
 
         # Cooldown tracking: (rule_name, context_hash) → last_fired_time
@@ -320,6 +327,12 @@ class EscalationEngine:
             import urllib.request
             import urllib.error
 
+            is_safe_url(
+                self._webhook_url,
+                config=UrlSafetyConfig(
+                    block_private_ips=not self._allow_internal_webhooks,
+                ),
+            )
             payload = json.dumps(event.to_dict()).encode()
             req = urllib.request.Request(
                 self._webhook_url,
