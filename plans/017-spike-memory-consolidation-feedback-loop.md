@@ -8,6 +8,13 @@
 
 ## Status
 
+**BLOCKED (2026-08-25):** the investigation confirmed that the session store has
+no tenant/company identity while runtime memory exposes a `company` scope. The
+design is recorded in [`docs/architecture/memory-consolidation-loop.yaml`](../docs/architecture/memory-consolidation-loop.yaml),
+but implementation must wait for a scope decision. Options are workspace-only,
+explicit company identity with schema propagation, or user/project-only with
+company memory kept manual.
+
 - **Priority**: P2
 - **Effort**: M para o spike (build M-L — grosseiro)
 - **Risk**: LOW (spike)
@@ -92,13 +99,13 @@ empresa multi-tenant? retenção do episódico pós-consolidação?).
 
 ## Done criteria
 
-- [ ] `docs/architecture/memory-consolidation-loop.yaml` existe (draft)
-- [ ] 5 perguntas respondidas com `file:line`
-- [ ] Regra de promoção de feedback desenhada com human-in-the-loop explícito
-- [ ] Plano de build em 3 fatias
-- [ ] ≥5 open questions
-- [ ] Nenhum código de produção alterado
-- [ ] Status atualizado em `plans/README.md`
+- [x] `docs/architecture/memory-consolidation-loop.yaml` existe (draft)
+- [x] 5 perguntas respondidas com `file:line`
+- [x] Regra de promoção de feedback desenhada com human-in-the-loop explícito
+- [x] Plano de build em fatias incrementais
+- [x] ≥5 open questions
+- [x] Nenhum código de produção alterado
+- [x] Status atualizado em `plans/README.md`
 
 ## STOP conditions
 
