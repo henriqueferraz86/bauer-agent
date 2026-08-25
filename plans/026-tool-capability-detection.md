@@ -15,6 +15,12 @@
 - **Depends on**: none
 - **Category**: bug / dx
 - **Planned at**: commit `ced7dc2`, 2026-07-18
+- **Outcome (2026-08-25)**: DONE via `8cd58cd` (HARNESS-029). The runtime
+  now derives the mode from the live client and emits a distinct actionable
+  catalog-capability warning through `runtime_capability.aviso_de_capacidade`.
+  The optional Ollama `/api/show` probe was intentionally not added: the live
+  client is the source of truth and existing regression tests cover unknown and
+  mismatched registry entries.
 
 ## Why this matters
 

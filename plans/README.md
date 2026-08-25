@@ -38,7 +38,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [023](023-system-prompt-mode-aware-tools.md) | System prompt não ensina tool-call-como-JSON em modo `native` (raiz da inconsistência de tools) | P3 | P1 | M | — | DONE (PR #57) |
 | [024](024-app-factory-integration-serve.md) | App Factory funciona pelo serve/Desktop (tools expostas + contexto no prompt) | P4 | P1 | M | 023 | DONE (implemented `0318b59`) |
 | [025](025-system-prompt-os-aware.md) | System prompt reflete o SO real (não "Windows" fixo) em servidores Linux | P3 | P2 | S | — | TODO |
-| [026](026-tool-capability-detection.md) | Aviso claro quando modelo cai no bridge por não estar no registry (+ detecção via Ollama) | P1 | P2 | M | — | TODO |
+| [026](026-tool-capability-detection.md) | Aviso claro quando modelo cai no bridge por não estar no registry (+ detecção via Ollama) | P1 | P2 | M | — | DONE (live-client capability + warning in `8cd58cd`) |
 | [027](027-doctor-agentic-stack-checks.md) | `bauer doctor` valida a stack agêntica (factory tools, tool mode, gate) | DX | P2 | S-M | — | TODO |
 | [029](029-vector-store-dim-cache-invalidation.md) | Cache de dimensão do vector_store fica obsoleto após `delete()`/`delete_prefix()` (perda silenciosa de escrita) | P1 | P1 | S | — | DONE (commit `4c24cb1`) |
 | [030](030-ollama-embed-json-guard.md) | `_ollama_embed` pode lançar exceção no caminho de sucesso, quebrando o contrato "nunca lança" do `EmbeddingEngine` | P1 | P1 | S | — | DONE (commit `8d80644`) |
