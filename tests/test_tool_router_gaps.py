@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -462,3 +464,38 @@ def test_web_fetch_truncates_long_content(ws: Path):
     with patch("httpx.Client.get", return_value=mock_resp):
         result = router._web_fetch({"url": "https://example.com", "max_chars": 100})
     assert "truncado" in result
+
+
+def test_timed_tool_returns_without_waiting_and_bounds_workers(ws: Path, monkeypatch):
+    """Timeout returns promptly; a still-running worker consumes the only slot."""
+    import bauer.tool_router as tr
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _slow(_args):
+        started.set()
+        try:
+            release.wait(timeout=5)
+            return "done"
+        finally:
+            finished.set()
+
+    router = ToolRouter(workspace=ws)
+    router._tools["slow_test"] = {"fn": _slow, "description": "", "args": {}}
+    monkeypatch.setitem(tr._TOOL_TIMEOUTS, "slow_test", 0.05)
+    monkeypatch.setattr(tr, "_TIMED_TOOL_SLOTS", threading.BoundedSemaphore(1))
+
+    start = time.monotonic()
+    with pytest.raises(ToolError, match="excedeu o timeout"):
+        router.execute({"action": "slow_test", "args": {}})
+    assert time.monotonic() - start < 0.5
+    assert started.is_set()
+
+    with pytest.raises(ToolError, match="limite de workers"):
+        router.execute({"action": "slow_test", "args": {}})
+
+    release.set()
+    assert finished.wait(timeout=1)
+    assert router.execute({"action": "slow_test", "args": {}}) == "done"

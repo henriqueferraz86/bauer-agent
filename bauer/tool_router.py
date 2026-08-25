@@ -58,6 +58,8 @@ import json
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -279,6 +281,15 @@ _TOOL_TIMEOUTS: dict[str, int] = {
     "send_message":    60,
     # Default for everything else (0 = no timeout)
 }
+
+# Python cannot safely kill a running thread. A persistent, bounded executor
+# lets a timed-out caller return immediately while keeping at most this many
+# non-browser workers alive (and never accumulating an unbounded queue).
+_TIMED_TOOL_WORKER_LIMIT = 4
+_TIMED_TOOL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_TIMED_TOOL_WORKER_LIMIT, thread_name_prefix="bauer-tool-timeout"
+)
+_TIMED_TOOL_SLOTS = threading.BoundedSemaphore(_TIMED_TOOL_WORKER_LIMIT)
 
 def _load_tool_timeouts_from_yaml() -> None:
     """Override _TOOL_TIMEOUTS from tools.yaml timeout_seconds keys (if present)."""
@@ -1764,15 +1775,24 @@ class ToolRouter(
                     ) from _te
             elif _timeout_sec > 0:
                 import concurrent.futures as _cf
-                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                    _future = _pool.submit(_fn, args)
-                    try:
-                        result = _future.result(timeout=_timeout_sec)
-                    except _cf.TimeoutError as _te:
-                        raise ToolError(
-                            f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
-                            "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
-                        ) from _te
+                if not _TIMED_TOOL_SLOTS.acquire(blocking=False):
+                    raise ToolError(
+                        f"Tool '{name}' não pôde iniciar: limite de workers com timeout atingido. "
+                        "Aguarde uma operação em andamento terminar."
+                    )
+                try:
+                    _future = _TIMED_TOOL_EXECUTOR.submit(_fn, args)
+                except Exception:
+                    _TIMED_TOOL_SLOTS.release()
+                    raise
+                _future.add_done_callback(lambda _done: _TIMED_TOOL_SLOTS.release())
+                try:
+                    result = _future.result(timeout=_timeout_sec)
+                except _cf.TimeoutError as _te:
+                    raise ToolError(
+                        f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
+                        "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                    ) from _te
             else:
                 # Tool externa (ToolRegistry) tem prioridade sobre built-in
                 if _ext_fn is not None:
