@@ -597,14 +597,17 @@ def _register_observability_routes(app, deps: _ObservabilityDeps, verify_key) ->
     @app.post("/approvals/{approval_id}/approve")
     def approve_request(approval_id: str, _: None = Depends(verify_key)):
         try:
-            return asdict(deps.approval_manager.approve(approval_id))
+            from .core.kernel import BauerKernel
+            result = BauerKernel(runs=deps.run_manager, bus=deps.event_bus, approvals=deps.approval_manager).approve(approval_id)
+            return asdict(result) if hasattr(result, "__dataclass_fields__") else result
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 
     @app.post("/approvals/{approval_id}/deny")
     def deny_request(approval_id: str, _: None = Depends(verify_key)):
         try:
-            return asdict(deps.approval_manager.deny(approval_id))
+            from .core.kernel import BauerKernel
+            return BauerKernel(runs=deps.run_manager, bus=deps.event_bus, approvals=deps.approval_manager).deny(approval_id)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
 
@@ -811,7 +814,7 @@ def create_app(
                 # (_used_since soma todas as linhas de run_costs, sem dedup).
                 # O gate pré-run continua funcionando: a PolicyEngine tem seu
                 # próprio BudgetManager lendo o mesmo runtime_root.
-                budget=None,
+                budget=budget_manager,
                 evaluator=evaluator_from_config(_kcfg, workspace=str(router.workspace)),
             )
 
@@ -2260,6 +2263,7 @@ def create_app(
             def _turn():
                 return run_one_turn_with_fallback(
                     ctx, active_router, _turn_client, _turn_model, _fallback_clients,
+                    budget=budget,
                 )
 
             def _should_stop():

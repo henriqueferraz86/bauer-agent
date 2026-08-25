@@ -2233,6 +2233,7 @@ def _native_turn_interactive(
     calls_left: int,
     guardrail=None,
     streamer=None,
+    budget=None,
 ) -> tuple[str, str | None]:
     """Um turno de native function calling no chat interativo.
 
@@ -2308,6 +2309,18 @@ def _native_turn_interactive(
         except _json.JSONDecodeError:
             args = {}
 
+        # Reserve the call before dispatch. A provider may emit a large native
+        # batch, but the hard budget controls actual execution, not accounting
+        # after the side effect has already happened.
+        if budget is not None:
+            if budget.remaining_tool_calls() <= 0:
+                result = "[BLOCKED] tool call budget exhausted"
+                cli_tool_log.append({"tool": name, "args_sig": _args_sig(args),
+                                     "result": result, "budget_accounted": True})
+                ctx.messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
+                continue
+            budget.consume_tool_call()
+
         # Guardrail pre-call (mesmo padrão de _run_native_tool_turn) — só ativo
         # quando o caller passa uma instância (ex.: /loop).
         _guard_blocked = False
@@ -2317,7 +2330,8 @@ def _native_turn_interactive(
                 ctx.add_user(_pre.message)
                 result = f"[BLOCKED] {_pre.message}"
                 _guard_blocked = True
-                cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
+                cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300],
+                                     "budget_accounted": budget is not None})
                 ctx.messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
                 if _pre.action == "halt":
                     console.print(f"  [yellow]⛔ guardrail:[/yellow] {_pre.message}")
@@ -2353,7 +2367,8 @@ def _native_turn_interactive(
                 elif _post.should_halt:
                     ctx.add_user(_post.message)
                     ctx_result, _ = _ctx_result_for_context(name, result)
-                    cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
+                    cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300],
+                                         "budget_accounted": budget is not None})
                     ctx.messages.append({"role": "tool", "tool_call_id": tc_id, "content": ctx_result})
                     console.print(f"  [yellow]⛔ guardrail:[/yellow] {_post.message}")
                     return "guardrail_halt", _post.message
@@ -2371,7 +2386,8 @@ def _native_turn_interactive(
                 console.print(f"  [dim]→[/dim] [cyan]{name}[/cyan]  {display_line}")
 
             ctx_result, _ = _ctx_result_for_context(name, result)
-            cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300]})
+            cli_tool_log.append({"tool": name, "args_sig": _args_sig(args), "result": result[:300],
+                                 "budget_accounted": budget is not None})
             ctx.messages.append({
                 "role": "tool",
                 "tool_call_id": tc_id,
@@ -2422,6 +2438,18 @@ def run_one_turn(
         # o modelo emitir resposta de texto após a última tool.
         budget = _IterBudget(max_total=MAX_TOOL_TURNS + 1)
 
+    # ``run_one_turn`` predates AutonomousBudget and used IterationBudget's
+    # ``consume/exhausted`` names. /loop shares its hard budget with this
+    # engine, so accept both interfaces without creating a shadow counter.
+    def _budget_exhausted() -> bool:
+        return bool(getattr(budget, "is_exhausted", getattr(budget, "exhausted", False)))
+
+    def _consume_llm() -> None:
+        if hasattr(budget, "consume_llm_call"):
+            budget.consume_llm_call()
+        else:
+            budget.consume()
+
     _trace: Any = _TraceNoop()
     if tracer is not None:
         try:
@@ -2450,8 +2478,8 @@ def run_one_turn(
 
     if use_native:
         _native_empty_recovered = False
-        while not budget.exhausted:
-            budget.consume()
+        while not _budget_exhausted():
+            _consume_llm()
             try:
                 result = _run_native_tool_turn(ctx, router, client, model_name, tool_log,
                                                _guardrail=_guardrail, _deduper=_deduper,
@@ -2460,7 +2488,8 @@ def run_one_turn(
                 # Provider não aceita tools= — downgrade definitivo para o
                 # bridge (abaixo) sem queimar o restante do budget.
                 use_native = False
-                budget.refund()
+                if hasattr(budget, "refund"):
+                    budget.refund()
                 break
 
             # Resposta vazia sem tool call: o bridge já recuperava disso desde
@@ -2514,8 +2543,8 @@ def run_one_turn(
 
     # Tool Bridge (fallback para Ollama e modelos sem native tool calling)
     _empty_recovered = False
-    while not budget.exhausted:
-        budget.consume()
+    while not _budget_exhausted():
+        _consume_llm()
         response = _collect_response(client, model_name, ctx.get_payload())
 
         # Resposta vazia: recovery em camadas (retry → compress+retry).
@@ -2558,6 +2587,12 @@ def run_one_turn(
             for action_dict in actions:
                 if len(tool_log) >= MAX_TOOL_TURNS:
                     break
+                if hasattr(budget, "remaining_tool_calls"):
+                    if budget.remaining_tool_calls() <= 0:
+                        return "[Limite de ferramentas atingido]", tool_log
+                    # Reserve before router.execute: a large batch cannot
+                    # side-step max_tool_calls while waiting for post-accounting.
+                    budget.consume_tool_call()
                 action_name = action_dict.get("action", "?")
                 action_args = action_dict.get("args", {}) or {}
 
@@ -2569,7 +2604,8 @@ def run_one_turn(
                         if _pre.action == "halt":
                             return _pre.message, tool_log
                         tool_result = f"[BLOCKED] {_pre.message}"
-                        tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300]})
+                        tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300],
+                                         "budget_accounted": hasattr(budget, "remaining_tool_calls")})
                         combined_parts.append(f"[Resultado de {action_name}]\n{tool_result}")
                         continue
 
@@ -2623,10 +2659,12 @@ def run_one_turn(
                         ctx.add_user(_post.message)
                     elif _post.should_halt:
                         ctx.add_user(_post.message)
-                        tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300]})
+                        tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300],
+                                         "budget_accounted": hasattr(budget, "remaining_tool_calls")})
                         return _post.message, tool_log
 
-                tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300]})
+                tool_log.append({"tool": action_name, "args_sig": _args_sig(action_args), "result": tool_result[:300],
+                                 "budget_accounted": hasattr(budget, "remaining_tool_calls")})
 
                 ctx_result, _ = _ctx_result_for_context(action_name, tool_result)
                 combined_parts.append(f"[Resultado de {action_name}]\n{ctx_result}")
@@ -4009,6 +4047,7 @@ def _run_tool_loop_body(
                         MAX_TOOL_TURNS - tool_turns,
                         guardrail=guardrail,
                         streamer=streamer,
+                        budget=budget,
                     )
                 except _NativeToolsUnsupported:
                     state.native_session_ok = False
@@ -4022,13 +4061,7 @@ def _run_tool_loop_body(
                     if _nkind == "guardrail_halt":
                         return _TurnOutcome(kind="guardrail_halt", display=_ntext or "", tool_log=cli_tool_log)
                     if _nkind == "continue":
-                        _new_calls = len(cli_tool_log) - tool_turns
                         tool_turns = len(cli_tool_log)
-                        if budget is not None:
-                            for _ in range(max(0, _new_calls)):
-                                if budget.is_exhausted:
-                                    break
-                                budget.consume_tool_call()
                         _maybe_reflect(ctx, tool_turns)
                         loop_warn, hard_stop = _detect_loop(cli_tool_log)
                         if loop_warn:
@@ -4290,7 +4323,6 @@ def _run_tool_loop_body(
             ):
                 if budget is not None and not budget.is_exhausted:
                     budget.consume_tool_call()
-
                 # Guardrail post-call
                 if guardrail is not None:
                     _post = guardrail.after_call(

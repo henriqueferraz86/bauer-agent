@@ -65,6 +65,7 @@ class PolicyEngine:
         if operation == "runtime.execute":
             try:
                 self.budget_manager.ensure_can_start(
+                    run_id=str(payload.get("run_id") or "") or None,
                     agent_id=str(payload.get("agent_id") or "default"),
                     company_id=str(payload.get("company_id") or "") or None,
                     estimated_cost_usd=float(payload.get("estimated_cost_usd") or 0),

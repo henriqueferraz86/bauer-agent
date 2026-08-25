@@ -990,3 +990,29 @@ def test_kernel_flag_opt_in():
 def test_kernel_enabled_tolerates_garbage():
     assert kernel_enabled(None) is False
     assert kernel_enabled(object()) is False
+
+
+@pytest.mark.parametrize(
+    ("operation", "input_data", "metadata", "expected"),
+    [
+        ("network.http", {"contains_secret": True}, {"contains_secret": False}, "deny"),
+        ("filesystem.write", {"path": "../outside.txt"}, {"path": "inside.txt"}, "ask"),
+    ],
+)
+def test_kernel_policy_uses_input_risk_facts_before_metadata(
+    kit, tmp_path, operation, input_data, metadata, expected,
+):
+    """Risk is supplied by the request input; metadata cannot downgrade it."""
+    _, bus, runs = kit
+    from bauer.core.policy import PolicyEngine
+
+    kernel = BauerKernel(
+        runs=runs, bus=bus, policy=PolicyEngine(workspace=tmp_path, runtime_root=tmp_path / "runtime"),
+    )
+    out = kernel.execute(KernelRequest(
+        task="x", agent_id="trusted-agent", operation=operation,
+        input={**input_data, "agent_id": "untrusted-input"},
+        metadata={**metadata, "agent_id": "untrusted-metadata"},
+    ), executor=_ok_executor)
+    assert out.policy_action == expected
+    assert runs.get_run(out.run_id).agent_id == "trusted-agent"

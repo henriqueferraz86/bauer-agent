@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..events import EventBus
+from .budget_ledger import BudgetLedger, BudgetLedgerExceeded
 from .state_store import JsonlStateStore
 
 AUTONOMY_MODES = {"manual", "supervised", "autonomous", "locked"}
@@ -58,8 +59,10 @@ class BudgetManager:
         event_bus: EventBus | None = None,
         stale_run_after_s: int | None = None,
     ) -> None:
+        self.root = Path(getattr(store, "root", root))
         self.store = store or JsonlStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
+        self.ledger = BudgetLedger(self.root)
         if stale_run_after_s is not None:
             self.stale_run_after_s = max(0, int(stale_run_after_s))
 
@@ -165,6 +168,25 @@ class BudgetManager:
             ("agent", profile.agent_budgets_usd.get(agent_id), agent_id),
             ("company", profile.company_budgets_usd.get(company_id or ""), company_id),
         ]
+        # A run created by the Kernel has an identity already. Reserve its
+        # estimate under SQLite's writer lock so two processes cannot both pass
+        # a read-then-write budget check. A zero estimate is intentionally a
+        # zero reservation: callers must enforce the cap while running.
+        if run_id:
+            limits = {scope: limit for scope, limit, _entity_id in checks}
+            try:
+                self.ledger.reserve(
+                    run_id=run_id, agent_id=agent_id, company_id=company_id,
+                    estimated_cost_usd=estimated_cost_usd, limits=limits,
+                )
+            except BudgetLedgerExceeded as exc:
+                self.event_bus.publish(
+                    "budget.exceeded", run_id=run_id, agent_id=agent_id,
+                    status="exceeded", message=str(exc), data={"scope": "atomic"},
+                )
+                raise BudgetExceededError(str(exc)) from exc
+            return
+
         for scope, limit, entity_id in checks:
             if limit is None:
                 continue
@@ -214,8 +236,16 @@ class BudgetManager:
             "timestamp": _now_iso(),
             "metadata": metadata or {},
         }
-        self.store.append("run_costs", record)
+        changed = self.ledger.settle(
+            run_id=run_id, actual_cost_usd=record["cost_usd"],
+            agent_id=agent_id, company_id=company_id,
+        )
+        if changed:
+            self.store.append("run_costs", record)
         return record
+
+    def release_run_reservation(self, run_id: str) -> None:
+        self.ledger.release(run_id)
 
     def _period_status(self, scope: str, limit: float | None) -> dict[str, Any]:
         used = self._used_for_scope(scope)
@@ -236,6 +266,13 @@ class BudgetManager:
         }
 
     def _used_for_scope(self, scope: str, *, entity_id: str | None = None) -> float:
+        # SQLite includes both settled cost and active reservations. It migrates
+        # historic JSONL once, so the old audit trail remains compatible.
+        if scope in {"daily", "weekly", "monthly", "agent", "company"}:
+            kwargs = {"agent_id": entity_id} if scope == "agent" else {}
+            if scope == "company":
+                kwargs = {"company_id": entity_id}
+            return self.ledger.used(scope, **kwargs)
         if scope == "daily":
             since = datetime.now(UTC) - timedelta(days=1)
             return self._used_since(since)

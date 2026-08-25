@@ -1535,3 +1535,21 @@ def test_oai_models_endpoint(tmp_path):
     assert len(data["data"]) >= 1
     assert data["data"][0]["id"] == "phi4-mini"
     assert data["data"][0]["owned_by"] == "bauer-agent"
+
+
+def test_server_denial_finalizes_waiting_kernel_run(tmp_path):
+    from bauer.core.events import EventBus
+    from bauer.core.policy import ApprovalManager
+    from bauer.core.runtime.run_manager import RunManager
+
+    tc = _make_app(tmp_path)
+    root = tmp_path / "sessions" / ".." / "runtime"
+    bus = EventBus(root=root)
+    runs = RunManager(root=root, event_bus=bus)
+    run = runs.create_run(session_id="s", agent_id="a", runtime_adapter="x", status="waiting_approval")
+    approval = ApprovalManager(root=root, event_bus=bus).request(
+        operation="shell.execute", tool_name="t", reason="test", risk_level="high", run_id=run.id,
+    )
+    response = tc.post(f"/approvals/{approval.id}/deny")
+    assert response.status_code == 200 and response.json()["status"] == "denied"
+    assert runs.get_run(run.id).status == "failed"

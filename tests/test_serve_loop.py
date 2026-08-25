@@ -75,6 +75,57 @@ def test_budget_tool_calls_stops_loop():
     assert rounds == 2  # 5 tools + 5 tools > 8 → o topo da 3ª rodada corta
 
 
+def test_preaccounted_tool_log_is_not_counted_twice():
+    ctx = _Ctx()
+    turns = iter([("working", [{"tool": "t", "budget_accounted": True}] * 50)])
+    stop, rounds, _, _ = run_loop_rounds(
+        goal="x", ctx=ctx, turn_fn=lambda: next(turns), budget=_budget(tools=50), max_rounds=1,
+    )
+    assert stop == "max_rounds" and rounds == 1
+
+
+def test_tool_batch_never_dispatches_past_hard_budget():
+    """60 proposed actions under cap 50: the 51st must not reach the router."""
+    from bauer.agent import run_one_turn
+
+    class _TurnCtx:
+        def __init__(self):
+            self.messages = []
+
+        def get_payload(self):
+            return self.messages
+
+        def add_assistant(self, text):
+            self.messages.append({"role": "assistant", "content": text})
+
+        def add_user(self, text):
+            self.messages.append({"role": "user", "content": text})
+
+    class _Client:
+        def chat_stream(self, *_args, **_kwargs):
+            return iter(["\n".join(
+                f'{{"action":"t","args":{{"n":{number}}}}}' for number in range(60)
+            )])
+
+    class _Router:
+        def __init__(self):
+            self.calls = 0
+
+        def available_tools(self):
+            return ["t"]
+
+        def execute(self, _action):
+            self.calls += 1
+            return "ok"
+
+    router = _Router()
+    budget = _budget(tools=50)
+    response, log = run_one_turn(_TurnCtx(), router, _Client(), "m", budget=budget)
+    assert "Limite de ferramentas" in response
+    assert router.calls == len(log) == 50
+    assert budget.remaining_tool_calls() == 0
+
+
 def test_should_stop_interrupts_between_rounds():
     ctx = _Ctx()
     calls = {"n": 0}

@@ -99,3 +99,31 @@ def test_approvals_cli_approve_and_deny(tmp_path):
     assert denied.exit_code == 0
     assert ApprovalManager(root=tmp_path).get(first.id).status == "approved"  # type: ignore[union-attr]
     assert ApprovalManager(root=tmp_path).get(second.id).status == "denied"  # type: ignore[union-attr]
+
+
+def test_runtime_budget_migrates_audit_and_reserves_once(tmp_path):
+    from bauer.core.runtime.autonomy import BudgetExceededError, BudgetManager
+
+    (tmp_path / "run_costs.jsonl").write_text(
+        '{"run_id":"old","agent_id":"a","cost_usd":0.4}\n',
+        encoding="utf-8",
+    )
+    budget = BudgetManager(root=tmp_path)
+    budget.set_profile(daily_budget_usd=1.0)
+    budget.ensure_can_start(run_id="new", agent_id="a", estimated_cost_usd=0.6)
+    budget.ensure_can_start(run_id="new", agent_id="a", estimated_cost_usd=0.6)  # idempotent retry
+    with pytest.raises(BudgetExceededError):
+        budget.ensure_can_start(run_id="other", agent_id="a", estimated_cost_usd=0.5)
+    budget.release_run_reservation("new")
+    budget.ensure_can_start(run_id="other", agent_id="a", estimated_cost_usd=0.5)
+
+
+def test_per_run_cost_limit_ignores_historic_global_spend(tmp_path):
+    from bauer.core.runtime.autonomy import BudgetExceededError, BudgetManager
+
+    budget = BudgetManager(root=tmp_path)
+    budget.record_run_cost(run_id="historic", agent_id="a", cost_usd=99.0)
+    budget.set_profile(daily_budget_usd=200.0, max_cost_usd_per_run=1.0)
+    budget.ensure_can_start(run_id="small", agent_id="a", estimated_cost_usd=0.9)
+    with pytest.raises(BudgetExceededError, match="budget exceeded for run"):
+        budget.ensure_can_start(run_id="too-large", agent_id="a", estimated_cost_usd=1.1)

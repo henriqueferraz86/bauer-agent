@@ -208,8 +208,12 @@ def run_loop_rounds(
         if text.strip():
             last_text = text
         try:
-            for _ in tool_log:
-                budget.consume_tool_call()
+            for entry in tool_log:
+                # The tool engine can receive this exact budget (notably
+                # /loop) and reserves before dispatch. Legacy turn functions
+                # remain accounted here, but never count the same execution.
+                if not entry.get("budget_accounted"):
+                    budget.consume_tool_call()
         except Exception:  # noqa: BLE001 — esgotou no meio: o topo do laço encerra
             pass
 
