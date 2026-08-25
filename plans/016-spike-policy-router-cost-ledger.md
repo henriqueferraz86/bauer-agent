@@ -14,6 +14,11 @@
 - **Depends on**: 015 recomendado antes (o router consome os perfis aprendidos)
 - **Category**: direction
 - **Planned at**: commit `2c9d86f`, 2026-07-07
+- **Outcome (2026-08-25)**: DONE (SPIKE) — draft em
+  `docs/architecture/policy-router-cost-ledger.yaml`. O STOP de RouterSection
+  foi investigado: há roteamento por tarefa ativo, portanto o design o estende
+  em vez de criar outra seção. O ledger é passivo primeiro e reutiliza a
+  disciplina transacional do BudgetLedger sem mudar admissão.
 
 ## Why this matters (a visão 20/10)
 
@@ -82,12 +87,12 @@ manual por sessão via /model continua soberana?).
 
 ## Done criteria
 
-- [ ] `docs/architecture/policy-router-cost-ledger.yaml` existe (draft)
-- [ ] 5 perguntas respondidas com `file:line` (incl. o que `RouterSection` já faz)
-- [ ] Plano de build em 3 fatias, ledger-primeiro
-- [ ] ≥4 open questions
-- [ ] Nenhum código de produção alterado
-- [ ] Status atualizado em `plans/README.md`
+- [x] `docs/architecture/policy-router-cost-ledger.yaml` existe (draft)
+- [x] 5 perguntas respondidas com `file:line` (incl. o que `RouterSection` já faz)
+- [x] Plano de build em 3 fatias, ledger-primeiro
+- [x] ≥4 open questions
+- [x] Nenhum código de produção alterado
+- [x] Status atualizado em `plans/README.md`
 
 ## STOP conditions
 

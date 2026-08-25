@@ -1,0 +1,263 @@
+id: policy-router-cost-ledger
+version: 1
+status: draft
+owner: bauer-runtime
+summary: >
+  Design spike for evolving the existing per-task model router into a
+  budget-aware RoutePolicy and for recording provider-reported usage in a
+  passive, privacy-minimising ledger before that policy changes routing. This
+  document introduces no production configuration, command, or runtime
+  behaviour.
+
+scope:
+  included:
+    - Reuse and extension of the existing RouterSection/model_router paths.
+    - Passive per-call usage and cost observations before any route decision uses them.
+    - A conservative free-tier cooldown signal supplied by the planned learned-provider profile store.
+  excluded:
+    - Replacing Kernel or AutonomousBudget admission limits.
+    - Prompt/completion storage, remote telemetry, or any cross-installation profile sharing.
+    - A second public router configuration section or an automatic hard daily spend stop.
+
+stop_condition_review:
+  RouterSection_already_routes_by_task: true
+  result: >
+    The condition is real but not a blocker for this requested design: RouterSection
+    drives a legacy local LLM classifier, while model.router_enabled plus
+    model.profiles drives active heuristic per-turn routing in both agent and
+    server. The new policy must be an evolution of bauer.model_router and
+    consume the existing router/profile configuration; it must not introduce a
+    duplicate router section.
+  evidence:
+    - "bauer/config_loader.py:715-721: RouterSection defines enabled and four legacy model fields."
+    - "bauer/commands/agent_cmd.py:372-417: RouterSection builds an enabled ModelRouter for local Ollama sessions."
+    - "bauer/model_router.py:192-243: heuristic task/complexity classification resolves configured provider/model tiers."
+    - "bauer/agent.py:5843-5876: agent applies the heuristic RouteDecision before a turn."
+    - "bauer/server.py:1205-1255: server resolves a provider client and model from the same style of task decision."
+
+investigation:
+  question_1_task_taxonomy:
+    answer: >
+      Bauer already knows both request intent and subsystem role. The general
+      heuristic currently classifies conversation, tool_call, coding,
+      reasoning, and architecture. Auxiliary slots separately identify
+      compression, review, approval, vision, decomposition/specification, and
+      intent routing. Delegated specialists are a further task boundary, but
+      they are not themselves a model-routing policy. The first policy taxonomy
+      should retain the general categories and add only explicit call roles:
+      chat, code, reason, tool, compress, and vision_or_judge. "summarize" is
+      an alias of compress in the first release, not a seventh independent
+      model category.
+    evidence:
+      - "bauer/model_router.py:125-145, 192-243: current five task types and tier resolution."
+      - "bauer/config_loader.py:864-888: seven configured auxiliary role slots and their consumers."
+      - "bauer/context_manager.py:283-300: compression prefers auxiliary.compression_model, then session model."
+      - "bauer/agent.py:803-828 and bauer/tools/execution.py:401-522: delegate_task is a specialist boundary."
+    initial_route_classes:
+      chat: "conversation/direct request; existing fast or direct tier"
+      code: "coding implementation/debugging; existing coding tier"
+      reason: "analysis/architecture; existing balanced or heavy tier"
+      tool: "tool-oriented request; existing tool_call tier"
+      compress: "context compaction/summarisation; existing compression auxiliary slot"
+      vision_or_judge: "vision analysis or independent approval/review; explicit auxiliary slots"
+
+  question_2_interception:
+    answer: >
+      There is no single universal selector today. The server centralises its
+      chat selection in _resolve_turn_model and then emits a route event;
+      interactive agent has an equivalent heuristic path plus a legacy
+      ModelRouter path; each auxiliary consumer resolves its own slot. The
+      least risky integration is a RoutePolicy facade in bauer.model_router:
+      server and agent call it where they call decide, while auxiliary_client
+      supplies role-qualified candidates without changing each consumer's
+      business logic. Client construction stays in existing injected resolver
+      functions, preserving local-mode and credential rules.
+    evidence:
+      - "bauer/server.py:1219-1255: server resolves profile clients, applies decide, and falls back to primary."
+      - "bauer/agent.py:5843-5887: agent applies heuristic routing before the legacy ModelRouter."
+      - "bauer/auxiliary_client.py:84-158: each known slot resolves to configured or main provider/model."
+      - "bauer/commands/_runtime.py:781-818: legacy fallback clients are built and deduplicated separately."
+    compatibility_boundary: >
+      If RoutePolicy is disabled, missing, has no eligible candidate, cannot
+      construct a client, or raises, callers return the current primary/profile
+      choice. Retrying remains run_one_turn_with_fallback's ordered legacy list;
+      RoutePolicy cannot remove a user-configured fallback in its first rollout.
+
+  question_3_usage_and_cost:
+    answer: >
+      Usage is captured, but it is neither universal nor one durable source of
+      truth. OpenAI-compatible and Anthropic clients set last_usage; the agent
+      reports it through a ContextVar cost_meter after bridge and native calls.
+      Server-installed sinks append rows to cost_history.jsonl and aggregate a
+      run total; SessionStats aggregates only the interactive-session view.
+      Provider-reported OpenRouter cost wins over the static table, while other
+      providers can use static pricing. Missing streaming usage currently
+      becomes an empty dict/no-op, so a passive ledger must represent
+      "unknown", never treat it as a free call or estimate from characters.
+    evidence:
+      - "bauer/openai_client.py:393-463: streaming captures final SSE usage when the provider supports it; otherwise last_usage stays empty."
+      - "bauer/anthropic_client.py:121-193: stream events build last_usage from input/output usage."
+      - "bauer/agent.py:1460-1470 and 2113-2124: bridge and native paths report last_usage to cost_meter."
+      - "bauer/cost_meter.py:45-69: ContextVar sink is best effort and returns zero without usage."
+      - "bauer/server.py:1121-1150: server sink appends cost history and records an aggregate run cost."
+      - "bauer/performance_tracker.py:53-80: SessionStats is an in-memory per-session usage/cost accumulator."
+      - "bauer/usage_pricing.py:157-190: reported positive provider cost wins; otherwise static provider/model pricing is used."
+      - "bauer/models_dev.py:520-529, 556-585: dynamic catalog exposes cost_in/cost_out but is cached catalog data, not a charge receipt."
+    limitations:
+      - "last_usage is absent for providers that omit final streaming usage, so exact spend coverage cannot be promised."
+      - "cost_meter.provider_from_client falls back to openai for generic compatible clients (bauer/cost_meter.py:72-90); attribution needs an explicit provider at the new boundary."
+      - "cost_history.jsonl stores session ids and has unlocked append/no retention (bauer/cost_tracker.py:19-20, 201-206, 219-253); it cannot become the concurrent routing ledger."
+      - "SessionStats records the final state.client usage for display (bauer/agent.py:4389-4418), so it is not a complete per-call audit for native/tool/fallback flows."
+
+  question_4_ledger:
+    answer: >
+      A process-safe ledger already exists for budget admission. It uses a
+      runtime-root SQLite database, WAL, busy timeout, and BEGIN IMMEDIATE, and
+      it stores a reserved/settled total per run. It deliberately does not hold
+      per-call usage events or routing data. The passive ledger should extend
+      this existing database through a migration owned by core runtime, adding
+      a separate append-only cost_observations table; it must not create a
+      competing budget authority and must not alter budget_runs until a later,
+      separately approved enforcement design.
+    evidence:
+      - "bauer/core/runtime/budget_ledger.py:21-53: existing isolated SQLite ledger with WAL, busy_timeout, and BEGIN IMMEDIATE."
+      - "bauer/core/runtime/budget_ledger.py:56-74, 106-160: current schema/reserve/settle/release are run-level budget accounting."
+      - "bauer/cost_tracker.py:50-70, 201-206: CostTracker is only thread-safe in an instance and its JSONL persistence has no process transaction."
+    passive_schema:
+      table: cost_observations
+      fields:
+        observation_id: "UUID generated once at the call-report boundary; PRIMARY KEY for retry/idempotency."
+        recorded_at: "UTC timestamp."
+        run_id: "Optional runtime run id; no prompt, response, endpoint, credential, or raw exception."
+        provider: "Canonical provider identifier passed by the caller, not inferred from host."
+        model: "Model identifier."
+        route_class: "chat|code|reason|tool|compress|vision_or_judge."
+        prompt_tokens: "Non-negative integer or NULL when usage was unavailable."
+        completion_tokens: "Non-negative integer or NULL when usage was unavailable."
+        cache_read_tokens: "Non-negative integer or NULL."
+        cost_usd: "Non-negative decimal/real or NULL when unknown."
+        cost_basis: "provider_reported|static_price|local_zero|usage_unavailable."
+      indexes:
+        - "recorded_at for retention and daily totals"
+        - "provider, model, route_class, recorded_at for route scoring"
+        - "run_id only when non-null, for operational correlation"
+    concurrency_and_retention:
+      writes: >
+        Reuse BudgetLedger's WAL, busy timeout, BEGIN IMMEDIATE, and primary-key
+        idempotency. On a lock timeout, queue no retry in the hot path: emit a
+        sanitized DEBUG log and preserve the user turn. The ledger is passive,
+        so lost telemetry must never block delivery or change a budget.
+      retention: >
+        Retain detailed observations for 90 days; compact daily provider/model/
+        route-class totals for 365 days in a transaction; then delete expired
+        detail during bounded maintenance. Retention values are proposed fixed
+        constants for the first build, not new public configuration.
+      privacy: >
+        Do not store message text, tool arguments/results, endpoint URLs,
+        credentials, raw exception text, user IDs, or full session IDs. Run id
+        is optional operational correlation only and must be omitted outside a
+        governed run.
+
+  question_5_free_tier_arbitration:
+    answer: >
+      Existing fallback is configured order plus error classification, and
+      therefore has no rate-limit-aware rotation. Plan 015 proposes a local
+      learned profile keyed by provider/model with bounded FailReason windows;
+      it is a design dependency, not a current runtime API. RoutePolicy should
+      ask an optional LearnedProfileReader for a fresh RATE_LIMIT observation.
+      If the reader cannot provide a reason-specific last-seen timestamp, the
+      policy applies no exclusion and keeps legacy order. When it can, a free
+      candidate recently rate-limited receives a temporary rank penalty/cooldown
+      (proposed 15 minutes, capped at 60 minutes for repeated fresh events),
+      while paid or configured primary candidates keep their normal eligibility.
+    evidence:
+      - "bauer/agent.py:2687-2743: fallback attempts the primary then configured list after should_fallback."
+      - "bauer/error_classifier.py:18-36, 310-317: RATE_LIMIT is a bounded classified reason that requests fallback."
+      - "bauer/models_dev.py:556-585: catalog marks is_free and sorts free candidates ahead of paid ones."
+      - "docs/architecture/learned-provider-profiles.yaml:98-145: Plan 015 draft specifies bounded error windows but no implemented reader."
+    safety_invariants:
+      - "A learned signal ranks candidates; it never disables the only configured route or silently changes a manual /model choice."
+      - "No profile reader, stale profile, or incomplete reason timestamp means no cooldown and legacy fallback order."
+      - "The cooldown is local, best effort, and does not claim that a provider is unavailable globally."
+
+route_policy:
+  location: "Proposed new facade in bauer.model_router; not an existing public API."
+  interface: |
+    RouteRequest(task_class, estimated_input_tokens, estimated_output_tokens,
+                 remaining_budget_usd, requested_provider, requested_model,
+                 local_only, call_role, run_id?)
+    RouteCandidate(provider, model, client_resolver, source, is_free,
+                   capabilities, static_cost_hint?)
+    RoutePolicy.rank(request, candidates) -> RoutePlan(
+        ranked=[ResolvedRoute(client, provider, model, reason, score)],
+        fallback_to_legacy: bool,
+        decision_trace: sanitized mapping)
+  inputs:
+    task_class: "One of the initial route classes above; current heuristic remains the classifier for general chat."
+    estimated_size: >
+      Current ContextManager exposes used_tokens (bauer/context_manager.py:139-157),
+      but no central pre-call output estimate exists. Slice 2 uses input-only
+      estimate and marks output estimate unknown; it must not hard-reject a
+      route on a made-up character estimate.
+    budget: "Optional remaining spend passed by governed/autonomous callers; absent means rank but do not enforce cost."
+  candidate_precedence:
+    - "Explicit user /model choice and --local constraints remain sovereign."
+    - "Role-specific AuxiliarySection slot for compress or vision_or_judge remains the first configured candidate."
+    - "Existing model.profiles[_by_provider] tier selected by the current heuristic."
+    - "Existing RouterSection legacy routes for local ModelRouter sessions."
+    - "Primary model then deduplicated model.fallback_models in their current order."
+  decision_rules:
+    - "Filter candidates that violate local_only, required capability, or a known observed context cap."
+    - "Rank eligible candidates by explicit role/tier fit, available budget hint, fresh learned cooldown, then existing configured order."
+    - "Construct clients only through existing route_client_fn/_client_for_profile paths after ranking."
+    - "Return fallback_to_legacy on missing pricing, missing learned profile, no budget, resolver failure, or policy exception."
+  config_and_cli_status: >
+    No new public config or command is approved by this spike. Names such as
+    router.policy_enabled, router.daily_budget_usd, 'bauer cost routes', and
+    'bauer router explain' are proposals for a later UX/config review only.
+
+build_slices:
+  - slice: 1
+    title: "Passive usage ledger with no routing change"
+    scope:
+      - "Migrate the existing core runtime BudgetLedger database with cost_observations; do not alter budget admission semantics."
+      - "Introduce a call-level observation envelope with explicit provider/model/route-class and idempotency id; bridge, native, and server paths emit it best effort."
+      - "Record provider-reported/static/local/unknown cost basis; do not use char estimates."
+    tests:
+      - "Concurrent writers and duplicate observation id preserve one event under SQLite WAL/BEGIN IMMEDIATE."
+      - "Missing last_usage writes usage_unavailable or is counted separately, never a false zero-dollar charge."
+      - "No prompt, response, exception text, endpoint, credential, or user identity is persisted."
+  - slice: 2
+    title: "RoutePolicy for existing auxiliary and tier profiles"
+    scope:
+      - "Add RoutePolicy as a facade over existing model_router classifications, AuxiliarySection slots, and model profiles; no new RouterSection."
+      - "Use ContextManager input usage only as a soft ranking hint; keep explicit /model and --local behavior intact."
+      - "Publish the existing model.route.selected event with a sanitized policy reason and retain legacy fallbacks."
+    tests:
+      - "Auxiliary compression/vision routes retain their explicitly configured slot."
+      - "Policy failure, client-resolver failure, and unknown price all return the current primary/profile selection."
+      - "Local-only route candidates cannot resolve a remote provider."
+  - slice: 3
+    title: "Learned free-tier cooldown and operator visibility"
+    scope:
+      - "Integrate the Plan 015 reader behind an optional protocol and rank recently rate-limited free candidates lower."
+      - "Expose passive daily cost, coverage/unknown counts, and route explanation through reviewed existing observability/cost surfaces."
+      - "Add retention compaction and an explicit inspect/reset UX only after CLI/config review."
+    tests:
+      - "Fresh reason-specific rate limit changes rank; stale/missing profile leaves legacy order untouched."
+      - "Cooldown cannot bypass an explicit user choice or exhaust all candidates."
+      - "Retention removes expired detail while preserving aggregate totals."
+
+verification_for_build:
+  - "uv sync --frozen --extra dev"
+  - "uv run pytest tests/ -q --tb=short"
+  - "uv run ruff check bauer/ --select E9,F63,F7,F82"
+  - "uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303"
+
+open_questions:
+  - "Should passive observations share budget_ledger.sqlite3 as proposed, or should performance measurements be isolated after an explicit migration/ownership review?"
+  - "Which caller can provide a stable call id and explicit provider without changing the public CostSink protocol incompatibly?"
+  - "Can Plan 015 expose a reason-specific last-seen timestamp needed for a real cooldown, or should the first integration be penalty-only?"
+  - "What daily/weekly budget semantics are advisory versus Kernel-enforced, and who is allowed to configure a hard stop?"
+  - "Should a manual /model session override last one call, a session, or until reset when RoutePolicy is enabled?"
+  - "What price freshness and provenance should be shown when provider usage is unavailable and static catalog pricing is used?"
