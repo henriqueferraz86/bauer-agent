@@ -708,7 +708,7 @@ def create_app(
     from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel as PydanticModel
+    from pydantic import BaseModel as PydanticModel, Field
 
     from .agent import run_one_turn, run_one_turn_with_fallback
 
@@ -727,7 +727,7 @@ def create_app(
     # --- schemas (definidas fora de qualquer função para Pydantic resolver corretamente) ---
 
     class ChatRequest(PydanticModel):
-        message: str
+        message: str = Field(..., max_length=100_000)
         session_id: Optional[str] = None
         project_id: Optional[str] = None
 
@@ -2448,11 +2448,11 @@ def create_app(
 
     class OAIMessage(PydanticModel):
         role: str
-        content: str
+        content: str = Field(..., max_length=200_000)
 
     class OAICompletionRequest(PydanticModel):
         model: Optional[str] = None
-        messages: list[OAIMessage]
+        messages: list[OAIMessage] = Field(..., min_length=1, max_length=200)
         stream: bool = False
         session_id: Optional[str] = None    # campo body (ignorado em favor do header)
         max_tokens: Optional[int] = None
