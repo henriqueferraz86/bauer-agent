@@ -18,6 +18,10 @@
 - **Depends on**: none
 - **Category**: security
 - **Planned at**: commit `2c9d86f`, 2026-07-06
+- **Outcome (2026-08-25)**: DONE — merged as `5c5f219`. The implementation
+  uses `gateway.allow_internal_webhooks` (renamed from the draft field),
+  validates all outbound webhook targets fail-closed, and covers configurable
+  provider API bases as well as the generic webhook path.
 
 ## Why this matters
 

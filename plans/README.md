@@ -19,7 +19,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [005](005-commands-integration-tests.md) | Testes de integração para os módulos de bauer/commands/ | P3 | P1 | M | — | DONE |
 | [006](006-distributed-agents-mvp.md) | Agentes Distribuídos MVP — dispatch remoto HTTP entre instâncias bauer serve | P6 | P2 | M | — | DONE |
 | [007](007-auth-key-file-permissions.md) | Restringir `.auth_key` para 0o600 + corrigir docstring | P5 | P1 | S | — | DONE (PR #86) |
-| [008](008-webhook-ssrf-guard.md) | Aplicar guard SSRF (`url_safety`) na entrega de webhooks | P7 | P1 | S | — | TODO |
+| [008](008-webhook-ssrf-guard.md) | Aplicar guard SSRF (`url_safety`) na entrega de webhooks | P7 | P1 | S | — | DONE (merged `5c5f219`) |
 | [009](009-server-request-body-limits.md) | Limitar tamanho do body em /chat e /v1/chat/completions | P7 | P2 | S | — | DONE |
 | [010](010-orchestrator-resume-robustness.md) | Robustez do orquestrador: validar StepResult no `--resume` + avisar DAG circular | P4 | P2 | S | — | DONE |
 | [011](011-context-budget-regression-tests.md) | Testes de regressão para budget/tail/`shrink_budget` do ContextManager | P1 | P2 | S | — | DONE (cobertura já existente, verificada em 2026-08-25) |
