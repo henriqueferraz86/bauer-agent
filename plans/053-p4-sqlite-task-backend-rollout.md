@@ -8,6 +8,7 @@
 - **Depends on**: 052 (DONE)
 - **Category**: data migration, reliability, developer experience
 - **Planned at**: commit `f4677a8`, 2026-08-25
+- **Completed**: merge `9c94778` on `master`, commit `ba236a5`, 2026-08-25
 
 ## Objective
 

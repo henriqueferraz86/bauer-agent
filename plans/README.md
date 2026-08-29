@@ -63,8 +63,53 @@ de STOP, e atualize sua linha de status ao concluir.
 | [050](050-p1-governance-hard-limits.md) | Tornar efetivos os limites de governança e aprovações | Segurança/correção | P1 | L | 049 | DONE (merge `af40d4b`; commit `74af4c4`) |
 | [051](051-p2-resource-boundaries.md) | Impor limites a timeout de tools e tarefas de memória | Confiabilidade | P2 | M | 050 | DONE (merge `0bb8ae4`; commit `98932ac`) |
 | [052](052-p3-docs-command-parity.md) | Alinhar roteiro beta e setup de desenvolvimento | Documentação/DX | P3 | S | 051 | DONE (merge `c1f75d2`; commit `ad2b59b`) |
+| [053](053-p4-sqlite-task-backend-rollout.md) | Rollout seguro e opt-in do backend SQLite de tarefas | Migração de dados/DX | P4 | L | 052 | DONE (merge `9c94778`; commit `ba236a5`) |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
+
+**Rodada 7 (2026-08-25) — P0→P4, endurecimento pós-auditoria**: planos 049–053,
+executados em série (cada um depende do anterior). Todos DONE.
+
+Duas pendências de índice ficam registradas aqui em vez de silenciosamente
+resolvidas:
+
+- O plano **049** (`049-p0-security-boundaries.md`) foi escrito na branch
+  `codex/cli-visual-2` e **nunca chegou ao master** — só o código dele veio
+  (`13093dd`, merge `c2d3e4e`). A tabela cita "049" como dependência do 050,
+  mas não há linha nem arquivo para ele. Quem for reconciliar a numeração:
+  trazer o documento junto.
+- O **053** entrou pelo merge `9c94778` sem passar por esta tabela; a linha
+  acima é a correção.
+
+O que o 053 mudou, para quem for mexer no caminho de migração depois:
+
+- `kanban_migration.migrate_tasks_md` deixou de tratar uma task já presente
+  como "nada a fazer". O skip cego não duplicava nada, mas os comentários do
+  Markdown de uma task existente nunca eram revisitados. Agora
+  `_ensure_legacy_comments` conta as ocorrências já gravadas com
+  `author='legacy-md'` e insere só o delta, e `MigrationReport.comments_added`
+  reporta o total. A contagem é por **multiset**, não por conjunto: `task_comments`
+  não tem constraint de unicidade de propósito (discussão normal repete texto),
+  então dois bullets idênticos na origem rendem duas linhas — um dedup por `set`
+  perderia a segunda para sempre. Só comentários com o marcador de autor entram
+  na conta: o que o usuário escreveu pela API do kanban nunca é tocado.
+- `bauer kanban-migrate --activate` é a adoção governada. **Recusa `--board`**:
+  ativar validando um board diferente do que a factory vai ler depois é o bug
+  `#10-F` de volta, com a flag já virada. Faz backup de `TASKS.md` e do config
+  via `open("xb")` — criação exclusiva, sem a corrida de um `if exists()` seguido
+  de cópia — em `.before-sqlite.bak`, `.bak.1`, … , nunca sobrescrevendo o de uma
+  ativação anterior. Migra, **valida que todo ID da origem chegou ao destino**
+  (contar linhas migradas não bastaria: um erro parcial mantém o relatório verde
+  para as tasks que passaram) e só então grava `agent.task_backend: sqlite`, por
+  escrita atômica em tempfile. Origem ausente, erro de migração, ID faltando,
+  backup impossível ou config inexistente deixam a flag intacta.
+  `--dry-run --activate` descreve backups, validação e ativação sem efeito nenhum.
+  O default de instalações existentes continua `markdown`.
+
+Limite conhecido, dito na saída do comando em vez de escondido: o rollback é da
+FLAG, não dos dados. Voltar para `markdown` devolve a leitura ao `TASKS.md`
+preservado, mas tarefas criadas depois da ativação vivem só no SQLite — não há
+espelhamento de volta, e o comando não finge que há.
 
 **Rodada 6 (2026-08-18, commit `d903de8`) — redução de superfície: bugs, código morto, consolidação**:
 planos 029–047, motivados por pedido explícito do usuário para reduzir a
