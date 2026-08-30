@@ -74,13 +74,23 @@ voice-tts = [
     # Extra separado de `voice` (não entra em `all`): é pesado e a decisão
     # de baixar 1.9GB deve ser explícita, diferente da captura de microfone.
     #
-    # NÃO instala PyTorch/torchaudio — o coqui-tts propositalmente não os
-    # declara como dependência (deixa você escolher a build certa em vez do
-    # resolver do pip puxar a errada). Depois deste extra, instale à parte:
-    #   CPU:  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-    #   CUDA: https://pytorch.org/get-started/locally/
-    # bauer/tts.py detecta a ausência dos dois e mostra esse mesmo aviso.
+    # NÃO instala PyTorch/torchaudio/torchcodec — o coqui-tts propositalmente
+    # não os declara como dependência (deixa você escolher a build certa em
+    # vez do resolver do pip puxar a errada). Depois deste extra, instale à
+    # parte (testado de ponta a ponta em 2026-08-30, Ubuntu/CPU):
+    #   CPU:  pip install torch torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu
+    #   CUDA: https://pytorch.org/get-started/locally/ (+ torchcodec da mesma build)
+    # torchcodec é exigido a partir do torch 2.9 (novo backend de I/O de
+    # áudio do torchaudio) — sem ele, o import de TTS.api falha com um erro
+    # dedicado, mas só depois de passar pelas checagens de torch/torchaudio.
+    # bauer/tts.py detecta a ausência dos três e mostra esse mesmo aviso.
     "coqui-tts>=0.27.0",
+    # coqui-tts 0.27.5 declara só `transformers>=4.57`, sem teto — o pip
+    # resolve a última 5.x por padrão, que remove `isin_mps_friendly` de
+    # `transformers.pytorch_utils` e quebra o import da camada XTTS
+    # (TTS/tts/layers/tortoise/autoregressive.py). 4.57.x é a última série
+    # 4.x — reproduzido e corrigido testando de verdade no Beelink.
+    "transformers>=4.57,<5",
 ]
 all = [
     "fastapi>=0.110",
