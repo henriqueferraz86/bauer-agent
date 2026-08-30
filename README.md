@@ -472,8 +472,15 @@ bauer voice transcribe audio.wav   # transcreve um arquivo existente
   - OpenAI: `OPENAI_API_KEY`
 - **TTS (resposta falada)**: escolha uma:
   - Local offline (recomendado, sem key, fala pt nativamente): `uv sync --extra
-    voice-tts` (Coqui XTTS-v2 — baixa ~1.9GB do Hugging Face na 1ª execução).
-    Pesos sob a Coqui Public Model License — uso não-comercial.
+    voice-tts` **+ PyTorch/Torchaudio à parte** — a lib não os instala junto
+    de propósito (deixa você escolher a build certa em vez do resolver do
+    pip puxar a errada):
+    - CPU (funciona em qualquer máquina): `pip install torch torchaudio
+      --index-url https://download.pytorch.org/whl/cpu`
+    - GPU NVIDIA/CUDA: veja https://pytorch.org/get-started/locally/
+
+    Pesos do XTTS-v2 (~1.9GB) baixam do Hugging Face na 1ª execução, sob a
+    Coqui Public Model License — uso não-comercial.
   - OpenAI: `OPENAI_API_KEY` (mesma key do STT cloud serve para os dois)
 
 `TTS_PROVIDER=auto` (default) tenta local primeiro, cai para OpenAI se

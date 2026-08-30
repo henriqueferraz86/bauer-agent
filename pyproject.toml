@@ -73,6 +73,13 @@ voice-tts = [
     # primeiro uso. Pesos sob CPML (uso não-comercial) — ver bauer/tts.py.
     # Extra separado de `voice` (não entra em `all`): é pesado e a decisão
     # de baixar 1.9GB deve ser explícita, diferente da captura de microfone.
+    #
+    # NÃO instala PyTorch/torchaudio — o coqui-tts propositalmente não os
+    # declara como dependência (deixa você escolher a build certa em vez do
+    # resolver do pip puxar a errada). Depois deste extra, instale à parte:
+    #   CPU:  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    #   CUDA: https://pytorch.org/get-started/locally/
+    # bauer/tts.py detecta a ausência dos dois e mostra esse mesmo aviso.
     "coqui-tts>=0.27.0",
 ]
 all = [
