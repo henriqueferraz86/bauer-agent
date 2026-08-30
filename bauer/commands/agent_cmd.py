@@ -1184,7 +1184,12 @@ def agent_run_one(
             raise RuntimeError(gov.error or gov.policy_reason or "bloqueado pela governança")
         if not gov.ok:
             raise RuntimeError(gov.error or "runtime adapter failed")
-        console.print(str(gov.output or (gov.result or {}).get("output") or ""))
+        output_text = str(gov.output or (gov.result or {}).get("output") or "")
+        console.print(output_text)
+        # Retorna o texto além de imprimir: Typer ignora o retorno na CLI, mas
+        # `bauer voice ask --speak` chama esta função como função Python comum
+        # e precisa do texto da resposta para sintetizar em áudio.
+        return output_text
     except Exception as exc:
         # `console_err` em vez de `console.print(..., err=True)`: o Rich não
         # aceita `err=` por chamada, então a linha antiga levantava TypeError

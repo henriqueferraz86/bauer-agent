@@ -55,9 +55,25 @@ web = [
     "beautifulsoup4>=4.12",  # extração de conteúdo limpo no web_fetch
 ]
 voice = [
+    # Captura de microfone + STT local offline (`bauer voice listen/ask/chat`).
+    # sounddevice/numpy/soundfile já eram exigidos em runtime por
+    # audio_capture.py (import lazy com ImportError amigável) mas nunca
+    # tinham sido declarados aqui — instalar --extra voice não bastava.
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+    "soundfile>=0.12",
     # STT local offline — pesos open-source do Whisper (large-v3-turbo) via
     # CTranslate2. Sem nuvem, sem API key. Baixa ~1.5GB no primeiro uso.
     "faster-whisper>=1.0.0",
+]
+voice-tts = [
+    # TTS local offline — Coqui XTTS-v2 (fork idiap mantido; o pacote
+    # coqui-ai/TTS original está parado desde o fechamento da Coqui Inc em
+    # 2024). Sem nuvem, sem API key, fala pt nativamente. Baixa ~1.9GB no
+    # primeiro uso. Pesos sob CPML (uso não-comercial) — ver bauer/tts.py.
+    # Extra separado de `voice` (não entra em `all`): é pesado e a decisão
+    # de baixar 1.9GB deve ser explícita, diferente da captura de microfone.
+    "coqui-tts>=0.27.0",
 ]
 all = [
     "fastapi>=0.110",
@@ -66,6 +82,9 @@ all = [
     "python-multipart>=0.0.9",
     "ddgs>=6.0",
     "beautifulsoup4>=4.12",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+    "soundfile>=0.12",
     "faster-whisper>=1.0.0",
 ]
 
