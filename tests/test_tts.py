@@ -196,10 +196,10 @@ class TestResolveLocalDevice:
 
 class TestLoadLocalModelDiagnostico:
     """coqui-tts pode estar instalado e o import de TTS.api falhar mesmo
-    assim — o caso real é PyTorch/Torchaudio ausentes (a lib não os declara
-    como dependência de propósito). A mensagem de erro precisa distinguir
-    isso de "coqui-tts não instalado", senão manda quem lê reinstalar algo
-    que já tem em vez de resolver a causa real.
+    assim — o caso real é PyTorch/Torchaudio/Torchcodec ausentes (a lib não
+    os declara como dependência de propósito). A mensagem de erro precisa
+    distinguir isso de "coqui-tts não instalado", senão manda quem lê
+    reinstalar algo que já tem em vez de resolver a causa real.
     """
 
     def _break_tts_api_import(self, monkeypatch, inner_exc: Exception):
@@ -222,9 +222,9 @@ class TestLoadLocalModelDiagnostico:
             tts._load_local_model()
 
     def test_instalado_mas_falta_torch_stack(self, monkeypatch):
-        """coqui-tts presente, torch/torchaudio ausentes — mesmo sintoma
-        (ImportError dentro de TTS/__init__.py) que o pacote inteiro faltando,
-        mas a causa e a solução são outras."""
+        """coqui-tts presente, torch/torchaudio/torchcodec ausentes — mesmo
+        sintoma (ImportError dentro de TTS/__init__.py) que o pacote inteiro
+        faltando, mas a causa e a solução são outras."""
         monkeypatch.setattr(tts, "_coqui_tts_available", lambda: True)
         monkeypatch.setattr(tts, "_torch_stack_available", lambda: False)
         self._break_tts_api_import(
@@ -233,11 +233,14 @@ class TestLoadLocalModelDiagnostico:
 
         with pytest.raises(RuntimeError, match="PyTorch/Torchaudio") as exc_info:
             tts._load_local_model()
-        assert "torch torchaudio --index-url" in str(exc_info.value)
+        msg = str(exc_info.value)
+        assert "Torchcodec" in msg
+        assert "torch torchaudio torchcodec --index-url" in msg
 
     def test_instalado_com_torch_mas_outro_erro(self, monkeypatch):
-        """coqui-tts e torch/torchaudio presentes, falha por outro motivo —
-        não deve alegar nem "não instalado" nem "falta torch"."""
+        """coqui-tts e torch/torchaudio/torchcodec presentes, falha por
+        outro motivo — não deve alegar nem "não instalado" nem "falta
+        torch"."""
         monkeypatch.setattr(tts, "_coqui_tts_available", lambda: True)
         monkeypatch.setattr(tts, "_torch_stack_available", lambda: True)
         self._break_tts_api_import(monkeypatch, ImportError("symbol lookup error"))
@@ -251,7 +254,7 @@ class TestLoadLocalModelDiagnostico:
 
 
 class TestTorchStackAvailable:
-    def test_ambos_presentes(self, monkeypatch):
+    def test_os_tres_presentes(self, monkeypatch):
         import importlib.util
 
         monkeypatch.setattr(
@@ -264,6 +267,17 @@ class TestTorchStackAvailable:
 
         def fake_find_spec(name):
             return object() if name == "torch" else None
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        assert tts._torch_stack_available() is False
+
+    def test_torch_e_torchaudio_sem_torchcodec_e_falso(self, monkeypatch):
+        """Reproduz o achado real no Beelink: torch+torchaudio instalados,
+        torchcodec faltando (exigido a partir do torch 2.9) — ainda falso."""
+        import importlib.util
+
+        def fake_find_spec(name):
+            return object() if name in ("torch", "torchaudio") else None
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
         assert tts._torch_stack_available() is False

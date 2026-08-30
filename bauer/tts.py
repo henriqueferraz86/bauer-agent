@@ -140,18 +140,25 @@ def _coqui_tts_available() -> bool:
 
 
 def _torch_stack_available() -> bool:
-    """True se PyTorch E Torchaudio estiverem instalados (sem importar).
+    """True se PyTorch, Torchaudio E Torchcodec estiverem instalados (sem
+    importar nenhum dos três).
 
     XTTS-v2 (TTS/tts/models/xtts.py) importa `torchaudio` além de `torch` —
     ter só o primeiro ainda quebra o import com o mesmo ModuleNotFoundError
-    genérico, então os dois entram na mesma checagem em vez de checar torch
-    sozinho e dar um diagnóstico incompleto.
+    genérico, então os três entram na mesma checagem em vez de checar torch
+    sozinho e dar um diagnóstico incompleto. `torchcodec` é exigido a partir
+    do torch 2.9 (torchaudio trocou de backend de I/O de áudio) — como o
+    PyPI serve a versão mais recente do torch por padrão, quem instalar hoje
+    sempre bate nesse requisito, então ele entra na mesma checagem em vez de
+    virar um quarto ramo de erro separado (achado testando de ponta a ponta,
+    não só lendo a doc — ver pyproject.toml).
     """
     import importlib.util
     try:
         return (
             importlib.util.find_spec("torch") is not None
             and importlib.util.find_spec("torchaudio") is not None
+            and importlib.util.find_spec("torchcodec") is not None
         )
     except (ImportError, ValueError):
         return False
@@ -209,17 +216,18 @@ def _load_local_model(model: str | None = None):
         # o pacote está no venv, o find_spec acima achou. Distinguir isso da
         # falta do pacote importa: dizer "não instalado" quando ele ESTÁ
         # manda quem lê pra reinstalar algo que já tem, sem tocar a causa
-        # real. O caso comum é PyTorch/Torchaudio ausentes: TTS/__init__.py
-        # exige os dois mas não os declara como dependência pip DE PROPÓSITO
-        # — a lib deixa o usuário escolher a build certa (CPU ou CUDA) em vez
-        # de o resolver genérico puxar a errada.
+        # real. O caso comum é PyTorch/Torchaudio/Torchcodec ausentes:
+        # TTS/__init__.py exige os três mas não os declara como dependência
+        # pip DE PROPÓSITO — a lib deixa o usuário escolher a build certa
+        # (CPU ou CUDA) em vez de o resolver genérico puxar a errada.
         if not _torch_stack_available():
             raise RuntimeError(
-                "coqui-tts está instalado, mas falta o PyTorch/Torchaudio (a "
-                "lib não os instala junto de propósito — você escolhe a "
-                "build certa). CPU: `pip install torch torchaudio "
-                "--index-url https://download.pytorch.org/whl/cpu`. GPU "
-                "NVIDIA/CUDA: veja https://pytorch.org/get-started/locally/"
+                "coqui-tts está instalado, mas falta PyTorch/Torchaudio/"
+                "Torchcodec (a lib não os instala junto de propósito — você "
+                "escolhe a build certa). CPU: `pip install torch torchaudio "
+                "torchcodec --index-url https://download.pytorch.org/whl/cpu"
+                "`. GPU NVIDIA/CUDA: veja https://pytorch.org/get-started/"
+                "locally/"
             ) from exc
         raise RuntimeError(
             f"coqui-tts está instalado, mas falhou ao carregar: {exc}"
