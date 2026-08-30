@@ -25,6 +25,12 @@ npm install
 npm run dev          # num terminal
 bauer serve --port 8000   # noutro
 
+# Opcional: se o serve estiver em outra porta
+# `$env:VITE_BAUER_API_TARGET = "http://127.0.0.1:5174"` (PowerShell)
+# `set VITE_BAUER_API_TARGET=http://127.0.0.1:5174` (cmd.exe)
+# ...ou crie desktop/.env.local com VITE_BAUER_API_TARGET=http://127.0.0.1:5174
+# (já no .gitignore via *.local — o Vite carrega sozinho, sem exportar nada)
+
 # Build de produção → emite para ../bauer/static/ (servido pelo bauer serve)
 npm run build
 ```
