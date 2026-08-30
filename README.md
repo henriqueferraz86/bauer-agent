@@ -443,23 +443,42 @@ bauer skills-hub stats            # telemetria de uso (quais disparam, desfecho,
 Toggle: `agent.skill_auto_inject` no config. A telemetria é só observação (não
 age) — base para refinar skills por uso real.
 
-### 🎤 Voice — Captura de voz e transcrição
+### 🎤 Voice — Conversa por voz (STT + TTS)
 
-Grava áudio do microfone e transcreve automaticamente com Whisper (local offline ou cloud):
+Grava áudio do microfone, transcreve com Whisper, e opcionalmente responde
+falado com síntese de voz (Coqui XTTS-v2 local ou OpenAI cloud):
 
 ```bash
-bauer voice listen              # grava até silêncio ou 30s, transcreve
+bauer voice listen              # grava até silêncio ou 120s, transcreve
 bauer voice listen --duration 60 --threshold -35  # ajusta duração e sensibilidade
+
+bauer voice ask                 # grava, envia ao Bauer, imprime a resposta
+bauer voice ask --speak         # idem, e também fala a resposta em voz
+
+bauer voice speak "algum texto"           # sintetiza e toca
+bauer voice speak "texto" -o saida.wav    # sintetiza e salva (não toca)
+
+bauer voice chat                # conversa contínua por voz — ouve, responde
+                                 # falado, ouve de novo. Diga "sair" ou Ctrl+C.
 
 bauer voice transcribe audio.wav   # transcreve um arquivo existente
 ```
 
 **Setup:**
-- **Captura**: `pip install sounddevice numpy` (ou `uv sync --extra voice`)
-- **Transcrição**: escolha uma:
-  - Local offline (recomendado): `pip install faster-whisper`
+- **Captura + STT**: `uv sync --extra voice` (sounddevice, numpy, soundfile,
+  faster-whisper). Transcrição escolhe entre:
+  - Local offline (recomendado, sem key): `STT_PROVIDER=local`
   - Cloud grátis: `GROQ_API_KEY` (console.groq.com)
   - OpenAI: `OPENAI_API_KEY`
+- **TTS (resposta falada)**: escolha uma:
+  - Local offline (recomendado, sem key, fala pt nativamente): `uv sync --extra
+    voice-tts` (Coqui XTTS-v2 — baixa ~1.9GB do Hugging Face na 1ª execução).
+    Pesos sob a Coqui Public Model License — uso não-comercial.
+  - OpenAI: `OPENAI_API_KEY` (mesma key do STT cloud serve para os dois)
+
+`TTS_PROVIDER=auto` (default) tenta local primeiro, cai para OpenAI se
+`coqui-tts` não estiver instalado. Com `--extra voice` + `--extra voice-tts`
+e nenhuma env configurada, `bauer voice chat` roda 100% offline.
 
 Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
 
