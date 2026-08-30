@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 from bauer.audio_playback import play_audio_file
@@ -72,3 +74,29 @@ class TestPlaybackFile:
              patch("bauer.audio_playback.sd", fake_sd), \
              patch("bauer.audio_playback.sf", fake_sf):
             assert play_audio_file(p) is False
+
+    def test_hung_playback_times_out_instead_of_blocking_forever(self, tmp_path):
+        """Achado real: numa maquina sem placa de som, sd.play()/sd.wait()
+        podem travar em vez de levantar (PortAudio esperando um dispositivo
+        que nunca aparece) — reproduzido rodando de verdade num servidor
+        headless. play_audio_file precisa devolver False num prazo curto,
+        nao ficar preso para sempre."""
+        p = tmp_path / "a.wav"
+        p.write_bytes(b"fake")
+        fake_sd = MagicMock()
+        # sd.wait() nunca retorna — simula o hang real do PortAudio.
+        fake_sd.wait.side_effect = lambda: threading.Event().wait()
+        fake_sf = MagicMock()
+        fake_sf.read.return_value = ([0.0], 16000)
+
+        with patch("bauer.audio_playback._has_sounddevice", return_value=True), \
+             patch("bauer.audio_playback._has_soundfile", return_value=True), \
+             patch("bauer.audio_playback.sd", fake_sd), \
+             patch("bauer.audio_playback.sf", fake_sf):
+            start = time.monotonic()
+            result = play_audio_file(p, timeout=0.2)
+            elapsed = time.monotonic() - start
+
+        assert result is False
+        # Devolveu perto do timeout pedido, nao ficou preso indefinidamente.
+        assert elapsed < 2.0
