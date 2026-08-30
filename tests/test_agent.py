@@ -339,6 +339,108 @@ def test_agent_listen_loop_keeps_listening_until_stop(ws: Path, router: ToolRout
     assert "primeira pergunta" in contents
 
 
+def test_agent_listen_command_speaks_the_reply(ws: Path, router: ToolRouter):
+    """/listen fala a resposta alem de imprimir — round-trip completo de voz."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Resposta falada de teste.")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input", return_value="resuma o projeto"), \
+         patch("bauer.tts.synthesize_speech",
+               return_value={"success": True, "path": "/tmp/bauer-tts-x.wav", "provider": "local"}) as synth, \
+         patch("bauer.audio_playback.play_audio_file", return_value=True) as play, \
+         patch("builtins.input", side_effect=["/listen", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    synth.assert_called_once_with("Resposta falada de teste.")
+    play.assert_called_once_with("/tmp/bauer-tts-x.wav")
+
+
+def test_agent_typed_turn_never_speaks(ws: Path, router: ToolRouter):
+    """Turno digitado normalmente nao deve disparar sintese de voz."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Resposta por texto normal.")
+    console = Console()
+
+    with patch("bauer.tts.synthesize_speech") as synth:
+        with patch("builtins.input", side_effect=["oi", EOFError]):
+            run_agent_session(client, "test-model", 4096, console, router)
+
+    synth.assert_not_called()
+
+
+def test_agent_listen_loop_speaks_each_turn(ws: Path, router: ToolRouter):
+    """/listen loop fala a resposta a cada rodada, ate o comando de parada."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Primeira resposta falada.")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input",
+               side_effect=["primeira pergunta", "parar"]), \
+         patch("bauer.tts.synthesize_speech",
+               return_value={"success": True, "path": "/tmp/bauer-tts-y.wav", "provider": "local"}) as synth, \
+         patch("bauer.audio_playback.play_audio_file", return_value=True), \
+         patch("builtins.input", side_effect=["/listen loop", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    synth.assert_called_once_with("Primeira resposta falada.")
+
+
+def test_agent_listen_speak_failure_does_not_crash_turn(ws: Path, router: ToolRouter):
+    """TTS indisponivel durante /listen: aviso discreto, turno segue normal."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Resposta cujo audio nao sai.")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input", return_value="oi"), \
+         patch("bauer.tts.synthesize_speech",
+               return_value={"success": False, "path": "", "error": "sem provider"}), \
+         patch("builtins.input", side_effect=["/listen", EOFError]):
+        run_agent_session(client, "test-model", 4096, console, router)
+
+    # Chegou ate o fim (EOFError encerrou a sessao normalmente) sem levantar.
+    assert client.chat_stream.call_count == 1
+
+
+def test_speak_voice_reply_plays_audio():
+    from bauer.agent import _speak_voice_reply
+    from rich.console import Console
+
+    with patch("bauer.tts.synthesize_speech",
+               return_value={"success": True, "path": "/tmp/bauer-tts-z.wav", "provider": "openai"}), \
+         patch("bauer.audio_playback.play_audio_file", return_value=True) as play:
+        _speak_voice_reply(Console(), "ola mundo")
+
+    play.assert_called_once_with("/tmp/bauer-tts-z.wav")
+
+
+def test_speak_voice_reply_empty_text_is_noop():
+    from bauer.agent import _speak_voice_reply
+    from rich.console import Console
+
+    with patch("bauer.tts.synthesize_speech") as synth:
+        _speak_voice_reply(Console(), "   ")
+
+    synth.assert_not_called()
+
+
+def test_speak_voice_reply_synthesis_error_does_not_raise():
+    from bauer.agent import _speak_voice_reply
+    from rich.console import Console
+
+    with patch("bauer.tts.synthesize_speech",
+               return_value={"success": False, "path": "", "error": "sem provider TTS"}):
+        _speak_voice_reply(Console(), "texto qualquer")  # nao deve levantar
+
+
 def test_capture_listen_input_handles_keyboard_interrupt():
     """Ctrl+C durante audio deve cancelar o /listen e devolver o prompt."""
     from bauer.agent import _capture_listen_input

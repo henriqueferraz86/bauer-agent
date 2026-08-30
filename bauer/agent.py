@@ -133,8 +133,8 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
     "/theme":          "troca a cor de acento (ou Ctrl+T p/ ciclar)",
-    "/listen":         "fala com o Bauer pelo microfone",
-    "/listen loop":    "conversa por voz ate cancelar",
+    "/listen":         "fala com o Bauer pelo microfone (responde falado)",
+    "/listen loop":    "conversa por voz ate cancelar (responde falado)",
     "/sessions":       "lista sessões salvas",
     "/spec":           "lista specs do projeto",
     "/spec new":       "cria novo spec (wizard)",
@@ -382,6 +382,54 @@ def _is_listen_loop_stop(text: str) -> bool:
     normalized = re.sub(r"[^\wÀ-ÿ\s-]", "", text.strip().lower(), flags=re.UNICODE)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized in _LISTEN_LOOP_STOP_WORDS
+
+
+def _speak_voice_reply(console: Console, text: str) -> None:
+    """Sintetiza e toca a resposta em voz — chamado quando o turno veio do
+    /listen ou /listen loop (mesmo par de módulos que `bauer voice chat` usa:
+    bauer/tts.py + bauer/audio_playback.py).
+
+    Best-effort: nunca interrompe o REPL. A resposta em texto já foi impressa
+    antes desta chamada, então uma falha de TTS/playback (sem provider, sem
+    alto-falante) vira um aviso discreto, não uma exceção que derruba o turno.
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+
+    try:
+        from .tts import synthesize_speech
+        result = synthesize_speech(text)
+    except Exception as exc:  # noqa: BLE001 — voz é extra, nunca trava o turno
+        from .logging_config import log_suppressed
+        log_suppressed("agent.voice_reply.synthesize", exc)
+        return
+
+    if not result.get("success"):
+        console.print(f"[dim yellow](voz indisponível: {result.get('error')})[/dim yellow]")
+        return
+
+    path = result["path"]
+    try:
+        from .audio_playback import play_audio_file
+        played = play_audio_file(path)
+    except Exception as exc:  # noqa: BLE001
+        from .logging_config import log_suppressed
+        log_suppressed("agent.voice_reply.playback", exc)
+        played = False
+
+    if not played:
+        console.print(f"[dim yellow](não foi possível tocar o áudio: {path})[/dim yellow]")
+
+    # Só o wav temporário que a própria síntese criou (prefixo bauer-tts-) —
+    # nunca um arquivo que o usuário tenha apontado por fora deste caminho.
+    from contextlib import suppress
+    from pathlib import Path as _Path
+
+    p = _Path(path)
+    if "bauer-tts-" in p.name:
+        with suppress(OSError):
+            p.unlink()
 
 
 def _set_blink_underline() -> None:
@@ -4670,6 +4718,10 @@ def run_agent_session(
 
     while True:
         # --- entrada do usuário ---
+        # Reseta a cada turno: só volta a virar True se ESTE turno veio do
+        # /listen ou /listen loop. Sem isso, digitar um turno normal logo
+        # depois de um turno falado herdaria a resposta em voz por engano.
+        _voice_turn = False
         if _listen_loop_active:
             listened = _capture_listen_input(console)
             if not listened:
@@ -4682,6 +4734,7 @@ def run_agent_session(
                 continue
             console.print(f"[dim]Voce disse:[/dim] {listened}")
             user_input = listened
+            _voice_turn = True
         else:
             try:
                 if _pt_session is not None:
@@ -4728,6 +4781,7 @@ def run_agent_session(
                 continue
             console.print(f"[dim]Voce disse:[/dim] {listened}")
             user_input = listened
+            _voice_turn = True
         if user_input.lower() in _EXIT_CMDS:
             console.print("[dim]Ate logo.[/dim]")
             stats.save()
@@ -5141,6 +5195,8 @@ def run_agent_session(
                 if session_store is not None and session_id:
                     session_store.save(session_id, ctx.messages)
                 _print_assistant_response(console, final)
+                if _voice_turn:
+                    _speak_voice_reply(console, final)
             continue
 
         # Prefetch memory context (decisões passadas + sessões similares)
@@ -5338,6 +5394,11 @@ def run_agent_session(
                 console.print()
             else:
                 _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
+            # Turno veio do /listen ou /listen loop: fala a resposta além de
+            # imprimi-la. Só em "final" — kinds de erro já imprimiram o que
+            # precisavam, e não há texto de resposta limpo pra sintetizar.
+            if _voice_turn:
+                _speak_voice_reply(console, outcome.display)
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.
