@@ -139,6 +139,24 @@ def _coqui_tts_available() -> bool:
         return False
 
 
+def _torch_stack_available() -> bool:
+    """True se PyTorch E Torchaudio estiverem instalados (sem importar).
+
+    XTTS-v2 (TTS/tts/models/xtts.py) importa `torchaudio` além de `torch` —
+    ter só o primeiro ainda quebra o import com o mesmo ModuleNotFoundError
+    genérico, então os dois entram na mesma checagem em vez de checar torch
+    sozinho e dar um diagnóstico incompleto.
+    """
+    import importlib.util
+    try:
+        return (
+            importlib.util.find_spec("torch") is not None
+            and importlib.util.find_spec("torchaudio") is not None
+        )
+    except (ImportError, ValueError):
+        return False
+
+
 def _resolve_local_device() -> str:
     if LOCAL_TTS_DEVICE in ("cpu", "cuda"):
         return LOCAL_TTS_DEVICE
@@ -181,10 +199,30 @@ def _load_local_model(model: str | None = None):
         os.environ.setdefault("COQUI_TOS_AGREED", "1")
         from TTS.api import TTS
     except ImportError as exc:
+        if not _coqui_tts_available():
+            raise RuntimeError(
+                "coqui-tts não instalado. Rode `pip install coqui-tts` (ou "
+                "`uv sync --extra voice-tts`) para voz local offline. Pesos "
+                "do XTTS-v2 (~1.9GB) baixam do Hugging Face na 1ª execução."
+            ) from exc
+        # coqui-tts está instalado, mas o import falhou por outro motivo —
+        # o pacote está no venv, o find_spec acima achou. Distinguir isso da
+        # falta do pacote importa: dizer "não instalado" quando ele ESTÁ
+        # manda quem lê pra reinstalar algo que já tem, sem tocar a causa
+        # real. O caso comum é PyTorch/Torchaudio ausentes: TTS/__init__.py
+        # exige os dois mas não os declara como dependência pip DE PROPÓSITO
+        # — a lib deixa o usuário escolher a build certa (CPU ou CUDA) em vez
+        # de o resolver genérico puxar a errada.
+        if not _torch_stack_available():
+            raise RuntimeError(
+                "coqui-tts está instalado, mas falta o PyTorch/Torchaudio (a "
+                "lib não os instala junto de propósito — você escolhe a "
+                "build certa). CPU: `pip install torch torchaudio "
+                "--index-url https://download.pytorch.org/whl/cpu`. GPU "
+                "NVIDIA/CUDA: veja https://pytorch.org/get-started/locally/"
+            ) from exc
         raise RuntimeError(
-            "coqui-tts não instalado. Rode `pip install coqui-tts` (ou "
-            "`uv sync --extra voice-tts`) para voz local offline. Pesos do "
-            "XTTS-v2 (~1.9GB) baixam do Hugging Face na 1ª execução."
+            f"coqui-tts está instalado, mas falhou ao carregar: {exc}"
         ) from exc
 
     _show_cpml_notice_once()
