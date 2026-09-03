@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 from bauer.voice_status import collect_voice_status
@@ -18,7 +19,13 @@ def test_collect_voice_status_is_read_only_and_reports_components():
         "wake word acústica",
         "barge-in VAD + AEC",
     }
-    assert all(item["ok"] for item in status)
+    # SAPI e especifico do Windows; no Ubuntu o restante do pipeline deve
+    # continuar pronto sem exigir um player de voz nativo.
+    assert all(
+        item["ok"]
+        for item in status
+        if item["name"] != "TTS local" or os.name == "nt"
+    )
 
 
 def test_collect_voice_status_marks_missing_optional_stack():

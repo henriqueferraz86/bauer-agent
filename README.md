@@ -529,6 +529,22 @@ recua automaticamente para a validação pela transcrição.
 `coqui-tts` não estiver instalado. Com `--extra voice` + `--extra voice-tts`
 e nenhuma env configurada, `bauer voice chat` roda 100% offline.
 
+Para um TTS neural local mais leve, use o Kokoro-82M via ONNX Runtime:
+
+```powershell
+uv sync --extra voice --extra voice-kokoro
+bauer voice kokoro-download
+$env:BAUER_TTS_PROVIDER="kokoro"
+$env:BAUER_TTS_KOKORO_VOICE="pm_alex"
+bauer voice speak "Olá, Henrique. Todos os sistemas estão operacionais."
+```
+
+O Kokoro inclui vozes brasileiras (`pf_dora`, `pm_alex`, `pm_santa`) e vozes
+inglesas britânicas. Os pesos do modelo são Apache 2.0; o runtime ONNX é MIT.
+`pm_alex` é o padrão quando `BAUER_TTS_LANGUAGE=pt-BR` (ou quando nenhum
+idioma é informado). O download fica em `$BAUER_HOME/models/kokoro`, fora do
+repositório.
+
 Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
 
 Para a saída de voz, `BAUER_TTS_PROVIDER=auto` usa SAPI local no Windows e

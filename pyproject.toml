@@ -66,6 +66,11 @@ voice = [
     # CTranslate2. Sem nuvem, sem API key. Baixa ~1.5GB no primeiro uso.
     "faster-whisper>=1.0.0",
 ]
+voice-kokoro = [
+    # Runtime ONNX leve para Kokoro-82M (pesos Apache-2.0). O modelo e os
+    # voicepacks sao baixados pelo comando `bauer voice kokoro download`.
+    "kokoro-onnx>=0.6.1",
+]
 voice-tts = [
     # TTS local offline — Coqui XTTS-v2 (fork idiap mantido; o pacote
     # coqui-ai/TTS original está parado desde o fechamento da Coqui Inc em

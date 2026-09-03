@@ -245,6 +245,17 @@ def cmd_voice_metrics(
             )
 
 
+@voice_app.command(name="kokoro-download")
+def cmd_voice_kokoro_download() -> None:
+    """Baixa o modelo e os voicepacks locais do Kokoro-82M."""
+    from bauer.voice_kokoro import download_kokoro_models
+
+    console.print("[cyan]Baixando modelo Kokoro-82M...[/cyan]")
+    model, voices = download_kokoro_models()
+    console.print(f"[green]Modelo pronto:[/green] {model}")
+    console.print(f"[green]Voicepack pronto:[/green] {voices}")
+
+
 def _listen_once(*, max_duration: int, silence_threshold: float) -> str | None:
     try:
         if os.environ.get("BAUER_STT_STREAMING", "").strip().lower() in {

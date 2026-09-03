@@ -440,21 +440,24 @@ def play_audio(
         try:
             import winsound
 
+            sound_api: Any = winsound
             if cancel_event is None:
                 if playback_start is not None:
                     playback_start()
-                winsound.PlaySound(str(path), winsound.SND_FILENAME)
+                sound_api.PlaySound(str(path), sound_api.SND_FILENAME)
                 return
             if playback_start is not None:
                 playback_start()
-            winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+            sound_api.PlaySound(
+                str(path), sound_api.SND_FILENAME | sound_api.SND_ASYNC
+            )
             try:
                 with wave.open(str(path), "rb") as wav:
                     duration = wav.getnframes() / max(wav.getframerate(), 1)
                 if cancel_event.wait(timeout=max(duration, 0.05) + 0.1):
                     raise VoiceOutputCancelled("playback interrompido")
             finally:
-                winsound.PlaySound(None, 0)
+                sound_api.PlaySound(None, 0)
             return
         except VoiceOutputCancelled:
             raise
@@ -586,9 +589,15 @@ def speak_response(
         if metrics is not None:
             metrics.mark("tts_synthesis_start")
         provider = os.environ.get("BAUER_TTS_PROVIDER", "auto").strip().lower()
-        if provider not in {"auto", "local", "openai"}:
-            raise VoiceOutputError("BAUER_TTS_PROVIDER deve ser auto, local ou openai")
-        if provider in {"auto", "local"}:
+        if provider not in {"auto", "local", "openai", "kokoro"}:
+            raise VoiceOutputError(
+                "BAUER_TTS_PROVIDER deve ser auto, local, openai ou kokoro"
+            )
+        if provider == "kokoro":
+            from .voice_kokoro import synthesize_kokoro_speech
+
+            synthesize_kokoro_speech(text, path)
+        elif provider in {"auto", "local"}:
             try:
                 synthesize_local_speech(
                     text,

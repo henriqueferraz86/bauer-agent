@@ -6,7 +6,8 @@ Providers (ordem padrão em TTS_PROVIDER=auto):
      na primeira execução.
   2. OpenAI tts-1 (cloud, OPENAI_API_KEY)
 
-Selecione explicitamente com a env ``TTS_PROVIDER`` = auto | local | openai.
+Selecione explicitamente com ``TTS_PROVIDER`` ou ``BAUER_TTS_PROVIDER`` =
+auto | local | openai | kokoro.
 Para voz 100% offline::
 
     pip install coqui-tts               # ou: uv sync --extra voice-tts
@@ -80,8 +81,10 @@ _TOS_LOCK = threading.Lock()
 
 
 def _tts_provider_pref() -> str:
-    """Preferência de provider, lida em call-time: auto | local | openai."""
-    return os.environ.get("TTS_PROVIDER", "auto").strip().lower()
+    """Preferência de provider, lida em call-time."""
+    return os.environ.get(
+        "BAUER_TTS_PROVIDER", os.environ.get("TTS_PROVIDER", "auto")
+    ).strip().lower()
 
 
 def _validate_text(text: str) -> str | None:
@@ -293,13 +296,20 @@ def preload_local_tts_model() -> bool:
 
 
 def available_tts_provider() -> str | None:
-    """Qual provider TTS está disponível agora ('local', 'openai' ou None).
+    """Qual provider TTS está disponível agora.
 
     Respeita TTS_PROVIDER; em 'auto' prioriza local (funciona sem API key,
     combina com o objetivo de "baixar o Bauer e já conseguir usar") e cai
     para OpenAI se coqui-tts não estiver instalado.
     """
     pref = _tts_provider_pref()
+    if pref == "kokoro":
+        try:
+            import importlib.util
+
+            return "kokoro" if importlib.util.find_spec("kokoro_onnx") else None
+        except (ImportError, ValueError):
+            return None
     if pref in ("local", "coqui", "xtts"):
         return "local" if _coqui_tts_available() else None
     if pref == "openai":
@@ -343,7 +353,9 @@ def synthesize_speech(
     pref = _tts_provider_pref()
     openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
-    if pref in ("local", "coqui", "xtts"):
+    if pref == "kokoro":
+        attempts.append("kokoro")
+    elif pref in ("local", "coqui", "xtts"):
         attempts.append("local")
     elif pref == "openai":
         if openai_key:
@@ -370,6 +382,10 @@ def synthesize_speech(
         try:
             if provider == "local":
                 _synthesize_local(text, dest, model)
+            elif provider == "kokoro":
+                from .voice_kokoro import synthesize_kokoro_speech
+
+                synthesize_kokoro_speech(text, dest)
             else:
                 _post_openai_tts(text, dest)
             logger.info(
