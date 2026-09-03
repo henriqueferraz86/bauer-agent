@@ -46,6 +46,7 @@ EventType = Literal[
     "memory.written",
     "memory.revised",
     "memory.expired",
+    "voice.turn.completed",
 ]
 
 #: DERIVADO do Literal acima, não uma segunda lista escrita à mão. As duas

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -70,6 +71,8 @@ _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 _LISTEN_CMDS = {"/listen", "/ouvir"}
 _LISTEN_LOOP_CMDS = {"/listen loop", "/listen auto", "/ouvir loop", "/ouvir auto"}
+_LISTEN_WAKE_CMDS = {"/listen wake", "/ouvir wake", "/wake"}
+_LISTEN_WAKE_STOP_CMDS = {"/listen wake stop", "/ouvir wake stop", "/wake stop"}
 _LISTEN_LOOP_STOP_WORDS = {
     "parar",
     "para",
@@ -92,6 +95,7 @@ _SLASH_BASE = [
     "/theme",
     "/listen",
     "/listen loop",
+    "/listen wake",
     "/sessions",
     "/spec",
     "/spec new",
@@ -133,8 +137,9 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/status":         "tokens usados / budget",
     "/model":          "trocar provider/modelo (abre seletor)",
     "/theme":          "troca a cor de acento (ou Ctrl+T p/ ciclar)",
-    "/listen":         "fala com o Bauer pelo microfone (responde falado)",
-    "/listen loop":    "conversa por voz ate cancelar (responde falado)",
+    "/listen":         "fala com o Bauer pelo microfone",
+    "/listen loop":    "conversa por voz ate cancelar",
+    "/listen wake":    "escuta somente apos a wake word",
     "/sessions":       "lista sessões salvas",
     "/spec":           "lista specs do projeto",
     "/spec new":       "cria novo spec (wizard)",
@@ -348,12 +353,29 @@ except ImportError:
     _PT_STYLE = None             # type: ignore[assignment]
 
 
-def _capture_listen_input(console: Console) -> str | None:
+def _capture_listen_input(
+    console: Console,
+    *,
+    metrics: Any = None,
+    capture: Any = None,
+) -> str | None:
     """Capture microphone input and return the transcribed text for a chat turn."""
+    if metrics is not None:
+        metrics.mark("stt_start")
     try:
-        from .audio_capture import capture_voice_input
+        if capture is None:
+            if os.environ.get("BAUER_STT_STREAMING", "").strip().lower() in {
+                "1", "true", "yes"
+            }:
+                from .voice_stt_stream import capture_voice_input_streaming
 
-        text = capture_voice_input(console=console)
+                capture = capture_voice_input_streaming
+            else:
+                from .audio_capture import capture_voice_input
+
+                capture = capture_voice_input
+
+        text = capture(console=console)
     except KeyboardInterrupt:
         console.print("[yellow]Audio cancelado.[/yellow]")
         return None
@@ -363,6 +385,9 @@ def _capture_listen_input(console: Console) -> str | None:
     except Exception as exc:
         console.print(f"[red]Erro ao ouvir: {exc}[/red]")
         return None
+    finally:
+        if metrics is not None:
+            metrics.mark("stt_end")
 
     text = (text or "").strip()
     if not _is_meaningful_voice_text(text):
@@ -384,7 +409,7 @@ def _is_listen_loop_stop(text: str) -> bool:
     return normalized in _LISTEN_LOOP_STOP_WORDS
 
 
-def _speak_voice_reply(console: Console, text: str) -> None:
+def _speak_voice_reply(console: Console, text: str, client=None) -> None:
     """Sintetiza e toca a resposta em voz — chamado quando o turno veio do
     /listen ou /listen loop (mesmo par de módulos que `bauer voice chat` usa:
     bauer/tts.py + bauer/audio_playback.py).
@@ -397,15 +422,32 @@ def _speak_voice_reply(console: Console, text: str) -> None:
     if not text:
         return
 
+    def _fallback_to_voice_session() -> bool:
+        if client is None:
+            return False
+        try:
+            from .voice_session import speak_response
+
+            speak_response(text, client)
+            return True
+        except Exception as exc:  # noqa: BLE001 — voz é saída acessória
+            from .logging_config import log_suppressed
+
+            log_suppressed("agent.voice_reply.session_fallback", exc)
+            return False
+
     try:
         from .tts import synthesize_speech
         result = synthesize_speech(text)
     except Exception as exc:  # noqa: BLE001 — voz é extra, nunca trava o turno
         from .logging_config import log_suppressed
         log_suppressed("agent.voice_reply.synthesize", exc)
+        _fallback_to_voice_session()
         return
 
     if not result.get("success"):
+        if _fallback_to_voice_session():
+            return
         console.print(f"[dim yellow](voz indisponível: {result.get('error')})[/dim yellow]")
         return
 
@@ -1433,6 +1475,7 @@ def _stream_to_sink(
     """
     from .delta_stream import emit_delta as _emit_delta
     from .delta_stream import emit_round_start as _emit_round
+    from .delta_stream import get_sink as _get_sink
     from .error_classifier import classify_api_error
     from .retry_utils import jittered_backoff
 
@@ -1442,8 +1485,17 @@ def _stream_to_sink(
         parts = []
         try:
             for chunk in client.chat_stream(model_name, api_payload):
+                sink = _get_sink()
+                if sink is not None and getattr(sink, "cancelled", False):
+                    from .voice_session import VoiceTurnCancelled
+
+                    raise VoiceTurnCancelled("turno de voz interrompido")
                 parts.append(chunk)
                 _emit_delta(chunk)
+                if getattr(sink, "cancelled", False):
+                    from .voice_session import VoiceTurnCancelled
+
+                    raise VoiceTurnCancelled("turno de voz interrompido")
             return parts
         except Exception as exc:  # noqa: BLE001 — reclassificado logo abaixo
             if parts:
@@ -1985,12 +2037,35 @@ def _print_assistant_response(console: Console, text: str, cost_line: str = "") 
     console.print()
 
 
+def _speak_voice_response(text: str, client, console: Console) -> None:
+    """Tenta falar uma resposta do /listen sem quebrar o turno textual."""
+    try:
+        from .voice_session import speak_response
+
+        console.print("[dim]🔊 Gerando resposta de voz...[/dim]")
+        speak_response(text, client)
+    except Exception as exc:  # noqa: BLE001 - TTS é saída acessória
+        logger = logging.getLogger("bauer.agent")
+        logger.debug("voice output indisponível: %s", exc)
+        console.print(f"[yellow]Resposta de voz indisponível: {exc}[/yellow]")
+
+
+def _voice_streaming_enabled() -> bool:
+    """Retorna se o pipeline de TTS incremental foi explicitamente ativado."""
+    enabled = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("BAUER_VOICE_STREAMING", "").strip().lower() in enabled
+        or os.environ.get("BAUER_VOICE_BARGE_IN", "").strip().lower() in enabled
+    )
+
+
 def _collect_with_fallback(
     client: OllamaClient,
     model_name: str,
     payload: list[dict],
     fallback_clients: "list | None",
     console: Console,
+    streamer=None,
 ) -> "tuple[str, Any, str]":
     """Tenta coletar resposta; em falha retryável tenta providers de fallback.
 
@@ -2000,6 +2075,18 @@ def _collect_with_fallback(
     Raises:
         OllamaError | OpenAIClientError: quando todos os providers falham.
     """
+    def _collect_with_stream_sink(active_client, active_model):
+        """Coleta e instala o sink também no caminho Tool Bridge."""
+        if streamer is None:
+            return _collect_response(active_client, active_model, payload)
+        from .delta_stream import reset_sink, set_sink
+
+        token = set_sink(streamer)
+        try:
+            return _collect_response(active_client, active_model, payload)
+        finally:
+            reset_sink(token)
+
     # Derive provider name from client for circuit breaker tracking
     try:
         from .cost_meter import provider_from_client as _pfn
@@ -2023,7 +2110,7 @@ def _collect_with_fallback(
     else:
         try:
             with _thinking_status(console, model_name):
-                resp = _collect_response(client, model_name, payload)
+                resp = _collect_with_stream_sink(client, model_name)
             if _cb_available and global_cb is not None:
                 global_cb.record_success(_primary_provider)
             return resp, client, model_name
@@ -2071,7 +2158,7 @@ def _collect_with_fallback(
         )
         try:
             with _thinking_status(console, fb_model):
-                resp = _collect_response(fb_client, fb_model, payload)
+                resp = _collect_with_stream_sink(fb_client, fb_model)
             if _cb_available and global_cb is not None:
                 global_cb.record_success(_fb_provider)
             return resp, fb_client, fb_model
@@ -3304,8 +3391,11 @@ def _run_tool_loop_body(
     _overflow_compress_attempted = False
     from .tool_dedup import ToolCallDeduper as _CliDeduper
     _cli_deduper = _CliDeduper()
+    from .voice_session import VoiceTurnCancelled
 
     while True:
+        if streamer is not None and getattr(streamer, "cancelled", False):
+            return _TurnOutcome(kind="interrupted", tool_log=cli_tool_log)
         # Checa ANTES de mais uma chamada LLM — consume_llm_call()/consume_tool_call()
         # levantam BudgetExhaustedError se já esgotado, então este é o único ponto
         # que precisa checar (nada consome budget entre uma volta e outra do while).
@@ -3378,8 +3468,12 @@ def _run_tool_loop_body(
                     response = _ntext or ""
                     _native_final = True
             if not _native_final:
+                _collect_kwargs = {}
+                if streamer is not None:
+                    _collect_kwargs["streamer"] = streamer
                 response, state.client, state.active_model = _collect_with_fallback(
-                    state.client, state.active_model, ctx.get_payload(), fallback_clients, console
+                    state.client, state.active_model, ctx.get_payload(), fallback_clients, console,
+                    **_collect_kwargs,
                 )
                 if budget is not None:
                     budget.consume_llm_call()  # cobre o path bridge — native já contou acima
@@ -3467,6 +3561,13 @@ def _run_tool_loop_body(
             stats.provider = _fb_provider
             ctx._provider = _fb_provider
             continue
+        except VoiceTurnCancelled:
+            if streamer is not None and hasattr(streamer, "cancel"):
+                streamer.cancel()
+            console.print("\n[dim][voz interrompida pelo usuário][/dim]")
+            if ctx.messages and ctx.messages[-1]["role"] == "user":
+                ctx.messages.pop()
+            return _TurnOutcome(kind="interrupted", tool_log=cli_tool_log)
         except KeyboardInterrupt:
             console.print("\n[dim][interrompido][/dim]")
             if ctx.messages and ctx.messages[-1]["role"] == "user":
@@ -4715,6 +4816,10 @@ def run_agent_session(
             except Exception:
                 pass
     _listen_loop_active = False
+    _wake_word_active = False
+    _voice_turn_active = False
+    _voice_metrics = None
+    _acoustic_wake_backend = None
 
     while True:
         # --- entrada do usuário ---
@@ -4722,19 +4827,62 @@ def run_agent_session(
         # /listen ou /listen loop. Sem isso, digitar um turno normal logo
         # depois de um turno falado herdaria a resposta em voz por engano.
         _voice_turn = False
+        _voice_turn_active = False
+        _voice_metrics = None
         if _listen_loop_active:
-            listened = _capture_listen_input(console)
+            from .voice_metrics import VoiceTurnMetrics
+
+            _voice_metrics = VoiceTurnMetrics()
+            acoustic_detected = None
+            if _wake_word_active and _acoustic_wake_backend is not None:
+                from .voice_acoustic_wake import capture_acoustic_command
+
+                listened = _capture_listen_input(
+                    console,
+                    metrics=_voice_metrics,
+                    capture=lambda *, console: capture_acoustic_command(
+                        _acoustic_wake_backend,
+                        console=console,
+                        metrics=_voice_metrics,
+                    ),
+                )
+                acoustic_detected = True
+            else:
+                listened = _capture_listen_input(console, metrics=_voice_metrics)
             if not listened:
                 _listen_loop_active = False
+                _wake_word_active = False
+                _acoustic_wake_backend = None
                 console.print("[dim]Modo /listen loop pausado. Digite /listen loop para retomar.[/dim]")
                 continue
             if _is_listen_loop_stop(listened):
                 _listen_loop_active = False
+                _wake_word_active = False
+                _acoustic_wake_backend = None
                 console.print("[dim]Modo /listen loop encerrado.[/dim]")
                 continue
+            if _wake_word_active:
+                from .voice_wakeword import extract_command
+
+                wake_command = extract_command(listened)
+                if wake_command is None and acoustic_detected is not True:
+                    console.print("[dim]Fala ignorada: aguardando a wake word.[/dim]")
+                    continue
+                if wake_command == "":
+                    console.print("[dim]Wake word detectada; aguardando o comando.[/dim]")
+                    continue
+                if wake_command is not None:
+                    listened = wake_command
+                if _is_listen_loop_stop(listened):
+                    _listen_loop_active = False
+                    _wake_word_active = False
+                    _acoustic_wake_backend = None
+                    console.print("[dim]Modo de wake word encerrado.[/dim]")
+                    continue
             console.print(f"[dim]Voce disse:[/dim] {listened}")
             user_input = listened
             _voice_turn = True
+            _voice_turn_active = True
         else:
             try:
                 if _pt_session is not None:
@@ -4773,15 +4921,48 @@ def run_agent_session(
             continue
         if user_input.lower() in _LISTEN_LOOP_CMDS:
             _listen_loop_active = True
+            _wake_word_active = False
+            _acoustic_wake_backend = None
             console.print("[dim]Modo /listen loop iniciado. Fale 'parar' ou pressione Ctrl+C na escuta para pausar.[/dim]")
             continue
+        if user_input.lower() in _LISTEN_WAKE_STOP_CMDS:
+            _listen_loop_active = False
+            _wake_word_active = False
+            _acoustic_wake_backend = None
+            console.print("[dim]Wake word desativada.[/dim]")
+            continue
+        if user_input.lower() in _LISTEN_WAKE_CMDS:
+            _listen_loop_active = True
+            _wake_word_active = True
+            from .voice_acoustic_wake import acoustic_backend_configured, build_acoustic_backend
+            from .voice_wakeword import configured_wake_word
+
+            _acoustic_wake_backend = None
+            if acoustic_backend_configured():
+                try:
+                    _acoustic_wake_backend = build_acoustic_backend()
+                    acoustic_message = "backend acústico ativo"
+                except Exception as exc:  # noqa: BLE001 - fallback é intencional
+                    acoustic_message = f"fallback para transcrição ({exc})"
+            else:
+                acoustic_message = "gatilho validado pela transcrição"
+
+            console.print(
+                f"[dim]Escuta persistente ativada. Diga '{configured_wake_word()}' "
+                f"seguido do comando; {acoustic_message}; use /wake stop para encerrar.[/dim]"
+            )
+            continue
         if user_input.lower() in _LISTEN_CMDS:
-            listened = _capture_listen_input(console)
+            from .voice_metrics import VoiceTurnMetrics
+
+            _voice_metrics = VoiceTurnMetrics()
+            listened = _capture_listen_input(console, metrics=_voice_metrics)
             if not listened:
                 continue
             console.print(f"[dim]Voce disse:[/dim] {listened}")
             user_input = listened
             _voice_turn = True
+            _voice_turn_active = True
         if user_input.lower() in _EXIT_CMDS:
             console.print("[dim]Ate logo.[/dim]")
             stats.save()
@@ -5195,8 +5376,8 @@ def run_agent_session(
                 if session_store is not None and session_id:
                     session_store.save(session_id, ctx.messages)
                 _print_assistant_response(console, final)
-                if _voice_turn:
-                    _speak_voice_reply(console, final)
+                if _voice_turn_active:
+                    _speak_voice_reply(console, final, _turn_client)
             continue
 
         # Prefetch memory context (decisões passadas + sessões similares)
@@ -5258,22 +5439,74 @@ def run_agent_session(
         _stream_holder: dict = {}
 
         def _invoke_turn():
-            _stream_holder["atual"] = _make_streamer(console)
-            return _run_tool_loop_body(
-                ctx=ctx,
-                router=router,
-                state=_state,
-                console=console,
-                fallback_clients=fallback_clients,
-                stats=stats,
-                tool_timeout_s=tool_timeout_s,
-                session_store=session_store,
-                session_id=session_id,
-                active_workspace=active_workspace,
-                turn_input_text=user_input,
-                memprov=_memprov,
-                streamer=_stream_holder["atual"],
-            )
+            _text_streamer = _make_streamer(console)
+            _voice_streamer = None
+            _streamer = _text_streamer
+            if _voice_turn_active and _voice_streaming_enabled():
+                from .voice_session import CombinedStreamSink, StreamingVoiceOutput
+                from .voice_metrics import VoiceTurnMetrics
+
+                _voice_metrics_local = _voice_metrics or VoiceTurnMetrics()
+                _voice_metrics_local.mark("llm_start")
+                _voice_streamer = StreamingVoiceOutput(
+                    _turn_client,
+                    metrics=_voice_metrics_local,
+                )
+                _streamer = CombinedStreamSink(_text_streamer, _voice_streamer)
+                _stream_holder["voice"] = _voice_streamer
+            _stream_holder["atual"] = _streamer
+            try:
+                return _run_tool_loop_body(
+                    ctx=ctx,
+                    router=router,
+                    state=_state,
+                    console=console,
+                    fallback_clients=fallback_clients,
+                    stats=stats,
+                    tool_timeout_s=tool_timeout_s,
+                    session_store=session_store,
+                    session_id=session_id,
+                    active_workspace=active_workspace,
+                    turn_input_text=user_input,
+                    memprov=_memprov,
+                    streamer=_streamer,
+                )
+            finally:
+                if _voice_streamer is not None:
+                    _voice_streamer.metrics.mark("llm_end")
+                    _voice_streamer.finish()
+                    event_bus = getattr(router, "_event_bus", None)
+                    payload = _voice_streamer.metrics_payload
+                    if event_bus is not None and payload is not None:
+                        try:
+                            event_bus.publish(
+                                "voice.turn.completed",
+                                status=str(payload.get("status", "completed")),
+                                message="voice turn completed",
+                                data=payload,
+                            )
+                        except TypeError:
+                            # Compatibilidade com o EventBus legado, que usa
+                            # payload/source em vez do schema do runtime.
+                            try:
+                                event_bus.publish(
+                                    "voice.turn.completed",
+                                    payload,
+                                    source="voice",
+                                )
+                            except Exception:
+                                logging.getLogger("bauer.agent").debug(
+                                    "voice metrics event publish failed", exc_info=True
+                                )
+                        except Exception:
+                            logging.getLogger("bauer.agent").debug(
+                                "voice metrics event publish failed", exc_info=True
+                            )
+                    if _voice_streamer.error is not None:
+                        console.print(
+                            f"[yellow]Resposta de voz indisponível: "
+                            f"{_voice_streamer.error}[/yellow]"
+                        )
 
         def _invoke_turn_com_quadro():
             """O turno inteiro dentro do quadro vivo (plano 028 F2).
@@ -5394,11 +5627,8 @@ def run_agent_session(
                 console.print()
             else:
                 _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
-            # Turno veio do /listen ou /listen loop: fala a resposta além de
-            # imprimi-la. Só em "final" — kinds de erro já imprimiram o que
-            # precisavam, e não há texto de resposta limpo pra sintetizar.
-            if _voice_turn:
-                _speak_voice_reply(console, outcome.display)
+            if _voice_turn_active and _stream_holder.get("voice") is None:
+                _speak_voice_reply(console, outcome.display, _state.client)
         # demais kinds (loop_hard_stop, provider_error, empty_response,
         # interrupted, tool_limit) já imprimiram o necessário dentro de
         # _run_tool_loop_body — nada mais a fazer, volta a ler o próximo input.

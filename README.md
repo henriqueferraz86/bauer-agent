@@ -462,7 +462,46 @@ bauer voice chat                # conversa contínua por voz — ouve, responde
                                  # falado, ouve de novo. Diga "sair" ou Ctrl+C.
 
 bauer voice transcribe audio.wav   # transcreve um arquivo existente
+bauer voice status                  # verifica dependências e recursos locais
+bauer voice metrics                 # mostra latências dos turnos persistidos
 ```
+
+Dentro de `bauer agent`, `/listen` (ou `/ouvir`) captura a pergunta, envia a
+transcrição ao agente e tenta reproduzir a resposta em voz. A resposta textual
+continua sendo exibida normalmente. Nesta primeira versão, a saída usa o
+endpoint TTS compatível com OpenAI do cliente ativo e um player de áudio do
+sistema. Quando o provider entrega streaming, o Bauer já enfileira frases e
+começa o TTS antes de o LLM terminar. A interrupção durante a fala está
+disponível de forma opt-in com VAD + AEC; wake word e full-duplex contínuo entram
+nas próximas fases do Bauer Jarvis.
+
+`bauer voice listen` continua sendo apenas transcrição; para fazer uma pergunta
+por voz fora da sessão interativa, use `bauer voice ask`.
+
+Para uma sessão contínua ativada por palavra-chave, use `/listen wake` dentro do
+agente. O padrão é `bauer`; personalize com `BAUER_WAKE_WORD=jarvis`. Fala sem a
+palavra-chave é ignorada, e `bauer parar` ou `/wake stop` encerra o modo.
+O modo padrão continua validando o gatilho sobre a transcrição local/cloud;
+um backend acústico dedicado agora pode ser habilitado separadamente.
+
+Para habilitar o backend acústico opcional, instale `openwakeword`, defina o
+modelo e ative-o antes de iniciar o agente:
+
+```powershell
+$env:BAUER_WAKE_BACKEND="acoustic"
+$env:BAUER_WAKE_MODEL="hey_jarvis"
+bauer agent
+```
+
+No backend acústico, a wake word e o comando são capturados no mesmo stream,
+evitando perder o início de frases como “Bauer, abra o navegador”.
+
+Para habilitar STT incremental, que envia segmentos ao Whisper enquanto a fala
+continua, use `BAUER_STT_STREAMING=1`. O modo publica parciais internamente e
+mantém o fluxo legado como fallback quando a opção não está ativa.
+
+Se o modelo, a biblioteca ou o dispositivo não estiverem disponíveis, o Bauer
+recua automaticamente para a validação pela transcrição.
 
 **Setup:**
 - **Captura + STT**: `uv sync --extra voice` (sounddevice, numpy, soundfile,
@@ -491,6 +530,35 @@ bauer voice transcribe audio.wav   # transcreve um arquivo existente
 e nenhuma env configurada, `bauer voice chat` roda 100% offline.
 
 Toggle: `tools.voice_input_enabled` no config (default `false` — opt-in).
+
+Para a saída de voz, `BAUER_TTS_PROVIDER=auto` usa SAPI local no Windows e
+recorre ao endpoint compatível com OpenAI quando necessário. Use
+`BAUER_TTS_PROVIDER=local` para exigir voz local ou `openai` para ignorá-la.
+
+Para um perfil inspirado no Jarvis, com timbre remoto mais grave e ritmo mais
+pausado, use:
+
+```powershell
+$env:BAUER_TTS_PROFILE="jarvis"
+$env:BAUER_TTS_PROVIDER="openai"
+bauer agent
+```
+
+O perfil seleciona `onyx` quando o endpoint remoto oferece essa voz e reduz a
+velocidade do SAPI local. Para escolher uma voz instalada no Windows, defina
+`BAUER_TTS_LOCAL_VOICE` com o nome exato da voz e, se necessário, ajuste
+`BAUER_TTS_RATE` entre `-10` e `10`. O resultado é uma voz inspirada no estilo
+JARVIS, não uma cópia da voz original.
+
+O VAD pode monitorar o microfone durante todo o playback com
+`BAUER_VOICE_BARGE_IN=1`. O AEC usa como referência o WAV que está sendo
+reproduzido e cancela esse sinal antes do VAD; o monitor permanece ativo entre
+as frases TTS e o recurso continua opt-in porque o resultado depende do
+posicionamento e do dispositivo de áudio.
+
+Cada turno de voz registra latências de captura/STT, primeiro delta do LLM,
+síntese e playback. Com o EventBus do runtime ativo, o resultado é publicado
+no evento `voice.turn.completed`.
 
 ### ⌨️ Comandos dentro da sessão
 

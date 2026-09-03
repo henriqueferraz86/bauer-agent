@@ -297,13 +297,28 @@ def test_agent_listen_command_sends_transcript_to_model(ws: Path, router: ToolRo
     console = Console()
 
     with patch("bauer.agent._capture_listen_input", return_value="resuma o projeto"):
-        with patch("builtins.input", side_effect=["/listen", EOFError]):
+        with patch("bauer.voice_session.speak_response") as speak:
+            with patch("builtins.input", side_effect=["/listen", EOFError]):
+                run_agent_session(client, "test-model", 4096, console, router)
+
+    assert speak.call_args.args[0] == "Resposta por texto."
+    assert speak.call_args.args[1] is client
+
+
+def test_agent_text_command_does_not_speak_response(ws: Path, router: ToolRouter):
+    """Entrada textual normal não deve ativar a saída de voz."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Resposta somente texto.")
+    console = Console()
+
+    with patch("bauer.agent._speak_voice_response") as speak:
+        with patch("builtins.input", side_effect=["oi", EOFError]):
             run_agent_session(client, "test-model", 4096, console, router)
 
+    speak.assert_not_called()
     assert client.chat_stream.call_count == 1
-    first_call_payload = client.chat_stream.call_args_list[0][0][1]
-    contents = [m["content"] for m in first_call_payload]
-    assert "resuma o projeto" in contents
 
 
 def test_agent_listen_ignores_punctuation_only_transcript(ws: Path, router: ToolRouter):
@@ -330,8 +345,9 @@ def test_agent_listen_loop_keeps_listening_until_stop(ws: Path, router: ToolRout
     console = Console()
 
     with patch("bauer.agent._capture_listen_input", side_effect=["primeira pergunta", "parar"]):
-        with patch("builtins.input", side_effect=["/listen loop", EOFError]):
-            run_agent_session(client, "test-model", 4096, console, router)
+        with patch("bauer.agent._speak_voice_response"):
+            with patch("builtins.input", side_effect=["/listen loop", EOFError]):
+                run_agent_session(client, "test-model", 4096, console, router)
 
     assert client.chat_stream.call_count == 1
     first_payload = client.chat_stream.call_args_list[0][0][1]
@@ -439,6 +455,44 @@ def test_speak_voice_reply_synthesis_error_does_not_raise():
     with patch("bauer.tts.synthesize_speech",
                return_value={"success": False, "path": "", "error": "sem provider TTS"}):
         _speak_voice_reply(Console(), "texto qualquer")  # nao deve levantar
+
+
+def test_agent_listen_wake_ignores_speech_without_trigger(ws: Path, router: ToolRouter):
+    """Modo wake só transforma em turno a fala que contém o gatilho."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Resposta após wake word.")
+    console = Console()
+
+    with patch(
+        "bauer.agent._capture_listen_input",
+        side_effect=["leia o projeto", "Bauer, leia o projeto", "Bauer, parar"],
+    ):
+        with patch("bauer.agent._speak_voice_response"):
+            with patch("builtins.input", side_effect=["/listen wake", EOFError]):
+                run_agent_session(client, "test-model", 4096, console, router)
+
+    assert client.chat_stream.call_count == 1
+    payload = client.chat_stream.call_args_list[0][0][1]
+    contents = [message["content"] for message in payload]
+    assert "leia o projeto" in contents
+
+
+def test_agent_listen_wake_does_not_send_wake_word_only(ws: Path, router: ToolRouter):
+    """Wake word sozinha deixa o modo pronto para o próximo comando."""
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    client = _make_client("Não deveria ser chamado.")
+    console = Console()
+
+    with patch("bauer.agent._capture_listen_input", side_effect=["bauer", "bauer parar"]):
+        with patch("bauer.agent._speak_voice_response"):
+            with patch("builtins.input", side_effect=["/listen wake", EOFError]):
+                run_agent_session(client, "test-model", 4096, console, router)
+
+    client.chat_stream.assert_not_called()
 
 
 def test_capture_listen_input_handles_keyboard_interrupt():

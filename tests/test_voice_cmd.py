@@ -227,3 +227,40 @@ def test_voice_chat_speaks_each_turn_until_exit(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert run_one.call_count == 2
     assert synth.call_count == 2
+
+
+def test_voice_status_does_not_capture_audio():
+    runner = CliRunner()
+
+    with patch(
+        "bauer.voice_status.collect_voice_status",
+        return_value=[{"name": "microfone / VAD", "ok": True, "detail": "pronto"}],
+    ) as status:
+        with patch("bauer.audio_capture.capture_voice_input") as capture:
+            result = runner.invoke(app, ["voice", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert "Status do Bauer Voice" in result.output
+    status.assert_called_once_with()
+    capture.assert_not_called()
+
+
+def test_voice_metrics_prints_persisted_summary(tmp_path: Path):
+    runner = CliRunner()
+
+    with patch(
+        "bauer.voice_metrics_report.collect_voice_metrics",
+        return_value={
+            "turns": 1,
+            "completed": 1,
+            "errors": 0,
+            "averages_ms": {"total": 123.0, "llm_to_first_delta": None, "tts_synthesis": 20.0, "tts_playback": 80.0},
+            "recent": [{"turn_id": "turn-1", "status": "completed", "total_ms": 123.0}],
+        },
+    ) as metrics:
+        result = runner.invoke(app, ["voice", "metrics", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Métricas do Bauer Voice" in result.output
+    assert "turn-1" in result.output
+    metrics.assert_called_once_with(limit=20, runtime_root=tmp_path)

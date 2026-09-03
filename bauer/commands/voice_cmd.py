@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
@@ -209,8 +210,54 @@ def cmd_voice_transcribe(
         raise typer.Exit(1)
 
 
+@voice_app.command(name="status")
+def cmd_voice_status() -> None:
+    """Mostra a prontidão local do pipeline de voz sem capturar áudio."""
+    from bauer.voice_status import collect_voice_status
+
+    console.print("[bold cyan]Status do Bauer Voice[/bold cyan]")
+    for component in collect_voice_status():
+        marker = "[green]OK[/green]" if component["ok"] else "[yellow]--[/yellow]"
+        console.print(f"{marker} {component['name']}: {component['detail']}")
+
+
+@voice_app.command(name="metrics")
+def cmd_voice_metrics(
+    limit: int = typer.Option(20, "--limit", min=1, max=200, help="Número de turnos recentes"),
+    runtime_root: Path = typer.Option(Path("memory/runtime"), "--root", help="Raiz do runtime"),
+) -> None:
+    """Exibe médias de latência dos turnos de voz persistidos."""
+    from bauer.voice_metrics_report import collect_voice_metrics
+
+    report = collect_voice_metrics(limit=limit, runtime_root=runtime_root)
+    console.print("[bold cyan]Métricas do Bauer Voice[/bold cyan]")
+    console.print(
+        f"Turnos: {report['turns']} | completos: {report['completed']} | erros: {report['errors']}"
+    )
+    averages = report["averages_ms"]
+    for name, value in averages.items():
+        console.print(f"  {name}: {value if value is not None else 'n/d'} ms")
+    if report["recent"]:
+        console.print("[dim]Turnos recentes:[/dim]")
+        for item in report["recent"]:
+            console.print(
+                f"  {item['turn_id']} | {item['status']} | {item['total_ms'] or 'n/d'} ms"
+            )
+
+
 def _listen_once(*, max_duration: int, silence_threshold: float) -> str | None:
     try:
+        if os.environ.get("BAUER_STT_STREAMING", "").strip().lower() in {
+            "1", "true", "yes"
+        }:
+            from bauer.voice_stt_stream import capture_voice_input_streaming
+
+            return capture_voice_input_streaming(
+                duration_max_s=max_duration,
+                silence_threshold_db=silence_threshold,
+                console=console,
+            )
+
         from bauer.audio_capture import capture_voice_input
 
         return capture_voice_input(
