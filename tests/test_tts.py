@@ -17,7 +17,9 @@ def _mock_post(monkeypatch, handler):
 def _clean_env(monkeypatch):
     """Nenhum teste deve herdar TTS_PROVIDER/OPENAI_API_KEY do ambiente real."""
     monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    monkeypatch.delenv("BAUER_TTS_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(tts, "_kokoro_available", lambda: False)
 
 
 class TestValidacao:
@@ -37,6 +39,11 @@ class TestAvailableProvider:
     def test_sem_nada_configurado(self, monkeypatch):
         monkeypatch.setattr(tts, "_coqui_tts_available", lambda: False)
         assert available_tts_provider() is None
+
+    def test_auto_detecta_kokoro_instalado(self, monkeypatch):
+        monkeypatch.setattr(tts, "_kokoro_available", lambda: True)
+        monkeypatch.setattr(tts, "_coqui_tts_available", lambda: False)
+        assert available_tts_provider() == "kokoro"
 
     def test_openai_key_presente(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

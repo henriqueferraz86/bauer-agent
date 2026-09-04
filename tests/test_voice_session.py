@@ -67,7 +67,8 @@ def test_jarvis_tts_profile_selects_deeper_voice_and_slower_rate(monkeypatch):
     assert configured_tts_rate() == -1
 
 
-def test_speak_response_cleans_temporary_file():
+def test_speak_response_cleans_temporary_file(monkeypatch):
+    monkeypatch.setenv("BAUER_TTS_PROVIDER", "auto")
     with patch(
         "bauer.voice_session.synthesize_local_speech",
         side_effect=VoiceOutputError("local indisponível"),

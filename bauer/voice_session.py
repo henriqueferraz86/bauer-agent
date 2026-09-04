@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from .http_shared import shared_ssl_context
+from .tts import _tts_provider_pref
 from .voice_metrics import VoiceTurnMetrics
 from .voice_text import strip_emoji_for_speech
 
@@ -592,7 +593,7 @@ def speak_response(
             raise VoiceOutputCancelled("saída de voz interrompida")
         if metrics is not None:
             metrics.mark("tts_synthesis_start")
-        provider = os.environ.get("BAUER_TTS_PROVIDER", "auto").strip().lower()
+        provider = _tts_provider_pref()
         if provider not in {"auto", "local", "openai", "kokoro"}:
             raise VoiceOutputError(
                 "BAUER_TTS_PROVIDER deve ser auto, local, openai ou kokoro"

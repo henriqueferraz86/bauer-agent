@@ -84,9 +84,23 @@ _TOS_LOCK = threading.Lock()
 
 def _tts_provider_pref() -> str:
     """Preferência de provider, lida em call-time."""
-    return os.environ.get(
-        "BAUER_TTS_PROVIDER", os.environ.get("TTS_PROVIDER", "auto")
-    ).strip().lower()
+    configured = os.environ.get("BAUER_TTS_PROVIDER", os.environ.get("TTS_PROVIDER", ""))
+    if configured.strip():
+        return configured.strip().lower()
+    # A instalação padrão do Bauer inclui Kokoro. Se a preferência não foi
+    # explicitamente configurada, escolha-o automaticamente em vez de exigir
+    # que cada sessão exporte BAUER_TTS_PROVIDER manualmente.
+    return "kokoro" if _kokoro_available() else "auto"
+
+
+def _kokoro_available() -> bool:
+    """Indica se o runtime opcional do Kokoro está instalado neste Python."""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("kokoro_onnx") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _validate_text(text: str) -> str | None:
@@ -306,12 +320,7 @@ def available_tts_provider() -> str | None:
     """
     pref = _tts_provider_pref()
     if pref == "kokoro":
-        try:
-            import importlib.util
-
-            return "kokoro" if importlib.util.find_spec("kokoro_onnx") else None
-        except (ImportError, ValueError):
-            return None
+        return "kokoro" if _kokoro_available() else None
     if pref in ("local", "coqui", "xtts"):
         return "local" if _coqui_tts_available() else None
     if pref == "openai":

@@ -83,6 +83,9 @@ irm https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/instal
 ```
 
 Instala em `%LOCALAPPDATA%\BauerAgent`, cria `bauer.cmd` e adiciona ao PATH do usuário.
+Por padrão, a instalação Windows também instala captura de voz e Kokoro, e
+configura automaticamente a voz portuguesa `pm_alex`; não é necessário exportar
+variáveis de ambiente a cada sessão.
 
 ```powershell
 # Atualizar
@@ -539,8 +542,6 @@ Para um TTS neural local mais leve, use o Kokoro-82M via ONNX Runtime:
 ```powershell
 uv sync --extra voice --extra voice-kokoro
 bauer voice kokoro-download
-$env:BAUER_TTS_PROVIDER="kokoro"
-$env:BAUER_TTS_KOKORO_VOICE="pm_alex"
 bauer voice speak "Olá, Henrique. Todos os sistemas estão operacionais."
 ```
 

@@ -18,7 +18,7 @@
     Remove completamente o Bauer Agent (workspace não é tocado).
 
 .PARAMETER Extra
-    Extras pip a instalar (padrão: gateway). Use "all" para todos.
+    Extras pip a instalar (padrão: gateway,voice,voice-kokoro). Use "all" para todos.
 
 .PARAMETER NoExtra
     Instala só dependências core, sem extras.
@@ -26,7 +26,7 @@
 param(
     [switch]$Update,
     [switch]$Uninstall,
-    [string]$Extra    = "gateway",
+    [string]$Extra    = "gateway,voice,voice-kokoro",
     [switch]$NoExtra
 )
 
@@ -45,6 +45,30 @@ function Write-Info  { param($msg) Write-Host "[bauer] $msg" -ForegroundColor Cy
 function Write-Ok    { param($msg) Write-Host "[bauer] v $msg" -ForegroundColor Green }
 function Write-Warn  { param($msg) Write-Host "[bauer] ! $msg" -ForegroundColor Yellow }
 function Write-Err   { param($msg) Write-Host "[bauer] x $msg" -ForegroundColor Red; throw $msg }
+
+function Test-ExtraEnabled {
+    param([string]$Name)
+    if ($Extra.Trim().ToLowerInvariant() -eq "all") { return $true }
+    return @($Extra -split "," | ForEach-Object { $_.Trim().ToLowerInvariant() }) -contains $Name
+}
+
+function Set-VoiceDefaults {
+    if (-not (Test-ExtraEnabled "voice-kokoro")) { return }
+
+    # Persiste a escolha no perfil do usuário para que instalações e updates
+    # não dependam de `$env:...` digitado manualmente em cada terminal.
+    $provider = [Environment]::GetEnvironmentVariable("BAUER_TTS_PROVIDER", "User")
+    if (-not $provider) {
+        [Environment]::SetEnvironmentVariable("BAUER_TTS_PROVIDER", "kokoro", "User")
+        $env:BAUER_TTS_PROVIDER = "kokoro"
+        Write-Info "Provider de voz padrão: Kokoro"
+    }
+    $voice = [Environment]::GetEnvironmentVariable("BAUER_TTS_KOKORO_VOICE", "User")
+    if (-not $voice) {
+        [Environment]::SetEnvironmentVariable("BAUER_TTS_KOKORO_VOICE", "pm_alex", "User")
+        $env:BAUER_TTS_KOKORO_VOICE = "pm_alex"
+    }
+}
 
 # ─── Uninstall ───────────────────────────────────────────────────────────────
 if ($Uninstall) {
@@ -98,6 +122,8 @@ if ($Update) {
     $pipTarget = if ($Extra) { "$InstallDir\[$Extra]" } else { $InstallDir }
     & "$VenvDir\Scripts\python" -m pip install -q --upgrade -e $pipTarget
 
+    Set-VoiceDefaults
+
     Write-Ok "Bauer Agent atualizado!"
     try { & $BauerCmd --version } catch {}
     return
@@ -132,6 +158,8 @@ $extrasLabel = if ($Extra) { " [extras: $Extra]" } else { "" }
 Write-Info "Instalando dependencias$extrasLabel..."
 $pipTarget = if ($Extra) { "$InstallDir\[$Extra]" } else { $InstallDir }
 & "$VenvDir\Scripts\python" -m pip install -q -e $pipTarget
+
+Set-VoiceDefaults
 
 # ─── Launchers ───────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force $BinDir | Out-Null
