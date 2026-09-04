@@ -44,6 +44,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from .voice_text import strip_emoji_for_speech
+
 logger = logging.getLogger("bauer.tts")
 
 # Mesmo limite documentado da API OpenAI TTS — aplicado a todos os providers
@@ -337,6 +339,7 @@ def synthesize_speech(
     Sem `output_path`, escreve num arquivo temporário (chamador decide se
     apaga depois de tocar).
     """
+    text = strip_emoji_for_speech(text)
     err = _validate_text(text)
     if err:
         return {"success": False, "path": "", "error": err}

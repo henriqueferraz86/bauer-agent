@@ -29,6 +29,7 @@ import httpx
 
 from .http_shared import shared_ssl_context
 from .voice_metrics import VoiceTurnMetrics
+from .voice_text import strip_emoji_for_speech
 
 logger = logging.getLogger("bauer.voice_session")
 
@@ -387,7 +388,7 @@ def synthesize_speech(
     cancel_event: threading.Event | None = None,
 ) -> Path:
     """Gera um WAV através de um endpoint OpenAI-compatible."""
-    clean_text = str(text).strip()
+    clean_text = strip_emoji_for_speech(text)
     if not clean_text:
         raise VoiceOutputError("resposta vazia não pode ser convertida em voz")
     if cancel_event is not None and cancel_event.is_set():
@@ -575,6 +576,9 @@ def speak_response(
     barge_in: BargeInController | None = None,
 ) -> None:
     """Gera e reproduz uma resposta, removendo o arquivo temporário depois."""
+    text = strip_emoji_for_speech(text)
+    if not text:
+        return
     fd, raw_path = tempfile.mkstemp(prefix="bauer-voice-", suffix=".wav")
     os.close(fd)
     path = Path(raw_path)

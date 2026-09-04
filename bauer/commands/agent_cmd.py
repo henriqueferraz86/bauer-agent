@@ -648,8 +648,6 @@ def agent(
         lambda: build_kernel(cfg, workspace=str(getattr(router, "workspace", "workspace"))),
         label="bauer agent",
     )
-    if _kernel_inst is not None:
-        console.print("[dim]Kernel ativo — turnos governados (estados + policy + budget)[/dim]")
 
     import time as _time
     _session_start = _time.time()

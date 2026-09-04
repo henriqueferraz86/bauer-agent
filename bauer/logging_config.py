@@ -44,6 +44,11 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
 
     # Evita handlers duplicados em chamadas repetidas (testes, REPL).
     if logger.handlers:
+        # O CLI permanece silencioso para INFO, mas o logger continua aceitando
+        # esse nível para o arquivo de log e para diagnóstico quando necessário.
+        for handler in logger.handlers:
+            if isinstance(handler, _SafeStreamHandler):
+                handler.setLevel(logging.WARNING)
         return logger
 
     fmt = logging.Formatter(
@@ -52,6 +57,9 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
     )
 
     stream = _SafeStreamHandler(sys.stderr)
+    # Mensagens de progresso do CLI usam console.print; no canal de logging,
+    # somente WARNING e ERROR devem aparecer no terminal.
+    stream.setLevel(logging.WARNING)
     stream.setFormatter(fmt)
     logger.addHandler(stream)
 
