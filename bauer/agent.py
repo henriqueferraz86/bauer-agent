@@ -2494,6 +2494,28 @@ def _native_turn_interactive(
     tool_calls = msg.get("tool_calls") or []
     content = msg.get("content") or ""
 
+    # Alguns endpoints OpenAI-compatible anunciam function calling, mas ainda
+    # devolvem a chamada no corpo textual (ex.: {"command":"docker ps -q"}).
+    # No caminho nativo isso era tratado como resposta final: a tela mostrava
+    # o JSON e o comando nunca chegava ao ToolRouter. Reaproveitamos o mesmo
+    # parser/normalizador do bridge e convertemos o resultado para o contrato
+    # nativo antes de decidir que o turno terminou. A execução continua nos
+    # guards e no timeout do bloco abaixo.
+    if not tool_calls and content:
+        bridge_action = _try_parse_tool(content, router)
+        if bridge_action is not None:
+            tool_calls = [{
+                "id": "bridge-content-0",
+                "type": "function",
+                "function": {
+                    "name": bridge_action["action"],
+                    "arguments": _json.dumps(
+                        bridge_action.get("args", {}), ensure_ascii=False
+                    ),
+                },
+            }]
+            content = ""
+
     if not tool_calls:
         return "final", content
 

@@ -93,7 +93,10 @@ class StreamingSTTSession:
         self,
         *,
         sample_rate: int = 16000,
-        segment_duration_s: float = 1.5,
+        # Groq has a 20 RPM limit on the free/on-demand tier. Four-second
+        # chunks keep a continuous session below that ceiling while retaining
+        # incremental transcription and the short VAD end-of-speech cutoff.
+        segment_duration_s: float = 4.0,
         transcriber: Callable[[Path], dict[str, Any]] | None = None,
         on_partial: Callable[[str], None] | None = None,
         on_final: Callable[[str], None] | None = None,
@@ -230,7 +233,7 @@ def capture_voice_input_streaming(
     silence_threshold_db: float = -40.0,
     silence_duration_s: float = 0.8,
     sample_rate: int = 16000,
-    segment_duration_s: float = 1.5,
+    segment_duration_s: float = 4.0,
     console: Any = None,
     on_partial: Callable[[str], None] | None = None,
 ) -> str | None:

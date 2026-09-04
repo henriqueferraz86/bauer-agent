@@ -72,20 +72,20 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
     # "MagicMock/mock.logging.file/<id>"). Nesse caso, pula o log em arquivo
     # (o log de console segue funcionando) em vez de escrever onde não deve.
     if file_path and isinstance(file_path, (str, bytes, Path)):
-        handler = _make_file_handler(Path(file_path), fmt)
+        file_handler: logging.FileHandler | None = _make_file_handler(Path(file_path), fmt)
         # Fallback para um caminho garantidamente do usuário quando o
         # configurado não é gravável. Bug real (Beelink): logging.file default
         # é "./logs/bauer.log" — RELATIVO ao cwd — e ali o `./logs` pertencia
         # ao root, então FileHandler estourava PermissionError e derrubava
         # `bauer doctor` inteiro com traceback. Log é caminho ACESSÓRIO: nunca
         # deve quebrar o comando (ver AGENTS.md).
-        if handler is None:
+        if file_handler is None:
             from .paths import get_bauer_home
             fallback = get_bauer_home() / "logs" / "bauer.log"
             if fallback != Path(file_path):
-                handler = _make_file_handler(fallback, fmt)
-        if handler is not None:
-            logger.addHandler(handler)
+                file_handler = _make_file_handler(fallback, fmt)
+        if file_handler is not None:
+            logger.addHandler(file_handler)
 
     return logger
 

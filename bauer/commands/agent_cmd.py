@@ -1160,9 +1160,42 @@ def agent_run_one(
     try:
         adapter = get_runtime_adapter(config=cfg)
 
+        # `voice chat` chega aqui pelo mesmo `run-one` usado por
+        # `voice ask`. O adapter legado só fazia `chat_stream`, então a voz
+        # recebia uma resposta textual e nunca executava web/shell/arquivos.
+        # Clientes Bauer reais passam pelo motor completo de tools; dublês dos
+        # testes e integrações antigas permanecem no caminho do adapter.
+        from ..agent import _build_system_prompt, run_one_turn
+        from ..anthropic_client import AnthropicClient
+        from ..core.context import ContextBuilder
+        from ..ollama_client import OllamaClient
+        from ..openai_client import OpenAIClient
+
+        tool_client = isinstance(client, (OpenAIClient, OllamaClient, AnthropicClient))
+        tool_router = _build_router(cfg, Path.cwd(), llm_client=client) if tool_client else None
+        tool_context = None
+        if tool_router is not None:
+            base_prompt = _build_system_prompt(tool_router, client=client)
+            if system:
+                base_prompt = f"{base_prompt}\n\n# INSTRUCOES DO ESPECIALISTA\n{system}"
+            tool_context, _ = (
+                ContextBuilder(
+                    applied_context=int(getattr(cfg.model, "requested_context", 32768) or 32768),
+                    provider=str(getattr(cfg.model, "provider", "ollama") or "ollama"),
+                )
+                .instrucao("seguranca", base_prompt)
+                .conteudo("tarefa", task)
+                .montar(llm_client=client, llm_model=model_name)
+            )
+
         def _executar(_payload):
             # `client` e `adapter` são objetos vivos: ficam no closure, não no
             # input do KernelRequest (que é persistido saneado no state store).
+            if tool_router is not None and tool_context is not None:
+                output, tool_log = run_one_turn(
+                    tool_context, tool_router, client, model_name,
+                )
+                return {"output": output, "tool_log": tool_log}
             return adapter.run_agent({
                 "client": client,
                 "model": model_name,

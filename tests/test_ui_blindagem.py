@@ -18,6 +18,7 @@ comportamento quadrático que o buffer por bloco do F1 existe para evitar.
 from __future__ import annotations
 
 import io
+import statistics
 import time
 
 import pytest
@@ -260,8 +261,13 @@ class TestCustoDeRender:
         return time.perf_counter() - t0
 
     def test_custo_cresce_linearmente(self):
-        base = self._tempo(200)
-        quadruplo = self._tempo(800)
+        # O primeiro render sofre custos de inicialização do Rich/Markdown e
+        # runners compartilhados podem sofrer uma preempção curta. A mediana
+        # de três amostras separa esse ruído do custo do renderer sem afrouxar
+        # o teto que detecta uma regressão quadrática.
+        self._tempo(100)  # warm-up
+        base = statistics.median(self._tempo(200) for _ in range(3))
+        quadruplo = statistics.median(self._tempo(800) for _ in range(3))
         # 4x de entrada num render linear custa ~4x; quadrático custaria ~16x.
         # Teto em 8x: folga generosa para ruído de máquina, e ainda assim longe
         # do quadrático.

@@ -30,6 +30,32 @@ def _ctx() -> MagicMock:
 
 
 class TestTurnoNativoStreama:
+    def test_json_de_tool_no_conteudo_nativo_e_executado(self):
+        """Endpoints compatíveis podem devolver uma tool call como conteúdo.
+
+        Isso precisa seguir pelo mesmo ToolRouter dos tool calls nativos para
+        a resposta de voz só ser gerada depois do resultado real da ferramenta.
+        """
+        client = MagicMock()
+        client.chat_with_tools.return_value = {
+            "content": '{"command":"docker ps -q"}',
+            "tool_calls": [],
+        }
+        router = MagicMock()
+        router.get_tool_schemas.return_value = []
+        router.available_tools.return_value = ["run_command"]
+        router.execute_native_call.return_value = "abc123\n"
+
+        kind, _ = _native_turn_interactive(
+            _ctx(), router, client, "m", _console(),
+            cli_tool_log=[], deduper=ToolCallDeduper(), calls_left=10,
+        )
+
+        assert kind == "continue"
+        router.execute_native_call.assert_called_once_with(
+            "run_command", {"command": "docker ps -q"}
+        )
+
     def test_passa_on_delta_ao_client(self):
         client = MagicMock()
         client.chat_with_tools.return_value = {"content": "pronto", "tool_calls": []}
@@ -146,6 +172,15 @@ class TestTurnoNativoStreama:
 
 
 class TestNaoImprimirDuasVezes:
+    def test_json_de_tool_nao_aparece_durante_streaming(self):
+        con = _console()
+        s = ConsoleStreamRenderer(con)
+        s.on_delta('{"command":"docker ps -q"}')
+        s.close()
+
+        assert '{"command"' not in con.file.getvalue()
+        assert s.escreveu_algo is False
+
     def test_texto_ja_transmitido_nao_reimprime(self):
         con = _console()
         s = ConsoleStreamRenderer(con)

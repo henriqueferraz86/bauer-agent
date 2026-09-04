@@ -87,6 +87,7 @@ class ConsoleStreamRenderer:
         self._live: Any = None
         self._cabecalho_impresso = False
         self._algo_escrito = False
+        self._tool_json_candidate = False
 
     # ── protocolo do sink ────────────────────────────────────────────────
     def on_round(self) -> None:
@@ -94,6 +95,7 @@ class ConsoleStreamRenderer:
         try:
             self._fechar_bloco(final=True)
             self.diag.on_round()
+            self._tool_json_candidate = False
         except Exception as _exc:  # noqa: BLE001
             from .logging_config import log_suppressed as _log_sup
             _log_sup("ui_stream.on_round", _exc)
@@ -109,6 +111,14 @@ class ConsoleStreamRenderer:
                 self.console.file.flush()
                 self._algo_escrito = True
                 return
+            # Native-capable providers occasionally stream a bridge-style JSON
+            # tool request as content. Hold that candidate back from the live
+            # terminal; the native turn either executes it or prints the real
+            # final answer after the tool result arrives.
+            if not self._algo_escrito and not self._bloco and not self._em_cerca:
+                if self._tool_json_candidate or chunk.lstrip().startswith("{"):
+                    self._tool_json_candidate = True
+                    return
             self._cabecalho()
             self._bloco += chunk
             self._consumir_blocos_fechados()

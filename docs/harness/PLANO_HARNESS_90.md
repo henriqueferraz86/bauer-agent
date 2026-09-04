@@ -199,7 +199,7 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 |---|---|---|---|---|
 | Uso obrigatorio do Kernel | **100%** ✅ | 12/12 | 100% | — |
 | Kernel e ciclo de vida | **100%** ✅ | 12/12 | 95% | — |
-| Context Builder | **100%** ✅ | 9/9 | 90% | — |
+| Context Builder | **100%** ✅ | 10/10 | 90% | — |
 | Validacao deterministica | **100%** ✅ | 8/8 | 90% | — |
 | Contrato de tarefa | **0%** ✅ | 0/0 | 0% | — |
 | Isolamento | **75%** | 3/4 | 85% | `2-container` |

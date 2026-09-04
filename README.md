@@ -481,6 +481,11 @@ nas próximas fases do Bauer Jarvis.
 `bauer voice listen` continua sendo apenas transcrição; para fazer uma pergunta
 por voz fora da sessão interativa, use `bauer voice ask`.
 
+Pedidos falados usam o mesmo motor de ferramentas do agente digitado: pesquisa
+web, leitura/escrita de arquivos e comandos passam pelo `ToolRouter`, aguardam o
+resultado e só então entram no TTS. Comandos sujeitos a confirmação continuam
+protegidos pelos mesmos guards do terminal.
+
 Para uma sessão contínua ativada por palavra-chave, use `/listen wake` dentro do
 agente. O padrão é `bauer`; personalize com `BAUER_WAKE_WORD=jarvis`. Fala sem a
 palavra-chave é ignorada, e `bauer parar` ou `/wake stop` encerra o modo.
@@ -503,6 +508,12 @@ O STT incremental é o caminho padrão e único da conversa por voz. Ele envia
 segmentos ao Whisper enquanto a fala continua, publica parciais internamente e
 encerra a captura após aproximadamente 0,8s de silêncio. O modo legado de
 captura, que aguardava 5s, não é mais selecionado pelo agente.
+
+Groq, quando escolhido por `STT_PROVIDER=auto` (ou explicitamente), é usado
+somente para transformar áudio em texto — ele não é o modelo que responde ao
+usuário. Os segmentos do modo streaming têm 4s para permanecer abaixo do
+limite comum de 20 requisições por minuto do Whisper Groq. Para não depender
+desse limite, use `STT_PROVIDER=local` depois de instalar `faster-whisper`.
 
 O TTS da conversa também usa streaming por frases automaticamente; não é
 necessário definir `BAUER_VOICE_STREAMING=1`. `BAUER_VOICE_BARGE_IN=1` continua
