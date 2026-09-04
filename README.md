@@ -496,9 +496,14 @@ bauer agent
 No backend acústico, a wake word e o comando são capturados no mesmo stream,
 evitando perder o início de frases como “Bauer, abra o navegador”.
 
-Para habilitar STT incremental, que envia segmentos ao Whisper enquanto a fala
-continua, use `BAUER_STT_STREAMING=1`. O modo publica parciais internamente e
-mantém o fluxo legado como fallback quando a opção não está ativa.
+O STT incremental é o caminho padrão e único da conversa por voz. Ele envia
+segmentos ao Whisper enquanto a fala continua, publica parciais internamente e
+encerra a captura após aproximadamente 0,8s de silêncio. O modo legado de
+captura, que aguardava 5s, não é mais selecionado pelo agente.
+
+O TTS da conversa também usa streaming por frases automaticamente; não é
+necessário definir `BAUER_VOICE_STREAMING=1`. `BAUER_VOICE_BARGE_IN=1` continua
+disponível separadamente para habilitar interrupção da fala pelo usuário.
 
 Se o modelo, a biblioteca ou o dispositivo não estiverem disponíveis, o Bauer
 recua automaticamente para a validação pela transcrição.

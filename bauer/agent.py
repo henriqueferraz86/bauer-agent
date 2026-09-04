@@ -364,16 +364,12 @@ def _capture_listen_input(
         metrics.mark("stt_start")
     try:
         if capture is None:
-            if os.environ.get("BAUER_STT_STREAMING", "").strip().lower() in {
-                "1", "true", "yes"
-            }:
-                from .voice_stt_stream import capture_voice_input_streaming
+            # STT incremental é o único caminho suportado para a conversa de
+            # voz. O capturador legado esperava 5s de silêncio e não deve mais
+            # ser selecionado por configuração ou por omissão.
+            from .voice_stt_stream import capture_voice_input_streaming
 
-                capture = capture_voice_input_streaming
-            else:
-                from .audio_capture import capture_voice_input
-
-                capture = capture_voice_input
+            capture = capture_voice_input_streaming
 
         text = capture(console=console)
     except KeyboardInterrupt:
@@ -997,6 +993,37 @@ def _extract_text_from_pseudo_json(response: str) -> str | None:
     return None
 
 
+def _normalize_tool_object(obj: object, available: set[str]) -> dict | None:
+    """Normaliza uma action emitida pelo modelo para o formato do Tool Bridge.
+
+    Alguns modelos OpenAI-compat em modo bridge emitem o shell call no formato
+    curto ``{"command": "docker ps -q"}``, em vez do contrato completo
+    ``{"action": "run_command", "args": {"command": ...}}``. Esse formato
+    só é aceito quando ``run_command`` está realmente disponível e o objeto não
+    contém campos fora do contrato de seus argumentos. A execução continua
+    passando por ``ToolRouter.execute`` e, portanto, pelos mesmos guards.
+    """
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("action") in available:
+        return obj
+
+    if (
+        "action" not in obj
+        and "command" in obj
+        and "run_command" in available
+        and isinstance(obj.get("command"), str)
+        and obj["command"].strip()
+        and set(obj).issubset({"command", "confirm", "background"})
+    ):
+        args = {"command": obj["command"]}
+        for key in ("confirm", "background"):
+            if key in obj:
+                args[key] = obj[key]
+        return {"action": "run_command", "args": args}
+    return None
+
+
 def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None:
     """Acha o primeiro objeto JSON `{"action": ..., ...}` embutido em qualquer
     posição do texto — não só no início.
@@ -1014,8 +1041,9 @@ def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None
     while idx != -1:
         try:
             obj, _ = decoder.raw_decode(text, idx)
-            if isinstance(obj, dict) and obj.get("action") in available:
-                return obj
+            normalized = _normalize_tool_object(obj, available)
+            if normalized is not None:
+                return normalized
         except _json.JSONDecodeError:
             pass
         idx = text.find("{", idx + 1)
@@ -1077,8 +1105,9 @@ def _try_parse_tool(response: str, router: ToolRouter) -> dict | None:
     # Estratégia 1: resposta inteira é JSON (ou bloco markdown)
     try:
         parsed = router._parse(stripped)
-        if isinstance(parsed, dict) and parsed.get("action") in available:
-            return parsed
+        normalized = _normalize_tool_object(parsed, available)
+        if normalized is not None:
+            return normalized
     except Exception:
         pass
 
@@ -1087,8 +1116,9 @@ def _try_parse_tool(response: str, router: ToolRouter) -> dict | None:
         try:
             decoder = _json.JSONDecoder()
             obj, _ = decoder.raw_decode(stripped)
-            if isinstance(obj, dict) and obj.get("action") in available:
-                return obj
+            normalized = _normalize_tool_object(obj, available)
+            if normalized is not None:
+                return normalized
         except Exception:
             pass
 
@@ -1116,8 +1146,9 @@ def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | No
             continue
         try:
             obj = _json.loads(line)
-            if isinstance(obj, dict) and obj.get("action") in available:
-                actions.append(obj)
+            normalized = _normalize_tool_object(obj, available)
+            if normalized is not None:
+                actions.append(normalized)
         except _json.JSONDecodeError:
             # Linha pode ser parte de um JSON multi-linha — ignora
             pass
@@ -2051,12 +2082,13 @@ def _speak_voice_response(text: str, client, console: Console) -> None:
 
 
 def _voice_streaming_enabled() -> bool:
-    """Retorna se o pipeline de TTS incremental foi explicitamente ativado."""
-    enabled = {"1", "true", "yes", "on"}
-    return (
-        os.environ.get("BAUER_VOICE_STREAMING", "").strip().lower() in enabled
-        or os.environ.get("BAUER_VOICE_BARGE_IN", "").strip().lower() in enabled
-    )
+    """Retorna se o pipeline de TTS incremental está ativo.
+
+    A conversa por voz não tem mais um modo TTS legado selecionável: turnos de
+    voz sempre enfileiram frases e começam a síntese assim que há uma unidade
+    falável. ``BAUER_VOICE_BARGE_IN`` continua controlando apenas interrupção.
+    """
+    return True
 
 
 def _collect_with_fallback(

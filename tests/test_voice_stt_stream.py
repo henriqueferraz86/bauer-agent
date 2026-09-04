@@ -55,11 +55,10 @@ def test_streaming_stt_emits_partial_and_final(monkeypatch, tmp_path: Path):
     assert session.error is None
 
 
-def test_agent_capture_can_select_streaming_stt(monkeypatch):
+def test_agent_capture_always_uses_streaming_stt():
     from rich.console import Console
     from bauer.agent import _capture_listen_input
 
-    monkeypatch.setenv("BAUER_STT_STREAMING", "1")
     with patch(
         "bauer.voice_stt_stream.capture_voice_input_streaming",
         return_value="texto parcial final",

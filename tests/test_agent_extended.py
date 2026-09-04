@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from bauer.agent import (
     _extract_text_from_pseudo_json,
     _run_orchestrator_inline,
     _try_parse_tool,
+    _try_parse_tools_batch,
     run_one_turn,
     run_one_turn_with_fallback,
 )
@@ -85,6 +87,34 @@ def test_try_parse_tool_valid_action(router: ToolRouter):
     result = _try_parse_tool('{"action": "list_dir", "args": {"path": "."}}', router)
     assert result is not None
     assert result["action"] == "list_dir"
+
+
+def test_try_parse_tool_normalizes_short_shell_call():
+    """Modelos de voz podem emitir {"command": ...} em modo bridge."""
+    bridge_router = MagicMock()
+    bridge_router.available_tools.return_value = ["run_command"]
+    bridge_router._parse.side_effect = json.loads
+
+    result = _try_parse_tool('{"command": "docker ps -q"}Vou verificar.', bridge_router)
+
+    assert result == {
+        "action": "run_command",
+        "args": {"command": "docker ps -q"},
+    }
+
+
+def test_try_parse_tools_batch_normalizes_short_shell_call():
+    """A forma curta também deve funcionar no parser de lote do bridge."""
+    bridge_router = MagicMock()
+    bridge_router.available_tools.return_value = ["run_command"]
+    bridge_router._parse.side_effect = json.loads
+
+    result = _try_parse_tools_batch('{"command": "docker ps -q"}', bridge_router)
+
+    assert result == [{
+        "action": "run_command",
+        "args": {"command": "docker ps -q"},
+    }]
 
 
 def test_try_parse_tool_unknown_action(router: ToolRouter):

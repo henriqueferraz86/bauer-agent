@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import typer
@@ -258,20 +257,9 @@ def cmd_voice_kokoro_download() -> None:
 
 def _listen_once(*, max_duration: int, silence_threshold: float) -> str | None:
     try:
-        if os.environ.get("BAUER_STT_STREAMING", "").strip().lower() in {
-            "1", "true", "yes"
-        }:
-            from bauer.voice_stt_stream import capture_voice_input_streaming
+        from bauer.voice_stt_stream import capture_voice_input_streaming
 
-            return capture_voice_input_streaming(
-                duration_max_s=max_duration,
-                silence_threshold_db=silence_threshold,
-                console=console,
-            )
-
-        from bauer.audio_capture import capture_voice_input
-
-        return capture_voice_input(
+        return capture_voice_input_streaming(
             duration_max_s=max_duration,
             silence_threshold_db=silence_threshold,
             console=console,

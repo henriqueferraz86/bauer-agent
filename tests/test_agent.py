@@ -364,6 +364,7 @@ def test_agent_listen_command_speaks_the_reply(ws: Path, router: ToolRouter):
     console = Console()
 
     with patch("bauer.agent._capture_listen_input", return_value="resuma o projeto"), \
+         patch("bauer.agent._voice_streaming_enabled", return_value=False), \
          patch("bauer.tts.synthesize_speech",
                return_value={"success": True, "path": "/tmp/bauer-tts-x.wav", "provider": "local"}) as synth, \
          patch("bauer.audio_playback.play_audio_file", return_value=True) as play, \
@@ -399,6 +400,7 @@ def test_agent_listen_loop_speaks_each_turn(ws: Path, router: ToolRouter):
 
     with patch("bauer.agent._capture_listen_input",
                side_effect=["primeira pergunta", "parar"]), \
+         patch("bauer.agent._voice_streaming_enabled", return_value=False), \
          patch("bauer.tts.synthesize_speech",
                return_value={"success": True, "path": "/tmp/bauer-tts-y.wav", "provider": "local"}) as synth, \
          patch("bauer.audio_playback.play_audio_file", return_value=True), \
@@ -500,7 +502,7 @@ def test_capture_listen_input_handles_keyboard_interrupt():
     from bauer.agent import _capture_listen_input
     from rich.console import Console
 
-    with patch("bauer.audio_capture.capture_voice_input", side_effect=KeyboardInterrupt):
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", side_effect=KeyboardInterrupt):
         assert _capture_listen_input(Console()) is None
 
 
@@ -508,7 +510,7 @@ def test_capture_listen_input_rejects_noise_transcript():
     from bauer.agent import _capture_listen_input
     from rich.console import Console
 
-    with patch("bauer.audio_capture.capture_voice_input", return_value="."):
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="."):
         assert _capture_listen_input(Console()) is None
 
 

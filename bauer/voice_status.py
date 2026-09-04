@@ -41,7 +41,7 @@ def collect_voice_status() -> list[dict[str, Any]]:
             "name": "STT streaming",
             "ok": stt_stream,
             "detail": (
-                "pronto; ative BAUER_STT_STREAMING=1"
+                "ativo por padrão; VAD encerra após 0,8s de silêncio"
                 if stt_stream
                 else "requer sounddevice + numpy + soundfile"
             ),

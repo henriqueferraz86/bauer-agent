@@ -11,7 +11,7 @@ from bauer.cli import app
 def test_voice_ask_sends_transcript_to_agent(tmp_path: Path):
     runner = CliRunner()
 
-    with patch("bauer.audio_capture.capture_voice_input", return_value="resuma o projeto") as capture:
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="resuma o projeto") as capture:
         with patch("bauer.commands.agent_cmd.agent_run_one") as run_one:
             result = runner.invoke(
                 app,
@@ -45,7 +45,7 @@ def test_voice_ask_sends_transcript_to_agent(tmp_path: Path):
 def test_voice_listen_keeps_transcription_only():
     runner = CliRunner()
 
-    with patch("bauer.audio_capture.capture_voice_input", return_value="texto capturado"):
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="texto capturado"):
         with patch("bauer.commands.agent_cmd.agent_run_one") as run_one:
             result = runner.invoke(app, ["voice", "listen"])
 
@@ -58,7 +58,7 @@ def test_voice_ask_without_speak_never_touches_tts(tmp_path: Path):
     """Default (sem --speak): comportamento antigo, sem custo de sintese."""
     runner = CliRunner()
 
-    with patch("bauer.audio_capture.capture_voice_input", return_value="oi"):
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="oi"):
         with patch("bauer.commands.agent_cmd.agent_run_one", return_value="resposta") as run_one:
             with patch("bauer.tts.synthesize_speech") as synth:
                 result = runner.invoke(
@@ -79,7 +79,7 @@ def test_voice_ask_without_speak_never_touches_tts(tmp_path: Path):
 def test_voice_ask_with_speak_synthesizes_response(tmp_path: Path):
     runner = CliRunner()
 
-    with patch("bauer.audio_capture.capture_voice_input", return_value="oi"):
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="oi"):
         with patch("bauer.commands.agent_cmd.agent_run_one", return_value="ola, tudo bem?"):
             with patch(
                 "bauer.tts.synthesize_speech",
@@ -105,7 +105,7 @@ def test_voice_ask_speak_failure_does_not_break_command(tmp_path: Path):
     """TTS indisponivel com --speak: aviso, mas exit_code continua 0."""
     runner = CliRunner()
 
-    with patch("bauer.audio_capture.capture_voice_input", return_value="oi"):
+    with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="oi"):
         with patch("bauer.commands.agent_cmd.agent_run_one", return_value="resposta"):
             with patch(
                 "bauer.tts.synthesize_speech",
@@ -179,7 +179,7 @@ def test_voice_chat_exits_on_spoken_exit_word(tmp_path: Path):
 
     with patch("bauer.transcription.preload_local_model", return_value=False):
         with patch("bauer.tts.preload_local_tts_model", return_value=False):
-            with patch("bauer.audio_capture.capture_voice_input", return_value="sair"):
+            with patch("bauer.voice_stt_stream.capture_voice_input_streaming", return_value="sair"):
                 with patch("bauer.commands.agent_cmd.agent_run_one") as run_one:
                     result = runner.invoke(
                         app,
@@ -205,7 +205,7 @@ def test_voice_chat_speaks_each_turn_until_exit(tmp_path: Path):
 
     with patch("bauer.transcription.preload_local_model", return_value=False):
         with patch("bauer.tts.preload_local_tts_model", return_value=False):
-            with patch("bauer.audio_capture.capture_voice_input", side_effect=fake_capture):
+            with patch("bauer.voice_stt_stream.capture_voice_input_streaming", side_effect=fake_capture):
                 with patch(
                     "bauer.commands.agent_cmd.agent_run_one", return_value="resposta falada"
                 ) as run_one:
