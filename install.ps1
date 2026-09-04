@@ -154,12 +154,18 @@ New-Item -ItemType Directory -Force $BinDir | Out-Null
 
 # ─── PATH ────────────────────────────────────────────────────────────────────
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User") -as [string]
-if ($userPath -notlike "*$BinDir*") {
-    Write-Info "Adicionando $BinDir ao PATH do usuario..."
-    $newPath = if ($userPath) { "$userPath;$BinDir" } else { $BinDir }
+$userEntries = @($userPath -split ";" | Where-Object { $_ -and $_ -ne $BinDir })
+$newPath = (@($BinDir) + $userEntries) -join ";"
+if ($newPath -ne $userPath) {
+    Write-Info "Colocando $BinDir na frente do PATH do usuario..."
     [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-    $env:PATH += ";$BinDir"
 }
+
+# O processo atual nao recarrega o PATH do usuario automaticamente. Reordena
+# tambem a copia em memoria para que o comando `bauer` funcione imediatamente,
+# mesmo que outro pacote tenha instalado um executavel com o mesmo nome.
+$processEntries = @($env:PATH -split ";" | Where-Object { $_ -and $_ -ne $BinDir })
+$env:PATH = (@($BinDir) + $processEntries) -join ";"
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 Write-Host ""
