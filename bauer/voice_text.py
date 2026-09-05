@@ -19,10 +19,18 @@ _EMOJI_RE = re.compile(
     "\\U0001F3FB-\\U0001F3FF"
     "]+"
 )
-_WHITESPACE_RE = re.compile(r"[ \t]{2,}")
+_SPEECH_MARKUP_RE = re.compile(r"[*_~`#|<>\[\]{}:•◦▪▫◘○●◻◼▸►→←┃│=]+")
+_LIST_PREFIX_RE = re.compile(r"(?m)^\s*(?:[-+]|\d+[.)])\s+")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def strip_emoji_for_speech(text: str) -> str:
-    """Remove emojis do texto enviado ao sintetizador, preservando pontuação."""
+    """Limpa emojis e marcação visual antes de enviar texto ao sintetizador.
+
+    A resposta exibida pode conter Markdown, listas e símbolos de interface;
+    esses caracteres não devem ser pronunciados literalmente pelo TTS.
+    """
     clean = _EMOJI_RE.sub(" ", str(text or ""))
+    clean = _LIST_PREFIX_RE.sub(" ", clean)
+    clean = _SPEECH_MARKUP_RE.sub(" ", clean)
     return _WHITESPACE_RE.sub(" ", clean).strip()
