@@ -24,7 +24,9 @@ def collect_voice_status() -> list[dict[str, Any]]:
     acoustic = _available("openwakeword") and bool(
         os.environ.get("BAUER_WAKE_MODEL", "").strip()
     )
-    tts_local = os.name == "nt" and bool(shutil.which("powershell") or shutil.which("pwsh"))
+    sapi = os.name == "nt" and bool(shutil.which("powershell") or shutil.which("pwsh"))
+    xtts = _available("TTS")
+    tts_local = xtts or sapi
     barge_in = capture and wav
     return [
         {
@@ -54,7 +56,13 @@ def collect_voice_status() -> list[dict[str, Any]]:
         {
             "name": "TTS local",
             "ok": tts_local,
-            "detail": "SAPI / PowerShell disponível" if tts_local else "indisponível neste sistema",
+            "detail": (
+                "XTTS-v2 disponível (voz de referência será usada se configurada)"
+                if xtts
+                else "SAPI / PowerShell disponível"
+                if sapi
+                else "instale coqui-tts ou use Kokoro/OpenAI"
+            ),
         },
         {
             "name": "wake word acústica",

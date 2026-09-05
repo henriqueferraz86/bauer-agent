@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -253,6 +256,59 @@ def cmd_voice_kokoro_download() -> None:
     model, voices = download_kokoro_models()
     console.print(f"[green]Modelo pronto:[/green] {model}")
     console.print(f"[green]Voicepack pronto:[/green] {voices}")
+
+
+@voice_app.command(name="xtts-setup")
+def cmd_voice_xtts_setup(
+    speaker_wav: Path = typer.Argument(
+        ...,
+        help="WAV de referência autorizado para a clonagem local do XTTS-v2",
+    ),
+) -> None:
+    """Configura uma voz de referência XTTS-v2 persistente no perfil do Bauer.
+
+    O WAV é copiado para ``$BAUER_HOME/voices`` para sobreviver a updates e o
+    provider local é ativado no ``$BAUER_HOME/.env``. O áudio original nunca
+    é copiado para o repositório do projeto.
+    """
+    if not speaker_wav.is_file():
+        console.print(f"[red]Arquivo não encontrado: {speaker_wav}[/red]")
+        raise typer.Exit(1)
+
+    from bauer.config_admin import save_env_value
+    from bauer.paths import get_bauer_home
+
+    target = get_bauer_home() / "voices" / "jarvis18s-reference.wav"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(speaker_wav, target)
+        env_path = get_bauer_home() / ".env"
+        save_env_value("BAUER_TTS_PROVIDER", "local", env_path)
+        save_env_value("BAUER_TTS_SPEAKER_WAV", str(target), env_path)
+        if os.name == "nt":
+            for key, value in {
+                "BAUER_TTS_PROVIDER": "local",
+                "BAUER_TTS_SPEAKER_WAV": str(target),
+            }.items():
+                persisted = subprocess.run(
+                    ["setx", key, value],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if persisted.returncode != 0:
+                    detail = (persisted.stderr or persisted.stdout).strip()
+                    raise OSError(f"setx {key} falhou: {detail or 'sem detalhes'}")
+    except OSError as exc:
+        console.print(f"[red]Não foi possível configurar a voz: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    os.environ["BAUER_TTS_PROVIDER"] = "local"
+    os.environ["BAUER_TTS_SPEAKER_WAV"] = str(target)
+    console.print(f"[green]Voz XTTS configurada:[/green] {target}")
+    console.print(
+        "[dim]Use `bauer voice speak \"Olá, Henrique\"` ou `/listen` para testar.[/dim]"
+    )
 
 
 def _listen_once(*, max_duration: int, silence_threshold: float) -> str | None:

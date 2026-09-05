@@ -82,6 +82,22 @@ def test_speak_response_cleans_temporary_file(monkeypatch):
     assert not temporary_path.exists()
 
 
+def test_speak_response_local_usa_xtts_e_nao_sapi(monkeypatch):
+    monkeypatch.setenv("BAUER_TTS_PROVIDER", "local")
+    with patch(
+        "bauer.voice_session.synthesize_local_tts",
+        return_value={"success": True, "provider": "local"},
+    ) as synthesize, patch(
+        "bauer.voice_session.synthesize_local_speech",
+        side_effect=AssertionError("SAPI não deve ser usado no provider local"),
+    ), patch("bauer.voice_session.play_audio") as play:
+        speak_response("Resposta clonada.", _client())
+
+    synthesize.assert_called_once()
+    assert synthesize.call_args.kwargs["output_path"].suffix == ".wav"
+    play.assert_called_once()
+
+
 def test_streaming_voice_output_queues_sentences_in_order():
     calls: list[str] = []
 

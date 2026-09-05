@@ -53,20 +53,40 @@ function Test-ExtraEnabled {
 }
 
 function Set-VoiceDefaults {
-    if (-not (Test-ExtraEnabled "voice-kokoro")) { return }
+    if (-not (Test-ExtraEnabled "voice-kokoro") -and -not (Test-ExtraEnabled "voice-tts")) { return }
 
     # Persiste a escolha no perfil do usuário para que instalações e updates
     # não dependam de `$env:...` digitado manualmente em cada terminal.
     $provider = [Environment]::GetEnvironmentVariable("BAUER_TTS_PROVIDER", "User")
-    if (-not $provider) {
+    if (-not $provider -and (Test-ExtraEnabled "voice-kokoro") -and -not (Test-ExtraEnabled "voice-tts")) {
         [Environment]::SetEnvironmentVariable("BAUER_TTS_PROVIDER", "kokoro", "User")
         $env:BAUER_TTS_PROVIDER = "kokoro"
         Write-Info "Provider de voz padrão: Kokoro"
     }
     $voice = [Environment]::GetEnvironmentVariable("BAUER_TTS_KOKORO_VOICE", "User")
-    if (-not $voice) {
+    if (-not $voice -and (Test-ExtraEnabled "voice-kokoro")) {
         [Environment]::SetEnvironmentVariable("BAUER_TTS_KOKORO_VOICE", "pm_alex", "User")
         $env:BAUER_TTS_KOKORO_VOICE = "pm_alex"
+    }
+
+    # Se o usuário já colocou a referência em Downloads e pediu o extra
+    # pesado do XTTS, instala a cópia persistente automaticamente. O arquivo
+    # fica fora do repositório para sobreviver a updates e não ser publicado.
+    if (Test-ExtraEnabled "voice-tts") {
+        $source = "$env:USERPROFILE\Downloads\jarvis18s\jarvis18s-reference.wav"
+        $bauerHome = if ($env:BAUER_HOME) { $env:BAUER_HOME } else { "$env:USERPROFILE\.bauer" }
+        $target = "$bauerHome\voices\jarvis18s-reference.wav"
+        if (Test-Path $source) {
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            Copy-Item -LiteralPath $source -Destination $target -Force
+            [Environment]::SetEnvironmentVariable("BAUER_TTS_SPEAKER_WAV", $target, "User")
+            $env:BAUER_TTS_SPEAKER_WAV = $target
+            if (-not $provider) {
+                [Environment]::SetEnvironmentVariable("BAUER_TTS_PROVIDER", "local", "User")
+                $env:BAUER_TTS_PROVIDER = "local"
+                Write-Info "Provider de voz padrão: XTTS-v2 com referência local"
+            }
+        }
     }
 }
 

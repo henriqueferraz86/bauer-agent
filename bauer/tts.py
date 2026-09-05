@@ -13,6 +13,7 @@ Para voz 100% offline::
     pip install coqui-tts               # ou: uv sync --extra voice-tts
     export TTS_PROVIDER=local           # Windows: set TTS_PROVIDER=local
     # opcionais: TTS_LANGUAGE (pt), TTS_VOICE (nome de speaker embutido),
+    #            BAUER_TTS_SPEAKER_WAV (WAV de referência para clonagem),
     #            TTS_LOCAL_DEVICE (auto|cpu|cuda)
 
 Uso::
@@ -77,6 +78,8 @@ _TIMEOUT_S = 120.0
 
 # Cache do modelo local — carregar os pesos é caro; reusa entre sínteses.
 _LOCAL_MODEL_CACHE: dict[tuple, Any] = {}
+_DLL_DIRECTORY_HANDLES: list[Any] = []
+_FFMPEG_RUNTIME_READY = False
 
 _TOS_NOTICE_SHOWN = False
 _TOS_LOCK = threading.Lock()
@@ -87,10 +90,69 @@ def _tts_provider_pref() -> str:
     configured = os.environ.get("BAUER_TTS_PROVIDER", os.environ.get("TTS_PROVIDER", ""))
     if configured.strip():
         return configured.strip().lower()
+    # Quando há uma referência XTTS configurada, ela tem precedência sobre o
+    # Kokoro: a referência é uma escolha explícita da voz clonada do usuário.
+    if _coqui_tts_available() and local_tts_speaker_wav() is not None:
+        return "local"
     # A instalação padrão do Bauer inclui Kokoro. Se a preferência não foi
     # explicitamente configurada, escolha-o automaticamente em vez de exigir
     # que cada sessão exporte BAUER_TTS_PROVIDER manualmente.
     return "kokoro" if _kokoro_available() else "auto"
+
+
+def local_tts_speaker_wav() -> Path | None:
+    """Retorna o WAV de referência XTTS configurado, se existir.
+
+    O caminho padrão fica nos dados do usuário para sobreviver a updates do
+    código e não depender de um arquivo distribuído pelo repositório. Um
+    caminho explícito é retornado mesmo quando está ausente, permitindo que
+    a síntese produza um erro claro em vez de trocar silenciosamente de voz.
+    """
+    configured = os.environ.get(
+        "BAUER_TTS_SPEAKER_WAV", os.environ.get("TTS_SPEAKER_WAV", "")
+    ).strip()
+    if configured:
+        return Path(configured).expanduser()
+    try:
+        from .paths import get_bauer_home
+
+        default = get_bauer_home() / "voices" / "jarvis18s-reference.wav"
+        return default if default.is_file() else None
+    except (OSError, RuntimeError):
+        return None
+
+
+def _configure_ffmpeg_runtime() -> None:
+    """Torna DLLs do FFmpeg compartilhado visíveis ao TorchCodec no Windows.
+
+    O ``coqui-tts`` usa o TorchCodec para ler o WAV de referência. Em Windows
+    é comum o usuário ter apenas o build estático do FFmpeg no PATH; esse
+    build não fornece as DLLs que o TorchCodec carrega. Se o build compartilhado
+    do WinGet estiver instalado, adicioná-lo aqui torna o Bauer autocontido
+    mesmo quando foi aberto antes de um novo terminal.
+    """
+    global _FFMPEG_RUNTIME_READY
+    if _FFMPEG_RUNTIME_READY or os.name != "nt":
+        return
+    localappdata = os.environ.get("LOCALAPPDATA", "").strip()
+    if not localappdata:
+        return
+    packages = Path(localappdata) / "Microsoft" / "WinGet" / "Packages"
+    try:
+        dll = next(packages.rglob("avcodec-*.dll"), None)
+    except OSError:
+        return
+    if dll is None:
+        return
+    bin_dir = dll.parent
+    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is not None:
+        try:
+            _DLL_DIRECTORY_HANDLES.append(add_dll_directory(str(bin_dir)))
+        except OSError:
+            pass
+    _FFMPEG_RUNTIME_READY = True
 
 
 def _kokoro_available() -> bool:
@@ -219,6 +281,7 @@ def _load_local_model(model: str | None = None):
     cache sem sintetizar nada — mesmo padrão de transcription.py.
     """
     try:
+        _configure_ffmpeg_runtime()
         # Aceita os termos ANTES do import: a lib pergunta y/n na 1ª carga do
         # modelo, e isso travaria para sempre num processo headless (serve,
         # daemon, CI) sem esta env setada antes.
@@ -266,10 +329,25 @@ def _load_local_model(model: str | None = None):
 def _synthesize_local(text: str, dest: Path, model: str | None = None) -> None:
     """Sintetiza localmente com XTTS-v2 (offline, open-source, pt nativo).
 
-    Sem TTS_VOICE configurada, usa o primeiro speaker embutido do modelo —
-    zero-config, sem precisar de áudio de referência para clonar voz.
+    Com ``BAUER_TTS_SPEAKER_WAV``, usa o áudio como referência para a voz
+    clonada. Sem referência, mantém o fallback para o primeiro speaker
+    embutido do modelo.
     """
     tts = _load_local_model(model)
+    reference = local_tts_speaker_wav()
+    if reference is not None:
+        if not reference.is_file():
+            raise RuntimeError(f"WAV de referência não encontrado: {reference}")
+        _configure_ffmpeg_runtime()
+        tts.tts_to_file(
+            text=text,
+            file_path=str(dest),
+            language=LOCAL_TTS_LANGUAGE,
+            speaker_wav=str(reference),
+        )
+        if not dest.exists() or dest.stat().st_size == 0:
+            raise RuntimeError("síntese local não produziu áudio")
+        return
     speaker = LOCAL_TTS_SPEAKER or None
     if not speaker:
         speakers = list(getattr(tts, "speakers", None) or [])

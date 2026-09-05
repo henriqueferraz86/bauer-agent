@@ -567,6 +567,22 @@ recua automaticamente para a validação pela transcrição.
 `coqui-tts` não estiver instalado. Com `--extra voice` + `--extra voice-tts`
 e nenhuma env configurada, `bauer voice chat` roda 100% offline.
 
+Para usar uma voz autorizada como referência no XTTS-v2, configure-a uma vez:
+
+```powershell
+bauer voice xtts-setup "C:\Users\henri\Downloads\jarvis18s\jarvis18s-reference.wav"
+```
+
+O Bauer copia o WAV para `$BAUER_HOME/voices/jarvis18s-reference.wav`, ativa
+`BAUER_TTS_PROVIDER=local` e salva a configuração no perfil do usuário. Assim,
+`/listen`, `bauer voice chat` e o streaming por frases usam a mesma voz após
+reinicializações e atualizações. O áudio de referência deve ser seu ou ter
+autorização de uso; ele não é incluído no repositório.
+
+No Windows, quando o TorchCodec pedir DLLs de áudio, instale o build
+**compartilhado** do FFmpeg. O Bauer detecta automaticamente a instalação do
+WinGet; builds apenas estáticos não são suficientes para o XTTS-v2.
+
 Para um TTS neural local mais leve, use o Kokoro-82M via ONNX Runtime:
 
 ```powershell

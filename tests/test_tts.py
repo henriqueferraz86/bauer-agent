@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -18,6 +20,8 @@ def _clean_env(monkeypatch):
     """Nenhum teste deve herdar TTS_PROVIDER/OPENAI_API_KEY do ambiente real."""
     monkeypatch.delenv("TTS_PROVIDER", raising=False)
     monkeypatch.delenv("BAUER_TTS_PROVIDER", raising=False)
+    monkeypatch.delenv("BAUER_TTS_SPEAKER_WAV", raising=False)
+    monkeypatch.delenv("TTS_SPEAKER_WAV", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(tts, "_kokoro_available", lambda: False)
 
@@ -54,6 +58,15 @@ class TestAvailableProvider:
         """auto: local vem primeiro (offline, sem key) — símetro ao TTS_PROVIDER=auto."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setattr(tts, "_coqui_tts_available", lambda: True)
+        assert available_tts_provider() == "local"
+
+    def test_referencia_xtts_prioriza_sobre_kokoro(self, monkeypatch, tmp_path):
+        reference = tmp_path / "jarvis-reference.wav"
+        reference.write_bytes(b"RIFF reference")
+        monkeypatch.setenv("BAUER_TTS_SPEAKER_WAV", str(reference))
+        monkeypatch.setattr(tts, "_coqui_tts_available", lambda: True)
+        monkeypatch.setattr(tts, "_kokoro_available", lambda: True)
+
         assert available_tts_provider() == "local"
 
     def test_pref_local_sem_pacote_instalado(self, monkeypatch):
@@ -144,6 +157,27 @@ class TestSynthesizeLocal:
         assert result["success"]
         assert result["provider"] == "local"
         assert calls["text"] == "oi"
+
+    def test_referencia_wav_e_passada_ao_xtts(self, monkeypatch, tmp_path):
+        reference = tmp_path / "jarvis-reference.wav"
+        reference.write_bytes(b"RIFF reference")
+        monkeypatch.setenv("BAUER_TTS_SPEAKER_WAV", str(reference))
+
+        calls = {}
+
+        class FakeTTS:
+            def tts_to_file(self, **kwargs):
+                calls.update(kwargs)
+                Path(kwargs["file_path"]).write_bytes(b"fake-wav")
+
+        monkeypatch.setattr(tts, "_load_local_model", lambda model=None: FakeTTS())
+        out = tmp_path / "local.wav"
+        tts._synthesize_local("Olá, Henrique", out)
+
+        assert calls["text"] == "Olá, Henrique"
+        assert calls["speaker_wav"] == str(reference)
+        assert "speaker" not in calls
+        assert out.read_bytes() == b"fake-wav"
 
     def test_pacote_ausente_da_mensagem_de_instalacao(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TTS_PROVIDER", "local")

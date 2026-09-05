@@ -28,7 +28,7 @@ from typing import Any
 import httpx
 
 from .http_shared import shared_ssl_context
-from .tts import _tts_provider_pref
+from .tts import _tts_provider_pref, synthesize_speech as synthesize_local_tts
 from .voice_metrics import VoiceTurnMetrics
 from .voice_text import strip_emoji_for_speech
 
@@ -625,7 +625,15 @@ def speak_response(
             from .voice_kokoro import synthesize_kokoro_speech
 
             synthesize_kokoro_speech(text, path)
-        elif provider in {"auto", "local"}:
+        elif provider == "local":
+            # ``local`` significa XTTS-v2. Isso inclui a referência WAV
+            # configurada e mantém o mesmo caminho no streaming por frases e
+            # no comando ``bauer voice speak``; SAPI fica reservado ao modo
+            # ``auto`` quando nenhum TTS neural foi escolhido.
+            result = synthesize_local_tts(text, output_path=path)
+            if not result.get("success"):
+                raise VoiceOutputError(str(result.get("error") or "TTS local falhou"))
+        elif provider == "auto":
             try:
                 synthesize_local_speech(
                     text,
