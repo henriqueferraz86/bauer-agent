@@ -352,12 +352,14 @@ def _synthesize_local(text: str, dest: Path, model: str | None = None) -> None:
         if not reference.is_file():
             raise RuntimeError(f"WAV de referência não encontrado: {reference}")
         _configure_ffmpeg_runtime()
-        tts.tts_to_file(
-            text=text,
-            file_path=str(dest),
-            language=LOCAL_TTS_LANGUAGE,
-            speaker_wav=str(reference),
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            tts.tts_to_file(
+                text=text,
+                file_path=str(dest),
+                language=LOCAL_TTS_LANGUAGE,
+                speaker_wav=str(reference),
+            )
         if not dest.exists() or dest.stat().st_size == 0:
             raise RuntimeError("síntese local não produziu áudio")
         return
@@ -370,12 +372,14 @@ def _synthesize_local(text: str, dest: Path, model: str | None = None) -> None:
             "modelo local carregado sem speakers embutidos — defina TTS_VOICE "
             "com o nome de um speaker do modelo."
         )
-    tts.tts_to_file(
-        text=text,
-        file_path=str(dest),
-        language=LOCAL_TTS_LANGUAGE,
-        speaker=speaker,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        tts.tts_to_file(
+            text=text,
+            file_path=str(dest),
+            language=LOCAL_TTS_LANGUAGE,
+            speaker=speaker,
+        )
     if not dest.exists() or dest.stat().st_size == 0:
         raise RuntimeError("síntese local não produziu áudio")
 
