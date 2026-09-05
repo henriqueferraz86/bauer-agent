@@ -27,6 +27,11 @@ def collect_voice_status() -> list[dict[str, Any]]:
     sapi = os.name == "nt" and bool(shutil.which("powershell") or shutil.which("pwsh"))
     xtts = _available("TTS")
     tts_local = xtts or sapi
+    player = next(
+        (name for name in ("afplay", "aplay", "paplay", "ffplay") if shutil.which(name)),
+        None,
+    )
+    playback = bool(player) or (capture and wav)
     barge_in = capture and wav
     return [
         {
@@ -62,6 +67,17 @@ def collect_voice_status() -> list[dict[str, Any]]:
                 else "SAPI / PowerShell disponível"
                 if sapi
                 else "instale coqui-tts ou use Kokoro/OpenAI"
+            ),
+        },
+        {
+            "name": "reprodução de áudio",
+            "ok": playback,
+            "detail": (
+                f"player {player} disponível"
+                if player
+                else "sounddevice + soundfile serão usados como fallback"
+                if capture and wav
+                else "instale ffplay/aplay ou sounddevice + soundfile"
             ),
         },
         {

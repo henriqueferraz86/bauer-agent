@@ -491,6 +491,7 @@ def play_audio(
 
     # Permite usar a mesma sessão em Linux/macOS sem adicionar uma dependência
     # pesada ao pacote. Um player do sistema é suficiente para o MVP.
+    errors: list[str] = []
     for command in (("afplay",), ("aplay",), ("paplay",), ("ffplay", "-nodisp", "-autoexit")):
         executable = shutil.which(command[0])
         if executable is None:
@@ -510,16 +511,30 @@ def play_audio(
                     process.wait(timeout=2)
                     raise VoiceOutputCancelled("playback interrompido")
             if process.returncode != 0:
-                raise VoiceOutputError(
-                    f"playback via {command[0]} terminou com código {process.returncode}"
+                errors.append(
+                    f"{command[0]} terminou com código {process.returncode}"
                 )
+                continue
             return
         except VoiceOutputCancelled:
             raise
         except (OSError, subprocess.SubprocessError) as exc:
-            raise VoiceOutputError(f"playback via {command[0]} falhou: {exc}") from exc
+            errors.append(f"{command[0]} falhou: {exc}")
+
+    # Em desktops Linux sem ALSA/PulseAudio CLI instalado, o stack já usado
+    # pela captura do microfone consegue reproduzir o WAV diretamente.
+    try:
+        from .audio_playback import play_audio_file
+
+        if play_audio_file(path, blocking=True):
+            return
+    except Exception as exc:  # noqa: BLE001 - fallback de playback
+        errors.append(f"sounddevice falhou: {exc}")
+
+    detail = f" ({'; '.join(errors)})" if errors else ""
     raise VoiceOutputError(
-        "nenhum player de áudio disponível; instale afplay, aplay, paplay ou ffplay"
+        "nenhuma saída de áudio conseguiu reproduzir o WAV; instale/ative "
+        f"um player (aplay, paplay ou ffplay) ou verifique o dispositivo{detail}"
     )
 
 

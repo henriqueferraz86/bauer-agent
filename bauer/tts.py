@@ -41,6 +41,7 @@ import logging
 import os
 import tempfile
 import threading
+import warnings
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -286,7 +287,13 @@ def _load_local_model(model: str | None = None):
         # modelo, e isso travaria para sempre num processo headless (serve,
         # daemon, CI) sem esta env setada antes.
         os.environ.setdefault("COQUI_TOS_AGREED", "1")
-        from TTS.api import TTS
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"torch\.jit\.script is deprecated\.*",
+                category=FutureWarning,
+            )
+            from TTS.api import TTS
     except ImportError as exc:
         if not _coqui_tts_available():
             raise RuntimeError(
@@ -321,7 +328,13 @@ def _load_local_model(model: str | None = None):
     key = (mdl_name, device)
     tts = _LOCAL_MODEL_CACHE.get(key)
     if tts is None:
-        tts = TTS(mdl_name).to(device)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"torch\.jit\.script is deprecated\.*",
+                category=FutureWarning,
+            )
+            tts = TTS(mdl_name).to(device)
         _LOCAL_MODEL_CACHE[key] = tts
     return tts
 
