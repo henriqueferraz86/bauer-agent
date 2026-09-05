@@ -9,7 +9,8 @@ Alternativas explícitas via STT_PROVIDER:
   ``local`` — faster-whisper (``large-v3-turbo``), offline
 
 Selecione explicitamente com a env ``STT_PROVIDER`` = openrouter | auto | local |
-groq | openai. Sem a variável, o padrão é ``openrouter``.
+groq | openai. Sem a variável, o padrão é ``openrouter``. O idioma padrão é
+português (``STT_LANGUAGE=pt``); deixe vazio para detecção automática.
 Para rodar o modelo open-source 100% offline::
 
     pip install faster-whisper          # ou: uv sync --extra voice
@@ -64,6 +65,11 @@ LOCAL_STT_DEVICE = os.environ.get("STT_LOCAL_DEVICE", "auto")  # auto | cpu | cu
 LOCAL_STT_COMPUTE = os.environ.get("STT_LOCAL_COMPUTE", "int8")  # int8 (CPU) | float16 (GPU)
 
 _TIMEOUT_S = 120.0
+
+
+def _stt_language() -> str:
+    """Retorna o idioma STT configurado; português é o padrão do Bauer."""
+    return os.environ.get("STT_LANGUAGE", "pt").strip().lower()
 
 
 def _stt_provider_pref() -> str:
@@ -130,16 +136,25 @@ def _validate(path: str | Path) -> str | None:
     return None
 
 
-def _post_whisper(url: str, api_key: str, model: str, path: Path) -> dict[str, Any]:
+def _post_whisper(
+    url: str,
+    api_key: str,
+    model: str,
+    path: Path,
+    language: str = "",
+) -> dict[str, Any]:
     """POST multipart num endpoint /audio/transcriptions OpenAI-compat."""
     import httpx
 
     with path.open("rb") as fh:
+        data = {"model": model, "response_format": "json"}
+        if language:
+            data["language"] = language
         resp = httpx.post(
             url,
             headers={"Authorization": f"Bearer {api_key}"},
             files={"file": (path.name, fh)},
-            data={"model": model, "response_format": "json"},
+            data=data,
             timeout=_TIMEOUT_S,
         )
     if resp.status_code != 200:
@@ -160,7 +175,12 @@ def _post_whisper(url: str, api_key: str, model: str, path: Path) -> dict[str, A
     return {"success": True, "transcript": text}
 
 
-def _post_openrouter_whisper(api_key: str, model: str, path: Path) -> dict[str, Any]:
+def _post_openrouter_whisper(
+    api_key: str,
+    model: str,
+    path: Path,
+    language: str = "",
+) -> dict[str, Any]:
     """Transcreve pelo endpoint STT nativo do OpenRouter.
 
     O OpenRouter recebe o áudio em JSON/base64 no campo ``input_audio``.
@@ -181,6 +201,8 @@ def _post_openrouter_whisper(api_key: str, model: str, path: Path) -> dict[str, 
             "format": audio_format,
         },
     }
+    if language:
+        payload["language"] = language
     resp = httpx.post(
         OPENROUTER_STT_URL,
         headers={
@@ -242,7 +264,11 @@ def _load_local_model(model: str | None = None):
     return wm
 
 
-def _transcribe_local(path: Path, model: str | None = None) -> dict[str, Any]:
+def _transcribe_local(
+    path: Path,
+    model: str | None = None,
+    language: str = "",
+) -> dict[str, Any]:
     """Transcreve localmente com faster-whisper (offline, open-source).
 
     Carrega o modelo uma vez por (modelo, device, compute) e mantém em cache.
@@ -250,7 +276,8 @@ def _transcribe_local(path: Path, model: str | None = None) -> dict[str, Any]:
     depois roda 100% offline.
     """
     wm = _load_local_model(model)
-    segments, _info = wm.transcribe(str(path))
+    kwargs = {"language": language} if language else {}
+    segments, _info = wm.transcribe(str(path), **kwargs)
     text = "".join(seg.text for seg in segments).strip()
     if not text:
         raise RuntimeError("transcrição vazia")
@@ -318,6 +345,7 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
     if err:
         return {"success": False, "transcript": "", "error": err}
     path = Path(file_path)
+    language = _stt_language()
 
     # (provider, url, key, model) — url/key são None no provider local.
     attempts: list[tuple[str, str | None, str | None, str]] = []
@@ -370,11 +398,11 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
     for provider, url, key, mdl in attempts:
         try:
             if provider == "openrouter":
-                result = _post_openrouter_whisper(key, mdl, path)
+                result = _post_openrouter_whisper(key, mdl, path, language)
             elif provider == "local":
-                result = _transcribe_local(path, mdl)
+                result = _transcribe_local(path, mdl, language)
             else:
-                result = _post_whisper(url, key, mdl, path)
+                result = _post_whisper(url, key, mdl, path, language)
             result["provider"] = provider
             logger.info(
                 "Transcrito %s via %s (%d chars)", path.name, provider,

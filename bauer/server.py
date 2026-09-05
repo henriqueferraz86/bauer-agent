@@ -9,6 +9,7 @@ Endpoints:
   DELETE /sessions/{id}        — remove sessão         [auth]
   POST /chat                   — envia mensagem, recebe resposta completa [auth]
   POST /transcribe             — transcreve áudio (multipart) em texto [auth]
+  POST /speak                  — sintetiza uma resposta em WAV [auth]
   GET  /stream?message=&session_id=  — resposta em tempo real via SSE [auth]
 
   # OpenAI-compatible (Claw3D / virtual office integration)
@@ -730,6 +731,9 @@ def create_app(
         message: str = Field(..., max_length=100_000)
         session_id: Optional[str] = None
         project_id: Optional[str] = None
+
+    class SpeechRequest(PydanticModel):
+        text: str = Field(..., min_length=1, max_length=100_000)
 
     class ToolCallLog(PydanticModel):
         tool: str
@@ -1749,6 +1753,62 @@ def create_app(
         if not result["success"]:
             raise HTTPException(status_code=422, detail=result["error"])
         return {"transcript": result["transcript"], "provider": result["provider"]}
+
+    @app.post("/speak")
+    async def speak(
+        body: SpeechRequest,
+        _: None = Depends(_verify_key),
+    ):
+        """Sintetiza uma resposta do chat para reprodução no navegador.
+
+        O texto continua sendo entregue pelo SSE mesmo que o TTS esteja
+        indisponível. A síntese roda no threadpool porque Kokoro e os demais
+        providers são síncronos e não podem bloquear o event loop.
+        """
+        import anyio
+        import tempfile
+
+        from starlette.background import BackgroundTask
+
+        from .tts import synthesize_speech
+
+        fd, raw_path = tempfile.mkstemp(prefix="bauer-web-tts-", suffix=".wav")
+        os.close(fd)
+        temp_path = Path(raw_path)
+
+        try:
+            result = await anyio.to_thread.run_sync(
+                synthesize_speech,
+                body.text,
+                temp_path,
+            )
+        except Exception as exc:  # noqa: BLE001 — voz é saída acessória
+            temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=503, detail=f"Síntese de voz indisponível: {exc}") from exc
+
+        if not result.get("success"):
+            temp_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=503,
+                detail=result.get("error") or "Síntese de voz indisponível.",
+            )
+
+        audio_path = Path(str(result.get("path") or temp_path))
+        if not audio_path.is_file() or audio_path.stat().st_size == 0:
+            temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=503, detail="Síntese de voz retornou áudio vazio.")
+
+        def cleanup() -> None:
+            audio_path.unlink(missing_ok=True)
+            if audio_path != temp_path:
+                temp_path.unlink(missing_ok=True)
+
+        return FileResponse(
+            audio_path,
+            media_type="audio/wav",
+            filename="bauer-response.wav",
+            background=BackgroundTask(cleanup),
+        )
 
     @app.get("/stream")
     def stream(

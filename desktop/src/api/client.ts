@@ -31,6 +31,20 @@ async function handle<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function handleAudio(res: Response): Promise<Blob> {
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.blob();
+}
+
 export const api = {
   get: <T>(path: string) => fetch(path, { headers: headers() }).then((r) => handle<T>(r)),
   post: <T>(path: string, body?: unknown) =>
@@ -48,6 +62,8 @@ export const api = {
     delete h["Content-Type"];
     return fetch(path, { method: "POST", headers: h, body: form }).then((r) => handle<T>(r));
   },
+  audio: (path: string, body: unknown) =>
+    fetch(path, { method: "POST", headers: headers(), body: JSON.stringify(body) }).then(handleAudio),
 };
 
 export interface SSEEvent {

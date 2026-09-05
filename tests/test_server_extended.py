@@ -406,6 +406,43 @@ def test_transcribe_rejects_oversized_413(tmp_path: Path):
     mock_stt.assert_not_called()
 
 
+# ─── /speak ──────────────────────────────────────────────────────────────────
+
+
+def test_speak_returns_audio_and_cleans_up(tmp_path: Path):
+    captured: dict = {}
+
+    def _fake_speak(text, output_path=None, model=None):
+        captured["text"] = text
+        captured["path"] = Path(output_path)
+        captured["path"].write_bytes(b"RIFFfake-wav")
+        return {"success": True, "path": str(captured["path"]), "provider": "kokoro"}
+
+    with patch("bauer.tts.synthesize_speech", side_effect=_fake_speak):
+        client = _make_app(tmp_path)
+        resp = client.post("/speak", json={"text": "Olá, Bauer"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("audio/wav")
+    assert resp.content == b"RIFFfake-wav"
+    assert captured["text"] == "Olá, Bauer"
+    assert not captured["path"].exists()
+
+
+def test_speak_failure_isolated_from_chat(tmp_path: Path):
+    with patch("bauer.tts.synthesize_speech") as mock_speak:
+        mock_speak.return_value = {
+            "success": False,
+            "path": "",
+            "error": "Kokoro não instalado",
+        }
+        client = _make_app(tmp_path)
+        resp = client.post("/speak", json={"text": "Olá"})
+
+    assert resp.status_code == 503
+    assert "Kokoro" in resp.json()["detail"]
+
+
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 

@@ -55,6 +55,7 @@ OPERACOES_CORE = {
     "POST /loop",
     "POST /loop/{run_id}/stop",
     "POST /models/switch",
+    "POST /speak",
     "POST /transcribe",
     "POST /v1/chat/completions",
 }

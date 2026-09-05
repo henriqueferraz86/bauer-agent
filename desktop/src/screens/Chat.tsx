@@ -80,6 +80,8 @@ export default function Chat() {
   const navigate = useNavigate();
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const responseAudioRef = useRef<HTMLAudioElement | null>(null);
+  const responseAudioUrlRef = useRef<string | null>(null);
 
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
 
@@ -90,6 +92,11 @@ export default function Chat() {
 
   useEffect(() => {
     scroll();
+  }, []);
+
+  useEffect(() => () => {
+    responseAudioRef.current?.pause();
+    if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
   }, []);
 
   function appendInfo(text: string) {
@@ -252,6 +259,11 @@ export default function Chat() {
       },
     },
     {
+      cmd: "/listen",
+      desc: "Iniciar ou parar a conversa por voz",
+      run: () => toggleRecording(),
+    },
+    {
       cmd: "/model",
       desc: "Trocar modelo (ex: /model gpt-4o ou /model openai gpt-4o)",
       run: async (arg) => {
@@ -308,7 +320,29 @@ export default function Chat() {
     void c.run(arg);
   }
 
-  async function send(overrideText?: string) {
+  async function playResponseAudio(text: string): Promise<void> {
+    if (!text.trim()) return;
+    try {
+      const blob = await api.audio("/speak", { text });
+      const url = URL.createObjectURL(blob);
+      responseAudioRef.current?.pause();
+      if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
+      const audio = new Audio(url);
+      responseAudioRef.current = audio;
+      responseAudioUrlRef.current = url;
+      audio.onended = () => {
+        if (responseAudioRef.current === audio) responseAudioRef.current = null;
+        if (responseAudioUrlRef.current === url) responseAudioUrlRef.current = null;
+        URL.revokeObjectURL(url);
+      };
+      await audio.play();
+    } catch {
+      // O texto continua disponível se o TTS estiver sem provider ou se o
+      // navegador bloquear autoplay.
+    }
+  }
+
+  async function send(overrideText?: string, options?: { speak?: boolean }) {
     const text = (overrideText ?? input).trim();
     if (!text || busy) return;
     // Um comando com barra SEMPRE roteia pro seu handler — mesmo quando a
@@ -339,6 +373,7 @@ export default function Chat() {
     const qs = new URLSearchParams({ message: text });
     if (sessionId) qs.set("session_id", sessionId);
 
+    let responseText = "";
     try {
       await streamSSE(`/stream?${qs.toString()}`, (e) => {
         setMessages((m) => {
@@ -373,6 +408,7 @@ export default function Chat() {
             last.streaming = false;
           } else {
             last.text += e.data;
+            responseText += e.data;
             // tok/s medido sobre o que chegou. ~4 chars por token é a
             // aproximação usual; é estimativa e está rotulada como tal na UI
             // (tok/s, não "tokens exatos") — o servidor não manda contagem.
@@ -388,6 +424,7 @@ export default function Chat() {
         });
         scroll();
       });
+      if (options?.speak) await playResponseAudio(responseText);
     } catch (err) {
       setMessages((m) => {
         const copy = [...m];
@@ -430,7 +467,7 @@ export default function Chat() {
         setTranscribing(true);
         try {
           const r = await api.upload<{ transcript: string; provider: string }>("/transcribe", blob, "voice.webm");
-          if (r.transcript?.trim()) await send(r.transcript);
+          if (r.transcript?.trim()) await send(r.transcript, { speak: true });
         } catch (e) {
           appendInfo(`[Erro na transcrição: ${e}]`);
         } finally {

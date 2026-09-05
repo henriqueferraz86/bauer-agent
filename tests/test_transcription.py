@@ -155,6 +155,7 @@ class TestProviders:
         assert seen["json"]["model"] == "openai/whisper-large-v3-turbo"
         assert seen["json"]["input_audio"]["format"] == "ogg"
         assert seen["json"]["input_audio"]["data"]
+        assert seen["json"]["language"] == "pt"
 
 
 class TestAvailableProvider:
@@ -213,8 +214,9 @@ class TestLocalProvider:
 
         called = {}
 
-        def fake_local(path, model=None):
+        def fake_local(path, model=None, language=""):
             called["model"] = model
+            called["language"] = language
             return {"success": True, "transcript": "olá mundo"}
 
         monkeypatch.setattr(transcription, "_transcribe_local", fake_local)
@@ -223,6 +225,7 @@ class TestLocalProvider:
         assert result["provider"] == "local"
         assert result["transcript"] == "olá mundo"
         assert called["model"] == transcription.LOCAL_STT_MODEL
+        assert called["language"] == "pt"
 
     def test_transcribe_local_sem_pacote_erro_amigavel(self, audio_file, monkeypatch):
         """Sem faster-whisper instalado, STT_PROVIDER=local dá erro com dica de install."""

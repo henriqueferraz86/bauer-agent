@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: Object.fromEntries(
-        ["/api", "/chat", "/transcribe", "/stream", "/health", "/status", "/models", "/sessions", "/tools", "/v1"].map(
+        ["/api", "/chat", "/transcribe", "/speak", "/stream", "/health", "/status", "/models", "/sessions", "/tools", "/v1"].map(
           (p) => [p, { target: backendTarget, changeOrigin: true }]
         )
       ),

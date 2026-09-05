@@ -122,6 +122,11 @@ bauer chat                   # chat mínimo com o modelo
 padrão (`gateway`, `voice` e `voice-kokoro`). Configurações, credenciais,
 memória e modelos ficam fora do repositório e não são sobrescritos.
 
+No chat web, o botão do microfone envia a fala para o mesmo STT do `bauer
+agent` e reproduz a resposta por TTS quando o provider de voz está disponível.
+O idioma padrão da transcrição é português; use `STT_LANGUAGE` vazio para
+voltar à detecção automática.
+
 > **Dica**: use `bauer model` a qualquer momento para trocar de provider/modelo. O menu exibe claramente quais são **GRÁTIS** e quais são **PAGOS**.
 
 ### ⚡ Qual comando eu uso?
