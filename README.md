@@ -108,12 +108,19 @@ bauer init
 # 2. Verificar saúde do ambiente
 bauer doctor
 
-# 3. Iniciar — escolha o modo:
+# 3. Atualizar o Bauer e as dependências instaladas (quando necessário)
+bauer update
+
+# 4. Iniciar — escolha o modo:
 bauer run "faça a tarefa X"  # ★ autônomo: do início ao fim, na pasta atual
 bauer agent                  # conversar (tools + memória, uso diário)
 bauer serve                  # UI web (chat + modo autônomo no browser)
 bauer chat                   # chat mínimo com o modelo
 ```
+
+`bauer update` busca a versão mais recente da `master` e reinstala os extras
+padrão (`gateway`, `voice` e `voice-kokoro`). Configurações, credenciais,
+memória e modelos ficam fora do repositório e não são sobrescritos.
 
 > **Dica**: use `bauer model` a qualquer momento para trocar de provider/modelo. O menu exibe claramente quais são **GRÁTIS** e quais são **PAGOS**.
 
