@@ -2517,7 +2517,21 @@ def _native_turn_interactive(
             content = ""
 
     if not tool_calls:
+        if streamer is not None:
+            # Só agora sabemos que o stream não era uma solicitação de tool.
+            # A voz fica silenciada durante a execução e fala apenas a
+            # resposta final confirmada.
+            _on_final = getattr(streamer, "on_final", None)
+            if _on_final is not None:
+                _on_final()
         return "final", content
+
+    if streamer is not None:
+        # Descarta qualquer preâmbulo/texto intermediário antes de executar a
+        # tool. O resultado será falado na rodada final seguinte.
+        _on_tool = getattr(streamer, "on_tool", None)
+        if _on_tool is not None:
+            _on_tool(str(tool_calls[0].get("function", {}).get("name", "?")))
 
     ctx.messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
 
@@ -3649,6 +3663,13 @@ def _run_tool_loop_body(
         actions = None if _native_final else _try_parse_tools_batch(response, router)
 
         if actions is not None and tool_turns < MAX_TOOL_TURNS:
+            if streamer is not None:
+                # O texto transmitido foi uma instrução de ferramenta, não uma
+                # resposta para o usuário. Aguarde a próxima rodada após a
+                # execução para liberar o TTS.
+                _on_tool = getattr(streamer, "on_tool", None)
+                if _on_tool is not None:
+                    _on_tool(str(actions[0].get("action", "?")))
             combined_parts: list[str] = []
 
             # Só processa o que cabe dentro do limite de tool turns
@@ -3830,6 +3851,10 @@ def _run_tool_loop_body(
 
         # Resposta final em texto — extrai se o modelo usou JSON de conversa
         display = _extract_text_from_pseudo_json(response) or response
+        if streamer is not None:
+            _on_final = getattr(streamer, "on_final", None)
+            if _on_final is not None:
+                _on_final()
         stats.end_turn(len(display))
 
         # Wave 1 — capture real token usage from the client (provider-agnostic).

@@ -247,6 +247,14 @@ def capture_voice_input_streaming(
             "sounddevice não instalado; rode `uv sync --extra voice`"
         ) from exc
 
+    # Falha cedo, antes de abrir o microfone. O padrão do /listen é o
+    # OpenRouter; sem a chave o usuário precisa receber a instrução e os
+    # preços imediatamente, em vez de gravar áudio que não poderá ser enviado.
+    from .transcription import available_stt_provider, stt_unavailable_message
+
+    if available_stt_provider() is None:
+        raise StreamingSTTUnavailable(stt_unavailable_message())
+
     from .voice_vad import EnergyVAD, VOICE_FINISHED
 
     if console is not None:

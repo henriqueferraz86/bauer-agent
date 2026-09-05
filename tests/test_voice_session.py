@@ -89,11 +89,30 @@ def test_streaming_voice_output_queues_sentences_in_order():
         output = StreamingVoiceOutput(_client())
         output.on_delta("Primeira frase. Segunda frase")
         output.on_delta(" também.")
+        output.on_final()
         output.finish()
 
     assert calls == ["Primeira frase.", "Segunda frase também."]
     assert output.spoken_segments == 2
     assert output.error is None
+
+
+def test_streaming_voice_output_waits_for_tool_result_before_speaking():
+    calls: list[str] = []
+
+    with patch("bauer.voice_session.speak_response", side_effect=lambda text, *_args, **_kwargs: calls.append(text)):
+        output = StreamingVoiceOutput(_client())
+        output.on_delta("Vou consultar os containers.")
+        output.on_round()
+        output.on_tool("run_command")
+        output.on_delta("Encontrei dois containers em execução.")
+        output.on_round()
+
+        assert calls == []
+        output.on_final()
+        output.finish()
+
+    assert calls == ["Encontrei dois containers em execução."]
 
 
 def test_playback_cancelled_before_start(tmp_path: Path):

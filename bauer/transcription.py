@@ -1,12 +1,15 @@
 """Transcrição de áudio (STT) — voice notes do gateway viram texto.
 
-Providers (ordem padrão em STT_PROVIDER=auto):
-  1. Groq Whisper (``whisper-large-v3-turbo``) — free tier, GROQ_API_KEY
-  2. OpenAI Whisper (``whisper-1``) — OPENAI_API_KEY
-  3. Local faster-whisper (``large-v3-turbo``) — OFFLINE, pesos open-source na
-     máquina, sem API. Requer ``pip install faster-whisper``.
+Provider padrão do /listen:
+  OpenRouter (``openai/whisper-large-v3-turbo``) — OPENROUTER_API_KEY
 
-Selecione explicitamente com a env ``STT_PROVIDER`` = auto | local | groq | openai.
+Alternativas explícitas via STT_PROVIDER:
+  ``groq`` — Groq Whisper (``whisper-large-v3-turbo``)
+  ``openai`` — OpenAI Whisper (``whisper-1``)
+  ``local`` — faster-whisper (``large-v3-turbo``), offline
+
+Selecione explicitamente com a env ``STT_PROVIDER`` = openrouter | auto | local |
+groq | openai. Sem a variável, o padrão é ``openrouter``.
 Para rodar o modelo open-source 100% offline::
 
     pip install faster-whisper          # ou: uv sync --extra voice
@@ -21,12 +24,14 @@ Uso::
     if result["success"]:
         print(result["transcript"])
 
-Cloud usa httpx multipart (já é core). O local é lazy-import: faster-whisper só
-é exigido quando STT_PROVIDER=local ou como fallback em auto se instalado.
+OpenRouter usa o endpoint STT JSON/base64; os demais clouds usam multipart.
+O local é lazy-import: faster-whisper só é exigido quando STT_PROVIDER=local
+ou como fallback em auto se instalado.
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from pathlib import Path
@@ -44,6 +49,13 @@ GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_STT_MODEL = os.environ.get("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 OPENAI_STT_URL = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_STT_MODEL = os.environ.get("STT_OPENAI_MODEL", "whisper-1")
+OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+OPENROUTER_STT_MODEL = os.environ.get(
+    "STT_OPENROUTER_MODEL", "openai/whisper-large-v3-turbo"
+)
+
+# US$ 0,000003 por segundo = US$ 0,0108 por hora.
+OPENROUTER_STT_PRICE_PER_SECOND_USD = 0.000003
 
 # Local (faster-whisper) — roda os pesos open-source OFFLINE na máquina, sem API.
 # whisper-large-v3-turbo é o mesmo modelo do Groq, mas aqui sem nuvem.
@@ -55,8 +67,46 @@ _TIMEOUT_S = 120.0
 
 
 def _stt_provider_pref() -> str:
-    """Preferência de provider, lida em call-time: auto | local | groq | openai."""
-    return os.environ.get("STT_PROVIDER", "auto").strip().lower()
+    """Preferência de provider, lida em call-time; OpenRouter é o padrão."""
+    return os.environ.get("STT_PROVIDER", "openrouter").strip().lower()
+
+
+def openrouter_stt_setup_message() -> str:
+    """Mensagem exibida quando o /listen ainda não tem a chave do OpenRouter."""
+    hourly = OPENROUTER_STT_PRICE_PER_SECOND_USD * 3600
+    return (
+        "O /listen usa o OpenRouter por padrão e precisa de uma API key.\n"
+        "Crie sua chave em https://openrouter.ai/keys e configure no Windows:\n"
+        "  [Environment]::SetEnvironmentVariable(\"OPENROUTER_API_KEY\", "
+        "\"sk-or-v1-...\", \"User\")\n"
+        "Depois feche e reabra o terminal.\n\n"
+        "Tabela de preço do openai/whisper-large-v3-turbo:\n"
+        f"  1 hora:      US$ {hourly:.4f}\n"
+        f"  100 horas:   US$ {hourly * 100:.2f}\n"
+        f"  1.000 horas: US$ {hourly * 1000:.2f}\n"
+        "Preço calculado a US$ 0,000003 por segundo; o valor final depende do "
+        "uso medido pelo OpenRouter."
+    )
+
+
+def stt_unavailable_message() -> str:
+    """Retorna uma instrução específica para o provider STT selecionado."""
+    pref = _stt_provider_pref()
+    if pref in ("openrouter", "openrouter-stt"):
+        return openrouter_stt_setup_message()
+    if pref == "groq":
+        return "GROQ_API_KEY não configurada. Configure a chave ou use STT_PROVIDER=local."
+    if pref == "openai":
+        return "OPENAI_API_KEY não configurada. Configure a chave ou use STT_PROVIDER=local."
+    if pref in ("local", "faster-whisper", "faster_whisper"):
+        return (
+            "faster-whisper não instalado. Rode `uv sync --extra voice` "
+            "ou use STT_PROVIDER=openrouter com OPENROUTER_API_KEY."
+        )
+    return (
+        "Nenhum provider STT disponível. Configure OPENROUTER_API_KEY, "
+        "GROQ_API_KEY/OPENAI_API_KEY, ou instale faster-whisper para uso local."
+    )
 
 # Cache do modelo local — carregar os pesos é caro; reusa entre transcrições.
 _LOCAL_MODEL_CACHE: dict[tuple, Any] = {}
@@ -101,8 +151,58 @@ def _post_whisper(url: str, api_key: str, model: str, path: Path) -> dict[str, A
                 if isinstance(body.get("error"), dict)
                 else body.get("error") or detail
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 — corpo de erro pode não ser JSON
+            logger.debug("resposta de erro do provider não era JSON", exc_info=True)
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+    text = (resp.json().get("text") or "").strip()
+    if not text:
+        raise RuntimeError("transcrição vazia")
+    return {"success": True, "transcript": text}
+
+
+def _post_openrouter_whisper(api_key: str, model: str, path: Path) -> dict[str, Any]:
+    """Transcreve pelo endpoint STT nativo do OpenRouter.
+
+    O OpenRouter recebe o áudio em JSON/base64 no campo ``input_audio``.
+    """
+    import httpx
+
+    suffix = path.suffix.lower().lstrip(".")
+    audio_format = {
+        "oga": "ogg",
+        "opus": "ogg",
+        "mpga": "mp3",
+        "mpeg": "mp3",
+    }.get(suffix, suffix)
+    payload = {
+        "model": model,
+        "input_audio": {
+            "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "format": audio_format,
+        },
+    }
+    resp = httpx.post(
+        OPENROUTER_STT_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/bauer-agent",
+            "X-Title": "Bauer Agent",
+        },
+        json=payload,
+        timeout=_TIMEOUT_S,
+    )
+    if resp.status_code != 200:
+        detail = resp.text[:300]
+        try:
+            body = resp.json()
+            detail = str(
+                (body.get("error") or {}).get("message")
+                if isinstance(body.get("error"), dict)
+                else body.get("error") or detail
+            )
+        except Exception:  # noqa: BLE001 — corpo de erro pode não ser JSON
+            logger.debug("resposta de erro do OpenRouter não era JSON", exc_info=True)
         raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
     text = (resp.json().get("text") or "").strip()
     if not text:
@@ -182,19 +282,22 @@ def preload_local_model() -> bool:
 
 
 def available_stt_provider() -> str | None:
-    """Qual provider STT está disponível agora ('local', 'groq', 'openai' ou None).
+    """Qual provider STT está disponível agora.
 
-    Respeita STT_PROVIDER; em 'auto' prioriza cloud (mais rápido p/ áudios curtos)
-    e cai no local se faster-whisper estiver instalado.
+    Sem STT_PROVIDER, exige OpenRouter. ``auto`` preserva a cadeia de fallback.
     """
     pref = _stt_provider_pref()
+    if pref in ("openrouter", "openrouter-stt"):
+        return "openrouter" if os.environ.get("OPENROUTER_API_KEY", "").strip() else None
     if pref in ("local", "faster-whisper", "faster_whisper"):
         return "local" if _faster_whisper_available() else None
     if pref == "groq":
         return "groq" if os.environ.get("GROQ_API_KEY", "").strip() else None
     if pref == "openai":
         return "openai" if os.environ.get("OPENAI_API_KEY", "").strip() else None
-    # auto
+    # auto: OpenRouter, outros clouds e local como fallback
+    if os.environ.get("OPENROUTER_API_KEY", "").strip():
+        return "openrouter"
     if os.environ.get("GROQ_API_KEY", "").strip():
         return "groq"
     if os.environ.get("OPENAI_API_KEY", "").strip():
@@ -205,7 +308,7 @@ def available_stt_provider() -> str | None:
 
 
 def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[str, Any]:
-    """Transcreve um arquivo de áudio. Groq primeiro (free), depois OpenAI.
+    """Transcreve um arquivo de áudio pelo provider configurado.
 
     Retorna ``{"success": bool, "transcript": str, "provider": str}`` ou
     ``{"success": False, "transcript": "", "error": str}``. Nunca levanta —
@@ -218,8 +321,16 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
 
     # (provider, url, key, model) — url/key são None no provider local.
     attempts: list[tuple[str, str | None, str | None, str]] = []
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
     openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+    def _add_openrouter():
+        if openrouter_key:
+            attempts.append(
+                ("openrouter", OPENROUTER_STT_URL, openrouter_key,
+                 model or OPENROUTER_STT_MODEL)
+            )
 
     def _add_groq():
         if groq_key:
@@ -233,13 +344,16 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
         attempts.append(("local", None, None, model or LOCAL_STT_MODEL))
 
     pref = _stt_provider_pref()
-    if pref in ("local", "faster-whisper", "faster_whisper"):
+    if pref in ("openrouter", "openrouter-stt"):
+        _add_openrouter()
+    elif pref in ("local", "faster-whisper", "faster_whisper"):
         _add_local()
     elif pref == "groq":
         _add_groq()
     elif pref == "openai":
         _add_openai()
-    else:  # auto: cloud primeiro (rápido p/ áudios curtos), local como fallback
+    else:  # auto: OpenRouter, outros clouds e local como fallback
+        _add_openrouter()
         _add_groq()
         _add_openai()
         if _faster_whisper_available():
@@ -249,17 +363,15 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
         return {
             "success": False,
             "transcript": "",
-            "error": (
-                "Nenhum provider STT disponível. Opções: (1) GROQ_API_KEY "
-                "(gratuito — console.groq.com), (2) OPENAI_API_KEY, ou (3) local "
-                "offline: `pip install faster-whisper` + STT_PROVIDER=local."
-            ),
+            "error": stt_unavailable_message(),
         }
 
     errors: list[str] = []
     for provider, url, key, mdl in attempts:
         try:
-            if provider == "local":
+            if provider == "openrouter":
+                result = _post_openrouter_whisper(key, mdl, path)
+            elif provider == "local":
                 result = _transcribe_local(path, mdl)
             else:
                 result = _post_whisper(url, key, mdl, path)

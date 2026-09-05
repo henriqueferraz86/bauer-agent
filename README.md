@@ -483,8 +483,9 @@ por voz fora da sessão interativa, use `bauer voice ask`.
 
 Pedidos falados usam o mesmo motor de ferramentas do agente digitado: pesquisa
 web, leitura/escrita de arquivos e comandos passam pelo `ToolRouter`, aguardam o
-resultado e só então entram no TTS. Comandos sujeitos a confirmação continuam
-protegidos pelos mesmos guards do terminal.
+resultado e só então entram no TTS. Texto intermediário, JSON de tool calls e
+progresso das ferramentas não são falados. Comandos sujeitos a confirmação
+continuam protegidos pelos mesmos guards do terminal.
 
 Para uma sessão contínua ativada por palavra-chave, use `/listen wake` dentro do
 agente. O padrão é `bauer`; personalize com `BAUER_WAKE_WORD=jarvis`. Fala sem a
@@ -509,11 +510,16 @@ segmentos ao Whisper enquanto a fala continua, publica parciais internamente e
 encerra a captura após aproximadamente 0,8s de silêncio. O modo legado de
 captura, que aguardava 5s, não é mais selecionado pelo agente.
 
-Groq, quando escolhido por `STT_PROVIDER=auto` (ou explicitamente), é usado
-somente para transformar áudio em texto — ele não é o modelo que responde ao
-usuário. Os segmentos do modo streaming têm 4s para permanecer abaixo do
-limite comum de 20 requisições por minuto do Whisper Groq. Para não depender
-desse limite, use `STT_PROVIDER=local` depois de instalar `faster-whisper`.
+Por padrão, o `/listen` usa `openai/whisper-large-v3-turbo` via OpenRouter e
+exige `OPENROUTER_API_KEY`. O preço publicado é US$ 0,000003 por segundo:
+aproximadamente US$ 0,0108 por hora, US$ 1,08 por 100 horas e US$ 10,80 por
+1.000 horas. Se a chave não estiver configurada, o próprio `/listen` mostra a
+instrução de configuração e essa tabela antes de abrir o microfone.
+
+Groq, OpenAI e faster-whisper continuam disponíveis como alternativas
+explícitas com `STT_PROVIDER=groq`, `STT_PROVIDER=openai` ou
+`STT_PROVIDER=local`. `STT_PROVIDER=auto` mantém a cadeia de fallback, mas não é
+o padrão da instalação.
 
 O TTS da conversa também usa streaming por frases automaticamente; não é
 necessário definir `BAUER_VOICE_STREAMING=1`. `BAUER_VOICE_BARGE_IN=1` continua
@@ -523,11 +529,12 @@ Se o modelo, a biblioteca ou o dispositivo não estiverem disponíveis, o Bauer
 recua automaticamente para a validação pela transcrição.
 
 **Setup:**
-- **Captura + STT**: `uv sync --extra voice` (sounddevice, numpy, soundfile,
-  faster-whisper). Transcrição escolhe entre:
-  - Local offline (recomendado, sem key): `STT_PROVIDER=local`
-  - Cloud grátis: `GROQ_API_KEY` (console.groq.com)
-  - OpenAI: `OPENAI_API_KEY`
+  - **Captura + STT**: `uv sync --extra voice` (sounddevice, numpy, soundfile,
+  faster-whisper). O padrão cloud é OpenRouter:
+  - OpenRouter: `OPENROUTER_API_KEY` — `openai/whisper-large-v3-turbo`
+  - Local offline: `STT_PROVIDER=local`
+  - Groq: `STT_PROVIDER=groq` + `GROQ_API_KEY`
+  - OpenAI: `STT_PROVIDER=openai` + `OPENAI_API_KEY`
 - **TTS (resposta falada)**: escolha uma:
   - Local offline (recomendado, sem key, fala pt nativamente): `uv sync --extra
     voice-tts` **+ PyTorch/Torchaudio/Torchcodec à parte** — a lib não os

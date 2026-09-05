@@ -161,11 +161,14 @@ class BargeInController:
 
 
 class StreamingVoiceOutput:
-    """Converte frases recebidas do stream em áudio numa fila dedicada.
+    """Converte a resposta final do stream em áudio numa fila dedicada.
 
     O produtor (stream do LLM) nunca espera a chamada TTS nem o playback. A
     fila mantém a ordem das frases e o worker encerra de forma determinística
-    quando ``finish`` é chamado ao final do turno.
+    quando ``finish`` é chamado ao final do turno. O texto só é liberado para
+    o TTS depois que o agente confirma que a rodada não gerou uma tool call;
+    assim, preâmbulos ou JSON de ferramentas nunca são falados antes do
+    resultado da execução.
     """
 
     def __init__(
@@ -192,6 +195,7 @@ class StreamingVoiceOutput:
         self._error: VoiceOutputError | None = None
         self._spoken_segments = 0
         self._finished = False
+        self._final_answer_ready = False
         self.metrics_payload: dict[str, Any] | None = None
         self._worker.start()
 
@@ -200,20 +204,35 @@ class StreamingVoiceOutput:
             return
         self.metrics.mark("llm_first_delta")
         self._buffer += chunk
-        self._enqueue_ready_sentences()
 
     def on_round(self) -> None:
-        # Se o modelo terminou uma rodada antes de chamar uma tool, não deixe
-        # um preâmbulo preso ao texto da próxima rodada.
-        self._enqueue_buffer(force=True)
+        # A rodada pode ser uma tool call ou uma resposta final. O caller
+        # chama on_tool() ou on_final() depois de inspecionar a mensagem.
+        # Portanto, não fale nada neste ponto.
+        return
+
+    def on_final(self) -> None:
+        """Libera a rodada somente depois de confirmar que é a resposta final."""
+        if self._finished:
+            return
+        self._final_answer_ready = True
+        self._enqueue_ready_sentences()
 
     def on_tool(self, _name: str) -> None:
-        self._enqueue_buffer(force=True)
+        # Todo texto acumulado pertence à solicitação de ferramenta (ou a um
+        # preâmbulo que não deve ser falado). O resultado só será produzido na
+        # próxima rodada do LLM, depois que a ferramenta terminar.
+        self._final_answer_ready = False
+        self._buffer = ""
 
     def finish(self) -> None:
         if self._finished:
             return
-        self._enqueue_buffer(force=True)
+        if self._final_answer_ready:
+            self._enqueue_buffer(force=True)
+        else:
+            # Não transforme uma rodada interrompida ou de tool call em fala.
+            self._buffer = ""
         self._finished = True
         self._queue.put(None)
         try:
@@ -344,6 +363,10 @@ class CombinedStreamSink:
         if self.text_sink is not None:
             self.text_sink.on_round()
         self.voice_sink.on_round()
+
+    def on_final(self) -> None:
+        """Informa à voz que a rodada foi confirmada como resposta final."""
+        self.voice_sink.on_final()
 
     def on_tool(self, name: str) -> None:
         if self.text_sink is not None:
