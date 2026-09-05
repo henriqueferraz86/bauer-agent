@@ -39,13 +39,13 @@ def test_setup_logging_default_level():
     assert logger.level == logging.INFO
 
 
-def test_setup_logging_console_hides_info_but_keeps_warnings():
+def test_setup_logging_console_fica_silencioso():
     logging.getLogger("bauer").handlers.clear()
     logger = setup_logging(level="info")
     stream_handlers = [h for h in logger.handlers if isinstance(h, _SafeStreamHandler)]
 
     assert len(stream_handlers) == 1
-    assert stream_handlers[0].level == logging.WARNING
+    assert stream_handlers[0].level > logging.CRITICAL
 
 
 def test_setup_logging_debug_level():

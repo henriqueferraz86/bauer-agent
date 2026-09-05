@@ -1,6 +1,6 @@
 """Configuração de logging para o Bauer Agent.
 
-Logs vão para arquivo e console com formatação simples e clara.
+Logs vão para arquivo; o chat/CLI permanece silencioso por padrão.
 Premortem item 9: todo erro precisa ter causa, valor configurado, valor detectado
 e ação sugerida. Logs aqui são o canal pra isso.
 """
@@ -17,6 +17,11 @@ _LEVELS = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+# O chat tem uma saída própria para conversa, progresso e erros acionáveis.
+# Logs técnicos continuam disponíveis no arquivo configurado, mas não devem
+# interromper a leitura da conversa com INFO/WARNING/DEBUG/ERROR.
+_CONSOLE_SILENT_LEVEL = logging.CRITICAL + 1
 
 
 class _SafeStreamHandler(logging.StreamHandler):
@@ -44,11 +49,11 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
 
     # Evita handlers duplicados em chamadas repetidas (testes, REPL).
     if logger.handlers:
-        # O CLI permanece silencioso para INFO, mas o logger continua aceitando
-        # esse nível para o arquivo de log e para diagnóstico quando necessário.
+        # O CLI permanece silencioso; o logger continua aceitando os níveis
+        # configurados para o arquivo de log e para diagnóstico quando necessário.
         for handler in logger.handlers:
             if isinstance(handler, _SafeStreamHandler):
-                handler.setLevel(logging.WARNING)
+                handler.setLevel(_CONSOLE_SILENT_LEVEL)
         return logger
 
     fmt = logging.Formatter(
@@ -57,9 +62,10 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
     )
 
     stream = _SafeStreamHandler(sys.stderr)
-    # Mensagens de progresso do CLI usam console.print; no canal de logging,
-    # somente WARNING e ERROR devem aparecer no terminal.
-    stream.setLevel(logging.WARNING)
+    # Mensagens de conversa/progresso usam console.print; nenhum log técnico
+    # deve aparecer no terminal do chat. O FileHandler abaixo continua
+    # recebendo os registros para diagnóstico, quando configurado.
+    stream.setLevel(_CONSOLE_SILENT_LEVEL)
     stream.setFormatter(fmt)
     logger.addHandler(stream)
 
