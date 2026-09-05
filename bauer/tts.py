@@ -50,6 +50,16 @@ from .voice_text import strip_emoji_for_speech
 
 logger = logging.getLogger("bauer.tts")
 
+# O XTTS chama torch.jit.script durante o carregamento e a inferência. É um
+# aviso de depreciação interno do PyTorch (não uma falha do áudio) e inclui
+# crases no texto da mensagem; filtrá-lo aqui evita que apareça no CLI mesmo
+# quando a biblioteca o emite fora do bloco catch_warnings local.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.jit\.script` is deprecated.*",
+    category=FutureWarning,
+)
+
 # Mesmo limite documentado da API OpenAI TTS — aplicado a todos os providers
 # para manter o contrato de erro previsível independente de qual foi usado.
 MAX_TEXT_CHARS = 4096
