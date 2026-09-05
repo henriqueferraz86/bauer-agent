@@ -591,6 +591,13 @@ bauer voice kokoro-download
 bauer voice speak "Olá, Henrique. Todos os sistemas estão operacionais."
 ```
 
+No Linux, novas instalações já incluem `voice` e `voice-kokoro` por padrão.
+Para baixar os pesos e deixar o Kokoro persistente como voz ativa, use:
+
+```bash
+bauer voice kokoro-setup --voice pm_alex
+```
+
 O Kokoro inclui vozes brasileiras (`pf_dora`, `pm_alex`, `pm_santa`) e vozes
 inglesas britânicas. Os pesos do modelo são Apache 2.0; o runtime ONNX é MIT.
 `pm_alex` é o padrão quando `BAUER_TTS_LANGUAGE=pt-BR` (ou quando nenhum

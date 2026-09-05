@@ -258,6 +258,36 @@ def cmd_voice_kokoro_download() -> None:
     console.print(f"[green]Voicepack pronto:[/green] {voices}")
 
 
+@voice_app.command(name="kokoro-setup")
+def cmd_voice_kokoro_setup(
+    voice: str = typer.Option(
+        "pm_alex",
+        "--voice",
+        help="Voz do Kokoro (pt-BR: pm_alex, pf_dora ou pm_santa)",
+    ),
+) -> None:
+    """Baixa o Kokoro e deixa-o como provider TTS persistente."""
+    from bauer.config_admin import save_env_value
+    from bauer.paths import get_bauer_home
+    from bauer.voice_kokoro import download_kokoro_models
+
+    selected_voice = voice.strip() or "pm_alex"
+    console.print("[cyan]Baixando modelo Kokoro-82M...[/cyan]")
+    try:
+        model, voices = download_kokoro_models()
+        env_path = get_bauer_home() / ".env"
+        save_env_value("BAUER_TTS_PROVIDER", "kokoro", env_path)
+        save_env_value("BAUER_TTS_KOKORO_VOICE", selected_voice, env_path)
+    except Exception as exc:  # noqa: BLE001 - comando exibe erro amigável
+        console.print(f"[red]Não foi possível configurar o Kokoro: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    os.environ["BAUER_TTS_PROVIDER"] = "kokoro"
+    os.environ["BAUER_TTS_KOKORO_VOICE"] = selected_voice
+    console.print(f"[green]Kokoro configurado:[/green] {selected_voice}")
+    console.print(f"[dim]Modelo: {model} | Voicepack: {voices}[/dim]")
+
+
 @voice_app.command(name="xtts-setup")
 def cmd_voice_xtts_setup(
     speaker_wav: Path = typer.Argument(
