@@ -19,6 +19,14 @@ from bauer.agent import (
     _compress_tool_result_inline,
     _ctx_result_for_context,
 )
+from bauer.agent_tool_results import head_tail
+
+
+def test_head_tail_preserves_both_ends_of_a_large_result():
+    head, tail, omitted = head_tail("inicio\nmuito-meio\nfim", 16)
+    assert head == ["inicio"]
+    assert tail == ["fim"]
+    assert omitted == 1
 
 
 # ─── _ctx_result_for_context — casos básicos ─────────────────────────────────

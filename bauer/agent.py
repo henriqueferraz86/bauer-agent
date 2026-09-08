@@ -73,6 +73,7 @@ from .agent_loop_support import (
     print_loop_summary as _print_loop_summary_impl,
     run_loop_skill_verification as _run_loop_skill_verification_impl,
 )
+from .agent_tool_results import head_tail as _head_tail_impl
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -1103,27 +1104,7 @@ def _head_tail(text: str, budget: int) -> tuple[list[str], list[str], int]:
     Returns:
         (linhas_do_inicio, linhas_do_fim, n_linhas_omitidas)
     """
-    lines = [l for l in text.splitlines() if l.strip()]
-    tail_budget = int(budget * _TAIL_SHARE)
-    head_budget = budget - tail_budget
-
-    tail: list[str] = []
-    used = 0
-    for line in reversed(lines):
-        if used + len(line) + 1 > tail_budget:
-            break
-        tail.insert(0, line)
-        used += len(line) + 1
-
-    head: list[str] = []
-    used = 0
-    for line in lines[: len(lines) - len(tail)]:
-        if used + len(line) + 1 > head_budget:
-            break
-        head.append(line)
-        used += len(line) + 1
-
-    return head, tail, len(lines) - len(head) - len(tail)
+    return _head_tail_impl(text, budget, tail_share=_TAIL_SHARE)
 
 
 def _compress_tool_result_inline(action: str, result: str) -> str:
