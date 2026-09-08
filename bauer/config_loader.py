@@ -615,6 +615,8 @@ class ServeSection(_StrictSection):
     host: str = "127.0.0.1"  # default seguro — bind apenas local; use 0.0.0.0 só com api_key
     port: int = Field(ge=1, le=65535, default=8000)
     api_key: str = ""  # Bearer token para proteger o bauer serve (ou BAUER_SERVE_API_KEY no .env)
+    deployment_mode: Literal["local", "reverse_proxy"] = "local"
+    public_url: str = ""  # URL HTTPS pública quando deployment_mode=reverse_proxy
     workers: int = Field(ge=1, le=8, default=1)
     rate_limit_requests: int = Field(ge=0, default=60)   # max requests por IP/key por janela; 0 = desativado
     rate_limit_window_s: float = Field(ge=1.0, default=60.0)  # janela em segundos

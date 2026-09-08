@@ -22,6 +22,37 @@ runtime_app.add_typer(runtime_teams_app, name="teams")
 runtime_app.add_typer(runtime_service_app, name="service")
 
 
+@runtime_app.command("snapshot")
+def runtime_snapshot_cmd(
+    root: Path = typer.Option(Path("memory/runtime"), "--root"),
+    destination: Path = typer.Option(..., "--destination", "-d"),
+):
+    """Cria snapshot consistente dos bancos operacionais do runtime."""
+    from ..core.runtime.snapshot import SnapshotError, create_snapshot
+
+    try:
+        snapshot = create_snapshot(root, destination)
+    except (OSError, SnapshotError) as exc:
+        console.print(f"[red]Snapshot falhou:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]Snapshot verificado:[/green] {snapshot}")
+
+
+@runtime_app.command("verify-snapshot")
+def runtime_verify_snapshot_cmd(
+    destination: Path = typer.Argument(...),
+):
+    """Verifica checksums e integridade de um snapshot sem modificá-lo."""
+    from ..core.runtime.snapshot import SnapshotError, verify_snapshot
+
+    try:
+        manifest = verify_snapshot(destination)
+    except SnapshotError as exc:
+        console.print(f"[red]Snapshot inválido:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]Snapshot íntegro:[/green] {len(manifest['databases'])} banco(s)")
+
+
 @runtime_agents_app.command("list")
 def runtime_agents_list_cmd():
     """Lista agents formais versionados do runtime."""

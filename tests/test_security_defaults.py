@@ -16,7 +16,7 @@ import yaml
 
 from bauer.config_loader import load_config, ServeSection
 from bauer.model_registry import load_registry
-from bauer.preflight import run_doctor, serve_binding_error
+from bauer.preflight import run_doctor, serve_binding_error, serve_deployment_error
 
 
 _BASE_CFG = {
@@ -86,6 +86,36 @@ def test_loopback_bind_without_key_is_allowed(host: str):
 
 def test_external_bind_with_key_is_allowed():
     assert serve_binding_error("0.0.0.0", "local-development-key") is None
+
+
+def test_reverse_proxy_requires_an_explicit_safe_contract():
+    base = {
+        "deployment_mode": "reverse_proxy",
+        "api_key": "key",
+        "cors_origins": ["https://bauer.example"],
+        "trusted_proxies": ["10.0.0.0/8"],
+        "public_url": "https://bauer.example",
+    }
+    assert serve_deployment_error(**base) is None
+
+    for field, value in (
+        ("api_key", ""),
+        ("cors_origins", ["*"]),
+        ("trusted_proxies", ["*"]),
+        ("public_url", "http://bauer.example"),
+    ):
+        unsafe = {**base, field: value}
+        assert serve_deployment_error(**unsafe) is not None
+
+
+def test_local_deployment_keeps_legacy_permissive_defaults():
+    assert serve_deployment_error(
+        deployment_mode="local",
+        api_key="",
+        cors_origins=[],
+        trusted_proxies=[],
+        public_url="",
+    ) is None
 
 
 # ---------------------------------------------------------------------------

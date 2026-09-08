@@ -49,6 +49,39 @@ def serve_binding_error(host: str, api_key: str) -> str | None:
     )
 
 
+def serve_deployment_error(
+    *,
+    deployment_mode: str,
+    api_key: str,
+    cors_origins: list[str],
+    trusted_proxies: list[str],
+    public_url: str,
+) -> str | None:
+    """Valida o contrato explícito do Bauer quando há proxy de borda.
+
+    TLS é terminado fora do processo FastAPI. Este guard não tenta inferir a
+    topologia pelo host atual: o operador declara o modo e recebe uma falha de
+    boot antes de expor uma configuração ambígua.
+    """
+    if deployment_mode == "local":
+        return None
+    if not (api_key or "").strip():
+        return "serve reverse_proxy recusado: configure serve.api_key."
+    if not public_url.strip().lower().startswith("https://"):
+        return "serve reverse_proxy recusado: serve.public_url deve usar https://."
+    if not cors_origins or "*" in cors_origins:
+        return (
+            "serve reverse_proxy recusado: configure serve.cors_origins "
+            "explicitamente, sem '*'."
+        )
+    if not trusted_proxies or "*" in trusted_proxies:
+        return (
+            "serve reverse_proxy recusado: configure serve.trusted_proxies "
+            "com IPs/CIDRs explícitos, sem '*'."
+        )
+    return None
+
+
 def _detect_env_num_ctx() -> int | None:
     """Lê OLLAMA_CONTEXT_LENGTH do ambiente do processo atual.
 

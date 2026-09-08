@@ -37,6 +37,7 @@ OPERACOES_CORE = {
     "GET /audit/skills/insights",
     "GET /events",
     "GET /health",
+    "GET /readyz",
     "GET /loop/{run_id}",
     "GET /loops",
     "GET /models",
@@ -202,5 +203,10 @@ def test_rotas_protegidas_exigem_auth(spec):
 
     assert c.get("/health").status_code == 200, "/health deve seguir publica"
 
-    for rota in ("/sessions", "/events", "/runs", "/audit", "/approvals", "/status"):
+    for rota in ("/sessions", "/events", "/runs", "/audit", "/approvals", "/status", "/readyz"):
         assert c.get(rota).status_code == 401, f"{rota} respondeu sem API key"
+
+    ready = c.get("/readyz", headers={"X-API-Key": "segredo", "X-Request-ID": "request-id-123"})
+    assert ready.status_code == 200
+    assert ready.headers["X-Request-ID"] == "request-id-123"
+    assert ready.headers["X-Content-Type-Options"] == "nosniff"

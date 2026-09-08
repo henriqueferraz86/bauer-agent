@@ -1251,6 +1251,14 @@ def create_app(
     @app.middleware("http")
     async def _metrics_middleware(request, call_next):
         _metrics.requests_total += 1
+        from .server_observability import apply_security_headers, request_id
+
+        request_id_value = request_id(request.headers.get("X-Request-ID"))
+
+        def _finalize(response):
+            response.headers["X-Request-ID"] = request_id_value
+            apply_security_headers(response)
+            return response
 
         # Global rate limit (applies to every route, even /health)
         if _limiter.max_requests > 0:
@@ -1259,11 +1267,11 @@ def create_app(
             if not _limiter.is_allowed(key):
                 retry = _limiter.retry_after(key)
                 _metrics.rate_limited_total += 1
-                return JSONResponse(
+                return _finalize(JSONResponse(
                     status_code=429,
                     content={"detail": f"Rate limit excedido. Tente novamente em {retry:.0f}s."},
                     headers={"Retry-After": str(int(retry) + 1)},
-                )
+                ))
 
         t0 = time.monotonic()
         try:
@@ -1296,15 +1304,25 @@ def create_app(
                 "path": request.url.path,
                 "status": response.status_code,
                 "duration_ms": round(elapsed_ms, 1),
+                "request_id": request_id_value,
                 "client_ip": _get_client_ip(request),
                 "user_agent": request.headers.get("User-Agent", ""),
             }
             _access_logger.info(json.dumps(record))
-        return response
+        return _finalize(response)
 
     @app.get("/health")
     def health():
         return {"status": "ok", "model": _state["model"]}
+
+    @app.get("/readyz")
+    def readyz(_: None = Depends(_verify_key)):
+        from .server_observability import runtime_ready
+
+        ready, detail = runtime_ready(runtime_root)
+        if not ready:
+            raise HTTPException(status_code=503, detail=detail)
+        return {"status": "ready"}
 
     @app.get("/status")
     def status(_: None = Depends(_verify_key)):

@@ -79,10 +79,20 @@ def serve(
     serve_host = host or cfg.serve.host
     serve_port = port or cfg.serve.port
     serve_key = api_key or cfg.serve.api_key
-    from ..preflight import serve_binding_error
+    from ..preflight import serve_binding_error, serve_deployment_error
     _serve_error = serve_binding_error(serve_host, serve_key)
     if _serve_error:
         console.print(f"[red]{_serve_error}[/red]")
+        raise typer.Exit(code=1)
+    _deployment_error = serve_deployment_error(
+        deployment_mode=cfg.serve.deployment_mode,
+        api_key=serve_key,
+        cors_origins=list(cfg.serve.cors_origins),
+        trusted_proxies=list(cfg.serve.trusted_proxies),
+        public_url=cfg.serve.public_url,
+    )
+    if _deployment_error:
+        console.print(f"[red]{_deployment_error}[/red]")
         raise typer.Exit(code=1)
 
     state = _get_or_run_state(cfg, reg, state_file)
