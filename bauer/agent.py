@@ -56,6 +56,11 @@ from .agent_voice import (
 # Compatibilidade para extensões e testes que ainda importam o símbolo privado
 # de bauer.agent enquanto a sessão CLI é modularizada.
 from .agent_orchestration import run_orchestrator_inline as _run_orchestrator_inline
+from .agent_loop_config import (
+    parse_loop_args as _parse_loop_args,
+    resolve_loop_config as _resolve_loop_config,
+    resolve_max_tool_turns as _resolve_max_tool_turns,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -3766,91 +3771,6 @@ _LOOP_STOP_REASON_LABELS = {
 _LOOP_SKILL_COOLDOWN_S = 60
 
 
-def _parse_loop_args(rest: str) -> tuple[str, dict]:
-    """Extrai flags conhecidas de `/loop <tarefa> [--max-minutes N] ...`.
-
-    Retorna (descrição_da_tarefa, overrides) — overrides tem só as chaves
-    que o usuário passou explicitamente (valores ainda como string bruta,
-    convertidos/validados por `_resolve_loop_config`).
-
-    A tarefa é texto livre e fica VERBATIM (só as flags são removidas).
-    Nada de shlex aqui: em modo POSIX ele consome as barras invertidas de
-    caminhos Windows — `/loop suba o docker em C:\\Users\\x` chegava ao
-    modelo como "C:Usersx", um caminho inexistente (incidente real
-    autonomous_loop_stopped de 2026-07-02).
-    """
-    import re as _re
-
-    _FLAG_TO_KEY = {
-        "max-minutes": "max_minutes",
-        "max-tool-calls": "max_tool_calls",
-        "max-cost": "max_cost_usd",
-        "approval": "approval_mode",
-    }
-    overrides: dict = {}
-
-    def _grab(m: "_re.Match") -> str:
-        overrides[_FLAG_TO_KEY[m.group(1)]] = m.group(2)
-        return ""  # remove a flag + valor + whitespace à direita
-
-    task = _re.sub(
-        r"(?:^|(?<=\s))--(max-minutes|max-tool-calls|max-cost|approval)\s+(\S+)\s*",
-        _grab,
-        rest,
-    )
-
-    def _grab_yolo(_m: "_re.Match") -> str:
-        overrides["approval_mode"] = "yolo"
-        return ""
-
-    task = _re.sub(r"(?:^|(?<=\s))--yolo(?:\s+|$)", _grab_yolo, task)
-    return task.strip(), overrides
-
-
-def _resolve_loop_config(overrides: dict) -> "LoopSection":
-    """Resolve limites do /loop: flag > config.yaml (`loop:`) > defaults.
-
-    Nunca lança — falha ao carregar config.yaml cai silenciosamente para os
-    defaults de `LoopSection`. Overrides de flag inválidos (ex.: --max-cost
-    abc) levantam ValueError com mensagem amigável para o chamador tratar.
-    """
-    from .config_loader import LoopSection
-
-    try:
-        from .config_loader import load_config
-        base = load_config().loop
-    except Exception:
-        base = LoopSection()
-
-    data = base.model_dump()
-    if "max_minutes" in overrides:
-        try:
-            data["max_minutes"] = int(overrides["max_minutes"])
-        except ValueError:
-            raise ValueError(f"--max-minutes inválido: {overrides['max_minutes']!r}") from None
-    if "max_tool_calls" in overrides:
-        try:
-            data["max_tool_calls"] = int(overrides["max_tool_calls"])
-        except ValueError:
-            raise ValueError(f"--max-tool-calls inválido: {overrides['max_tool_calls']!r}") from None
-    if "max_cost_usd" in overrides:
-        try:
-            data["max_cost_usd"] = float(overrides["max_cost_usd"])
-        except ValueError:
-            raise ValueError(f"--max-cost inválido: {overrides['max_cost_usd']!r}") from None
-    if "approval_mode" in overrides:
-        data["approval_mode"] = overrides["approval_mode"]
-    if "approval_risk_threshold" in overrides:
-        try:
-            data["approval_risk_threshold"] = float(overrides["approval_risk_threshold"])
-        except ValueError:
-            raise ValueError(
-                f"approval_risk_threshold inválido: {overrides['approval_risk_threshold']!r}"
-            ) from None
-
-    return LoopSection(**data)
-
-
 def _run_loop_mode(
     *,
     task_description: str,
@@ -4260,17 +4180,6 @@ def _handle_loop_skill_cmd(
         return
 
     console.print("[yellow]Uso:[/yellow] /loop-skill list | /loop-skill run <nome> [texto livre]")
-
-
-def _resolve_max_tool_turns() -> int:
-    """Lê config.tools.max_tool_turns — best-effort, default 150 (mesmo
-    valor default de ToolsSection) se a config não carregar, mesma
-    filosofia de _minimal_code_mode_enabled/_resolve_loop_config."""
-    try:
-        from .config_loader import load_config
-        return load_config().tools.max_tool_turns
-    except Exception:
-        return 150
 
 
 def run_agent_session(

@@ -99,6 +99,15 @@ def _run_loop(client, workspace: Path, task="tarefa de teste", overrides=None, l
 # ─── _parse_loop_args ─────────────────────────────────────────────────────────
 
 
+def test_loop_config_helpers_are_delegated_to_specialized_module():
+    """O símbolo legado não duplica parsing/config no módulo de sessão."""
+    import bauer.agent as agent_module
+    from bauer.agent_loop_config import parse_loop_args, resolve_loop_config
+
+    assert agent_module._parse_loop_args is parse_loop_args
+    assert agent_module._resolve_loop_config is resolve_loop_config
+
+
 def test_parse_loop_args_all_flags():
     task, overrides = _parse_loop_args(
         "conserta os testes --max-minutes 5 --max-tool-calls 40 --max-cost 1.5 --approval deny_all"
