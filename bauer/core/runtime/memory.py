@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..events import EventBus
-from .state_store import JsonlStateStore
+from .state_store import RuntimeStateStore, SqliteStateStore
 
 MEMORY_SCOPES = {"user", "company", "project", "agent", "skill"}
 
@@ -48,10 +48,10 @@ class RuntimeMemoryManager:
         self,
         *,
         root: str | Path = "memory/runtime",
-        store: JsonlStateStore | None = None,
+        store: RuntimeStateStore | None = None,
         event_bus: EventBus | None = None,
     ):
-        self.store = store or JsonlStateStore(root)
+        self.store = store or SqliteStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
 
     def write(

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..events.schema import Event
-from ..runtime.state_store import JsonlStateStore
+from ..runtime.state_store import RuntimeStateStore
 
 
 @dataclass(slots=True)
@@ -26,7 +26,7 @@ class AuditRecord:
 
 
 class AuditLog:
-    def __init__(self, store: JsonlStateStore):
+    def __init__(self, store: RuntimeStateStore):
         self.store = store
 
     def record_event(self, event: Event) -> AuditRecord:

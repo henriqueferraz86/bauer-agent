@@ -33,7 +33,7 @@ _NO_EXECUTION = object()
 def _persistable(data: dict[str, Any]) -> dict[str, Any]:
     """Cópia JSON-serializável do payload — objetos vivos (client, callables)
     viram marcador. O payload ORIGINAL segue intacto para o adapter; só o que
-    vai para o JsonlStateStore é saneado."""
+    vai para o state store é saneado."""
     out: dict[str, Any] = {}
     for key, value in data.items():
         try:
@@ -996,9 +996,9 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
     from ..runtime.autonomy import BudgetManager
     from ..runtime.resilience import RuntimeControl, RuntimeRecovery
     from ..runtime.run_manager import RunManager
-    from ..runtime.state_store import JsonlStateStore
+    from ..runtime.state_store import SqliteStateStore
 
-    store = getattr(bus, "store", None) or JsonlStateStore(root)
+    store = getattr(bus, "store", None) or SqliteStateStore(root)
     bus = bus or EventBus(store=store)
     runs = RunManager(store=store, event_bus=bus)
     policy = None

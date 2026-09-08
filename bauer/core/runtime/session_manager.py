@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .state_store import JsonlStateStore
+from .state_store import RuntimeStateStore, SqliteStateStore
 
 
 @dataclass
@@ -23,8 +23,8 @@ class Session:
 
 
 class SessionManager:
-    def __init__(self, store: JsonlStateStore | None = None, root: str | Path = "memory/runtime"):
-        self.store = store or JsonlStateStore(root)
+    def __init__(self, store: RuntimeStateStore | None = None, root: str | Path = "memory/runtime"):
+        self.store = store or SqliteStateStore(root)
 
     def create_session(
         self,

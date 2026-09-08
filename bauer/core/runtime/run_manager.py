@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from ..events.bus import EventBus
-from .state_store import JsonlStateStore
+from .state_store import RuntimeStateStore, SqliteStateStore
 
 # Estados base (caminho legado: queued → running → completed) + estados do
 # Kernel (created/planning/policy_check/evaluating/retrying/paused — só usados
@@ -66,12 +66,12 @@ class Run:
 class RunManager:
     def __init__(
         self,
-        store: JsonlStateStore | None = None,
+        store: RuntimeStateStore | None = None,
         root: str | Path = "memory/runtime",
         event_bus: EventBus | None = None,
         agent_registry: Any | None = None,
     ):
-        self.store = store or JsonlStateStore(root)
+        self.store = store or SqliteStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
         self.agent_registry = agent_registry
 
@@ -203,7 +203,20 @@ class RunManager:
             raise KeyError(f"Run not found: {run_id}")
         if run.status in TERMINAL_RUN_STATUSES:
             return run
-        return self.update_run(run_id, status="failed", error=error)
+        data = run.__dict__.copy()
+        data.update(status="failed", error=error, updated_at=_now_iso())
+        if not data.get("finished_at"):
+            data["finished_at"] = _now_iso()
+        updated = Run(**data)
+        if not self.store.upsert_unless_status(
+            "runs", updated, forbidden_statuses=TERMINAL_RUN_STATUSES
+        ):
+            current = self.get_run(run_id)
+            if current is None:
+                raise KeyError(f"Run not found: {run_id}")
+            return current
+        self._publish_status_event(updated)
+        return updated
 
     def cancel_run(self, run_id: str) -> Run:
         run = self.get_run(run_id)

@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..events import EventBus
-from ..runtime.state_store import JsonlStateStore
+from ..runtime.state_store import SqliteStateStore
 
 
 @dataclass(slots=True)
@@ -30,7 +30,7 @@ class ApprovalRecord:
 class ApprovalManager:
     def __init__(self, *, root: str | Path = "memory/runtime", event_bus: EventBus | None = None):
         self.root = Path(root)
-        self.store = JsonlStateStore(self.root)
+        self.store = SqliteStateStore(self.root)
         self.event_bus = event_bus or EventBus(root=self.root)
 
     def request(

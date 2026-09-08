@@ -15,7 +15,7 @@ from .autonomy import BudgetExceededError, BudgetManager
 from .run_manager import RunManager
 from .resilience import RuntimeControl, WorkerRegistry
 from .session_manager import SessionManager
-from .state_store import JsonlStateStore
+from .state_store import RuntimeStateStore, SqliteStateStore
 
 
 TaskStatus = str
@@ -45,13 +45,13 @@ class Scheduler:
         self,
         *,
         root: str | Path = "memory/runtime",
-        store: JsonlStateStore | None = None,
+        store: RuntimeStateStore | None = None,
         event_bus: EventBus | None = None,
         adapter_factory: AdapterFactory | None = None,
         config: Any = None,
     ) -> None:
         self.root = Path(root)
-        self.store = store or JsonlStateStore(self.root)
+        self.store = store or SqliteStateStore(self.root)
         self.event_bus = event_bus or EventBus(store=self.store)
         self.run_manager = RunManager(store=self.store, event_bus=self.event_bus)
         self.session_manager = SessionManager(store=self.store)

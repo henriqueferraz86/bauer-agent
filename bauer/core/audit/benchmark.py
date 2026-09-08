@@ -59,7 +59,7 @@ def run_benchmark_suite(
 ) -> BenchmarkSuiteReport:
     """Execute scenarios, audit their runs and persist a repeatable report."""
     from ..events import EventBus
-    from ..runtime.state_store import JsonlStateStore
+    from ..runtime.state_store import SqliteStateStore
 
     root = Path(runtime_root)
     suite = BenchmarkSuiteReport(
@@ -103,14 +103,14 @@ def run_benchmark_suite(
     suite.passed = sum(1 for item in suite.results if item.passed)
     suite.failed = suite.total - suite.passed
     suite.finished_at = datetime.now(UTC).isoformat()
-    JsonlStateStore(root).upsert("benchmark_reports", asdict(suite))
+    SqliteStateStore(root).upsert("benchmark_reports", asdict(suite))
     return suite
 
 
 def list_benchmark_reports(runtime_root: str | Path, *, limit: int = 20) -> list[dict[str, Any]]:
-    from ..runtime.state_store import JsonlStateStore
+    from ..runtime.state_store import SqliteStateStore
 
-    records = JsonlStateStore(runtime_root).list_latest("benchmark_reports")
+    records = SqliteStateStore(runtime_root).list_latest("benchmark_reports")
     return list(reversed(records[-max(0, limit):]))
 
 

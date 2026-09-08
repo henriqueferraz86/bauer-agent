@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..runtime.state_store import JsonlStateStore
+from ..runtime.state_store import RuntimeStateStore, SqliteStateStore
 from .schema import Event, EventType
 
 Subscriber = Callable[[Event], None]
@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class EventBus:
-    def __init__(self, store: JsonlStateStore | None = None, root: str | Path = "memory/runtime"):
-        self.store = store or JsonlStateStore(root)
+    def __init__(self, store: RuntimeStateStore | None = None, root: str | Path = "memory/runtime"):
+        self.store = store or SqliteStateStore(root)
         self._subscribers: dict[str, list[Subscriber]] = {}
 
     def subscribe(self, event_type: str, handler: Subscriber) -> None:

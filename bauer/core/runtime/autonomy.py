@@ -9,7 +9,7 @@ from typing import Any
 
 from ..events import EventBus
 from .budget_ledger import BudgetLedger, BudgetLedgerExceeded
-from .state_store import JsonlStateStore
+from .state_store import RuntimeStateStore, SqliteStateStore
 
 AUTONOMY_MODES = {"manual", "supervised", "autonomous", "locked"}
 
@@ -55,12 +55,12 @@ class BudgetManager:
         self,
         *,
         root: str | Path = "memory/runtime",
-        store: JsonlStateStore | None = None,
+        store: RuntimeStateStore | None = None,
         event_bus: EventBus | None = None,
         stale_run_after_s: int | None = None,
     ) -> None:
         self.root = Path(getattr(store, "root", root))
-        self.store = store or JsonlStateStore(root)
+        self.store = store or SqliteStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
         self.ledger = BudgetLedger(self.root)
         if stale_run_after_s is not None:

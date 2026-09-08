@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from ..events.schema import Event
-from ..runtime.state_store import JsonlStateStore
+from ..runtime.state_store import RuntimeStateStore
 
 
 @dataclass(slots=True)
@@ -23,7 +23,7 @@ class TraceSpan:
 
 
 class RunTraceStore:
-    def __init__(self, store: JsonlStateStore):
+    def __init__(self, store: RuntimeStateStore):
         self.store = store
 
     def record_event(self, event: Event) -> TraceSpan | None:

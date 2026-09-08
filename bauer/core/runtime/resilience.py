@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .run_manager import RECOVERABLE_RUN_STATUSES, RunManager
-from .state_store import JsonlStateStore
+from .state_store import RuntimeStateStore, SqliteStateStore
 
 #: Intervalo entre batidas do pulso de um run. Tem de ser MUITO menor que o
 #: `max_age_s` do recovery (900s default) — a margem é o que impede um atraso de
@@ -30,8 +30,8 @@ class WorkerHeartbeat:
 
 
 class WorkerRegistry:
-    def __init__(self, *, root: str | Path = "memory/runtime", store: JsonlStateStore | None = None):
-        self.store = store or JsonlStateStore(root)
+    def __init__(self, *, root: str | Path = "memory/runtime", store: RuntimeStateStore | None = None):
+        self.store = store or SqliteStateStore(root)
 
     def heartbeat(self, worker_id: str, *, status: str = "online", metadata: dict[str, Any] | None = None) -> WorkerHeartbeat:
         now = _now_iso()
@@ -96,8 +96,8 @@ class RunHeartbeat:
     COLECAO = "run_heartbeats"
 
     def __init__(self, *, root: str | Path = "memory/runtime",
-                 store: JsonlStateStore | None = None):
-        self.store = store or JsonlStateStore(root)
+                 store: RuntimeStateStore | None = None):
+        self.store = store or SqliteStateStore(root)
 
     def bater(self, run_id: str) -> RunLiveness:
         record = RunLiveness(id=run_id, last_seen_at=_now_iso(), pid=os.getpid())
@@ -145,8 +145,8 @@ class RunHeartbeat:
 
 
 class RuntimeControl:
-    def __init__(self, *, root: str | Path = "memory/runtime", store: JsonlStateStore | None = None):
-        self.store = store or JsonlStateStore(root)
+    def __init__(self, *, root: str | Path = "memory/runtime", store: RuntimeStateStore | None = None):
+        self.store = store or SqliteStateStore(root)
 
     def set_kill_switch(self, enabled: bool) -> dict[str, Any]:
         record = {
@@ -163,8 +163,8 @@ class RuntimeControl:
 
 
 class RuntimeRecovery:
-    def __init__(self, *, root: str | Path = "memory/runtime", store: JsonlStateStore | None = None):
-        self.store = store or JsonlStateStore(root)
+    def __init__(self, *, root: str | Path = "memory/runtime", store: RuntimeStateStore | None = None):
+        self.store = store or SqliteStateStore(root)
         self.run_manager = RunManager(store=self.store)
         self.heartbeats = RunHeartbeat(store=self.store)
 

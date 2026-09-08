@@ -14,7 +14,7 @@ from ..events import EventBus
 from ..policy import PolicyEngine
 from .agent_registry import RuntimeAgentRegistry
 from .run_manager import Run, RunManager
-from .state_store import JsonlStateStore
+from .state_store import SqliteStateStore
 
 
 class TeamRegistryError(ValueError):
@@ -123,7 +123,7 @@ class DelegationManager:
         policy_engine: PolicyEngine | None = None,
         event_bus: EventBus | None = None,
     ):
-        self.store = JsonlStateStore(root)
+        self.store = SqliteStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
         self.agent_registry = agent_registry or RuntimeAgentRegistry()
         self.team_registry = team_registry or TeamRegistry(agent_registry=self.agent_registry)

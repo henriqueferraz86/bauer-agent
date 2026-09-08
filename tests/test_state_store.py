@@ -1,11 +1,20 @@
-"""Testes do JsonlStateStore — incluindo integridade sob concorrência (#08)."""
+"""Testes do estado persistente do runtime, incluindo concorrência."""
 
 from __future__ import annotations
 
+import json
+import multiprocessing
 import threading
 from pathlib import Path
 
-from bauer.core.runtime.state_store import JsonlStateStore
+from bauer.core.runtime.state_store import JsonlStateStore, SqliteStateStore
+
+
+def _sqlite_process_writer(root: str, process_id: int, count: int) -> None:
+    """Target de processo precisa estar no nível do módulo para Windows/spawn."""
+    store = SqliteStateStore(root)
+    for index in range(count):
+        store.append("events", {"id": f"p{process_id}-{index}", "process": process_id})
 
 
 def test_append_list_latest_roundtrip(tmp_path: Path):
@@ -28,17 +37,13 @@ def test_missing_collection_is_empty(tmp_path: Path):
 
 
 def test_concurrent_appends_do_not_corrupt(tmp_path: Path):
-    """#08: N threads appendando no MESMO arquivo, via instâncias distintas de
-    JsonlStateStore apontando pro mesmo root. Sem o lock por-arquivo, writes se
-    intercalavam (linha corrompida → JSONDecodeError → registro PERDIDO). Com o
-    lock, TODOS os N*M registros são legíveis e válidos."""
+    """Múltiplas instâncias preservam todos os registros no mesmo banco."""
     n_threads = 8
     per_thread = 50
     barrier = threading.Barrier(n_threads)
 
     def _worker(tid: int) -> None:
-        # instância PRÓPRIA por thread (mesmo root) — testa o lock por-arquivo,
-        # não um lock por-instância.
+        # Instância própria por thread, todas no mesmo diretório persistente.
         store = JsonlStateStore(root=tmp_path)
         barrier.wait()  # largada simultânea maximiza a contenção
         for i in range(per_thread):
@@ -66,6 +71,42 @@ def test_no_partial_line_on_disk(tmp_path: Path):
     raw = (tmp_path / "c.jsonl").read_text(encoding="utf-8")
     lines = raw.splitlines()
     assert len(lines) == 20
-    import json
     for ln in lines:
         assert isinstance(json.loads(ln), dict)  # toda linha é JSON válido
+
+
+def test_sqlite_migrates_jsonl_and_keeps_audit(tmp_path: Path):
+    (tmp_path / "runs.jsonl").write_text(
+        json.dumps({"id": "legacy", "status": "queued", "updated_at": "1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    store = SqliteStateStore(tmp_path)
+    assert store.latest("runs", "legacy")["status"] == "queued"  # type: ignore[index]
+
+    store.upsert("runs", {"id": "legacy", "status": "running", "updated_at": "2"})
+    assert store.latest("runs", "legacy")["status"] == "running"  # type: ignore[index]
+    assert len((tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_sqlite_serializes_writes_from_separate_processes(tmp_path: Path):
+    process_count = 2
+    per_process = 30
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(target=_sqlite_process_writer, args=(str(tmp_path), process_id, per_process))
+        for process_id in range(process_count)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+
+    records = SqliteStateStore(tmp_path).list("events")
+    assert len(records) == process_count * per_process
+    assert {record["id"] for record in records} == {
+        f"p{process_id}-{index}"
+        for process_id in range(process_count)
+        for index in range(per_process)
+    }
