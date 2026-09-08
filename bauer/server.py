@@ -1482,10 +1482,14 @@ def create_app(
                     cfg = load_config(config_path)
                     new_client = _build_client_for_provider(new_provider, new_model, cfg)
                 except Exception as exc:
+                    _log.warning(
+                        "model switch failed for provider=%s model=%s: %s",
+                        new_provider, new_model, exc,
+                    )
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Nao foi possivel construir client para provider '{new_provider}': {exc}",
-                    )
+                        detail=f"Nao foi possivel construir client para provider '{new_provider}'.",
+                    ) from exc
             else:
                 # Sem config_path — aceita a troca mas mantém o client atual
                 # (o chat vai falhar se o provider for incompatível)
@@ -1783,8 +1787,9 @@ def create_app(
                 temp_path,
             )
         except Exception as exc:  # noqa: BLE001 — voz é saída acessória
+            _log.warning("text-to-speech failed: %s", exc)
             temp_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=503, detail=f"Síntese de voz indisponível: {exc}") from exc
+            raise HTTPException(status_code=503, detail="Síntese de voz indisponível.") from exc
 
         if not result.get("success"):
             temp_path.unlink(missing_ok=True)

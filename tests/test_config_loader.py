@@ -44,6 +44,27 @@ def test_load_valid_config(tmp_path: Path):
     assert cfg.model.requested_context == 16384
     assert cfg.runtime.profile == "low"
     assert cfg.runtime.safety_margin_mb == 1024
+    assert cfg.memory.semantic_indexing_enabled is True
+    assert cfg.memory.semantic_indexing_debounce_s == 0.5
+    assert cfg.memory.semantic_indexing_batch_size == 16
+
+
+def test_memory_indexing_config_is_strict_and_bounded(tmp_path: Path):
+    p = tmp_path / "config.yaml"
+    p.write_text(
+        VALID_CONFIG + "\nmemory:\n  semantic_indexing_enabled: false\n"
+        "  semantic_indexing_debounce_s: 2\n  semantic_indexing_batch_size: 4\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(p)
+    assert cfg.memory.semantic_indexing_enabled is False
+    assert cfg.memory.semantic_indexing_debounce_s == 2
+    assert cfg.memory.semantic_indexing_batch_size == 4
+
+    invalid = tmp_path / "invalid-memory.yaml"
+    invalid.write_text(VALID_CONFIG + "\nmemory:\n  unknown: true\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="unknown"):
+        load_config(invalid)
 
 
 def test_ui_visual_preferences_are_strict_and_have_safe_defaults(tmp_path: Path):

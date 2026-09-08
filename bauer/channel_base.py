@@ -249,7 +249,12 @@ class AgentBackend:
                     self._fallback_clients = build_fallback_clients(cfg)
                 except Exception:  # noqa: BLE001
                     self._fallback_clients = []
-                self._store = SqliteSessionStore(self.sessions_dir)
+                self._store = SqliteSessionStore(
+                    self.sessions_dir,
+                    semantic_indexing_enabled=cfg.memory.semantic_indexing_enabled,
+                    semantic_indexing_debounce_s=cfg.memory.semantic_indexing_debounce_s,
+                    semantic_indexing_batch_size=cfg.memory.semantic_indexing_batch_size,
+                )
                 self._system_prompt = _build_system_prompt(self._router, client=self._client)
                 self._init_error = ""
                 try:

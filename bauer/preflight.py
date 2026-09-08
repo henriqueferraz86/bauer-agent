@@ -7,6 +7,7 @@ RuntimeState completo + uma lista de "notas" legíveis.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,30 @@ from .runtime_state import ContextState, RuntimeState
 class DoctorReport:
     state: RuntimeState
     findings: list[str]   # mensagens legíveis (mesmas das notes em state)
+
+
+def serve_binding_error(host: str, api_key: str) -> str | None:
+    """Return a boot-blocking error for an unauthenticated external bind.
+
+    Local development on loopback intentionally permits an empty key.  Any
+    other address is treated as reachable by another machine; refusing the
+    bind is safer than relying on ``bauer doctor`` being run first.
+    """
+    normalized = (host or "").strip().lower().strip("[]")
+    is_local = normalized in {"localhost", "127.0.0.1", "::1"}
+    if not is_local:
+        try:
+            is_local = ipaddress.ip_address(normalized).is_loopback
+        except ValueError:
+            # Hostnames other than localhost may resolve to a network address.
+            is_local = False
+    if is_local or (api_key or "").strip():
+        return None
+    return (
+        "serve recusado: host externo sem autenticação. "
+        f"Configure serve.api_key para {host!r} ou altere serve.host para "
+        "127.0.0.1."
+    )
 
 
 def _detect_env_num_ctx() -> int | None:

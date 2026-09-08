@@ -8,7 +8,7 @@
 - **Depends on**: —
 - **Category**: security, performance, frontend reliability, architecture
 - **Planned at**: 2026-09-08, após auditoria completa de maturidade
-- **Status**: TODO
+- **Status**: IN PROGRESS
 
 ## Objective
 
@@ -187,3 +187,16 @@ ou introduzir multi-tenancy completo.
 3. `test(desktop): cover automatic microphone turn lifecycle`
 4. `refactor(runtime): extract execution and voice boundaries`
 
+## Execution record
+
+- Fases 1 e 2 implementadas nesta branch: bind externo sem chave é recusado,
+  exceções internas não são devolvidas em respostas HTTP sensíveis, e a
+  indexação semântica tem configuração estrita, fila incremental, debounce,
+  lote limitado e desligamento independente do FTS.
+- Fase 3 implementada: as regras de silêncio, parada e wake foram extraídas
+  para `desktop/src/voice.ts`, cobertas por Vitest e incluídas no CI do desktop.
+- A documentação foi alinhada de 8 para 16 telas e passou a documentar os
+  controles de memória semântica.
+- Fase 4 fica deliberadamente incremental: a extração segura do ciclo de voz
+  foi feita; a divisão ampla de `agent.py`, `server.py` e `tool_router.py`
+  permanece como próxima etapa, condicionada a testes de contrato de custódia.

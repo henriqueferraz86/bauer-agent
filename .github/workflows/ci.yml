@@ -275,6 +275,10 @@ jobs:
         working-directory: desktop
         run: npm run build
 
+      - name: Testes de comportamento da SPA
+        working-directory: desktop
+        run: npm test
+
       - name: Verify build output
         run: test -f bauer/static/index.html
 

@@ -16,7 +16,7 @@ import yaml
 
 from bauer.config_loader import load_config, ServeSection
 from bauer.model_registry import load_registry
-from bauer.preflight import run_doctor
+from bauer.preflight import run_doctor, serve_binding_error
 
 
 _BASE_CFG = {
@@ -70,6 +70,22 @@ def test_serve_host_default_is_local():
         f"Default de serve.host deve ser '127.0.0.1', mas é '{s.host}'. "
         "Instalaçao nova ficaria exposta na rede sem api_key."
     )
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "bauer.local"])
+def test_external_bind_without_key_is_blocked(host: str):
+    error = serve_binding_error(host, "")
+    assert error is not None
+    assert "serve.api_key" in error
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "[::1]"])
+def test_loopback_bind_without_key_is_allowed(host: str):
+    assert serve_binding_error(host, "") is None
+
+
+def test_external_bind_with_key_is_allowed():
+    assert serve_binding_error("0.0.0.0", "local-development-key") is None
 
 
 # ---------------------------------------------------------------------------

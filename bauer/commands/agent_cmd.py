@@ -420,7 +420,12 @@ def agent(
     # ── Sessao persistente ───────────────────────────────────────────────────
     try:
         from ..sqlite_session_store import SqliteSessionStore
-        store = SqliteSessionStore(sessions_dir)
+        store = SqliteSessionStore(
+            sessions_dir,
+            semantic_indexing_enabled=cfg.memory.semantic_indexing_enabled,
+            semantic_indexing_debounce_s=cfg.memory.semantic_indexing_debounce_s,
+            semantic_indexing_batch_size=cfg.memory.semantic_indexing_batch_size,
+        )
     except Exception:
         from ..session_store import SessionStore
         store = SessionStore(sessions_dir)
@@ -993,7 +998,12 @@ def agent_run(
     # /clear dentro da sessão apaga o histórico e começa do zero.
     try:
         from ..sqlite_session_store import SqliteSessionStore
-        store = SqliteSessionStore(sessions_dir)
+        store = SqliteSessionStore(
+            sessions_dir,
+            semantic_indexing_enabled=cfg.memory.semantic_indexing_enabled,
+            semantic_indexing_debounce_s=cfg.memory.semantic_indexing_debounce_s,
+            semantic_indexing_batch_size=cfg.memory.semantic_indexing_batch_size,
+        )
     except Exception:
         from ..session_store import SessionStore
         store = SessionStore(sessions_dir)

@@ -16,8 +16,12 @@ FTS5 degradado graciosamente para LIKE se a compilação não suportar.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import threading
+import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +43,27 @@ def _fts5_available(conn: sqlite3.Connection) -> bool:
         return True
     except sqlite3.OperationalError:
         return False
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 #: Roles cujas mensagens entram no ÍNDICE VETORIAL (busca semântica). tool e
@@ -148,13 +173,67 @@ class SqliteSessionStore:
         results = store.search_sessions("oi", top_k=5)
     """
 
-    def __init__(self, sessions_dir: str | Path = "memory/sessions") -> None:
+    def __init__(
+        self,
+        sessions_dir: str | Path = "memory/sessions",
+        *,
+        semantic_indexing_enabled: bool | None = None,
+        semantic_indexing_debounce_s: float | None = None,
+        semantic_indexing_batch_size: int | None = None,
+    ) -> None:
         self.dir = Path(sessions_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.dir / "sessions.db"
         self._has_fts5: bool = False
+        self._semantic_indexing_enabled = (
+            semantic_indexing_enabled
+            if semantic_indexing_enabled is not None
+            else _env_bool("BAUER_SEMANTIC_INDEXING_ENABLED", True)
+        )
+        self._semantic_indexing_debounce_s = max(
+            0.0,
+            semantic_indexing_debounce_s
+            if semantic_indexing_debounce_s is not None
+            else min(60.0, _env_float("BAUER_SEMANTIC_INDEXING_DEBOUNCE_S", 0.0)),
+        )
+        self._semantic_indexing_batch_size = self._clamp_int(
+            semantic_indexing_batch_size
+            if semantic_indexing_batch_size is not None
+            else _env_int("BAUER_SEMANTIC_INDEXING_BATCH_SIZE", 16),
+            1,
+            256,
+        )
+        self._index_condition = threading.Condition()
+        self._index_queue: deque[tuple[str, str]] = deque()
+        self._index_worker_active = False
+        self._index_next_flush_at = 0.0
+        self._known_session_lengths: dict[str, int] = {}
         self._init_db()
         self._migrate_jsonl()
+
+    @staticmethod
+    def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+        return max(minimum, min(maximum, value))
+
+    @property
+    def semantic_indexing_enabled(self) -> bool:
+        """Whether new session messages are queued for vector indexing."""
+        return self._semantic_indexing_enabled
+
+    def wait_for_indexing(self, timeout_s: float = 5.0) -> bool:
+        """Wait until the local indexing queue is drained.
+
+        This is primarily useful for deterministic tests and diagnostics. The
+        normal chat path remains fire-and-forget and never calls this method.
+        """
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        with self._index_condition:
+            while self._index_worker_active or self._index_queue:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._index_condition.wait(timeout=remaining)
+        return True
 
     # ------------------------------------------------------------------
     # Conexão (nova por chamada — thread-safe sem lock global)
@@ -572,35 +651,73 @@ class SqliteSessionStore:
                     (session_id, idx, role, content, now),
                 )
 
-        # Asynchronously index new messages in VectorStore for semantic search
-        import threading as _threading
+        self._queue_new_index_items(session_id, messages)
 
-        def _index_in_background() -> None:
+    def _queue_new_index_items(self, session_id: str, messages: list[dict]) -> None:
+        """Queue only messages added since the last save of *session_id*."""
+        if not self._semantic_indexing_enabled:
+            return
+
+        with self._index_condition:
+            previous_length = self._known_session_lengths.get(session_id)
+            start = 0 if previous_length is None or len(messages) < previous_length else previous_length
+            self._known_session_lengths[session_id] = len(messages)
+            for idx, message in enumerate(messages[start:], start):
+                role = message.get("role", "")
+                if role not in _INDEXED_VECTOR_ROLES:
+                    continue
+                content = _content_to_str(message.get("content", ""))
+                if content.strip():
+                    self._index_queue.append((f"{session_id}:{role}:{idx}", content))
+
+            if not self._index_queue:
+                self._index_condition.notify_all()
+                return
+
+            self._index_next_flush_at = time.monotonic() + self._semantic_indexing_debounce_s
+            if not self._index_worker_active:
+                self._index_worker_active = True
+                worker = threading.Thread(
+                    target=self._index_worker,
+                    name="bauer-semantic-index",
+                    daemon=True,
+                )
+                worker.start()
+            self._index_condition.notify_all()
+
+    def _index_worker(self) -> None:
+        """Drain the coalesced queue with one bounded worker per store."""
+        while True:
+            with self._index_condition:
+                while self._index_queue:
+                    wait_s = self._index_next_flush_at - time.monotonic()
+                    if wait_s > 0:
+                        self._index_condition.wait(timeout=wait_s)
+                        continue
+                    batch: list[tuple[str, str]] = []
+                    while self._index_queue and len(batch) < self._semantic_indexing_batch_size:
+                        batch.append(self._index_queue.popleft())
+                    break
+                else:
+                    self._index_worker_active = False
+                    self._index_condition.notify_all()
+                    return
+
             try:
                 from .vector_store import get_default_store as _get_store
-                _store = _get_store()
-                for _idx, _msg in enumerate(messages):
-                    _role = _msg.get("role", "")
-                    # Só indexa SUBSTÂNCIA (user+assistant). Medição da base real:
-                    # 55% dos vetores eram role=tool (output cru de comando/
-                    # arquivo/JSON) + 4% system — 59% de ruído que não se
-                    # recupera semanticamente e afogava o sinal (user/assistant
-                    # eram só 39%). tool/system ficam na tabela `messages` (FTS)
-                    # para busca textual; fora do índice vetorial.
-                    if _role not in _INDEXED_VECTOR_ROLES:
+                store = _get_store()
+                for source_id, content in batch:
+                    try:
+                        store.store_if_absent(source_id, "session_msg", content)
+                    except Exception:
+                        # Semantic memory is auxiliary; one bad item must not
+                        # discard the rest of the queued conversation.
                         continue
-                    _content = _content_to_str(_msg.get("content", ""))
-                    if not _content.strip():
-                        continue
-                    _source_id = f"{session_id}:{_role}:{_idx}"
-                    # store_if_absent: não re-embeda o que já foi indexado (o
-                    # re-index roda a cada save sobre a conversa inteira).
-                    _store.store_if_absent(_source_id, "session_msg", _content)
-            except Exception:
-                pass  # Never raise in background thread
-
-        _t = _threading.Thread(target=_index_in_background, daemon=True)
-        _t.start()
+            finally:
+                with self._index_condition:
+                    if self._index_queue:
+                        self._index_next_flush_at = time.monotonic() + self._semantic_indexing_debounce_s
+                        self._index_condition.notify_all()
 
     def compact_vector_index(self) -> int:
         """Remove do índice vetorial global os vetores de roles NÃO indexados.

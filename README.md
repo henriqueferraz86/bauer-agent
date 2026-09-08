@@ -1206,6 +1206,9 @@ O Bauer tem defaults "agressivos mas seguros". Ajuste em `agent:` / `tools:`:
 | `tools.extra_allowed_commands` | `[]` | Libera comandos além da allowlist (ex.: `[docker, kubectl]`) |
 | `tools.confirm_commands` | `true` | Prompt interativo para comando fora da allowlist (aprende) |
 | `tools.voice_input_enabled` | `false` | Ativa `bauer voice listen` (requer sounddevice + faster-whisper) |
+| `memory.semantic_indexing_enabled` | `true` | Indexa mensagens novas para busca semântica; `false` mantém sessões e FTS |
+| `memory.semantic_indexing_debounce_s` | `0.5` | Aguarda e coalesce saves rápidos antes de chamar o embedding |
+| `memory.semantic_indexing_batch_size` | `16` | Limita itens processados por rodada do worker semântico |
 
 ---
 

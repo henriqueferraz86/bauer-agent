@@ -94,6 +94,70 @@ class TestSessionIndexRoleFilter:
         assert vs.count("session_msg") == 2
 
 
+class TestSessionIndexBudget:
+    def test_indexing_can_be_disabled(self, tmp_path, monkeypatch):
+        eng = _CountingEngine()
+        vs = VectorStore(db_path=":memory:", engine=eng)
+        monkeypatch.setattr("bauer.vector_store.get_default_store", lambda *a, **k: vs)
+        store = SqliteSessionStore(
+            tmp_path / "sessions",
+            semantic_indexing_enabled=False,
+        )
+
+        store.save("disabled", [{"role": "user", "content": "não indexar"}])
+
+        assert store.wait_for_indexing(0.1)
+        assert eng.calls == 0
+        assert vs.count("session_msg") == 0
+
+    def test_only_messages_added_since_last_save_are_queued(self, tmp_path, monkeypatch):
+        eng = _CountingEngine()
+        vs = VectorStore(db_path=":memory:", engine=eng)
+        monkeypatch.setattr("bauer.vector_store.get_default_store", lambda *a, **k: vs)
+        store = SqliteSessionStore(
+            tmp_path / "sessions",
+            semantic_indexing_debounce_s=0,
+        )
+
+        first = [
+            {"role": "user", "content": "pergunta inicial"},
+            {"role": "assistant", "content": "resposta inicial"},
+        ]
+        store.save("incremental", first)
+        assert store.wait_for_indexing()
+        assert eng.calls == 2
+
+        store.save("incremental", first + [{"role": "user", "content": "nova pergunta"}])
+        assert store.wait_for_indexing()
+        assert eng.calls == 3
+        assert vs.count("session_msg") == 3
+
+    def test_debounce_coalesces_rapid_saves(self, tmp_path, monkeypatch):
+        class _FakeStore:
+            def __init__(self):
+                self.items = []
+
+            def store_if_absent(self, source_id, source_type, text):
+                self.items.append((source_id, source_type, text))
+
+        fake = _FakeStore()
+        monkeypatch.setattr("bauer.vector_store.get_default_store", lambda *a, **k: fake)
+        store = SqliteSessionStore(
+            tmp_path / "sessions",
+            semantic_indexing_debounce_s=0.05,
+            semantic_indexing_batch_size=16,
+        )
+
+        store.save("burst", [{"role": "user", "content": "um"}])
+        store.save("burst", [
+            {"role": "user", "content": "um"},
+            {"role": "assistant", "content": "dois"},
+        ])
+
+        assert store.wait_for_indexing()
+        assert [item[0] for item in fake.items] == ["burst:user:0", "burst:assistant:1"]
+
+
 # ─── compact_vector_index (limpeza única do acúmulo antigo) ──────────────────
 
 class TestCompactVectorIndex:

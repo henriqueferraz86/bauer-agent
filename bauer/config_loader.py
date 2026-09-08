@@ -769,6 +769,14 @@ class ToolsSection(_StrictSection):
     voice_input_enabled: bool = False
 
 
+class MemorySection(_StrictSection):
+    """Configuração de memória semântica e seu orçamento de recursos."""
+
+    semantic_indexing_enabled: bool = True
+    semantic_indexing_debounce_s: float = Field(ge=0.0, le=60.0, default=0.5)
+    semantic_indexing_batch_size: int = Field(ge=1, le=256, default=16)
+
+
 class LoopSection(_StrictSection):
     """Orçamento de segurança e política de aprovação do modo `/loop`.
 
@@ -1062,6 +1070,7 @@ class BauerConfig(_StrictSection):
     kernel: KernelSection = KernelSection()
     logging: LoggingSection = LoggingSection()
     tools: ToolsSection = ToolsSection()
+    memory: MemorySection = MemorySection()
     loop: LoopSection = LoopSection()
     web: WebSection = WebSection()
     mcp: McpSection = McpSection()

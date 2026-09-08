@@ -76,6 +76,15 @@ def serve(
     cfg, reg = _load_or_die(config, models)
     setup_logging(cfg.logging.level, cfg.logging.file)
 
+    serve_host = host or cfg.serve.host
+    serve_port = port or cfg.serve.port
+    serve_key = api_key or cfg.serve.api_key
+    from ..preflight import serve_binding_error
+    _serve_error = serve_binding_error(serve_host, serve_key)
+    if _serve_error:
+        console.print(f"[red]{_serve_error}[/red]")
+        raise typer.Exit(code=1)
+
     state = _get_or_run_state(cfg, reg, state_file)
 
     if not state.get("ollama_alive"):
@@ -137,10 +146,6 @@ def serve(
         _fallback_clients = build_fallback_clients(cfg, conjunto="local" if local else "default")
     except Exception:  # noqa: BLE001 — best-effort, nunca impede o serve de subir
         _fallback_clients = []
-
-    serve_host = host or cfg.serve.host
-    serve_port = port or cfg.serve.port
-    serve_key = api_key or cfg.serve.api_key
 
     fastapi_app = create_app(
         model_name=model_name,

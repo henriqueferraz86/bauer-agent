@@ -3,6 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { api, streamSSE } from "../api/client";
 import Hud, { HudData } from "../components/Hud";
 import Markdown from "../components/Markdown";
+import {
+  extractWakeCommand,
+  isVoiceStop,
+  shouldStopRecording,
+  VOICE_LEVEL_THRESHOLD,
+} from "../voice";
 
 interface ToolCall { name: string; label?: string; icon?: string; }
 interface SkillTag { name: string; score: number | null; }
@@ -46,11 +52,6 @@ interface SlashCommand {
 type VoiceMode = "once" | "loop" | "wake";
 
 const CHAT_STATE_KEY = "bauer.chatState.v1";
-const VOICE_SILENCE_MS = 1800;
-const VOICE_NO_SPEECH_TIMEOUT_MS = 15000;
-const VOICE_MAX_RECORDING_MS = 120000;
-const VOICE_LEVEL_THRESHOLD = 0.035;
-
 function loadChatState(): { messages: Message[]; sessionId: string } {
   try {
     const raw = localStorage.getItem(CHAT_STATE_KEY);
@@ -489,25 +490,6 @@ export default function Chat() {
     }
   }
 
-  function normalizedVoiceText(text: string): string {
-    return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
-  }
-
-  function isVoiceStop(text: string): boolean {
-    return new Set(["parar", "pare", "cancelar"]).has(normalizedVoiceText(text));
-  }
-
-  function extractWakeCommand(text: string): string | null {
-    const folded = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-    const index = folded.indexOf("bauer");
-    if (index < 0) return null;
-    const before = folded[index - 1];
-    const after = folded[index + 5];
-    if ((before && /[\w]/.test(before)) || (after && /[\w]/.test(after))) return null;
-    return text.slice(index + 5).replace(/^[\s,;:!?-]+/, "").trim();
-  }
-
   function stopVoiceMonitor() {
     if (voiceMonitorRef.current !== null) {
       window.cancelAnimationFrame(voiceMonitorRef.current);
@@ -637,11 +619,7 @@ export default function Chat() {
         }
         const silentFor = now - lastSoundAt;
         const noSpeechFor = now - startedAt;
-        if (
-          (heardSpeech && silentFor >= VOICE_SILENCE_MS) ||
-          (!heardSpeech && noSpeechFor >= VOICE_NO_SPEECH_TIMEOUT_MS) ||
-          noSpeechFor >= VOICE_MAX_RECORDING_MS
-        ) {
+        if (shouldStopRecording({ heardSpeech, silentForMs: silentFor, noSpeechForMs: noSpeechFor })) {
           setVoiceStatus("Processando sua voz…");
           recorder.stop();
           return;

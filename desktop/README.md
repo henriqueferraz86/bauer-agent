@@ -2,7 +2,7 @@
 
 Interface gráfica do Bauer, em duas camadas:
 
-- **Fase 1 — Web SPA** (`src/`): React + Vite, 8 telas (Projetos, Chat, Kanban,
+- **Fase 1 — Web SPA** (`src/`): React + Vite, 16 telas (Projetos, Chat, Kanban,
   Modelos, Gateway, Observabilidade, Logs, Config). É servida pelo próprio
   `bauer serve` em `/` (o `vite build` emite para `../bauer/static/`).
 - **Fase 2 — App nativo** (`src-tauri/`): shell Tauri v2 que abre a SPA numa
@@ -41,7 +41,7 @@ e abre a SPA no navegador.
 ## App nativo (Fase 2 — Tauri)
 
 ```bash
-# Dev: abre a janela nativa, spawna o bauer serve e carrega as 8 telas
+# Dev: abre a janela nativa, spawna o bauer serve e carrega as 16 telas
 npm run tauri:dev
 
 # Build do bundle nativo (.exe/.msi, .dmg, .deb/.AppImage conforme o SO)
