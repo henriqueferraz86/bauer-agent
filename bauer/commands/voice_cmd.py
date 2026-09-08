@@ -20,6 +20,22 @@ voice_app = typer.Typer(
 _VOICE_EXIT_WORDS = {"sair", "tchau", "encerrar", "parar", "exit", "quit", "bye"}
 
 
+def _persist_tts_env(values: dict[str, str]) -> None:
+    """Persiste preferências de TTS no ambiente do usuário no Windows."""
+    if os.name != "nt":
+        return
+    for key, value in values.items():
+        persisted = subprocess.run(
+            ["setx", key, value],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if persisted.returncode != 0:
+            detail = (persisted.stderr or persisted.stdout).strip()
+            raise OSError(f"setx {key} falhou: {detail or 'sem detalhes'}")
+
+
 @voice_app.command(name="listen")
 def cmd_voice_listen(
     max_duration: int = typer.Option(
@@ -278,6 +294,12 @@ def cmd_voice_kokoro_setup(
         env_path = get_bauer_home() / ".env"
         save_env_value("BAUER_TTS_PROVIDER", "kokoro", env_path)
         save_env_value("BAUER_TTS_KOKORO_VOICE", selected_voice, env_path)
+        _persist_tts_env(
+            {
+                "BAUER_TTS_PROVIDER": "kokoro",
+                "BAUER_TTS_KOKORO_VOICE": selected_voice,
+            }
+        )
     except Exception as exc:  # noqa: BLE001 - comando exibe erro amigável
         console.print(f"[red]Não foi possível configurar o Kokoro: {exc}[/red]")
         raise typer.Exit(1) from exc
@@ -315,20 +337,12 @@ def cmd_voice_xtts_setup(
         env_path = get_bauer_home() / ".env"
         save_env_value("BAUER_TTS_PROVIDER", "local", env_path)
         save_env_value("BAUER_TTS_SPEAKER_WAV", str(target), env_path)
-        if os.name == "nt":
-            for key, value in {
+        _persist_tts_env(
+            {
                 "BAUER_TTS_PROVIDER": "local",
                 "BAUER_TTS_SPEAKER_WAV": str(target),
-            }.items():
-                persisted = subprocess.run(
-                    ["setx", key, value],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if persisted.returncode != 0:
-                    detail = (persisted.stderr or persisted.stdout).strip()
-                    raise OSError(f"setx {key} falhou: {detail or 'sem detalhes'}")
+            }
+        )
     except OSError as exc:
         console.print(f"[red]Não foi possível configurar a voz: {exc}[/red]")
         raise typer.Exit(1) from exc

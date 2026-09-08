@@ -8,6 +8,28 @@ from typer.testing import CliRunner
 from bauer.cli import app
 
 
+def test_persist_tts_env_updates_windows_user_environment(monkeypatch):
+    from bauer.commands import voice_cmd
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return type("Completed", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr(voice_cmd.os, "name", "nt")
+    monkeypatch.setattr(voice_cmd.subprocess, "run", fake_run)
+
+    voice_cmd._persist_tts_env(
+        {"BAUER_TTS_PROVIDER": "kokoro", "BAUER_TTS_KOKORO_VOICE": "pm_alex"}
+    )
+
+    assert [call[0] for call in calls] == [
+        ["setx", "BAUER_TTS_PROVIDER", "kokoro"],
+        ["setx", "BAUER_TTS_KOKORO_VOICE", "pm_alex"],
+    ]
+
+
 def test_voice_ask_sends_transcript_to_agent(tmp_path: Path):
     runner = CliRunner()
 
