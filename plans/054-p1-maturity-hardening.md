@@ -204,4 +204,6 @@ ou introduzir multi-tenancy completo.
   mantidas como reexports e os contratos de SSE e ContextVar continuam
   cobertos por testes.
 - O React Router foi atualizado para a série 7 corrigida; o audit de
-  dependências de produção passou sem vulnerabilidades.
+  dependências de produção passou sem vulnerabilidades. O Vitest foi elevado
+  à série 4, compatível com o Node 20 do CI, para remover a cadeia vulnerável
+  de Vite/esbuild também da auditoria completa de desenvolvimento.
