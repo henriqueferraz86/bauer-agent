@@ -35,7 +35,6 @@ Claw3D / Virtual Office:
 """
 
 import hmac
-import ipaddress
 import os
 import threading
 import time
@@ -47,6 +46,11 @@ from typing import Any, Optional
 from .server_streaming import StreamGate as _StreamGate
 from .server_streaming import sse_frame as _sse
 from .server_streaming import strip_action_blocks as _strip_action_block
+from .server_observability import (
+    client_ip_from as _client_ip_from_impl,
+    parse_trusted_proxies as _parse_trusted_proxies_impl,
+    peer_is_trusted as _peer_is_trusted_impl,
+)
 
 # Timeout de turno (wall-clock) do loop de tool-calling em /stream — sem isso,
 # uma sessao que entra num loop de tool calls (ou uma chamada de LLM/tool
@@ -295,32 +299,11 @@ def _parse_trusted_proxies(entries: "list[str] | None") -> tuple[list, bool]:
     serve só é alcançável através do proxy). Entradas inválidas são ignoradas
     em vez de derrubar o servidor no boot.
     """
-    redes: list = []
-    coringa = False
-    for raw in entries or []:
-        item = str(raw).strip()
-        if not item:
-            continue
-        if item == "*":
-            coringa = True
-            continue
-        try:
-            redes.append(ipaddress.ip_network(item, strict=False))
-        except ValueError:
-            continue
-    return redes, coringa
+    return _parse_trusted_proxies_impl(entries)
 
 
 def _peer_is_trusted(peer: str, redes: list, coringa: bool) -> bool:
-    if coringa:
-        return True
-    if not peer or not redes:
-        return False
-    try:
-        addr = ipaddress.ip_address(peer)
-    except ValueError:
-        return False
-    return any(addr in rede for rede in redes)
+    return _peer_is_trusted_impl(peer, redes, coringa)
 
 
 def _client_ip_from(
@@ -342,20 +325,7 @@ def _client_ip_from(
     Sem `trusted_proxies` configurado (default), o header é ignorado e vale o
     peer do socket. Falha para o lado seguro: no máximo agrupa demais.
     """
-    if not _peer_is_trusted(peer, redes, coringa):
-        return peer or "unknown"
-    cadeia = [p.strip() for p in (forwarded or "").split(",") if p.strip()]
-    for candidato in reversed(cadeia):
-        # O coringa NÃO se aplica aqui, só ao peer. Ele significa "confie no
-        # proxy que me conectou", não "confie em toda a cadeia" — se valesse
-        # para a cadeia, todo salto seria pulado, a varredura não acharia
-        # ninguém e o header voltaria a ser ignorado, anulando a própria
-        # configuração. Com `*` e sem CIDRs, o salto mais à direita é o que o
-        # proxy anexou: exatamente o peer que falou com ele.
-        if not _peer_is_trusted(candidato, redes, coringa=False):
-            return candidato
-    # Cadeia vazia ou 100% de proxies confiáveis: o peer é o melhor que temos.
-    return peer or "unknown"
+    return _client_ip_from_impl(peer, forwarded, redes, coringa)
 
 
 @dataclass(frozen=True)

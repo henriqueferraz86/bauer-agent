@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import ipaddress
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,3 +43,39 @@ def runtime_ready(root: Path) -> tuple[bool, str | None]:
     except (OSError, sqlite3.DatabaseError):
         return False, "runtime storage unavailable"
     return True, None
+
+
+def parse_trusted_proxies(entries: list[str] | None) -> tuple[list, bool]:
+    """Converte IPs/CIDRs de proxy em redes; `*` é opt-in explícito."""
+    networks: list = []
+    wildcard = False
+    for raw in entries or []:
+        item = str(raw).strip()
+        if item == "*":
+            wildcard = True
+        elif item:
+            try:
+                networks.append(ipaddress.ip_network(item, strict=False))
+            except ValueError:
+                continue
+    return networks, wildcard
+
+
+def peer_is_trusted(peer: str, networks: list, wildcard: bool) -> bool:
+    if wildcard:
+        return True
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(address in network for network in networks)
+
+
+def client_ip_from(peer: str, forwarded: str, networks: list, wildcard: bool) -> str:
+    """Honra XFF somente quando a conexão vem de proxy explicitamente confiável."""
+    if not peer_is_trusted(peer, networks, wildcard):
+        return peer or "unknown"
+    for candidate in reversed([item.strip() for item in (forwarded or "").split(",") if item.strip()]):
+        if not peer_is_trusted(candidate, networks, False):
+            return candidate
+    return peer or "unknown"
