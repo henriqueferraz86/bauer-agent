@@ -28,3 +28,36 @@ def head_tail(
         used += len(line) + 1
 
     return head, tail, len(lines) - len(head) - len(tail)
+
+
+def compress_result(
+    action: str, result: str, *, listing_tools: frozenset[str], preview_size: int,
+    tail_share: float = 0.6,
+) -> str:
+    """Resume resultado grande preservando a causa provável no final."""
+    lines = [line for line in result.splitlines() if line.strip()]
+    n_lines, n_chars = len(lines), len(result)
+    if action in listing_tools:
+        preview = lines[:8]
+        summary = f"[{n_chars} chars — {n_lines} itens] " + ", ".join(preview)
+        if n_lines > len(preview):
+            summary += f" ... +{n_lines - len(preview)} mais"
+    else:
+        header = f"[{n_chars} chars — {n_lines} linhas]"
+        budget = max(preview_size - len(header) - 40, 80)
+        head, tail, omitted = head_tail(result, budget, tail_share=tail_share)
+        if not head and not tail:
+            half = budget // 2
+            summary = f"{header} {result[:half].rstrip()}"
+            summary += f"\n... [{max(n_chars - budget, 0)} chars omitidos] ...\n"
+            summary += result[-half:].lstrip()
+        else:
+            parts = [header, *head]
+            if omitted > 0:
+                parts.append(f"... +{omitted} linhas omitidas ...")
+            summary = "\n".join([*parts, *tail])
+    if len(summary) > preview_size:
+        keep = preview_size - 3
+        first = keep // 2
+        summary = summary[:first] + "..." + summary[-(keep - first):]
+    return summary

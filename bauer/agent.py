@@ -73,7 +73,10 @@ from .agent_loop_support import (
     print_loop_summary as _print_loop_summary_impl,
     run_loop_skill_verification as _run_loop_skill_verification_impl,
 )
-from .agent_tool_results import head_tail as _head_tail_impl
+from .agent_tool_results import (
+    compress_result as _compress_result_impl,
+    head_tail as _head_tail_impl,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -1122,47 +1125,13 @@ def _compress_tool_result_inline(action: str, result: str) -> str:
     Returns:
         String comprimida com ≤ _TOOL_RESULT_COMPRESSED_PREVIEW chars.
     """
-    lines = [l for l in result.splitlines() if l.strip()]
-    n_lines = len(lines)
-    n_chars = len(result)
-
-    if action in _LISTING_TOOLS:
-        # Para listagens: contagem + primeiros 8 itens
-        n_preview = 8
-        preview_items = lines[:n_preview]
-        extra = n_lines - n_preview
-        summary = f"[{n_chars} chars — {n_lines} itens] " + ", ".join(preview_items)
-        if extra > 0:
-            summary += f" ... +{extra} mais"
-    else:
-        # Conteúdo e genérico: início + fim. O cabeçalho de metadados consome
-        # parte do orçamento, então é descontado antes de dividir head/tail.
-        header = f"[{n_chars} chars — {n_lines} linhas]"
-        budget = max(_TOOL_RESULT_COMPRESSED_PREVIEW - len(header) - 40, 80)
-        head, tail, omitted = _head_tail(result, budget)
-
-        if not head and not tail:
-            # Linha única gigante (JSON de uma linha, log sem quebras): não há
-            # como fatiar por linha — fatia por char, preservando as duas pontas.
-            half = budget // 2
-            summary = f"{header} {result[:half].rstrip()}"
-            summary += f"\n... [{max(n_chars - budget, 0)} chars omitidos] ...\n"
-            summary += result[-half:].lstrip()
-        else:
-            parts = [header]
-            parts.extend(head)
-            if omitted > 0:
-                parts.append(f"... +{omitted} linhas omitidas ...")
-            parts.extend(tail)
-            summary = "\n".join(parts)
-
-    # Garante que não ultrapassa o limite mesmo após formatação. O corte final
-    # tira do MEIO, não do fim, para nunca sacrificar as últimas linhas.
-    if len(summary) > _TOOL_RESULT_COMPRESSED_PREVIEW:
-        keep = _TOOL_RESULT_COMPRESSED_PREVIEW - 3
-        head_keep = keep // 2
-        summary = summary[:head_keep] + "..." + summary[-(keep - head_keep):]
-    return summary
+    return _compress_result_impl(
+        action,
+        result,
+        listing_tools=_LISTING_TOOLS,
+        preview_size=_TOOL_RESULT_COMPRESSED_PREVIEW,
+        tail_share=_TAIL_SHARE,
+    )
 
 
 def _ctx_result_for_context(action: str, result: str) -> tuple[str, bool]:
