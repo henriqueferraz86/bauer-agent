@@ -64,7 +64,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [051](051-p2-resource-boundaries.md) | Impor limites a timeout de tools e tarefas de memória | Confiabilidade | P2 | M | 050 | DONE (merge `0bb8ae4`; commit `98932ac`) |
 | [052](052-p3-docs-command-parity.md) | Alinhar roteiro beta e setup de desenvolvimento | Documentação/DX | P3 | S | 051 | DONE (merge `c1f75d2`; commit `ad2b59b`) |
 | [053](053-p4-sqlite-task-backend-rollout.md) | Rollout seguro e opt-in do backend SQLite de tarefas | Migração de dados/DX | P4 | L | 052 | DONE (merge `9c94778`; commit `ba236a5`) |
-| [054](054-p1-maturity-hardening.md) | Elevar o Bauer de beta avançado para pré-produção robusta | Segurança, performance, desktop, arquitetura | P1 | L | — | TODO |
+| [054](054-p1-maturity-hardening.md) | Elevar o Bauer de beta avançado para pré-produção robusta | Segurança, performance, desktop, arquitetura | P1 | L | — | COMPLETE |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 

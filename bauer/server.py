@@ -44,6 +44,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from .server_streaming import StreamGate as _StreamGate
+from .server_streaming import sse_frame as _sse
+from .server_streaming import strip_action_blocks as _strip_action_block
+
 # Timeout de turno (wall-clock) do loop de tool-calling em /stream — sem isso,
 # uma sessao que entra num loop de tool calls (ou uma chamada de LLM/tool
 # travada) fica pendurada pra sempre: a SSE nunca fecha, a UI mostra
@@ -100,105 +104,6 @@ def _effective_ws(router) -> Path | None:
     if isinstance(ws, (str, Path)):
         return Path(ws)
     return None
-
-
-def _sse(data: str, event: str | None = None) -> str:
-    """Codifica um evento SSE preservando quebras de linha.
-
-    O protocolo SSE exige que cada linha do payload tenha seu próprio prefixo
-    ``data:`` — um ``\\n`` cru dentro de ``data: {texto}`` corrompe o frame e o
-    cliente descarta tudo que vier depois da primeira linha (era assim que o
-    /stream colapsava markdown inteiro numa linha só)."""
-    lines = "".join(f"data: {ln}\n" for ln in data.split("\n"))
-    prefix = f"event: {event}\n" if event else ""
-    return f"{prefix}{lines}\n"
-
-
-class _StreamGate:
-    """Retém trechos do stream que podem ser um tool-call JSON.
-
-    Modelos bridge (sem tool calling nativo) às vezes narram antes de emitir o
-    JSON da action (``Vou verificar…{"action": ...}`` ou dentro de fence
-    ```` ```json ````). Sem retenção, o JSON cru vaza para o chat antes de o
-    turno terminar e a action ser parseada. A gate segura o texto a partir de
-    um candidato (``{`` ou ```` ``` ````); se a janela seguinte não contém
-    ``"action"``, era falso alarme e o trecho é liberado."""
-
-    _PROBE = 96  # chars após o marcador para decidir se parece uma action
-
-    def __init__(self) -> None:
-        self.pending = ""
-        self.sent_any = False
-
-    def _candidate_idx(self) -> int:
-        idxs = [i for i in (self.pending.find("{"), self.pending.find("```")) if i != -1]
-        return min(idxs) if idxs else -1
-
-    def feed(self, chunk: str) -> str:
-        """Acumula um chunk e devolve a parte segura para enviar ao cliente."""
-        self.pending += chunk
-        out: list[str] = []
-        while True:
-            idx = self._candidate_idx()
-            if idx == -1:
-                out.append(self.pending)
-                self.pending = ""
-                break
-            out.append(self.pending[:idx])
-            self.pending = self.pending[idx:]
-            probe = self.pending[: self._PROBE]
-            if '"action"' in probe or len(self.pending) < self._PROBE:
-                # Candidato plausível (ou cedo demais para saber) — retém.
-                break
-            # Falso alarme (ex.: "{{.ServerVersion}}" num comando docker):
-            # libera o 1º char do marcador e re-escaneia o restante.
-            out.append(self.pending[0])
-            self.pending = self.pending[1:]
-        text = "".join(out)
-        self.sent_any = self.sent_any or bool(text)
-        return text
-
-
-def _strip_action_block(text: str, available: set) -> str:
-    """Remove TODOS os JSON de action (e os fences markdown ao redor) do texto.
-
-    Usado no flush da _StreamGate: a narração retida junto com o(s) JSON(s) vai
-    para o chat, o JSON não. Modelos que emitem vários tool calls numa única
-    resposta (batch, intercalados com prosa) deixariam o 2º, 3º… vazando se
-    removêssemos só o primeiro — daí o scan varrer a string inteira."""
-    import json as _json
-    import re as _re
-
-    def _is_action(obj) -> bool:
-        # Envelope de tool call do modelo: {"action": "...", "args": {...}}.
-        # Casa tools conhecidas OU qualquer objeto no formato action+args —
-        # mostrar JSON de tool call cru no chat nunca é desejável, mesmo que a
-        # tool não esteja disponível neste router (o modelo pode alucinar uma).
-        if not isinstance(obj, dict) or not isinstance(obj.get("action"), str):
-            return False
-        return obj["action"] in available or "args" in obj
-
-    decoder = _json.JSONDecoder()
-    out: list[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        if text[i] == "{":
-            try:
-                obj, end = decoder.raw_decode(text, i)
-                if _is_action(obj):
-                    i = end
-                    continue
-            except _json.JSONDecodeError:
-                pass
-        out.append(text[i])
-        i += 1
-    result = "".join(out)
-    # Fences que ficaram vazios após remover o JSON de dentro (```json``` ).
-    result = _re.sub(r"```(?:json)?\s*```", "", result)
-    # Colapsa as linhas em branco extras deixadas pelos blocos removidos.
-    result = _re.sub(r"\n{3,}", "\n\n", result)
-    return result
 
 
 # ─── Métricas globais em memória (Prometheus-style) ───────────────────────────

@@ -48,6 +48,11 @@ from .agent_slash_commands import (
     _handle_spec_cmd,
     _handle_task_cmd,
 )
+from .agent_voice import (
+    capture_listen_input as _capture_listen_input,
+    is_listen_loop_stop as _is_listen_loop_stop,
+    speak_voice_reply as _speak_voice_reply,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -73,16 +78,6 @@ _LISTEN_CMDS = {"/listen", "/ouvir"}
 _LISTEN_LOOP_CMDS = {"/listen loop", "/listen auto", "/ouvir loop", "/ouvir auto"}
 _LISTEN_WAKE_CMDS = {"/listen wake", "/ouvir wake", "/wake"}
 _LISTEN_WAKE_STOP_CMDS = {"/listen wake stop", "/ouvir wake stop", "/wake stop"}
-_LISTEN_LOOP_STOP_WORDS = {
-    "parar",
-    "para",
-    "cancelar",
-    "sair",
-    "encerrar",
-    "stop",
-    "cancel",
-    "exit",
-}
 _THUMBSUP_CMDS = {"/thumbsup", "/bom", "/positivo", "/like"}
 _THUMBSDOWN_CMDS = {"/thumbsdown", "/ruim", "/negativo", "/dislike"}
 
@@ -351,123 +346,6 @@ except ImportError:
     _PT_AVAILABLE = False
     _make_prompt_session = None  # type: ignore[assignment]
     _PT_STYLE = None             # type: ignore[assignment]
-
-
-def _capture_listen_input(
-    console: Console,
-    *,
-    metrics: Any = None,
-    capture: Any = None,
-) -> str | None:
-    """Capture microphone input and return the transcribed text for a chat turn."""
-    if metrics is not None:
-        metrics.mark("stt_start")
-    try:
-        if capture is None:
-            # STT incremental é o único caminho suportado para a conversa de
-            # voz. O capturador legado esperava 5s de silêncio e não deve mais
-            # ser selecionado por configuração ou por omissão.
-            from .voice_stt_stream import capture_voice_input_streaming
-
-            capture = capture_voice_input_streaming
-
-        text = capture(console=console)
-    except KeyboardInterrupt:
-        console.print("[yellow]Audio cancelado.[/yellow]")
-        return None
-    except ImportError as exc:
-        console.print(f"[red]{exc}[/red]")
-        return None
-    except Exception as exc:
-        console.print(f"[red]Erro ao ouvir: {exc}[/red]")
-        return None
-    finally:
-        if metrics is not None:
-            metrics.mark("stt_end")
-
-    text = (text or "").strip()
-    if not _is_meaningful_voice_text(text):
-        console.print("[yellow]Nada util foi transcrito; tente falar novamente.[/yellow]")
-        return None
-    return text
-
-
-def _is_meaningful_voice_text(text: str) -> bool:
-    compact = text.strip()
-    if len(compact) < 2:
-        return False
-    return bool(re.search(r"[\wÀ-ÿ]", compact, flags=re.UNICODE))
-
-
-def _is_listen_loop_stop(text: str) -> bool:
-    normalized = re.sub(r"[^\wÀ-ÿ\s-]", "", text.strip().lower(), flags=re.UNICODE)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized in _LISTEN_LOOP_STOP_WORDS
-
-
-def _speak_voice_reply(console: Console, text: str, client=None) -> None:
-    """Sintetiza e toca a resposta em voz — chamado quando o turno veio do
-    /listen ou /listen loop (mesmo par de módulos que `bauer voice chat` usa:
-    bauer/tts.py + bauer/audio_playback.py).
-
-    Best-effort: nunca interrompe o REPL. A resposta em texto já foi impressa
-    antes desta chamada, então uma falha de TTS/playback (sem provider, sem
-    alto-falante) vira um aviso discreto, não uma exceção que derruba o turno.
-    """
-    text = (text or "").strip()
-    if not text:
-        return
-
-    def _fallback_to_voice_session() -> bool:
-        if client is None:
-            return False
-        try:
-            from .voice_session import speak_response
-
-            speak_response(text, client)
-            return True
-        except Exception as exc:  # noqa: BLE001 — voz é saída acessória
-            from .logging_config import log_suppressed
-
-            log_suppressed("agent.voice_reply.session_fallback", exc)
-            return False
-
-    try:
-        from .tts import synthesize_speech
-        result = synthesize_speech(text)
-    except Exception as exc:  # noqa: BLE001 — voz é extra, nunca trava o turno
-        from .logging_config import log_suppressed
-        log_suppressed("agent.voice_reply.synthesize", exc)
-        _fallback_to_voice_session()
-        return
-
-    if not result.get("success"):
-        if _fallback_to_voice_session():
-            return
-        console.print(f"[dim yellow](voz indisponível: {result.get('error')})[/dim yellow]")
-        return
-
-    path = result["path"]
-    try:
-        from .audio_playback import play_audio_file
-        played = play_audio_file(path)
-    except Exception as exc:  # noqa: BLE001
-        from .logging_config import log_suppressed
-        log_suppressed("agent.voice_reply.playback", exc)
-        played = False
-
-    if not played:
-        console.print(f"[dim yellow](não foi possível tocar o áudio: {path})[/dim yellow]")
-
-    # Só o wav temporário que a própria síntese criou (prefixo bauer-tts-) —
-    # nunca um arquivo que o usuário tenha apontado por fora deste caminho.
-    from contextlib import suppress
-    from pathlib import Path as _Path
-
-    p = _Path(path)
-    if "bauer-tts-" in p.name:
-        with suppress(OSError):
-            p.unlink()
 
 
 def _set_blink_underline() -> None:

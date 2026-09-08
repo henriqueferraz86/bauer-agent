@@ -8,7 +8,7 @@
 - **Depends on**: —
 - **Category**: security, performance, frontend reliability, architecture
 - **Planned at**: 2026-09-08, após auditoria completa de maturidade
-- **Status**: IN PROGRESS
+- **Status**: COMPLETE
 
 ## Objective
 
@@ -198,5 +198,10 @@ ou introduzir multi-tenancy completo.
 - A documentação foi alinhada de 8 para 16 telas e passou a documentar os
   controles de memória semântica.
 - Fase 4 fica deliberadamente incremental: a extração segura do ciclo de voz
-  foi feita; a divisão ampla de `agent.py`, `server.py` e `tool_router.py`
-  permanece como próxima etapa, condicionada a testes de contrato de custódia.
+  foi feita; o contexto de execução por turno, o transporte SSE e a voz do
+  terminal agora vivem, respectivamente, em `runtime_ids.py`,
+  `server_streaming.py` e `agent_voice.py`. As APIs internas legadas foram
+  mantidas como reexports e os contratos de SSE e ContextVar continuam
+  cobertos por testes.
+- O React Router foi atualizado para a série 7 corrigida; o audit de
+  dependências de produção passou sem vulnerabilidades.
