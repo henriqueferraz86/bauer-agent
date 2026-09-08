@@ -1536,6 +1536,35 @@ class TestOAIChatCompletions:
             assert "choices" in c
             assert "delta" in c["choices"][0]
 
+    def test_streaming_hides_provider_exception_details(self, tmp_path):
+        """Erros de provider vão ao log, nunca ao consumidor autenticado do SSE."""
+        import json
+        from unittest.mock import MagicMock
+        from bauer.tool_router import ToolRouter
+
+        mock_client = MagicMock()
+        mock_client.chat_stream.side_effect = RuntimeError("diagnostico-interno-sensivel")
+        app = create_app(
+            model_name="phi4-mini", applied_context=4096,
+            router=ToolRouter(workspace=tmp_path), client=mock_client,
+            system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+
+        resp = TestClient(app).post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hi"}], "stream": True,
+        })
+
+        assert resp.status_code == 200
+        error_event = next(
+            json.loads(line.removeprefix("data:").strip())
+            for line in resp.text.splitlines()
+            if line.startswith("data:") and "[DONE]" not in line
+        )
+        assert error_event["error"]["message"] == "Erro interno durante a geração."
+        assert "diagnostico-interno-sensivel" not in resp.text
+        assert "[DONE]" in resp.text
+
     def test_session_id_header_is_honored(self, tmp_path):
         tc, _ = self._make_oai_app(tmp_path)
         resp = tc.post(

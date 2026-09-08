@@ -67,22 +67,27 @@ PERMITIDOS: dict[str, tuple[int, str]] = {
         "policy e budget antes de qualquer LLM.",
     ),
     "server.py": (
-        # 13 -> 11 em 2026-07-30: os dois `fail_run` de timeout do /stream
-        # viraram `fail_run_se_nao_terminal`. Não é só renomear — o cru
-        # sobrescrevia um run que a thread órfã já tinha concluído, e o desfecho
-        # passava a depender de quem ganhasse a corrida. Apareceu como falha de
-        # CI que passava na máquina local.
-        11,
-        "TRÊS grupos, todos rastreados em docs/harness/EXECUTION_PATHS.md:\n"
-        " (a) ramos LEGADOS de /chat e /loop, usados só quando kernel.enabled "
-        "     está desligado — o contrato da flag é o caminho antigo intocado;\n"
-        " (b) /stream SSE: roda o turno em thread órfã com persistência própria "
-        "     após timeout/desconexão. Envolver em stream() disputaria a posse "
-        "     do run com essa thread. É o §9.3(b) do plano: a garantia aqui é "
-        "     ESTE teste, não a custódia;\n"
-        " (c) /v1/chat/completions: cria e fecha run próprio. Dívida conhecida, "
-        "     próxima da fila — o modo não-streaming é síncrono e cabe em "
-        "     continue_governed().",
+        5,
+        "Depois da extração de /chat e /v1 em 2026-09-08, restam só /loop e "
+        "/stream. O /stream SSE roda o turno em thread órfã com persistência "
+        "própria após timeout/desconexão; envolvê-lo em stream() disputaria a "
+        "posse do run. É o §9.3(b) do plano: a garantia aqui é ESTE teste, não "
+        "a custódia. O ramo legado de /loop preserva kernel.enabled=false.",
+    ),
+    "server_chat.py": (
+        2,
+        "A rota /chat foi extraída de server.py em 2026-09-08 sem alterar seus "
+        "dois contratos: com Kernel, execute() mantém custódia; sem Kernel, o "
+        "ramo legado ainda cria e fecha o próprio run para respeitar "
+        "kernel.enabled=false. A contagem registra somente esse legado.",
+    ),
+    "server_openai.py": (
+        4,
+        "A rota /v1 foi extraída de server.py em 2026-09-08. No modo "
+        "não-streaming governado, continue_governed() tem custódia. As quatro "
+        "chamadas restantes pertencem ao streaming SSE (admit-only, cujo "
+        "gerador é dono do run) e ao fallback explícito de kernel.enabled=false; "
+        "a mudança de arquivo não cria uma nova exceção arquitetural.",
     ),
 }
 

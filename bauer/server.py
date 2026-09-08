@@ -632,23 +632,8 @@ def create_app(
 
     # --- schemas (definidas fora de qualquer função para Pydantic resolver corretamente) ---
 
-    class ChatRequest(PydanticModel):
-        message: str = Field(..., max_length=100_000)
-        session_id: Optional[str] = None
-        project_id: Optional[str] = None
-
     class SpeechRequest(PydanticModel):
         text: str = Field(..., min_length=1, max_length=100_000)
-
-    class ToolCallLog(PydanticModel):
-        tool: str
-        result: str
-
-    class ChatResponse(PydanticModel):
-        response: str
-        session_id: str
-        model: str
-        tool_calls: list[ToolCallLog] = []
 
     app = FastAPI(
         title="Bauer Agent Server",
@@ -688,15 +673,15 @@ def create_app(
     from .core.runtime.autonomy import BudgetManager
     budget_manager = BudgetManager(root=runtime_root, event_bus=event_bus)
 
-    # ── Bauer Kernel (Fase 12 / Sprint 6b) — opt-in via kernel.enabled ───────
+    # ── Bauer Kernel (Fase 12 / Sprint 6b) — ligado por default ─────────────
     #
     # Quando ligado, /chat passa a executar pelo BauerKernel.execute() com um
     # EXECUTOR que envolve o motor de turno JÁ EXISTENTE (run_one_turn_with_
     # fallback) — não o adapter genérico bauer_native (que não tem o loop de
     # tool-calling/memória/skills). O Kernel reusa run_manager/event_bus/
     # approval_manager/budget_manager JÁ CONSTRUÍDOS acima — não duplica
-    # estado. Desligado (default): /chat roda EXATAMENTE como antes, zero
-    # kernel.execute() na hora, zero risco.
+    # estado. Quando explicitamente desligado (kernel.enabled=false), /chat
+    # preserva o caminho legado para compatibilidade.
     # Wiring quebrado com a flag LIGADA derruba o boot (KernelWiringError) em
     # vez de subir um serve que afirma governar e não governa. Sem config_path
     # não há flag para ler — segue desligado, como antes.
@@ -1446,159 +1431,33 @@ def create_app(
         _verify_key,
     )
 
-    def _chat_via_kernel(req: ChatRequest, session_id: str, active_router, resolved: dict,
-                         request_agent_id: str, ctx, turn_client, turn_model, route):
-        """/chat pelo BauerKernel (kernel.enabled=true): estados+policy+budget
-        em volta do MESMO motor de turno (run_one_turn_with_fallback) — o
-        executor injetado, não o adapter genérico. Ver bloco de wiring do
-        `_kernel` acima para o porquê (adapter bauer_native não tem tool loop)."""
-        from .core.kernel import KernelRequest
+    from .server_chat import ChatRouteDependencies, build_chat_router
 
-        captured: dict = {}
-        # Snapshot p/ replan: o executor MUTA o ctx (resposta + tool messages).
-        # Sem restaurar, a 2ª execução veria a própria resposta reprovada no
-        # histórico e o replan_feedback seria ignorado — replan viraria custo
-        # dobrado sem chance de correção.
-        _base_msgs = len(ctx.messages)
-
-        def _executor(payload):
-            run_id = payload["run_id"]
-            if payload.get("replan_attempt"):
-                del ctx.messages[_base_msgs:]  # descarta a tentativa reprovada
-                ctx.add_ephemeral_system(
-                    "Sua resposta anterior foi reprovada pelo quality gate: "
-                    f"{payload.get('replan_feedback', '')}. Responda novamente "
-                    "corrigindo esse problema."
-                )
-            else:  # eventos por-run: só na 1ª tentativa (replan repetiria)
-                _publish_selected_skill(run_id, session_id, request_agent_id, resolved)
-                _publish_route(run_id, session_id, request_agent_id, route)
-            from .cost_meter import cost_sink
-            from .tool_router import reset_runtime_ids, set_runtime_ids
-            cost = _TurnCostRecorder(session_id)
-            cost_token = cost_sink.set(cost)
-            ids_token = set_runtime_ids(session_id, run_id)
-            try:
-                response, tool_log = run_one_turn_with_fallback(
-                    ctx, active_router, turn_client, turn_model, _fallback_clients,
-                )
-            except Exception as exc:
-                return {"status": "failed", "error": str(exc)}
-            finally:
-                cost_sink.reset(cost_token)
-                reset_runtime_ids(ids_token)
-            _metrics.tool_calls_total += len(tool_log)
-            _record_turn_budget(cost, run_id, request_agent_id)
-            formatted = _format_server_response(response)
-            store.save(session_id, ctx.messages)
-            session_manager.touch_session(session_id, state={"last_run_id": run_id})
-            captured["tool_log"] = tool_log
-            return {"status": "completed", "output": formatted,
-                    "tool_calls_count": len(tool_log),
-                    "cost_estimate": round(cost.total_usd, 6)}
-
-        out = _kernel.execute(
-            KernelRequest(
-                task=req.message, session_id=session_id, agent_id=request_agent_id,
-                input=_run_input(req.message, "/chat", resolved),
-            ),
-            executor=_executor,
-        )
-
-        if out.status == "waiting_approval":
-            from fastapi.responses import JSONResponse
-            return JSONResponse(status_code=202, content={
-                "status": "waiting_approval", "run_id": out.run_id,
-                "approval_id": out.approval_id, "reason": out.policy_reason,
-            })
-        if out.status == "cancelled":
-            raise HTTPException(status_code=503, detail=out.error or "Execução bloqueada (kill switch).")
-        if out.status != "completed":
-            if out.policy_action == "deny":
-                raise HTTPException(status_code=403, detail=out.error or "Bloqueado pela politica.")
-            _log.error("Erro interno em /chat (kernel): %s", out.error)
-            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
-
-        return ChatResponse(
-            response=out.output or "",
-            session_id=session_id,
-            model=_state["model"],
-            tool_calls=[ToolCallLog(**t) for t in captured.get("tool_log", [])],
-        )
-
-    @app.post("/chat", response_model=ChatResponse)
-    def chat(req: ChatRequest, _: None = Depends(_verify_key)):
-        _metrics.chat_requests_total += 1
-        session_id = req.session_id or store.new_id()
-        active_router, active_project_id = _resolve_project_router(session_id, req.project_id)
-        resolved = _resolve_request_context(req.message, _effective_ws(active_router))
-        resolved["project_id"] = active_project_id
-        request_agent_id = resolved.get("agent_id") or "serve.chat"
-        session_state = {"transport": "http", "endpoint": "/chat"}
-        if active_project_id:
-            session_state["project_id"] = active_project_id  # sticky: fixa nesta sessão
-        session_manager.get_or_create_session(
-            session_id,
-            agent_id=request_agent_id,
-            state=session_state,
-        )
-
-        ctx = _new_context()
-        ctx.messages = store.load(session_id)
-        _apply_request_context(ctx, resolved)
-        ctx.add_user(req.message)
-        _turn_client, _turn_model, _route = _resolve_turn_model(req.message)
-
-        if _kernel is not None:
-            return _chat_via_kernel(req, session_id, active_router, resolved,
-                                    request_agent_id, ctx, _turn_client, _turn_model, _route)
-
-        # ── caminho legado (kernel.enabled=false — default, intocado) ────────
-        run = run_manager.create_run(
-            session_id=session_id,
-            agent_id=request_agent_id,
-            runtime_adapter="bauer_native",
-            input=_run_input(req.message, "/chat", resolved),
-            status="running",
-        )
-        _publish_selected_skill(run.id, session_id, request_agent_id, resolved)
-
-        from .cost_meter import cost_sink
-        from .tool_router import reset_runtime_ids, set_runtime_ids
-        _publish_route(run.id, session_id, request_agent_id, _route)
-        _cost = _TurnCostRecorder(session_id)
-        _cost_token = cost_sink.set(_cost)
-        _ids_token = set_runtime_ids(session_id, run.id)
-        try:
-            response, tool_log = run_one_turn_with_fallback(
-                ctx, active_router, _turn_client, _turn_model, _fallback_clients,
-            )
-        except Exception as exc:
-            _log.exception("Erro interno em /chat: %s", exc)
-            run_manager.fail_run(run.id, str(exc))
-            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
-        finally:
-            cost_sink.reset(_cost_token)
-            reset_runtime_ids(_ids_token)
-
-        _metrics.tool_calls_total += len(tool_log)
-        _record_turn_budget(_cost, run.id, request_agent_id)
-        response = _format_server_response(response)
-        store.save(session_id, ctx.messages)
-        session_manager.touch_session(session_id, state={"last_run_id": run.id})
-        run_manager.complete_run(
-            run.id,
-            output={"response": response},
-            tool_calls_count=len(tool_log),
-            cost_estimate=round(_cost.total_usd, 6),
-        )
-
-        return ChatResponse(
-            response=response,
-            session_id=session_id,
-            model=_state["model"],
-            tool_calls=[ToolCallLog(**t) for t in tool_log],
-        )
+    app.include_router(build_chat_router(ChatRouteDependencies(
+        verify_key=_verify_key,
+        metrics=_metrics,
+        store=store,
+        session_manager=session_manager,
+        run_manager=run_manager,
+        kernel=_kernel,
+        router=router,
+        fallback_clients=_fallback_clients,
+        state=_state,
+        resolve_project_router=_resolve_project_router,
+        resolve_request_context=_resolve_request_context,
+        effective_workspace=_effective_ws,
+        apply_request_context=_apply_request_context,
+        new_context=_new_context,
+        resolve_turn_model=_resolve_turn_model,
+        run_input=_run_input,
+        publish_selected_skill=_publish_selected_skill,
+        publish_route=_publish_route,
+        turn_cost_recorder=_TurnCostRecorder,
+        record_turn_budget=_record_turn_budget,
+        format_response=_format_server_response,
+        run_one_turn_with_fallback=run_one_turn_with_fallback,
+        logger=_log,
+    )))
 
     @app.post("/transcribe")
     async def transcribe(
@@ -2407,310 +2266,29 @@ def create_app(
         from .serve_loop import loop_registry
         return {"loops": [s.to_dict() for s in loop_registry().list()]}
 
-    # ── OpenAI-compatible endpoint (Claw3D / virtual office) ─────────────────
-    #
-    # Protocolo idêntico ao usado pelo hermes-gateway-adapter.js:
-    #   POST /v1/chat/completions
-    #   Header X-Hermes-Session-Id  →  retomada de sessão
-    #   stream: true  →  SSE: data: {"choices":[{"delta":{"content":"..."}}]}
-    #                    finalizando com:  data: [DONE]
-    #   stream: false →  JSON: {"id":..., "choices":[{"message":...}], "usage":...}
+    from .server_openai import OpenAIRouteDependencies, build_openai_router
 
-    class OAIMessage(PydanticModel):
-        role: str
-        content: str = Field(..., max_length=200_000)
-
-    class OAICompletionRequest(PydanticModel):
-        model: Optional[str] = None
-        messages: list[OAIMessage] = Field(..., min_length=1, max_length=200)
-        stream: bool = False
-        session_id: Optional[str] = None    # campo body (ignorado em favor do header)
-        max_tokens: Optional[int] = None
-        temperature: Optional[float] = None
-
-    @app.post("/v1/chat/completions")
-    def oai_chat_completions(
-        req: OAICompletionRequest,
-        request: Request,
-        _: None = Depends(_verify_key),
-    ):
-        """Endpoint OpenAI-compatible para integração com Claw3D e outros clientes.
-
-        Definido como `def` (não `async def`) de propósito: todo o trabalho aqui
-        é I/O SÍNCRONO bloqueante (resolução de contexto de memória em SQLite,
-        coleta da resposta do LLM). Numa rota `async def` isso travaria o event
-        loop, serializando requisições concorrentes e health checks. Como `def`,
-        o Starlette roda o handler no threadpool — mesmo padrão de /chat e
-        /stream. (Ver plano 023 #20.)
-        """
-        import json as _json
-        import uuid as _uuid
-        import time as _time
-
-        _metrics.chat_requests_total += 1
-
-        # Sessão: header tem prioridade sobre body
-        sid = (
-            request.headers.get("X-Hermes-Session-Id")
-            or req.session_id
-            or store.new_id()
-        )
-        last_user_message = next(
-            (msg.content for msg in reversed(req.messages) if msg.role == "user"),
-            "",
-        )
-        # /v1 (Claw3D/OpenAI-compat) fica FORA do router-por-projeto (Fase 1) —
-        # API externa, sem noção de "projeto ativo" da UI desktop; sempre usa
-        # o router default do serve.
-        resolved = _resolve_request_context(last_user_message, _effective_ws(router))
-        request_agent_id = resolved.get("agent_id") or "serve.openai"
-        session_manager.get_or_create_session(
-            sid,
-            agent_id=request_agent_id,
-            state={"transport": "openai", "endpoint": "/v1/chat/completions"},
-        )
-
-        ctx = _new_context()
-        ctx.messages = store.load(sid)
-
-        # Adiciona todas as mensagens do request ao contexto
-        # (ignora mensagens de sistema — já está no system_prompt)
-        for msg in req.messages:
-            if msg.role == "user":
-                ctx.add_user(msg.content)
-            elif msg.role == "assistant":
-                ctx.add_assistant(msg.content)
-
-        _turn_client, active_model, _v1_route = _resolve_turn_model(last_user_message)
-        completion_id = f"chatcmpl-bauer-{_uuid.uuid4().hex[:12]}"
-        _v1_input = {
-            "messages": [msg.model_dump() for msg in req.messages],
-            "stream": req.stream,
-            "endpoint": "/v1/chat/completions",
-            "message": last_user_message,
-            "selected_agent": resolved.get("agent_id") or "",
-            "selected_skill": getattr(resolved.get("skill"), "name", ""),
-        }
-        if _kernel is not None:
-            # Governança na entrada (kill-switch, policy, budget) ANTES do LLM.
-            # O run fica em `queued`; quem o leva ao fim depende do modo:
-            #   não-streaming -> continue_governed() abaixo, custódia completa
-            #   streaming     -> start_run aqui, admit-only (mesmo motivo do
-            #                    /stream: o gerador SSE é dono do run)
-            from .core.kernel import KernelRequest as _KReq
-            run, _early = _kernel.admit(_KReq(
-                task=last_user_message, session_id=sid, agent_id=request_agent_id,
-                input=_v1_input,
-            ))
-            if _early is not None:
-                if _early.status == "waiting_approval":
-                    raise HTTPException(
-                        status_code=202,
-                        detail=f"Aguardando aprovação ({_early.approval_id}): "
-                               f"{_early.policy_reason}",
-                    )
-                if _early.policy_action == "deny":
-                    raise HTTPException(status_code=403,
-                                        detail=_early.error or "Bloqueado pela politica.")
-                raise HTTPException(status_code=503,
-                                    detail=_early.error or "Execução bloqueada.")
-            if req.stream:
-                run_manager.start_run(run.id)
-        else:
-            run = run_manager.create_run(
-                session_id=sid, agent_id=request_agent_id,
-                runtime_adapter="bauer_native", input=_v1_input, status="running",
-            )
-        _publish_selected_skill(run.id, sid, request_agent_id, resolved)
-        _publish_route(run.id, sid, request_agent_id, _v1_route)
-        resp_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
-
-        # ── modo streaming ────────────────────────────────────────────────────
-        if req.stream:
-            _metrics.stream_requests_total += 1
-
-            def _oai_stream():
-                from .agent import _try_parse_tool, MAX_TOOL_TURNS
-                from .tool_router import reset_runtime_ids, set_runtime_ids
-
-                # ContextVar (não atributo de instância): /v1 usa o router
-                # default, que pode rodar concorrente com /chat//stream — mutar
-                # a instância vazaria o id de um request pro outro. Instala aqui
-                # (na thread que roda o gerador e executa as tools).
-                _ids_token = set_runtime_ids(sid, run.id)
-                tool_count = 0
-                parts: list[str] = []
-                try:
-                    while True:
-                        current_run = run_manager.get_run(run.id)
-                        if current_run is not None and current_run.status == "cancelled":
-                            store.save(sid, ctx.messages)
-                            session_manager.touch_session(sid, state={"last_run_id": run.id})
-                            yield "data: [DONE]\n\n"
-                            return
-                        parts = []
-                        try:
-                            for chunk in _turn_client.chat_stream(active_model, ctx.get_payload()):
-                                current_run = run_manager.get_run(run.id)
-                                if current_run is not None and current_run.status == "cancelled":
-                                    store.save(sid, ctx.messages)
-                                    session_manager.touch_session(sid, state={"last_run_id": run.id})
-                                    yield "data: [DONE]\n\n"
-                                    return
-                                parts.append(chunk)
-                                # Emite chunk no formato OpenAI delta
-                                delta = _json.dumps({
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": int(_time.time()),
-                                    "model": active_model,
-                                    "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
-                                }, ensure_ascii=False)
-                                yield f"data: {delta}\n\n"
-                        except Exception as exc:
-                            err = _json.dumps({"error": {"message": str(exc), "type": "server_error"}})
-                            yield f"data: {err}\n\n"
-                            store.save(sid, ctx.messages)
-                            session_manager.touch_session(sid, state={"last_run_id": run.id})
-                            run_manager.fail_run(run.id, str(exc))
-                            yield "data: [DONE]\n\n"
-                            return
-
-                        response = _format_server_response("".join(parts))
-                        ctx.add_assistant(response)
-
-                        action_dict = _try_parse_tool(response, router)
-                        if action_dict and tool_count < MAX_TOOL_TURNS:
-                            action_name = action_dict.get("action", "tool")
-                            try:
-                                tool_result = router.execute(action_dict)
-                            except Exception as exc:
-                                tool_result = f"[Erro: {exc}]"
-                            # Emite evento de progresso de tool (formato Hermes)
-                            tool_evt = _json.dumps({"tool": action_name, "label": action_name})
-                            yield f"event: hermes.tool.progress\ndata: {tool_evt}\n\n"
-                            ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
-                            tool_count += 1
-                            _metrics.tool_calls_total += 1
-                        else:
-                            # Chunk final com finish_reason
-                            final_delta = _json.dumps({
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "created": int(_time.time()),
-                                "model": active_model,
-                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                            })
-                            yield f"data: {final_delta}\n\n"
-                            store.save(sid, ctx.messages)
-                            session_manager.touch_session(sid, state={"last_run_id": run.id})
-                            run_manager.complete_run(
-                                run.id,
-                                output={"response": response},
-                                tool_calls_count=tool_count,
-                            )
-                            yield "data: [DONE]\n\n"
-                            break
-                finally:
-                    reset_runtime_ids(_ids_token)
-
-            return StreamingResponse(
-                _oai_stream(),
-                media_type="text/event-stream",
-                headers=resp_headers,
-            )
-
-        # ── modo não-streaming (resposta completa) ────────────────────────────
-        from .cost_meter import cost_sink
-        from .tool_router import reset_runtime_ids, set_runtime_ids
-        _cost = _TurnCostRecorder(sid)
-        _cost_token = cost_sink.set(_cost)
-        _ids_token = set_runtime_ids(sid, run.id)
-        _turno: dict = {}
-
-        def _executar_v1(payload: dict) -> dict:
-            """O turno como executor do Kernel — quem conclui é o Kernel."""
-            feedback = (payload or {}).get("replan_feedback")
-            if feedback:
-                ctx.add_user(f"A validação reprovou a resposta anterior: {feedback}\n"
-                             f"Corrija e responda de novo.")
-            resposta, tl = run_one_turn(ctx, router, _turn_client, active_model)
-            _turno["response"] = _format_server_response(resposta)
-            _turno["tool_log"] = tl
-            return {"output": _turno["response"], "tool_calls_count": len(tl),
-                    "cost_estimate": round(_cost.total_usd, 6)}
-
-        try:
-            from .core.kernel import continue_governed
-            _gov = continue_governed(_kernel, run.id, _executar_v1)
-        except Exception as exc:
-            _log.exception("Erro interno em /v1/chat/completions: %s", exc)
-            if _kernel is None:
-                run_manager.fail_run(run.id, str(exc))
-            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.")
-        finally:
-            cost_sink.reset(_cost_token)
-            reset_runtime_ids(_ids_token)
-
-        if not _gov.ok:
-            # executor falhou ou gate reprovou — o Kernel já fechou o run
-            _log.warning("/v1/chat/completions não concluiu: %s", _gov.error)
-            raise HTTPException(status_code=500,
-                                detail=_gov.error or "Erro interno — consulte os logs do servidor.")
-
-        response = _turno.get("response", "")
-        tool_log = _turno.get("tool_log", [])
-        _metrics.tool_calls_total += len(tool_log)
-        _record_turn_budget(_cost, run.id, request_agent_id)
-        store.save(sid, ctx.messages)
-        session_manager.touch_session(sid, state={"last_run_id": run.id})
-        if _kernel is None:
-            # governado, o Kernel já concluiu depois dos gates
-            run_manager.complete_run(
-                run.id,
-                output={"response": response},
-                tool_calls_count=len(tool_log),
-                cost_estimate=round(_cost.total_usd, 6),
-            )
-
-        # Estima tokens (sem tokenizer real)
-        prompt_tokens = sum(len(m.get("content", "")) // 4 for m in ctx.messages[:-1])
-        completion_tokens = len(response) // 4
-
-        oai_response = {
-            "id": completion_id,
-            "object": "chat.completion",
-            "created": int(_time.time()),
-            "model": active_model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": response},
-                "finish_reason": "stop",
-            }],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
-        }
-        from fastapi.responses import JSONResponse
-        return JSONResponse(content=oai_response, headers=resp_headers)
-
-    @app.get("/v1/models")
-    def oai_models(_: None = Depends(_verify_key)):
-        """Lista modelos disponíveis — formato OpenAI (para compatibilidade com clientes OAI)."""
-        import time as _time
-        return {
-            "object": "list",
-            "data": [
-                {
-                    "id": _state["model"],
-                    "object": "model",
-                    "created": int(_time.time()),
-                    "owned_by": "bauer-agent",
-                }
-            ],
-        }
+    app.include_router(build_openai_router(OpenAIRouteDependencies(
+        verify_key=_verify_key,
+        store=store,
+        session_manager=session_manager,
+        run_manager=run_manager,
+        kernel=_kernel,
+        router=router,
+        metrics=_metrics,
+        state=_state,
+        new_context=_new_context,
+        resolve_request_context=_resolve_request_context,
+        effective_workspace=_effective_ws,
+        resolve_turn_model=_resolve_turn_model,
+        publish_selected_skill=_publish_selected_skill,
+        publish_route=_publish_route,
+        format_response=_format_server_response,
+        turn_cost_recorder=_TurnCostRecorder,
+        record_turn_budget=_record_turn_budget,
+        run_one_turn=run_one_turn,
+        logger=_log,
+    )))
 
     # --- Desktop API (SPA das 8 telas) ------------------------------------------
     try:
