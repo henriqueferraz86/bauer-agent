@@ -60,6 +60,7 @@ from .agent_loop_config import (
     resolve_loop_config as _resolve_loop_config,
     resolve_max_tool_turns as _resolve_max_tool_turns,
 )
+from .agent_loop_driver import run_loop_mode as _run_loop_mode_impl
 from .agent_loop_support import (
     handle_loop_skill_cmd as _handle_loop_skill_cmd_impl,
     print_loop_summary as _print_loop_summary_impl,
@@ -3792,217 +3793,21 @@ def _run_loop_mode(
     loop_skill: "LoopSkill | None" = None,
     bus=None,
 ) -> None:
-    """Roda o agente sozinho, turno após turno, sem confirmação humana a cada
-    passo — até concluir a tarefa (sinal natural + nudge de confirmação),
-    estourar o orçamento de segurança, um guardrail mandar parar, ou o
-    usuário interromper com Ctrl+C.
-
-    Muta `state`/`ctx`/`stats` in-place, igual ao call site do fluxo manual —
-    quem chama sincroniza `client`/`active_model`/etc. de volta depois.
-
-    `loop_skill`: quando setado, ao final de um stop_reason=="completed" roda
-    um gate de verificação obrigatório (`_run_loop_skill_verification`) e
-    grava o resultado em `DecisionMemory` — comportamento extra só ativo
-    para loop-skills; um `/loop` manual (`loop_skill=None`) continua
-    idêntico ao de sempre.
-    """
-    try:
-        loop_cfg = _resolve_loop_config(overrides)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        return
-
-    from .autonomous_budget import AutonomousBudget
-    from .headless_approval import HeadlessApprovalEngine, HeadlessApprovalConfig
-    from .tool_guardrails import ToolCallGuardrailController
-    from .usage_pricing import format_cost as _fmt_cost
-
-    budget = AutonomousBudget(
-        max_cost_usd=loop_cfg.max_cost_usd,
-        max_wall_seconds=loop_cfg.max_minutes * 60,
-        max_tool_calls=loop_cfg.max_tool_calls,
+    """Adaptador compatível para o driver extraído de ``/loop``."""
+    _run_loop_mode_impl(
+        task_description=task_description, overrides=overrides, ctx=ctx,
+        router=router, state=state, console=console,
+        fallback_clients=fallback_clients, stats=stats,
+        tool_timeout_s=tool_timeout_s, session_store=session_store,
+        session_id=session_id, active_workspace=active_workspace, memprov=memprov,
+        loop_skill=loop_skill, bus=bus, resolve_loop_config=_resolve_loop_config,
+        run_tool_loop_body=_run_tool_loop_body,
+        print_assistant_response=_print_assistant_response,
+        confirm_nudge=_LOOP_CONFIRM_NUDGE,
+        run_loop_skill_verification=_run_loop_skill_verification,
+        print_loop_summary=_print_loop_summary,
+        stop_reason_labels=_LOOP_STOP_REASON_LABELS,
     )
-    # `bus` (o do Kernel, quando o turno é governado): os limiares de estagnação
-    # deixam de morrer no console e viram `run.progress.warning` auditável. Sem
-    # bus, o guardrail é idêntico ao de sempre.
-    guardrail = ToolCallGuardrailController(bus=bus, session_id=str(session_id or ""))
-    engine = HeadlessApprovalEngine(
-        HeadlessApprovalConfig(mode=loop_cfg.approval_mode, risk_threshold=loop_cfg.approval_risk_threshold)
-    )
-
-    console.print(
-        f"[cyan]▶ /loop iniciado[/cyan] [dim]| aprovação: {loop_cfg.approval_mode} | "
-        f"até {loop_cfg.max_minutes}m / {loop_cfg.max_tool_calls} tool calls / "
-        f"{_fmt_cost(loop_cfg.max_cost_usd)}. Ctrl+C interrompe.[/dim]"
-    )
-
-    router._approval_callback = engine.make_approval_callback()
-    ctx.add_user(task_description)
-
-    round_num = 0
-    confirm_pending = False
-    warned_80 = False
-    stop_reason = "completed"
-    all_tool_log: list[dict] = []
-
-    try:
-        while True:
-            if budget.is_exhausted:
-                stop_reason = "budget_exhausted"
-                break
-
-            round_num += 1
-            outcome = _run_tool_loop_body(
-                ctx=ctx,
-                router=router,
-                state=state,
-                console=console,
-                fallback_clients=fallback_clients,
-                stats=stats,
-                tool_timeout_s=tool_timeout_s,
-                session_store=session_store,
-                session_id=session_id,
-                active_workspace=active_workspace,
-                turn_input_text=task_description,
-                memprov=memprov,
-                budget=budget,
-                guardrail=guardrail,
-            )
-            all_tool_log.extend(outcome.tool_log)
-
-            snap = budget.snapshot()
-            _mins, _secs = divmod(int(snap.elapsed_seconds), 60)
-            console.print(
-                f"[dim][loop] rodada {round_num} | {snap.tool_calls} tool calls "
-                f"({snap.tool_calls}/{snap.max_tool_calls}) | {_mins}m{_secs:02d}s/"
-                f"{loop_cfg.max_minutes}m | {_fmt_cost(snap.cost_usd)}/{_fmt_cost(snap.max_cost_usd)}[/dim]"
-            )
-            if not warned_80 and budget.is_warning:
-                console.print("[yellow]⚠ /loop perto do limite de orçamento (≥80%).[/yellow]")
-                warned_80 = True
-
-            if outcome.kind == "final":
-                _print_assistant_response(console, outcome.display, outcome.turn_cost_line)
-
-                if not outcome.tool_log:
-                    # Sinal natural genuíno: a resposta já veio em texto puro,
-                    # SEM nenhuma tool call nesta rodada — candidato real a
-                    # "terminei". Uma rodada que chamou tools e só por acaso
-                    # terminou em texto não conta (o modelo ainda trabalhou).
-                    if confirm_pending:
-                        stop_reason = "completed"
-                        break
-                    confirm_pending = True
-                    ctx.add_user(_LOOP_CONFIRM_NUDGE)
-                else:
-                    confirm_pending = False
-                continue
-
-            confirm_pending = False
-
-            if outcome.kind == "tool_limit":
-                # Cap por-turno (MAX_TOOL_TURNS) — não é o orçamento do /loop,
-                # só reinicia a "conversa" pro próximo round continuar.
-                continue
-
-            if outcome.kind in (
-                "loop_hard_stop", "guardrail_halt", "provider_error",
-                "empty_response", "interrupted", "budget_exhausted",
-            ):
-                stop_reason = outcome.kind
-                break
-    finally:
-        router._approval_callback = None
-
-    verify_result = None
-    if loop_skill is not None and stop_reason == "completed":
-        verify_result = _run_loop_skill_verification(
-            loop_skill=loop_skill,
-            active_workspace=active_workspace,
-            ctx=ctx,
-            router=router,
-            state=state,
-            console=console,
-            fallback_clients=fallback_clients,
-            stats=stats,
-            tool_timeout_s=tool_timeout_s,
-            session_store=session_store,
-            session_id=session_id,
-            memprov=memprov,
-            budget=budget,
-            guardrail=guardrail,
-        )
-        if verify_result is not None and not verify_result.ok:
-            stop_reason = "verification_failed"
-
-    _print_loop_summary(console, stop_reason, round_num, budget, all_tool_log, task_description)
-
-    # Conclusão normal não é incidente — gravar (e logar em INFO) um
-    # "autonomous_loop_stopped: completed" fazia sucesso parecer erro no
-    # terminal do usuário. Só paradas anômalas viram incidente.
-    if stop_reason != "completed":
-        try:
-            from .incidents import record_incident
-            snap = budget.snapshot()
-            record_incident(
-                "autonomous_loop_stopped",
-                reason=stop_reason,
-                task_description=task_description[:200],
-                rounds=round_num,
-                elapsed_seconds=round(snap.elapsed_seconds, 1),
-                tool_calls=snap.tool_calls,
-                llm_calls=snap.llm_calls,
-                cost_usd=round(snap.cost_usd, 4),
-            )
-        except Exception:
-            pass
-
-    try:
-        from .kanban_store import KanbanStore
-        _ks = KanbanStore(active_workspace)
-        _ks.append_event(
-            task_id="_loop",
-            event_type="autonomous_loop_stopped",
-            actor="loop",
-            message=f"{stop_reason}: {task_description[:120]}",
-            metadata=budget.to_dict(),
-        )
-    except Exception:
-        pass
-
-    if loop_skill is not None:
-        try:
-            from pathlib import Path as _Path_dm
-            from .decision_memory import DecisionMemory
-            snap = budget.snapshot()
-            _dm = DecisionMemory(db_path=_Path_dm(active_workspace) / "decisions.db")
-
-            if verify_result is not None:
-                _outcome = "good" if verify_result.ok else "bad"
-                _score = 1.0 if verify_result.ok else 0.0
-                _verify_line = f" | verificação: {verify_result.summary}"
-            elif stop_reason == "completed":
-                _outcome, _score, _verify_line = "good", 0.5, " | sem verificação configurada"
-            elif stop_reason in ("provider_error", "empty_response", "guardrail_halt", "verification_failed"):
-                _outcome, _score, _verify_line = "bad", 0.0, ""
-            else:  # budget_exhausted, loop_hard_stop, interrupted — inconclusivo
-                _outcome, _score, _verify_line = "neutral", 0.5, ""
-
-            _tool_names = sorted({t.get("tool", "?") for t in all_tool_log})
-            _dm.record(
-                context=task_description[:2000],
-                decision=(
-                    f"loop-skill '{loop_skill.name}': "
-                    f"{_LOOP_STOP_REASON_LABELS.get(stop_reason, stop_reason)} "
-                    f"em {round_num} rodada(s), {snap.tool_calls} tool calls, "
-                    f"{_fmt_cost(snap.cost_usd)}{_verify_line}"
-                ),
-                outcome=_outcome,
-                tags=[loop_skill.name, "loop-skill"] + _tool_names,
-                score=_score,
-            )
-        except Exception:
-            pass  # observabilidade nunca derruba o /loop
 
 
 def _run_loop_skill_verification(
