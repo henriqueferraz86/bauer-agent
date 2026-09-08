@@ -237,6 +237,33 @@ class TestBenchmark:
 # ─── 3.2 Circuit breaker — E2E do fallback chain ───────────────────────────────
 
 class TestCircuitBreakerFallbackE2E:
+    def test_primary_open_sem_fallback_preserva_erro_claro(self):
+        """Circuito aberto sem alternativa não pode vazar UnboundLocalError."""
+        import io
+
+        from bauer.agent import _collect_with_fallback
+        from bauer.circuit_breaker import global_cb
+        from bauer.ollama_client import OllamaError
+        from rich.console import Console
+
+        class PrimaryClient:
+            host = "https://api.openai.com"
+
+            def chat_stream(self, model, messages):
+                raise AssertionError("primário OPEN não deveria ser chamado")
+
+        provider_key = "openai"
+        try:
+            for _ in range(20):
+                global_cb.record_failure(provider_key, RuntimeError("down"))
+            with pytest.raises(OllamaError, match="Circuit OPEN e sem fallback"):
+                _collect_with_fallback(
+                    PrimaryClient(), "p-model", [{"role": "user", "content": "oi"}],
+                    None, Console(file=io.StringIO()),
+                )
+        finally:
+            global_cb.reset(provider_key)
+
     def test_primary_open_pula_direto_para_fallback(self):
         """Com o circuito do primário OPEN, a call nem tenta o primário."""
         from bauer.agent import _collect_with_fallback

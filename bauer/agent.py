@@ -61,6 +61,13 @@ from .agent_loop_config import (
     resolve_max_tool_turns as _resolve_max_tool_turns,
 )
 from .agent_loop_driver import run_loop_mode as _run_loop_mode_impl
+from .agent_response import (
+    collect_response as _collect_response_impl,
+    collect_with_fallback as _collect_with_fallback_impl,
+    parse_provider_context_cap as _parse_provider_context_cap_impl,
+    recover_empty_response as _recover_empty_response_impl,
+    stream_to_sink as _stream_to_sink_impl,
+)
 from .agent_loop_support import (
     handle_loop_skill_cmd as _handle_loop_skill_cmd_impl,
     print_loop_summary as _print_loop_summary_impl,
@@ -1382,57 +1389,10 @@ def _stream_to_sink(
     max_retries: int = 2,
     on_retry=None,
 ) -> "list[str]":
-    """Consome `chat_stream` emitindo cada chunk ao sink, com retry A FRIO.
-
-    "A frio" é a regra que não pode ser afrouxada: assim que UM chunk saiu, a
-    resposta já está na tela do usuário (ou na mensagem do canal). Retentar
-    depois disso reimprimiria a resposta inteira grudada na anterior. Então a
-    falha pós-emissão sobe — só a falha antes do primeiro token é retentada.
-
-    Antes deste helper, o ramo de sink não tinha retry nenhum: quem instalava
-    sink (o gateway) trocava, sem saber, o backoff de 429/5xx por uma falha
-    seca. Com o terminal virando consumidor de sink (plano 028 F1), isso
-    valeria também para todo `bauer agent` em provider de nuvem.
-    """
-    from .delta_stream import emit_delta as _emit_delta
-    from .delta_stream import emit_round_start as _emit_round
-    from .delta_stream import get_sink as _get_sink
-    from .error_classifier import classify_api_error
-    from .retry_utils import jittered_backoff
-
-    parts: "list[str]" = []
-    for attempt in range(max_retries + 1):
-        _emit_round()
-        parts = []
-        try:
-            for chunk in client.chat_stream(model_name, api_payload):
-                sink = _get_sink()
-                if sink is not None and getattr(sink, "cancelled", False):
-                    from .voice_session import VoiceTurnCancelled
-
-                    raise VoiceTurnCancelled("turno de voz interrompido")
-                parts.append(chunk)
-                _emit_delta(chunk)
-                if getattr(sink, "cancelled", False):
-                    from .voice_session import VoiceTurnCancelled
-
-                    raise VoiceTurnCancelled("turno de voz interrompido")
-            return parts
-        except Exception as exc:  # noqa: BLE001 — reclassificado logo abaixo
-            if parts:
-                raise  # já saiu texto: retry duplicaria a resposta
-            classified = classify_api_error(exc)
-            if not classified.retryable or attempt >= max_retries:
-                raise
-            wait = jittered_backoff(attempt, base_delay=5.0, max_delay=60.0)
-            if on_retry is not None:
-                try:
-                    on_retry(attempt + 1, classified, wait)
-                except Exception as _exc:  # noqa: BLE001 — aviso não derruba o turno
-                    from .logging_config import log_suppressed
-                    log_suppressed("stream.on_retry", _exc)
-            time.sleep(wait)
-    return parts
+    """Adaptador compatível para o streaming extraído de respostas."""
+    return _stream_to_sink_impl(
+        client, model_name, api_payload, max_retries=max_retries, on_retry=on_retry,
+    )
 
 
 def _collect_response(
@@ -1440,107 +1400,10 @@ def _collect_response(
     model_name: str,
     payload: list[dict],
 ) -> str:
-    """Coleta a resposta completa do modelo (sem streaming ao usuário).
-
-    Usa chat_with_retry (com exponential backoff) quando disponível — OpenAIClient.
-    Fallback para chat_stream direto (OllamaClient e qualquer client sem retry).
-
-    Wave 1 integrations (provider-aware, opt-in):
-      - Anthropic prompt caching: applies `cache_control` to system + last 3
-        non-system messages so the next turn enjoys cache hits (~75% input cost
-        reduction). `apply_anthropic_cache_control()` deep-copies — the input
-        `payload` (and the persisted history) is never mutated.
-      - Usage capture: after each LLM call, the client's `last_usage` attribute
-        holds the raw provider usage dict. Normalised + accumulated outside
-        this function via `bauer.account_usage.normalize_usage()`.
-    """
-    # Plugin hooks — pre_llm_call
-    try:
-        from .plugin_hooks import hooks as _phooks
-        _phooks.ensure_plugins_loaded()
-        _phooks.emit("pre_llm_call", model=model_name, messages=payload)
-    except Exception:
-        pass
-
-    # Anthropic prompt caching — provider-aware no-op for everything else.
-    # Caching only kicks in when the system prompt is byte-stable across turns;
-    # the deep-copy here ensures we never persist cache_control markers into
-    # the conversation history (which would invalidate cache hits).
-    api_payload = payload
-    try:
-        from .prompt_caching import (
-            apply_anthropic_cache_control,
-            should_apply_cache_control,
-        )
-        if should_apply_cache_control(client):
-            api_payload = apply_anthropic_cache_control(payload)
-    except Exception:
-        # If caching scaffolding fails for any reason, fall back to the raw
-        # payload — better to ship the request than to crash on a cost
-        # optimisation.
-        api_payload = payload
-
-    # Delta sink: quando instalado, consome o stream token a token emitindo
-    # cada chunk — a mensagem do canal (gateway) ou a resposta no terminal
-    # (plano 028 F1) cresce ao vivo. Agora com retry a frio, ver _stream_to_sink.
-    from .delta_stream import get_sink as _get_sink
-
-    # Usa retry automático apenas no OpenAIClient (que tem implementação real).
-    # Checar apenas hasattr() seria insuficiente pois MagicMock retorna True para tudo.
-    from .openai_client import OpenAIClient as _OpenAIClientClass
-    if _get_sink() is not None:
-        parts = _stream_to_sink(client, model_name, api_payload)
-    elif isinstance(client, _OpenAIClientClass) and hasattr(client, "chat_with_retry"):
-        parts = client.chat_with_retry(model_name, api_payload)
-    else:
-        parts = list(client.chat_stream(model_name, api_payload))
-    response = "".join(parts)
-
-    # Sanitiza lone surrogates (U+D800–U+DFFF) que provocam UnicodeEncodeError
-    # ao salvar a sessão (SQLite, logging, JSON dump). Origem comum: streaming
-    # SSE quebrando um caractere multi-byte UTF-8 entre chunks. Round-trip
-    # encode/decode com errors='replace' substitui surrogates por U+FFFD.
-    try:
-        from .unicode_utils import sanitize_surrogates as _sanitize
-        response = _sanitize(response)
-    except Exception:
-        # Fallback inline se import falhar — encode-decode direto
-        response = response.encode("utf-8", errors="replace").decode("utf-8")
-
-    # Plugin hooks — post_llm_call
-    try:
-        from .plugin_hooks import hooks as _phooks
-        _phooks.emit("post_llm_call", model=model_name, messages=payload, response=response)
-    except Exception:
-        pass
-
-    # Cost meter — entrega o custo real desta call ao sink ativo (daemon,
-    # goal tracker, benchmark). No-op quando ninguém está medindo.
-    try:
-        from .cost_meter import provider_from_client, report_llm_cost
-        report_llm_cost(
-            provider_from_client(client),
-            model_name,
-            getattr(client, "last_usage", None),
-        )
-    except Exception:
-        pass
-
-    # Escanear resposta do modelo por segredos antes de processar/logar
-    try:
-        from .secrets_scanner import scan as _scan
-        sr = _scan(response, redact=True)
-        if sr.found:
-            import logging as _log
-            names = ", ".join(set(m["name"] for m in sr.matches))
-            _log.getLogger(__name__).warning(
-                "[secrets_scanner] Segredos na resposta do modelo: %s. Redagidos.", names
-            )
-            response = sr.redacted_text
-    except Exception:
-        pass
-
-    return response
+    """Adaptador compatível para a coleta de resposta extraída."""
+    return _collect_response_impl(
+        client, model_name, payload, stream_to_sink_fn=_stream_to_sink,
+    )
 
 
 def _recover_empty_response(
@@ -1549,104 +1412,15 @@ def _recover_empty_response(
     ctx: ContextManager,
     console: Console | None = None,
 ) -> tuple[str, str]:
-    """Recuperação em camadas quando o modelo retorna resposta vazia.
-
-    Camadas (param na primeira que produzir resposta):
-      1. Retry com backoff 2s   — rate-limit silencioso / transiente
-      2. force_compress + retry — contexto sobrecarregado (causa mais comum
-                                  observada em uso real; antes o usuário era
-                                  instruído a dar /clear manualmente)
-
-    Returns:
-        (response, diagnostico):
-        - response != ""  → recuperado; diagnostico é vazio
-        - response == ""  → falha definitiva; diagnostico tem mensagem acionável.
-          O incidente é gravado em logs/incidents/ para virar teste de regressão.
-    """
-    import time as _time
-
-    # Camada 1: retry simples
-    _time.sleep(2.0)
-    response = _collect_response(client, model_name, ctx.get_payload())
-    if response.strip():
-        return response, ""
-
-    # Camada 2: compressão forçada + retry
-    compressed = False
-    try:
-        compressed = ctx.force_compress()
-    except Exception:
-        compressed = False
-    if compressed:
-        if console is not None:
-            console.print("[dim][recovery] contexto comprimido — tentando novamente...[/dim]")
-        response = _collect_response(client, model_name, ctx.get_payload())
-        if response.strip():
-            return response, ""
-
-    # Falha definitiva: grava incidente (sem conteúdo de mensagens) + diagnóstico
-    payload = ctx.get_payload()
-    approx_chars = sum(
-        len(m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content", "")))
-        for m in payload
+    """Adaptador compatível para a recuperação de resposta vazia."""
+    return _recover_empty_response_impl(
+        client, model_name, ctx, console, collect_response_fn=_collect_response,
     )
-    approx_tokens = approx_chars // 4
-    applied = getattr(ctx, "applied_context", 0) or 0
-    pct = f" (~{approx_tokens * 100 // applied}% do contexto)" if applied else ""
-
-    try:
-        from .incidents import record_incident
-        record_incident(
-            "empty_response",
-            model=model_name,
-            provider=getattr(ctx, "provider", "?"),
-            messages_count=len(payload),
-            approx_tokens=approx_tokens,
-            applied_context=applied,
-            compressed_before_final_retry=compressed,
-        )
-    except Exception:
-        pass
-
-    diagnostico = (
-        f"[Modelo retornou resposta vazia mesmo após retry + compressão]\n"
-        f"  Modelo: {model_name}\n"
-        f"  Contexto: {len(payload)} mensagens, ~{approx_tokens:,} tokens{pct}\n"
-        f"  Prováveis causas:\n"
-        f"    1. Rate-limit silencioso do provider (comum em free tier)\n"
-        f"    2. Filtro de conteúdo bloqueando a resposta\n"
-        f"    3. Modelo sobrecarregado no servidor\n"
-        f"  Soluções:\n"
-        f"    Aguarde 30s — pode ser rate-limit transiente\n"
-        f"    /model      — troca de provider/modelo\n"
-        f"    /clear      — última opção: limpa todo o histórico"
-    )
-    return "", diagnostico
 
 
 def _parse_provider_context_cap(error_text: str) -> int | None:
-    """Extrai a janela de contexto REAL reportada pelo provider num erro 400/413.
-
-    Formatos conhecidos:
-      OpenRouter: "This endpoint's maximum context length is 65536 tokens."
-      OpenAI:     "This model's maximum context length is 128000 tokens"
-      Groq 413:   "... tokens per minute (TPM): Limit 12000, ..."  (TPM, não janela — ignorado)
-    Retorna None quando não há um cap de CONTEXTO claro no texto.
-    """
-    import re as _re
-    m = _re.search(r"maximum context length is (\d{3,})", error_text)
-    if m:
-        try:
-            return int(m.group(1))
-        except ValueError:
-            return None
-    m = _re.search(r"context length of only (\d{3,})|context window of (\d{3,})", error_text)
-    if m:
-        try:
-            return int(m.group(1) or m.group(2))
-        except ValueError:
-            return None
-    return None
+    """Adaptador compatível para o parser de janela de contexto."""
+    return _parse_provider_context_cap_impl(error_text)
 
 
 @contextmanager
@@ -1989,127 +1763,12 @@ def _collect_with_fallback(
     console: Console,
     streamer=None,
 ) -> "tuple[str, Any, str]":
-    """Tenta coletar resposta; em falha retryável tenta providers de fallback.
-
-    Returns:
-        (response, active_client, active_model_name)
-
-    Raises:
-        OllamaError | OpenAIClientError: quando todos os providers falham.
-    """
-    def _collect_with_stream_sink(active_client, active_model):
-        """Coleta e instala o sink também no caminho Tool Bridge."""
-        if streamer is None:
-            return _collect_response(active_client, active_model, payload)
-        from .delta_stream import reset_sink, set_sink
-
-        token = set_sink(streamer)
-        try:
-            return _collect_response(active_client, active_model, payload)
-        finally:
-            reset_sink(token)
-
-    # Derive provider name from client for circuit breaker tracking
-    try:
-        from .cost_meter import provider_from_client as _pfn
-        _primary_provider = _pfn(client)
-    except Exception:
-        _primary_provider = getattr(client, "_provider", None) or "openai"
-
-    # --- Circuit breaker: skip primary if already OPEN ---
-    try:
-        from .circuit_breaker import global_cb, CircuitOpenError
-        _cb_available = True
-    except Exception:
-        _cb_available = False
-        global_cb = None  # type: ignore[assignment]
-        CircuitOpenError = Exception  # type: ignore[assignment, misc]
-
-    if _cb_available and global_cb is not None and global_cb.is_open(_primary_provider):
-        console.print(
-            f"[yellow]⚡ Circuit OPEN para '{_primary_provider}' — saltando para fallback[/yellow]"
-        )
-    else:
-        try:
-            with _thinking_status(console, model_name):
-                resp = _collect_with_stream_sink(client, model_name)
-            if _cb_available and global_cb is not None:
-                global_cb.record_success(_primary_provider)
-            return resp, client, model_name
-        except (OllamaError, OpenAIClientError) as primary_exc:
-            if _cb_available and global_cb is not None:
-                global_cb.record_failure(_primary_provider, primary_exc)
-            if not fallback_clients:
-                raise
-
-            # Classifica o erro — só faz fallback para erros "de provider", não de auth
-            _should_fallback = True
-            try:
-                from .error_classifier import classify_api_error
-                classified = classify_api_error(primary_exc)
-                _should_fallback = classified.should_fallback
-            except Exception:
-                pass  # sem classifier: assume que deve tentar fallback
-
-            if not _should_fallback:
-                raise
-
-            # Fall through to try fallback_clients below
-            _primary_failed_exc = primary_exc
-        else:
-            _primary_failed_exc = None  # type: ignore[assignment]
-
-    if not fallback_clients:
-        if "_primary_failed_exc" in dir():
-            raise _primary_failed_exc  # type: ignore[name-defined]
-        raise OllamaError("Circuit OPEN e sem fallback configurado")
-
-    for fb_entry in fallback_clients:
-        fb_client, fb_model = fb_entry[0], fb_entry[1]
-        _fb_label = fb_entry[2] if len(fb_entry) > 2 else getattr(fb_client, "default_model", fb_model)
-        try:
-            from .cost_meter import provider_from_client as _pfn
-            _fb_provider = _pfn(fb_client)
-        except Exception:
-            _fb_provider = getattr(fb_client, "_provider", None) or "openai"
-        if _cb_available and global_cb is not None and global_cb.is_open(_fb_provider):
-            console.print(f"[dim]  Fallback {_fb_label}: circuit OPEN, pulando[/dim]")
-            continue
-        console.print(
-            f"[yellow]⚡ Provider falhou — tentando fallback: [bold]{_fb_label}[/bold][/yellow]"
-        )
-        try:
-            with _thinking_status(console, fb_model):
-                resp = _collect_with_stream_sink(fb_client, fb_model)
-            if _cb_available and global_cb is not None:
-                global_cb.record_success(_fb_provider)
-            return resp, fb_client, fb_model
-        except Exception as fb_exc:
-            if _cb_available and global_cb is not None:
-                global_cb.record_failure(_fb_provider, fb_exc)
-            # Overflow de contexto num fallback: o payload não vai caber em
-            # NENHUM provider desta varredura (mesmo payload em todos). Para
-            # a cadeia aqui e propaga — o chamador comprime o contexto e
-            # re-tenta, em vez de queimar dezenas de providers à toa.
-            _stop_chain = False
-            try:
-                from .error_classifier import classify_api_error as _classify_fb
-                _stop_chain = _classify_fb(fb_exc).should_compress
-            except Exception:
-                _stop_chain = False  # classifier indisponível — segue como antes
-            if _stop_chain:
-                console.print(
-                    "[yellow]⚠ Payload grande demais para os providers — "
-                    "interrompendo a varredura de fallbacks para comprimir o contexto.[/yellow]"
-                )
-                raise fb_exc
-            console.print(f"[dim]  Fallback {_fb_label} também falhou: {fb_exc}[/dim]")
-            continue
-
-    # All fallbacks exhausted
-    if "_primary_failed_exc" in dir() and "_primary_failed_exc" in locals():
-        raise _primary_failed_exc  # type: ignore[name-defined]
-    raise OllamaError("Todos os providers estão com circuit OPEN ou falharam")
+    """Adaptador compatível para a coleta com fallback extraída."""
+    return _collect_with_fallback_impl(
+        client, model_name, payload, fallback_clients, console, streamer,
+        collect_response_fn=_collect_response,
+        thinking_status=_thinking_status,
+    )
 
 
 class _NativeToolsUnsupported(Exception):
