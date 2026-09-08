@@ -46,6 +46,10 @@ interface SlashCommand {
 type VoiceMode = "once" | "loop" | "wake";
 
 const CHAT_STATE_KEY = "bauer.chatState.v1";
+const VOICE_SILENCE_MS = 1800;
+const VOICE_NO_SPEECH_TIMEOUT_MS = 15000;
+const VOICE_MAX_RECORDING_MS = 120000;
+const VOICE_LEVEL_THRESHOLD = 0.035;
 
 function loadChatState(): { messages: Message[]; sessionId: string } {
   try {
@@ -72,6 +76,7 @@ export default function Chat() {
   const [palIdx, setPalIdx] = useState(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("");
   // HUD (plano 028 F5) — o mesmo painel de instrumentos do terminal.
   const [hud, setHud] = useState<HudData>({ provider: "", model: "" });
   // Medição de tok/s: contada no CLIENTE, sobre o que de fato chegou. Em ref,
@@ -89,6 +94,9 @@ export default function Chat() {
   const transcribingRef = useRef(false);
   const busyRef = useRef(false);
   const voiceRestartTimerRef = useRef<number | null>(null);
+  const voiceMonitorRef = useRef<number | null>(null);
+  const voiceAudioContextRef = useRef<AudioContext | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("once");
 
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
@@ -500,33 +508,66 @@ export default function Chat() {
     return text.slice(index + 5).replace(/^[\s,;:!?-]+/, "").trim();
   }
 
+  function stopVoiceMonitor() {
+    if (voiceMonitorRef.current !== null) {
+      window.cancelAnimationFrame(voiceMonitorRef.current);
+      voiceMonitorRef.current = null;
+    }
+    const context = voiceAudioContextRef.current;
+    voiceAudioContextRef.current = null;
+    if (context) void context.close().catch(() => { /* já pode estar fechado */ });
+  }
+
   function stopVoiceMode() {
     voiceModeRef.current = "once";
     setVoiceMode("once");
+    setVoiceStatus("Escuta pausada.");
     if (voiceRestartTimerRef.current !== null) {
       window.clearTimeout(voiceRestartTimerRef.current);
       voiceRestartTimerRef.current = null;
     }
+    stopVoiceMonitor();
+    voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+    voiceStreamRef.current = null;
     if (recordingRef.current) recorderRef.current?.stop();
   }
 
-  // ── Microfone: grava, transcreve (STT default do gateway) e envia ─────────
+  // ── Microfone: grava até silêncio, transcreve e envia ─────────────────────
   async function beginRecording() {
     if (recordingRef.current || busyRef.current || transcribingRef.current) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
       const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const audioContext = voiceAudioContextRef.current ?? new AudioContext();
+      voiceAudioContextRef.current = audioContext;
+      await audioContext.resume().catch(() => { /* alguns browsers já iniciam ativo */ });
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      const startedAt = performance.now();
+      let heardSpeech = false;
+      let lastSoundAt = startedAt;
+
       chunksRef.current = [];
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = async () => {
+        source.disconnect();
+        stopVoiceMonitor();
         stream.getTracks().forEach((t) => t.stop());
+        if (voiceStreamRef.current === stream) voiceStreamRef.current = null;
         recordingRef.current = false;
         setRecording(false);
         const blob = new Blob(chunksRef.current, { type: mime || "audio/webm" });
-        if (blob.size === 0) return;
+        if (blob.size === 0) {
+          setVoiceStatus(voiceModeRef.current === "wake" ? "Escutando — diga 'bauer' + o comando." : "Pode falar novamente.");
+          return;
+        }
         transcribingRef.current = true;
         setTranscribing(true);
+        setVoiceStatus("Transcrevendo sua fala…");
         try {
           const r = await api.upload<{ transcript: string; provider: string }>("/transcribe", blob, "voice.webm");
           let spoken = r.transcript?.trim() || "";
@@ -544,26 +585,73 @@ export default function Chat() {
               return;
             }
           }
-          if (spoken) await send(spoken, { speak: true });
+          if (spoken) {
+            setVoiceStatus("Bauer está respondendo…");
+            await send(spoken, { speak: true });
+          }
         } catch (e) {
           appendInfo(`[Erro na transcrição: ${e}]`);
         } finally {
           transcribingRef.current = false;
           setTranscribing(false);
           if (voiceModeRef.current !== "once") {
+            setVoiceStatus(
+              voiceModeRef.current === "wake"
+                ? "Escutando — diga 'bauer' + o comando."
+                : "Pode falar novamente.",
+            );
             voiceRestartTimerRef.current = window.setTimeout(() => {
               voiceRestartTimerRef.current = null;
               void beginRecording();
             }, 200);
+          } else {
+            setVoiceStatus("Pode falar novamente.");
+            voiceAudioContextRef.current = null;
           }
         }
       };
       recorderRef.current = recorder;
+      voiceStreamRef.current = stream;
       recorder.start();
       recordingRef.current = true;
       setRecording(true);
+      setVoiceStatus(
+        voiceModeRef.current === "wake"
+          ? "Escutando — diga 'bauer' + o comando."
+          : "Pode falar agora — paro automaticamente quando você terminar.",
+      );
+
+      const monitor = () => {
+        if (!recordingRef.current || recorderRef.current !== recorder) return;
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (const sample of samples) {
+          const centered = (sample - 128) / 128;
+          sum += centered * centered;
+        }
+        const level = Math.sqrt(sum / samples.length);
+        const now = performance.now();
+        if (level >= VOICE_LEVEL_THRESHOLD) {
+          heardSpeech = true;
+          lastSoundAt = now;
+        }
+        const silentFor = now - lastSoundAt;
+        const noSpeechFor = now - startedAt;
+        if (
+          (heardSpeech && silentFor >= VOICE_SILENCE_MS) ||
+          (!heardSpeech && noSpeechFor >= VOICE_NO_SPEECH_TIMEOUT_MS) ||
+          noSpeechFor >= VOICE_MAX_RECORDING_MS
+        ) {
+          setVoiceStatus("Processando sua voz…");
+          recorder.stop();
+          return;
+        }
+        voiceMonitorRef.current = window.requestAnimationFrame(monitor);
+      };
+      voiceMonitorRef.current = window.requestAnimationFrame(monitor);
     } catch (e) {
       appendInfo(`[Não consegui acessar o microfone: ${e}]`);
+      setVoiceStatus("Microfone indisponível.");
     }
   }
 
@@ -717,6 +805,12 @@ export default function Chat() {
             ))}
           </div>
         )}
+        {voiceStatus && (
+          <div className={"voice-status" + (recording ? " active" : "")} aria-live="polite">
+            <i className={"ti " + (recording ? "ti-microphone" : transcribing || busy ? "ti-loader-2 spin" : "ti-volume") } />
+            <span>{voiceStatus}</span>
+          </div>
+        )}
         <div className="box">
           <textarea
             placeholder={
@@ -725,7 +819,7 @@ export default function Chat() {
                   ? "Gravando em loop… diga 'parar' para encerrar"
                   : voiceMode === "wake"
                     ? "Aguardando 'bauer'… diga a palavra antes do comando"
-                    : "Gravando… clique no microfone de novo para enviar"
+                    : "Ouvindo… paro automaticamente quando você terminar"
                 : "Mensagem para Bauer… (digite / para comandos · Enter envia · Shift+Enter quebra linha)"
             }
             value={input}
@@ -737,7 +831,7 @@ export default function Chat() {
           <div
             className={"send-btn" + (recording ? " recording" : "")}
             onClick={() => toggleRecording("once")}
-            title={recording ? "Parar e enviar" : voiceMode === "loop" ? "Iniciar conversa contínua" : "Gravar áudio"}
+            title={recording ? "Parar e enviar agora" : voiceMode === "loop" ? "Iniciar conversa contínua" : "Gravar áudio"}
           >
             <i className={"ti " + (transcribing ? "ti-loader-2 spin" : recording ? "ti-player-stop" : "ti-microphone")} />
           </div>
