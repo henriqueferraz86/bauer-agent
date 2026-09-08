@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -490,7 +491,12 @@ def test_timed_tool_returns_without_waiting_and_bounds_workers(ws: Path, monkeyp
     start = time.monotonic()
     with pytest.raises(ToolError, match="excedeu o timeout"):
         router.execute({"action": "slow_test", "args": {}})
-    assert time.monotonic() - start < 0.5
+    # O timeout em si é 50ms. Em runners Windows compartilhados, a preparação
+    # anterior ao submit (hooks/audit e agendamento da thread) pode ultrapassar
+    # 500ms sob contenção; a margem maior valida que o caller não espera os 5s
+    # da tool lenta sem transformar a suíte em teste de performance do runner.
+    max_elapsed_s = 2.0 if sys.platform == "win32" else 0.5
+    assert time.monotonic() - start < max_elapsed_s
     assert started.is_set()
 
     with pytest.raises(ToolError, match="limite de workers"):
