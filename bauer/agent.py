@@ -27,7 +27,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from rich.console import Console
-from rich.rule import Rule
 
 from . import theme as _theme_mod
 from .context_manager import ContextManager
@@ -61,12 +60,16 @@ from .agent_loop_config import (
     resolve_loop_config as _resolve_loop_config,
     resolve_max_tool_turns as _resolve_max_tool_turns,
 )
+from .agent_loop_support import (
+    handle_loop_skill_cmd as _handle_loop_skill_cmd_impl,
+    print_loop_summary as _print_loop_summary_impl,
+    run_loop_skill_verification as _run_loop_skill_verification_impl,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
     from .session_store import SessionStore
     from .app_verify import VerifyResult
-    from .config_loader import LoopSection
     from .loop_skills import LoopSkill
 
 _EXIT_CMDS = {"/exit", "/quit", "/sair"}
@@ -4007,121 +4010,23 @@ def _run_loop_skill_verification(
     fallback_clients, stats, tool_timeout_s, session_store, session_id,
     memprov, budget, guardrail,
 ) -> "VerifyResult | None":
-    """Gate de verificação obrigatório de um loop-skill.
-
-    Roda 1x; se falhar, injeta o erro no contexto e dá EXATAMENTE UMA rodada
-    extra de correção (`_run_tool_loop_body` direto, sem loop de confirmação
-    aninhado), depois reverifica UMA vez. Bounded por construção — só existem
-    2 pontos de chamada de `_run_once()` neste código, nunca um loop.
-
-    `None` = loop-skill não configurou verificação (nem verify_command nem
-    verify_auto) — não é uma falha, é ausência de gate.
-    """
-    if not loop_skill.verify_command and not loop_skill.verify_auto:
-        return None
-
-    from .app_verify import Step, VerifyResult, verify_project
-
-    def _run_once() -> VerifyResult:
-        if loop_skill.verify_command:
-            import shlex
-            import subprocess
-            try:
-                proc = subprocess.run(
-                    shlex.split(loop_skill.verify_command),
-                    cwd=str(active_workspace), capture_output=True,
-                    text=True, encoding="utf-8", errors="replace", timeout=300,
-                )
-                out = (proc.stdout or "") + (proc.stderr or "")
-                ok = proc.returncode == 0
-                step = Step(
-                    "verify_command", [loop_skill.verify_command],
-                    rc=proc.returncode, ok=ok, output=out[-2000:],
-                )
-                return VerifyResult(
-                    str(active_workspace), "custom", ok, [step],
-                    "verificação customizada ok" if ok
-                    else f"verify_command falhou (rc={proc.returncode})",
-                )
-            except Exception as exc:
-                step = Step(
-                    "verify_command", [loop_skill.verify_command],
-                    rc=-1, ok=False, output=str(exc)[:2000],
-                )
-                return VerifyResult(
-                    str(active_workspace), "custom", False, [step],
-                    f"erro ao rodar verify_command: {exc}",
-                )
-        return verify_project(active_workspace)  # verify_auto
-
-    console.print(f"[cyan]verificação do loop-skill '{loop_skill.name}'...[/cyan]")
-    result = _run_once()
-    if result.ok:
-        console.print(f"[green]verificação passou:[/green] {result.summary}")
-        return result
-
-    console.print(f"[yellow]verificação falhou, tentando 1 correção:[/yellow] {result.summary}")
-    ctx.add_user(
-        f"A verificação automática falhou:\n{result.summary}\n\n"
-        "Corrija o problema. Esta é sua ÚLTIMA chance antes da verificação final."
+    """Adaptador compatível para o gate extraído em ``agent_loop_support``."""
+    return _run_loop_skill_verification_impl(
+        loop_skill=loop_skill, active_workspace=active_workspace, ctx=ctx,
+        router=router, state=state, console=console,
+        fallback_clients=fallback_clients, stats=stats,
+        tool_timeout_s=tool_timeout_s, session_store=session_store,
+        session_id=session_id, memprov=memprov, budget=budget, guardrail=guardrail,
+        run_tool_loop_body=_run_tool_loop_body,
     )
-    try:
-        _run_tool_loop_body(
-            ctx=ctx, router=router, state=state, console=console,
-            fallback_clients=fallback_clients, stats=stats,
-            tool_timeout_s=tool_timeout_s, session_store=session_store,
-            session_id=session_id, active_workspace=active_workspace,
-            turn_input_text="", memprov=memprov, budget=budget, guardrail=guardrail,
-        )
-    except Exception:
-        pass  # mesmo se a rodada de correção falhar/estourar, tenta verificar de novo
-
-    console.print(f"[cyan]reverificando '{loop_skill.name}'...[/cyan]")
-    result2 = _run_once()
-    if result2.ok:
-        console.print(f"[green]verificação passou após correção:[/green] {result2.summary}")
-    else:
-        console.print(
-            f"[red]verificação falhou de novo — encerrando (sem mais tentativas):[/red] {result2.summary}"
-        )
-    return result2
 
 
 def _print_loop_summary(console, stop_reason, round_num, budget, all_tool_log, task_description) -> None:
-    """Painel resumo ao final do /loop — motivo, orçamento, tool calls por tipo."""
-    try:
-        from collections import Counter
-
-        from rich.panel import Panel
-
-        from .usage_pricing import format_cost as _fmt_cost
-
-        snap = budget.snapshot()
-        label = _LOOP_STOP_REASON_LABELS.get(stop_reason, stop_reason)
-        lines = [
-            f"[bold]Motivo:[/bold] {label}",
-            f"[bold]Rodadas:[/bold] {round_num}",
-            f"[bold]Duração:[/bold] {int(snap.elapsed_seconds)}s",
-            f"[bold]Tool calls:[/bold] {snap.tool_calls}/{snap.max_tool_calls}",
-            f"[bold]LLM calls:[/bold] {snap.llm_calls}/{snap.max_llm_calls}",
-            f"[bold]Custo:[/bold] {_fmt_cost(snap.cost_usd)}/{_fmt_cost(snap.max_cost_usd)}",
-        ]
-        tool_counts = Counter(t.get("tool", "?") for t in all_tool_log)
-        if tool_counts:
-            lines.append(
-                "[bold]Por tool:[/bold] "
-                + ", ".join(f"{k}={v}" for k, v in tool_counts.most_common())
-            )
-        if stop_reason == "completed" and snap.tool_calls == 0:
-            lines.append(
-                "\n[yellow]⚠ O modelo 'concluiu' sem executar NENHUMA tool — "
-                "provavelmente só respondeu em texto. Verifique se a tarefa "
-                "foi mesmo executada; se não, reformule com passos concretos "
-                "(ex.: 'use run_command para ...').[/yellow]"
-            )
-        console.print(Panel("\n".join(lines), title="/loop encerrado", border_style="cyan"))
-    except Exception:
-        pass  # observabilidade nunca derruba o /loop
+    """Adaptador compatível para o painel final extraído do ``/loop``."""
+    _print_loop_summary_impl(
+        console, stop_reason, round_num, budget, all_tool_log, task_description,
+        stop_reason_labels=_LOOP_STOP_REASON_LABELS,
+    )
 
 
 def _handle_loop_skill_cmd(
@@ -4129,57 +4034,14 @@ def _handle_loop_skill_cmd(
     fallback_clients, stats, tool_timeout_s, session_store, session_id,
     active_workspace, memprov,
 ) -> None:
-    """`/loop-skill list` e `/loop-skill run <nome> [texto livre]` — uso
-    manual/debug. O disparo automático (ver dispatch em run_agent_session)
-    é o fluxo principal."""
-    from .loop_skills import LoopSkillNotFound, LoopSkillRegistry
-
-    rest = user_input.split(None, 1)
-    sub = rest[1].strip() if len(rest) > 1 else ""
-    registry = LoopSkillRegistry()
-
-    if not sub or sub.lower() == "list":
-        loop_skills = registry.list()
-        if not loop_skills:
-            console.print(
-                "[dim]Nenhum loop-skill instalado. Crie um YAML em "
-                "~/.bauer/loop_skills/ — veja o formato no plano/README.[/dim]"
-            )
-            return
-        for s in loop_skills:
-            console.print(f"[cyan]{s.name}[/cyan] — {s.description} [dim]({s.trigger_pattern})[/dim]")
-        return
-
-    if sub.lower().startswith("run "):
-        name_and_rest = sub[4:].strip()
-        name, _, free_text = name_and_rest.partition(" ")
-        try:
-            skill = registry.get(name)
-        except LoopSkillNotFound as exc:
-            console.print(f"[red]{exc}[/red]")
-            return
-        # Uso manual: sem regex real pra casar, então usa free_text como a
-        # tarefa literal se fornecido, senão usa o task_template como está.
-        task = free_text.strip() or skill.task_template
-        console.print(f"[cyan]rodando loop-skill '{skill.name}' manualmente...[/cyan]")
-        _run_loop_mode(
-            task_description=task,
-            overrides={
-                "max_minutes": str(skill.max_minutes),
-                "max_tool_calls": str(skill.max_tool_calls),
-                "max_cost_usd": str(skill.max_cost_usd),
-                "approval_mode": skill.approval_mode,
-                "approval_risk_threshold": str(skill.approval_risk_threshold),
-            },
-            ctx=ctx, router=router, state=state, console=console,
-            fallback_clients=fallback_clients, stats=stats,
-            tool_timeout_s=tool_timeout_s, session_store=session_store,
-            session_id=session_id, active_workspace=active_workspace,
-            memprov=memprov, loop_skill=skill,
-        )
-        return
-
-    console.print("[yellow]Uso:[/yellow] /loop-skill list | /loop-skill run <nome> [texto livre]")
+    """Adaptador para o comando extraído de ``/loop-skill``."""
+    _handle_loop_skill_cmd_impl(
+        user_input, console, ctx=ctx, router=router, state=state,
+        fallback_clients=fallback_clients, stats=stats,
+        tool_timeout_s=tool_timeout_s, session_store=session_store,
+        session_id=session_id, active_workspace=active_workspace, memprov=memprov,
+        run_loop_mode=_run_loop_mode,
+    )
 
 
 def run_agent_session(
