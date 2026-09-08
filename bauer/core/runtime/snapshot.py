@@ -4,16 +4,40 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 RUNTIME_DATABASES = ("runtime_state.sqlite3", "budget_ledger.sqlite3")
 MANIFEST_NAME = "manifest.json"
+MAINTENANCE_LOCK = ".runtime-maintenance.lock"
 
 
 class SnapshotError(ValueError):
     """Snapshot ausente, incompleto ou inconsistente."""
+
+
+def assert_runtime_writable(root: str | Path) -> None:
+    """Recusa novos acessos cooperativos enquanto há manutenção exclusiva."""
+    if (Path(root) / MAINTENANCE_LOCK).exists():
+        raise RuntimeError("runtime em manutenção; tente novamente após o restore")
+
+
+@contextmanager
+def maintenance_lock(root: str | Path):
+    """Reserva manutenção exclusiva sem confundir um arquivo velho com sucesso."""
+    path = Path(root) / MAINTENANCE_LOCK
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    except FileExistsError as exc:
+        raise SnapshotError("runtime já está em manutenção") from exc
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def create_snapshot(root: str | Path, destination: str | Path) -> Path:
@@ -28,9 +52,7 @@ def create_snapshot(root: str | Path, destination: str | Path) -> Path:
             if not source.exists():
                 continue
             copied = target / name
-            with sqlite3.connect(str(source), timeout=5.0) as origin:
-                with sqlite3.connect(str(copied)) as snapshot:
-                    origin.backup(snapshot)
+            _copy_database(source, copied)
             _integrity_check(copied)
             databases.append({
                 "name": name,
@@ -76,14 +98,50 @@ def verify_snapshot(destination: str | Path) -> dict:
     return manifest
 
 
+def restore_snapshot(root: str | Path, destination: str | Path) -> dict:
+    """Restaura somente bancos verificados sob uma trava cooperativa."""
+    manifest = verify_snapshot(destination)
+    source = Path(destination)
+    target_root = Path(root)
+    target_root.mkdir(parents=True, exist_ok=True)
+    with maintenance_lock(target_root):
+        replacements: list[tuple[Path, Path]] = []
+        for entry in manifest["databases"]:
+            name = str(entry["name"])
+            temporary = target_root / f".{name}.restore"
+            if temporary.exists():
+                temporary.unlink()
+            _copy_database(source / name, temporary)
+            _integrity_check(temporary)
+            replacements.append((temporary, target_root / name))
+        for temporary, live in replacements:
+            os.replace(temporary, live)
+    return manifest
+
+
 def _integrity_check(path: Path) -> None:
+    conn = None
     try:
-        with sqlite3.connect(str(path), timeout=5.0) as conn:
-            result = conn.execute("PRAGMA integrity_check").fetchone()
+        conn = sqlite3.connect(str(path), timeout=5.0)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.DatabaseError as exc:
         raise SnapshotError(f"Banco inválido: {path.name}") from exc
+    finally:
+        if conn is not None:
+            conn.close()
     if result is None or result[0] != "ok":
         raise SnapshotError(f"Integridade inválida: {path.name}")
+
+
+def _copy_database(source: Path, destination: Path) -> None:
+    """Usa backup SQLite e fecha handles antes de qualquer rename no Windows."""
+    origin = sqlite3.connect(str(source), timeout=5.0)
+    copied = sqlite3.connect(str(destination))
+    try:
+        origin.backup(copied)
+    finally:
+        copied.close()
+        origin.close()
 
 
 def _sha256(path: Path) -> str:

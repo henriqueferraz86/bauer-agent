@@ -5,6 +5,7 @@ from __future__ import annotations
 from rich.panel import Panel
 from pathlib import Path
 from rich.table import Table
+import sqlite3
 import typer
 
 from ._common import _PROJECT_WORKSPACE, console
@@ -51,6 +52,26 @@ def runtime_verify_snapshot_cmd(
         console.print(f"[red]Snapshot inválido:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     console.print(f"[green]Snapshot íntegro:[/green] {len(manifest['databases'])} banco(s)")
+
+
+@runtime_app.command("restore-snapshot")
+def runtime_restore_snapshot_cmd(
+    destination: Path = typer.Argument(...),
+    root: Path = typer.Option(Path("memory/runtime"), "--root"),
+    confirm_stopped: bool = typer.Option(False, "--confirm-stopped"),
+):
+    """Restaura snapshot verificado; pare os serviços antes de confirmar."""
+    from ..core.runtime.snapshot import SnapshotError, restore_snapshot
+
+    if not confirm_stopped:
+        console.print("[red]Recusado:[/red] pare o Bauer e informe --confirm-stopped.")
+        raise typer.Exit(code=1)
+    try:
+        manifest = restore_snapshot(root, destination)
+    except (OSError, SnapshotError, sqlite3.DatabaseError) as exc:
+        console.print(f"[red]Restore falhou:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]Restore concluído:[/green] {len(manifest['databases'])} banco(s)")
 
 
 @runtime_agents_app.command("list")

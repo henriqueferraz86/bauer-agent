@@ -77,6 +77,9 @@ class SqliteStateStore:
 
     @contextmanager
     def _connect(self):
+        from .snapshot import assert_runtime_writable
+
+        assert_runtime_writable(self.root)
         conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=5.0)
         try:
             conn.row_factory = sqlite3.Row
