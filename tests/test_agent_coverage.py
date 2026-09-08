@@ -402,6 +402,14 @@ class TestHandleSpecCmd:
 
 # ─── _run_orchestrator_inline ────────────────────────────────────────────────
 
+
+def test_orchestrator_inline_is_delegated_to_specialized_module():
+    """O símbolo legado mantém compatibilidade sem duplicar o fluxo no agente."""
+    from bauer.agent_orchestration import run_orchestrator_inline
+
+    assert _run_orchestrator_inline is run_orchestrator_inline
+
+
 class TestRunOrchestratorInline:
     def _make_orchestrator(self):
         from bauer.orchestrator import StepResult

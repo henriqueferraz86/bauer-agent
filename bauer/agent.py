@@ -53,6 +53,9 @@ from .agent_voice import (
     is_listen_loop_stop as _is_listen_loop_stop,
     speak_voice_reply as _speak_voice_reply,
 )
+# Compatibilidade para extensões e testes que ainda importam o símbolo privado
+# de bauer.agent enquanto a sessão CLI é modularizada.
+from .agent_orchestration import run_orchestrator_inline as _run_orchestrator_inline
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -2858,82 +2861,6 @@ def run_one_turn_with_fallback(
     if last_exc is not None:
         raise last_exc
     return "", []  # inalcançável (attempts sempre tem ≥1), satisfaz o type checker
-
-
-def _run_orchestrator_inline(
-    user_input: str,
-    orchestrator: "AgentOrchestrator",
-    console: Console,
-) -> str:
-    """Executa o orquestrador inline no chat e exibe progresso passo a passo.
-
-    Retorna a resposta final sintetizada para adicionar ao contexto do chat.
-    """
-    console.print(Rule("[bold dim]Orquestrador[/bold dim]"))
-    console.print("[yellow dim]Planejando passos...[/yellow dim]")
-
-    try:
-        steps = orchestrator.plan(user_input)
-        orchestrator.save_plan(user_input, steps)
-    except Exception as exc:
-        console.print(f"[red]Erro no planejamento: {exc}[/red]")
-        return ""
-
-    if not steps:
-        return ""
-
-    batches = orchestrator._topological_batches(steps)
-    total_waves = len(batches)
-    console.print(f"[dim]{len(steps)} passo(s) em {total_waves} onda(s)[/dim]\n")
-
-    all_results = []
-    done: dict = {}
-
-    for wave_idx, batch in enumerate(batches):
-        pending = [s for s in batch if s["id"] not in done]
-        if not pending:
-            continue
-
-        if len(pending) > 1:
-            ids = ", ".join(str(s["id"]) for s in pending)
-            console.print(f"[dim]Onda {wave_idx + 1}/{total_waves} — passos {ids} (paralelo)[/dim]")
-        else:
-            s = pending[0]
-            console.print(f"[dim]Passo {s['id']}/{len(steps)}: {s['goal']}[/dim]")
-
-        try:
-            batch_results = orchestrator.execute_parallel_steps(pending, all_results)
-        except KeyboardInterrupt:
-            console.print("\n[dim][orquestrador interrompido][/dim]")
-            orchestrator.clear_progress(user_input)
-            return ""
-        except Exception as exc:
-            console.print(f"[red]Erro no passo {wave_idx + 1}: {exc}[/red]")
-            continue
-
-        all_results.extend(batch_results)
-        orchestrator.save_progress(user_input, batch_results)
-        for r in batch_results:
-            done[r.id] = r
-            if r.tool_log:
-                tools_used = ", ".join(t["tool"] for t in r.tool_log)
-                console.print(f"  [dim]tools: {tools_used}[/dim]")
-
-    if not all_results:
-        orchestrator.clear_progress(user_input)
-        return ""
-
-    console.print("[dim]Sintetizando...[/dim]")
-    try:
-        objective = steps[0].get("goal", user_input)
-        final = orchestrator.synthesize(objective, all_results)
-    except Exception as exc:
-        console.print(f"[red]Erro na sintese: {exc}[/red]")
-        final = "\n".join(r.response for r in all_results)
-
-    orchestrator.clear_progress(user_input)
-    console.print(Rule())
-    return final
 
 
 # ─── /kanban handler ─────────────────────────────────────────────────────────
