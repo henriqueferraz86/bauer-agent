@@ -100,6 +100,10 @@ from .agent_native_protocol import (
     client_supports_native_tools as _client_supports_native_tools,
     is_native_unsupported_error as _is_native_unsupported_error,
 )
+from .agent_native_execution import (
+    native_tool_message as _native_tool_message,
+    parse_native_arguments as _parse_native_arguments,
+)
 from .provider_identity import (
     HOST_MARKERS as _MARCAS_DE_HOST,
     declared_provider as _provider_declarado,
@@ -1426,12 +1430,11 @@ def _run_native_tool_turn(
         Antes este caso era engolido com `return None`, o que fazia o loop
         re-tentar native até estourar o budget inteiro.
     """
-    import json as _json
     schemas = router.get_tool_schemas()
     messages = ctx.get_payload()
 
     try:
-        msg = client.chat_with_tools(model_name, messages, tools=schemas)
+        msg = _native_tool_message(client, model_name, messages, schemas)
     except Exception as exc:
         if _is_native_unsupported_error(exc):
             raise _NativeToolsUnsupported(str(exc)) from exc
@@ -1475,8 +1478,8 @@ def _run_native_tool_turn(
         fn = tc.get("function", {})
         name = fn.get("name", "?")
         try:
-            args = _json.loads(fn.get("arguments", "{}"))
-        except _json.JSONDecodeError:
+            args = _parse_native_arguments(fn.get("arguments", "{}"))
+        except AttributeError:
             args = {}
 
         # Wave 4.5: pre-call guardrail check (native path)
@@ -1586,21 +1589,18 @@ def _native_turn_interactive(
         _NativeToolsUnsupported: downgrade definitivo para bridge (sessão).
         OpenAIClientError: erros de rede/HTTP — tratados pelo handler do loop.
     """
-    import json as _json
-
     schemas = router.get_tool_schemas()
     try:
         if streamer is not None:
             # Sem spinner: o texto aparecendo JÁ é o indicador de atividade, e
             # dois displays ao vivo no mesmo console se atropelam.
-            msg = client.chat_with_tools(
-                model_name, ctx.get_payload(), tools=schemas,
-                on_delta=streamer.on_delta,
-            )
+            msg = _native_tool_message(model_name=model_name, client=client,
+                                       payload=ctx.get_payload(), schemas=schemas,
+                                       on_delta=streamer.on_delta)
             streamer.on_round()  # sela o que veio antes das tools/da resposta
         else:
             with _thinking_status(console, model_name):
-                msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+                msg = _native_tool_message(client, model_name, ctx.get_payload(), schemas)
     except TypeError as exc:
         # Client de terceiro/dublê sem o parâmetro `on_delta`: streaming é
         # opcional, a resposta não — repete sem ele. A checagem do nome é
@@ -1609,7 +1609,7 @@ def _native_turn_interactive(
         if "on_delta" not in str(exc):
             raise
         with _thinking_status(console, model_name):
-            msg = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+            msg = _native_tool_message(client, model_name, ctx.get_payload(), schemas)
     except Exception as exc:
         if _is_native_unsupported_error(exc):
             raise _NativeToolsUnsupported(str(exc)) from exc
@@ -1633,7 +1633,7 @@ def _native_turn_interactive(
                 "type": "function",
                 "function": {
                     "name": bridge_action["action"],
-                    "arguments": _json.dumps(
+                    "arguments": json.dumps(
                         bridge_action.get("args", {}), ensure_ascii=False
                     ),
                 },
@@ -1668,8 +1668,8 @@ def _native_turn_interactive(
         fn = tc.get("function", {})
         name = fn.get("name", "?")
         try:
-            args = _json.loads(fn.get("arguments", "{}"))
-        except _json.JSONDecodeError:
+            args = _parse_native_arguments(fn.get("arguments", "{}"))
+        except AttributeError:
             args = {}
 
         # Reserve the call before dispatch. A provider may emit a large native
