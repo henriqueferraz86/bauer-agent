@@ -84,6 +84,12 @@ from .agent_tool_protocol import (
     try_parse_tool as _try_parse_tool_impl,
     try_parse_tools_batch as _try_parse_tools_batch_impl,
 )
+from .agent_terminal import (
+    busy_spinner as _busy_spinner,
+    prompt_cmd_decision as _prompt_cmd_decision,
+    thinking_status as _thinking_status,
+    tool_exec_status as _tool_exec_status,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -1194,113 +1200,6 @@ def _recover_empty_response(
 def _parse_provider_context_cap(error_text: str) -> int | None:
     """Adaptador compatível para o parser de janela de contexto."""
     return _parse_provider_context_cap_impl(error_text)
-
-
-@contextmanager
-def _busy_spinner(console: Console, text: str):
-    """Spinner genérico para qualquer trecho "mudo" do terminal (chamada de
-    LLM, execução de tool). A barra de status fixa do prompt_toolkit
-    (bottom_toolbar) só existe enquanto o prompt está esperando input — some
-    assim que o Enter é pressionado, porque é renderizada pelo mecanismo de
-    prompt, não por um layout persistente. Sem NENHUM indicador nesse meio
-    tempo, um `run_command` demorado (docker build, etc.) parece travado.
-    Este spinner cobre esse vão: sempre há algo visivelmente rodando entre
-    o Enter e a próxima barra de status.
-
-    Best-effort: se o console não suportar live display (outro Live ativo,
-    output capturado), segue sem spinner em vez de quebrar o turno.
-
-    Registra o spinner em `ui_frame` (plano 028 F2) — QUALQUER `input()` que
-    rodar dentro do bloco, em qualquer profundidade, pode envolver-se com
-    `ui_frame.suspend()` e pausar este spinner sem precisar saber que ele
-    existe. É isto que substitui a antiga allowlist de tools "interativas":
-    não é mais preciso listar de antemão quem chama input() — quem chama só
-    precisa suspender.
-    """
-    from .ui_frame import current_frame as _current_frame
-    from .ui_frame import register as _register
-
-    # Com o quadro do turno ativo (plano 028 F2), a atividade vira uma linha do
-    # TRILHO em vez de um spinner próprio: o Rich admite um único display ao
-    # vivo por vez, e abrir um `console.status()` aqui falharia em silêncio,
-    # deixando o usuário sem indicador — justamente o vão que o spinner cobre.
-    _frame = _current_frame()
-    if _frame is not None:
-        from rich.text import Text as _Text
-
-        _rotulo = _Text.from_markup(text).plain.strip()
-        _frame.set_atividade(_rotulo)
-        try:
-            yield
-        finally:
-            _frame.set_atividade("")
-        return
-
-    _status = None
-    try:
-        _status = console.status(text, spinner="dots")
-        _status.__enter__()
-    except Exception:
-        _status = None
-    if _status is None:
-        yield
-        return
-    with _register(_status):
-        try:
-            yield
-        finally:
-            try:
-                _status.__exit__(None, None, None)
-            except Exception:
-                pass
-
-
-def _thinking_status(console: Console, model_name: str):
-    """Spinner enquanto o modelo gera a resposta completa (sem streaming)."""
-    return _busy_spinner(console, f"[dim]{model_name} pensando… (Ctrl+C interrompe)[/dim]")
-
-
-def _tool_exec_status(console: Console, name: str):
-    """_busy_spinner para execução de tool.
-
-    Até o F2 (plano 028) isto consultava uma allowlist de nomes de tool
-    "interativas" (clarify, run_command sob confirmação…) para decidir se
-    abria spinner — esquecer uma tool nova na lista reintroduzia o bug do
-    "totodo" (Live + input() corrompendo stdin, incidente 2026-07-02). Agora
-    o spinner SEMPRE abre, registrado em `ui_frame`; a tool que precisar de
-    input() suspende sozinha via `ui_frame.suspend()` (ver `_clarify` em
-    `bauer/tools/agent_misc.py` e `_prompt_cmd_decision` abaixo). Não há mais
-    lista para manter."""
-    return _busy_spinner(console, f"[dim]executando {name}… (Ctrl+C interrompe)[/dim]")
-
-
-def _prompt_cmd_decision(console: Console, title: str, body: str) -> str:
-    """Prompt compartilhado de decisão de comando. Devolve
-    "once" | "session" | "always" | "deny". Usado pelos dois gates (padrão
-    perigoso e allowlist). "always" é o que ENSINA — pergunta uma vez, nunca mais.
-    """
-    from .ui import approval_card as _card
-    from .ui import approval_options as _options
-    from .ui_frame import suspend as _suspend
-
-    console.print()
-    console.print(_card(title, body))
-    console.print(_options())
-    try:
-        with _suspend():
-            raw = input("  > ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return "deny"
-    mapping = {
-        "e": "once", "o": "once", "1": "once",
-        "s": "session", "a": "always",
-        "n": "deny", "d": "deny", "": "deny",
-    }
-    decision = mapping.get(raw[:1], "deny")
-    _label = {"once": "executando uma vez", "session": "liberado nesta sessão",
-              "always": "aprendido (liberado sempre)", "deny": "negado"}[decision]
-    console.print(f"  [{'green' if decision != 'deny' else 'red'}]{_label}[/]")
-    return decision
 
 
 #: Cor de aviso do tema, para markup Rich dentro das mensagens de gate. Função
