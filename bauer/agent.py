@@ -1622,6 +1622,22 @@ def _native_turn_interactive(
     return "continue", None
 
 
+from .agent_native_interactive import run_native_interactive as _run_native_interactive_impl
+
+
+def _native_turn_interactive(
+    ctx, router, client, model_name, console, cli_tool_log, deduper, calls_left,
+    guardrail=None, streamer=None, budget=None,
+) -> tuple[str, str | None]:
+    return _run_native_interactive_impl(
+        ctx, router, client, model_name, console, cli_tool_log, deduper, calls_left,
+        guardrail=guardrail, streamer=streamer, budget=budget,
+        parse_tool=_try_parse_tool, thinking_status=_thinking_status,
+        tool_status=_tool_exec_status, format_display=_format_tool_display,
+        context_result=_ctx_result_for_context, args_signature=_args_sig,
+    )
+
+
 def run_one_turn(
     ctx,
     router: ToolRouter,
