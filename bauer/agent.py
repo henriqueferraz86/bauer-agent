@@ -75,7 +75,14 @@ from .agent_loop_support import (
 )
 from .agent_tool_results import (
     compress_result as _compress_result_impl,
+    format_tool_display as _format_tool_display_impl,
     head_tail as _head_tail_impl,
+)
+from .agent_tool_protocol import (
+    extract_embedded_json_action as _extract_embedded_json_action_impl,
+    normalize_tool_object as _normalize_tool_object_impl,
+    try_parse_tool as _try_parse_tool_impl,
+    try_parse_tools_batch as _try_parse_tools_batch_impl,
 )
 
 if TYPE_CHECKING:
@@ -904,25 +911,7 @@ def _normalize_tool_object(obj: object, available: set[str]) -> dict | None:
     contém campos fora do contrato de seus argumentos. A execução continua
     passando por ``ToolRouter.execute`` e, portanto, pelos mesmos guards.
     """
-    if not isinstance(obj, dict):
-        return None
-    if obj.get("action") in available:
-        return obj
-
-    if (
-        "action" not in obj
-        and "command" in obj
-        and "run_command" in available
-        and isinstance(obj.get("command"), str)
-        and obj["command"].strip()
-        and set(obj).issubset({"command", "confirm", "background"})
-    ):
-        args = {"command": obj["command"]}
-        for key in ("confirm", "background"):
-            if key in obj:
-                args[key] = obj[key]
-        return {"action": "run_command", "args": args}
-    return None
+    return _normalize_tool_object_impl(obj, available)
 
 
 def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None:
@@ -935,20 +924,7 @@ def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None
     ...}"). ``JSONDecoder.raw_decode`` a partir de cada ``{`` encontrado lida
     com chaves aninhadas corretamente, ao contrário de um regex ganancioso.
     """
-    import json as _json
-
-    decoder = _json.JSONDecoder()
-    idx = text.find("{")
-    while idx != -1:
-        try:
-            obj, _ = decoder.raw_decode(text, idx)
-            normalized = _normalize_tool_object(obj, available)
-            if normalized is not None:
-                return normalized
-        except _json.JSONDecodeError:
-            pass
-        idx = text.find("{", idx + 1)
-    return None
+    return _extract_embedded_json_action_impl(text, available)
 
 
 
@@ -998,33 +974,7 @@ def _try_parse_tool(response: str, router: ToolRouter) -> dict | None:
        _extract_embedded_json_action
     Em todos os casos, só retorna se a action for uma tool conhecida.
     """
-    import json as _json
-
-    available = set(router.available_tools())
-    stripped = response.strip()
-
-    # Estratégia 1: resposta inteira é JSON (ou bloco markdown)
-    try:
-        parsed = router._parse(stripped)
-        normalized = _normalize_tool_object(parsed, available)
-        if normalized is not None:
-            return normalized
-    except Exception:
-        pass
-
-    # Estratégia 2: JSON válido no início seguido de texto extra
-    if stripped.startswith("{"):
-        try:
-            decoder = _json.JSONDecoder()
-            obj, _ = decoder.raw_decode(stripped)
-            normalized = _normalize_tool_object(obj, available)
-            if normalized is not None:
-                return normalized
-        except Exception:
-            pass
-
-    # Estratégia 3: JSON embutido após texto de narração
-    return _extract_embedded_json_action(stripped, available)
+    return _try_parse_tool_impl(response, set(router.available_tools()), router._parse)
 
 
 def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | None:
@@ -1034,32 +984,7 @@ def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | No
     para evitar que o contexto cresça a cada round-trip individual.
     Retorna lista com ao menos 1 item, ou None se não houver tool call válido.
     """
-    import json as _json
-
-    available = set(router.available_tools())
-    stripped = response.strip()
-    actions: list[dict] = []
-
-    # Tenta extrair um JSON por linha (modelo batch-tool-call)
-    for line in stripped.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = _json.loads(line)
-            normalized = _normalize_tool_object(obj, available)
-            if normalized is not None:
-                actions.append(normalized)
-        except _json.JSONDecodeError:
-            # Linha pode ser parte de um JSON multi-linha — ignora
-            pass
-
-    if actions:
-        return actions
-
-    # Fallback: lógica original (único JSON, possivelmente com texto ao redor)
-    single = _try_parse_tool(response, router)
-    return [single] if single is not None else None
+    return _try_parse_tools_batch_impl(response, set(router.available_tools()), router._parse)
 
 
 # ─── Compressão imediata de tool results grandes ───────────────────────────────
@@ -1155,110 +1080,8 @@ def _ctx_result_for_context(action: str, result: str) -> tuple[str, bool]:
 
 
 def _format_tool_display(action: str, result: str) -> str:
-    """Formata o resultado de uma tool para exibição no terminal.
-
-    Filtra ruído técnico (headers de formato, paths temporários) e
-    mostra apenas o que é relevante para o usuário:
-    - execute_code: ✓/✗ + stdout útil ou resumo de erro
-    - read_file / write_file / edit_file: confirmação + linha count
-    - list_dir / glob_files: contagem + primeiros itens
-    - http_request: status + primeiros 100 chars do body
-    - Genérico: primeiros 150 chars limpos
-
-    Returns uma Rich markup string (uma linha, raramente duas).
-    """
-    r = result.strip()
-    lines = r.splitlines()
-
-    # ── execute_code ──────────────────────────────────────────────────────────
-    if action == "execute_code":
-        # Extrai exit code
-        exit_code = 0
-        exit_line = next((l for l in lines if l.startswith("exit:")), None)
-        if exit_line:
-            try:
-                exit_code = int(exit_line.split(":", 1)[1].strip())
-            except (ValueError, IndexError):
-                pass
-
-        # Separa blocos stdout / stderr (ignora headers "--- stdout ---" etc.)
-        stdout_lines: list[str] = []
-        stderr_lines: list[str] = []
-        section = None
-        for l in lines:
-            if l.startswith("exit:"):
-                continue
-            if l.strip() in ("--- stdout ---", "-- stdout --"):
-                section = "out"
-                continue
-            if l.strip() in ("--- stderr ---", "-- stderr --"):
-                section = "err"
-                continue
-            if section == "out" and l.strip():
-                stdout_lines.append(l)
-            elif section == "err" and l.strip():
-                stderr_lines.append(l)
-            elif section is None and l.strip() and not l.startswith("---"):
-                # resultado sem seções separadas
-                stdout_lines.append(l)
-
-        if exit_code == 0:
-            if stdout_lines:
-                first = stdout_lines[0][:120]
-                extra = len(stdout_lines) - 1
-                suffix = f" [dim](+{extra} linhas)[/dim]" if extra > 0 else ""
-                return f"[green]✓[/green] [dim]{first}[/dim]{suffix}"
-            return "[green]✓[/green]"
-        else:
-            # Erro: mostra stderr resumido (limpa paths temporários)
-            err_clean = [
-                l for l in stderr_lines
-                if "Temp\\" not in l and "tmp" not in l.lower()[:20]
-            ] or stderr_lines
-            if err_clean:
-                first_err = err_clean[0][:120]
-                extra_err = len(err_clean) - 1
-                suffix = f" [dim](+{extra_err} linhas)[/dim]" if extra_err > 0 else ""
-                return f"[red]✗ exit {exit_code}[/red] [dim]{first_err}[/dim]{suffix}"
-            return f"[red]✗ exit {exit_code}[/red]"
-
-    # ── read_file ─────────────────────────────────────────────────────────────
-    if action == "read_file":
-        n = len([l for l in lines if l.strip()])
-        # Mostra a primeira linha de conteúdo se tiver
-        first = lines[0][:80].strip() if lines else ""
-        return f"[dim]{n} linhas — {first}{'…' if len(lines[0]) > 80 else ''}[/dim]" if first else f"[dim]{n} linhas[/dim]"
-
-    # ── write_file / edit_file / patch_file ───────────────────────────────────
-    if action in ("write_file", "edit_file", "patch_file", "create_file"):
-        first = lines[0][:120] if lines else r[:120]
-        ok = "✗" if ("erro" in first.lower() or "error" in first.lower()) else "✓"
-        color = "red" if ok == "✗" else "green"
-        return f"[{color}]{ok}[/{color}] [dim]{first}[/dim]"
-
-    # ── list_dir / glob_files ─────────────────────────────────────────────────
-    if action in ("list_dir", "glob_files", "regex_search"):
-        items = [l.strip() for l in lines if l.strip()]
-        n = len(items)
-        if n == 0:
-            return "[dim](vazio)[/dim]"
-        show = ", ".join(items[:4])
-        suffix = f" … +{n-4}" if n > 4 else ""
-        return f"[dim]{n} itens — {show}{suffix}[/dim]"
-
-    # ── http_request ──────────────────────────────────────────────────────────
-    if action == "http_request":
-        first = lines[0][:120] if lines else r[:120]
-        return f"[dim]{first}[/dim]"
-
-    # ── delegate_task ─────────────────────────────────────────────────────────
-    if action == "delegate_task":
-        first = lines[0][:120] if lines else r[:120]
-        return f"[cyan]⇢[/cyan] [dim]{first}[/dim]"
-
-    # ── genérico ──────────────────────────────────────────────────────────────
-    short = r[:150]
-    return f"[dim]{short}{'…' if len(r) > 150 else ''}[/dim]"
+    """Compatibilidade para extensões que ainda importam o símbolo privado."""
+    return _format_tool_display_impl(action, result)
 
 
 

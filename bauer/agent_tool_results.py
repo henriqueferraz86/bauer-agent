@@ -61,3 +61,64 @@ def compress_result(
         first = keep // 2
         summary = summary[:first] + "..." + summary[-(keep - first):]
     return summary
+
+
+def format_tool_display(action: str, result: str) -> str:
+    """Resume um resultado para o terminal sem alterar o texto enviado ao LLM."""
+    stripped = result.strip()
+    lines = stripped.splitlines()
+    if action == "execute_code":
+        exit_code = 0
+        exit_line = next((line for line in lines if line.startswith("exit:")), None)
+        if exit_line:
+            try:
+                exit_code = int(exit_line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+        stdout, stderr, section = [], [], None
+        for line in lines:
+            if line.startswith("exit:"):
+                continue
+            if line.strip() in ("--- stdout ---", "-- stdout --"):
+                section = "out"
+            elif line.strip() in ("--- stderr ---", "-- stderr --"):
+                section = "err"
+            elif section == "out" and line.strip():
+                stdout.append(line)
+            elif section == "err" and line.strip():
+                stderr.append(line)
+            elif section is None and line.strip() and not line.startswith("---"):
+                stdout.append(line)
+        if exit_code == 0:
+            if not stdout:
+                return "[green]✓[/green]"
+            suffix = f" [dim](+{len(stdout) - 1} linhas)[/dim]" if len(stdout) > 1 else ""
+            return f"[green]✓[/green] [dim]{stdout[0][:120]}[/dim]{suffix}"
+        clean_errors = [line for line in stderr if "Temp\\" not in line and "tmp" not in line.lower()[:20]] or stderr
+        if not clean_errors:
+            return f"[red]✗ exit {exit_code}[/red]"
+        suffix = f" [dim](+{len(clean_errors) - 1} linhas)[/dim]" if len(clean_errors) > 1 else ""
+        return f"[red]✗ exit {exit_code}[/red] [dim]{clean_errors[0][:120]}[/dim]{suffix}"
+    if action == "read_file":
+        nonempty = len([line for line in lines if line.strip()])
+        first = lines[0][:80].strip() if lines else ""
+        return f"[dim]{nonempty} linhas — {first}{'…' if len(lines[0]) > 80 else ''}[/dim]" if first else f"[dim]{nonempty} linhas[/dim]"
+    if action in ("write_file", "edit_file", "patch_file", "create_file"):
+        first = lines[0][:120] if lines else stripped[:120]
+        failed = "erro" in first.lower() or "error" in first.lower()
+        color, symbol = ("red", "✗") if failed else ("green", "✓")
+        return f"[{color}]{symbol}[/{color}] [dim]{first}[/dim]"
+    if action in ("list_dir", "glob_files", "regex_search"):
+        items = [line.strip() for line in lines if line.strip()]
+        if not items:
+            return "[dim](vazio)[/dim]"
+        suffix = f" … +{len(items) - 4}" if len(items) > 4 else ""
+        return f"[dim]{len(items)} itens — {', '.join(items[:4])}{suffix}[/dim]"
+    if action == "http_request":
+        first = lines[0][:120] if lines else stripped[:120]
+        return f"[dim]{first}[/dim]"
+    if action == "delegate_task":
+        first = lines[0][:120] if lines else stripped[:120]
+        return f"[cyan]⇢[/cyan] [dim]{first}[/dim]"
+    short = stripped[:150]
+    return f"[dim]{short}{'…' if len(stripped) > 150 else ''}[/dim]"
