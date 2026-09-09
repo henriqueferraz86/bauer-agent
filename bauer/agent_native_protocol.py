@@ -23,4 +23,6 @@ def client_supports_native_tools(client) -> bool:
 
 def is_native_unsupported_error(exc: Exception) -> bool:
     match = re.search(r"HTTP (\d{3})", str(exc))
-    return bool(match) and int(match.group(1)) in NATIVE_UNSUPPORTED_CODES
+    if match is None:
+        return False
+    return int(match.group(1)) in NATIVE_UNSUPPORTED_CODES

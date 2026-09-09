@@ -14,7 +14,7 @@ def extract_text_from_pseudo_json(response: str) -> str | None:
             if isinstance(args, dict) and isinstance(args.get(key), str):
                 return args[key]
     except Exception:
-        pass
+        return None
     return None
 
 

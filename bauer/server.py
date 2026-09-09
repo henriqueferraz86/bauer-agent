@@ -54,7 +54,6 @@ from .server_observability import (
     RateLimiter as _RateLimiter,
     client_ip_from as _client_ip_from,
     parse_trusted_proxies as _parse_trusted_proxies,
-    peer_is_trusted as _peer_is_trusted,
     register_observability_routes as _register_observability_routes,
 )
 

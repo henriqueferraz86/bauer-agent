@@ -79,9 +79,7 @@ from .agent_tool_results import (
     head_tail as _head_tail_impl,
 )
 from .agent_tool_protocol import (
-    extract_embedded_json_action as _extract_embedded_json_action_impl,
     extract_text_from_pseudo_json as _extract_text_from_pseudo_json,
-    normalize_tool_object as _normalize_tool_object_impl,
     try_parse_tool as _try_parse_tool_impl,
     try_parse_tools_batch as _try_parse_tools_batch_impl,
 )
@@ -103,17 +101,16 @@ from .agent_native_protocol import (
     is_native_unsupported_error as _is_native_unsupported_error,
 )
 from .agent_native_execution import (
-    native_tool_message as _native_tool_message,
-    parse_native_arguments as _parse_native_arguments,
     report_native_cost as _report_native_cost,
 )
 from .agent_native_turn import run_native_turn as _run_native_turn_impl
+from .agent_native_interactive import run_native_interactive as _run_native_interactive_impl
 from .agent_turn_policy import (
-    REFLECT_EVERY as _REFLECT_EVERY,
+    REFLECT_EVERY as _REFLECT_EVERY,  # noqa: F401 — compatibilidade de teste/extensão
     maybe_reflect as _maybe_reflect,
 )
 from .provider_identity import (
-    HOST_MARKERS as _MARCAS_DE_HOST,
+    HOST_MARKERS as _MARCAS_DE_HOST,  # noqa: F401 — compatibilidade de teste/extensão
     declared_provider as _provider_declarado,
     detect_provider_from_host as _detectar_provider_por_host,
 )
@@ -856,7 +853,9 @@ def _try_parse_tools_batch(response: str, router: ToolRouter) -> list[dict] | No
     para evitar que o contexto cresça a cada round-trip individual.
     Retorna lista com ao menos 1 item, ou None se não houver tool call válido.
     """
-    return _try_parse_tools_batch_impl(response, set(router.available_tools()), router._parse)
+    return _try_parse_tools_batch_impl(
+        response, set(router.available_tools()), getattr(router, "_parse", json.loads)
+    )
 
 
 # ─── Compressão imediata de tool results grandes ───────────────────────────────
@@ -1271,10 +1270,6 @@ def _run_native_tool_turn(
         is_unsupported_error=_is_native_unsupported_error,
     )
 
-
-from .agent_native_interactive import run_native_interactive as _run_native_interactive_impl
-
-
 def _native_turn_interactive(
     ctx, router, client, model_name, console, cli_tool_log, deduper, calls_left,
     guardrail=None, streamer=None, budget=None,
@@ -1286,7 +1281,6 @@ def _native_turn_interactive(
         tool_status=_tool_exec_status, format_display=_format_tool_display,
         context_result=_ctx_result_for_context, args_signature=_args_sig,
     )
-
 
 def run_one_turn(
     ctx,
@@ -2097,9 +2091,6 @@ def _run_tool_loop_body(
                                 "Turno interrompido.[/yellow]"
                             )
                             return _TurnOutcome(kind="loop_hard_stop", tool_log=cli_tool_log)
-                        # Cap de rounds (antes feito pelo slice em
-                        # _native_turn_interactive, removido p/ não quebrar
-                        # o pareamento assistant↔tool).
                         if tool_turns >= MAX_TOOL_TURNS:
                             console.print(
                                 f"[yellow]Limite de {MAX_TOOL_TURNS} tool calls "
@@ -2742,7 +2733,6 @@ def run_agent_session(
         if saved:
             ctx.messages = saved
 
-    tool_names = ", ".join(router.available_tools())
     # `provider` is needed for cost lookup in usage_pricing. Derive from the
     # ContextManager's `_provider` (set above from cfg) — falls back to "" which
     # cleanly disables costing without errors.

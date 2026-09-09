@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -83,9 +84,16 @@ class SqliteStateStore:
         conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=5.0)
         try:
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode = WAL")
-            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("PRAGMA busy_timeout = 5000")
+            for attempt in range(6):
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+            conn.execute("PRAGMA synchronous = NORMAL")
             yield conn
         finally:
             conn.close()

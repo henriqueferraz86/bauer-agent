@@ -14,7 +14,7 @@
 - **Depende de**: nenhum
 - **Categoria**: segurança, confiabilidade, observabilidade, arquitetura
 - **Planejado em**: commit `47f5bad`, 2026-09-08
-- **Status**: IN PROGRESS
+- **Status**: DONE
 
 ## Por que isto importa
 
