@@ -90,6 +90,11 @@ from .agent_terminal import (
     thinking_status as _thinking_status,
     tool_exec_status as _tool_exec_status,
 )
+from .agent_prompt_support import (
+    minimal_code_mode_enabled as _minimal_code_mode_enabled_impl,
+    specs_section as _specs_section_impl,
+    specialists_block as _specialists_block_impl,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -554,18 +559,7 @@ def _specs_section(specs_dir: str = "specs") -> str:
     saiba gerar specs quando solicitado em linguagem natural.
     Falhas silenciosas — specs são contexto adicional, não bloqueantes.
     """
-    try:
-        from .spec_manager import SpecManager
-        mgr = SpecManager(specs_dir)
-        ctx = mgr.specs_context(compact=True)
-        # Sempre inclui o hint de formato (para criar specs via linguagem natural)
-        # e os specs existentes se houver
-        result = _SPEC_FORMAT_HINT
-        if ctx:
-            result += f"\n\n{ctx}"
-        return result
-    except Exception:
-        return _SPEC_FORMAT_HINT
+    return _specs_section_impl(_SPEC_FORMAT_HINT, specs_dir)
 
 
 # Enforcement universal: o agente DEVE executar, não narrar. Portado do
@@ -816,11 +810,7 @@ def _minimal_code_mode_enabled() -> bool:
     Default True (mesmo valor default de AgentSection) se a config não
     carregar, mesma filosofia de _resolve_loop_config.
     """
-    try:
-        from .config_loader import load_config
-        return load_config().agent.minimal_code_mode
-    except Exception:
-        return True
+    return _minimal_code_mode_enabled_impl()
 
 
 def _specialist_delegation_enabled() -> bool:
@@ -883,10 +873,7 @@ def _specialists_block() -> str:
     """Wrapper de `_specialists_section()` para `_build_system_prompt`: aplica
     o toggle de config e só prefixa a quebra de linha quando há conteúdo real
     (registry vazio não deve deixar um "\\n" solto no prompt)."""
-    if not _specialist_delegation_enabled():
-        return ""
-    section = _specialists_section()
-    return f"\n{section}" if section else ""
+    return _specialists_block_impl()
 
 
 def _extract_text_from_pseudo_json(response: str) -> str | None:
