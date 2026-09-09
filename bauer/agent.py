@@ -105,6 +105,7 @@ from .agent_native_execution import (
     parse_native_arguments as _parse_native_arguments,
     report_native_cost as _report_native_cost,
 )
+from .agent_native_turn import run_native_turn as _run_native_turn_impl
 from .agent_turn_policy import (
     REFLECT_EVERY as _REFLECT_EVERY,
     maybe_reflect as _maybe_reflect,
@@ -1528,6 +1529,23 @@ def _run_native_tool_turn(
         })
 
     return None  # continua o loop
+
+
+def _run_native_tool_turn(
+    ctx, router, client, model_name, tool_log, _guardrail=None, _deduper=None,
+    *, tool_timeout_s: float = 0.0, _trace=None,
+) -> str | None:
+    """Fachada compatível para o executor nativo extraído."""
+    from .tool_timeout import call_with_timeout
+    return _run_native_turn_impl(
+        ctx, router, client, model_name, tool_log,
+        guardrail=_guardrail, deduper=_deduper, tool_timeout_s=tool_timeout_s,
+        trace=_trace, max_tool_turns=MAX_TOOL_TURNS,
+        args_signature=_args_sig, context_result=_ctx_result_for_context,
+        report_cost=_report_native_cost, call_with_timeout=call_with_timeout,
+        unsupported_error=_NativeToolsUnsupported,
+        is_unsupported_error=_is_native_unsupported_error,
+    )
 
 
 def _native_turn_interactive(
