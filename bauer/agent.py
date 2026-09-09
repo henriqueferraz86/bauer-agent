@@ -105,7 +105,10 @@ from .agent_native_execution import (
     parse_native_arguments as _parse_native_arguments,
     report_native_cost as _report_native_cost,
 )
-from .agent_turn_policy import maybe_reflect as _maybe_reflect
+from .agent_turn_policy import (
+    REFLECT_EVERY as _REFLECT_EVERY,
+    maybe_reflect as _maybe_reflect,
+)
 from .provider_identity import (
     HOST_MARKERS as _MARCAS_DE_HOST,
     declared_provider as _provider_declarado,
