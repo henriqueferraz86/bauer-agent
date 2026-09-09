@@ -825,6 +825,46 @@ curl -H "X-API-Key: sua-chave-secreta" http://localhost:7770/chat ...
 curl -H "Authorization: Bearer sua-chave-secreta" http://localhost:7770/chat ...
 ```
 
+### Implantação atrás de proxy TLS
+
+O padrão `deployment_mode: local` continua restrito à máquina local. Para expor
+o Bauer por um proxy reverso, declare o perfil explicitamente: o processo HTTP
+não termina TLS e a URL pública precisa ser HTTPS. Nunca use `*` para CORS ou
+para proxies confiáveis.
+
+```yaml
+serve:
+  deployment_mode: reverse_proxy
+  public_url: "https://bauer.exemplo.com"
+  api_key: "defina-por-variavel-de-ambiente"
+  cors_origins: ["https://bauer.exemplo.com"]
+  trusted_proxies: ["127.0.0.1", "10.0.0.0/24"]
+```
+
+O proxy deve terminar TLS, encaminhar para o bind local do Bauer e preservar
+`X-Forwarded-For` somente a partir dos CIDRs listados em `trusted_proxies`.
+`/health` é liveness sem dependências externas; `/readyz` exige autenticação e
+confere os bancos locais; `/metrics` é autenticado e suas métricas são por
+processo — deployments com vários workers devem coletar cada worker ou prover
+agregação na infraestrutura.
+
+### Snapshot do runtime
+
+Faça um snapshot periódico do estado operacional e valide-o antes de precisar
+dele. O snapshot inclui apenas `runtime_state.sqlite3` e `budget_ledger.sqlite3`;
+não inclui sessões, memória de decisão, chaves ou outras credenciais.
+
+```bash
+bauer runtime snapshot --root memory/runtime --destination backups/runtime-2026-09-09
+bauer runtime verify-snapshot backups/runtime-2026-09-09
+# Pare todos os processos Bauer que possam escrever no runtime antes do restore:
+bauer runtime restore-snapshot backups/runtime-2026-09-09 --root memory/runtime --confirm-stopped
+```
+
+Em Windows, proteja o diretório de destino com ACLs do usuário/serviço que roda
+o Bauer. A confirmação do restore é deliberada: ela impede restaurar por engano,
+mas o operador continua responsável por parar escritores não cooperativos.
+
 ### 🚦 Rate limiting
 
 ```yaml
