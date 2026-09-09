@@ -80,6 +80,7 @@ from .agent_tool_results import (
 )
 from .agent_tool_protocol import (
     extract_embedded_json_action as _extract_embedded_json_action_impl,
+    extract_text_from_pseudo_json as _extract_text_from_pseudo_json,
     normalize_tool_object as _normalize_tool_object_impl,
     try_parse_tool as _try_parse_tool_impl,
     try_parse_tools_batch as _try_parse_tools_batch_impl,
@@ -92,6 +93,7 @@ from .agent_terminal import (
 )
 from .agent_prompt_support import (
     minimal_code_mode_enabled as _minimal_code_mode_enabled_impl,
+    SPEC_FORMAT_HINT as _SPEC_FORMAT_HINT,
     specs_section as _specs_section_impl,
     specialists_block as _specialists_block_impl,
 )
@@ -183,7 +185,6 @@ _SLASH_BASE = [
     "/agent create",
     "/agent delete",
 ]
-
 
 # ─── Autocomplete (prompt_toolkit) ───────────────────────────────────────────
 
@@ -408,7 +409,6 @@ except ImportError:
     _make_prompt_session = None  # type: ignore[assignment]
     _PT_STYLE = None             # type: ignore[assignment]
 
-
 def _set_blink_underline() -> None:
     """Pede ao terminal um cursor sublinhado piscante (DECSCUSR `ESC[3 q`).
 
@@ -420,7 +420,6 @@ def _set_blink_underline() -> None:
         sys.stdout.flush()
     except Exception:
         pass
-
 
 MAX_TOOL_TURNS = 150
 
@@ -434,7 +433,6 @@ MAX_TOOL_TURNS = 150
 _LOOP_REPEAT_HARD  = 5   # N° de repetições consecutivas → hard stop imediato
 _LOOP_OSCIL_WINDOW = 6   # Janela de calls para detectar padrão A→B→A→B
 
-
 def _args_sig(args: object) -> str:
     """Hash curto dos args — distingue chamadas com args diferentes (evita falso-positivo no loop)."""
     try:
@@ -442,7 +440,6 @@ def _args_sig(args: object) -> str:
         return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:8]
     except Exception:
         return ""
-
 
 def _is_failed_result(result: str) -> bool:
     """True se o resultado de uma tool indica erro/bloqueio — mesma convenção
@@ -534,41 +531,6 @@ def _detect_loop(tool_log: list[dict]) -> tuple[str | None, bool]:
             return msg, False  # soft warning (pode ser legítimo em alguns casos)
 
     return None, False
-
-
-_SPEC_FORMAT_HINT = """
-# SPEC-DRIVEN DEVELOPMENT
-Quando o usuario pedir para criar um spec, gere um arquivo YAML em specs/<id>.yaml com este formato:
-
-id: nome-do-feature
-title: Título Descritivo
-version: "1.0.0"
-status: draft
-created: <data-hoje>
-purpose: |
-  O que este feature faz e por que existe (1-3 frases).
-behavior:
-  - Regra 1 que a implementação DEVE respeitar
-  - Regra 2
-interface:
-  inputs:
-    - name: param
-      type: str
-      required: true
-      description: descrição
-  outputs:
-    - name: resultado
-      type: str
-      description: descrição
-acceptance_criteria:
-  - Given X, when Y, then Z
-linked_files:
-  - bauer/arquivo.py
-  - tests/test_arquivo.py
-
-Status válidos: draft | review | approved | implemented | deprecated
-Use write_file para salvar em specs/<id>.yaml
-Diga ao usuario para rodar "bauer spec status <id> approved" quando o spec estiver pronto para implementar."""
 
 
 def _specs_section(specs_dir: str = "specs") -> str:
@@ -833,112 +795,9 @@ def _minimal_code_mode_enabled() -> bool:
     return _minimal_code_mode_enabled_impl()
 
 
-def _specialist_delegation_enabled() -> bool:
-    """Lê config.agent.specialist_delegation — mesma filosofia de
-    _minimal_code_mode_enabled (best-effort, default True)."""
-    try:
-        from .config_loader import load_config
-        return load_config().agent.specialist_delegation
-    except Exception:
-        return True
-
-
-def _specialists_section() -> str:
-    """Lista os agents especialistas (embutidos no pacote + agents.yaml do
-    usuário) para o system prompt, instruindo o modelo a delegar via
-    `delegate_task` quando a tarefa combinar com um deles.
-
-    Retorna "" (sem seção) quando o pool está vazio — não faz sentido
-    instruir sobre delegação sem nenhum especialista cadastrado. Best-effort:
-    qualquer falha de leitura degrada para "" silenciosamente, igual ao
-    padrão de _specs_section.
-    """
-    try:
-        from .agent_registry import merged_specialist_pool, resolve_user_agents_path
-
-        _agents_file = str(resolve_user_agents_path())
-        agents = merged_specialist_pool(_agents_file)
-        # Só lista agents locais (sem url) — remotos exigem bauer serve rodando
-        # à parte e já são endereçáveis por agent_name sem precisar de aviso
-        # prévio no prompt (o modelo não precisa "descobrir" um agent remoto
-        # específico, isso é decisão de infra do usuário, não de tarefa).
-        local_agents = [a for a in agents if not a.url]
-        if not local_agents:
-            return ""
-
-        lines = [
-            "# ESPECIALISTAS DISPONIVEIS\n"
-            "Estes agents tem system prompt ajustado para suas areas, mas "
-            "delegate_task(agent_name=\"<nome>\", task=\"...\") pra eles e uma "
-            "consulta de UMA RESPOSTA EM TEXTO — SEM tools, sem acesso a "
-            "arquivos/shell/docker, sem multiplas rodadas. Use SOMENTE para "
-            "pedir uma opiniao/analise pontual (revisar um trecho, explicar um "
-            "conceito, comparar opcoes, redigir um texto) que cabe numa resposta "
-            "unica.\n"
-            "NUNCA delegue tarefas que precisam EXECUTAR algo (rodar comando, "
-            "subir/parar servico, ler logs, editar arquivo, navegar pasta) — "
-            "mesmo que a tarefa seja da area de um especialista (ex.: 'suba o "
-            "docker e arrume o dashboard' e DevOps mas exige tools reais: faca "
-            "voce mesmo com run_command/read_file/write_file, NAO delegue). "
-            "Na duvida entre delegar ou executar, execute voce mesmo."
-        ]
-        for a in local_agents:
-            lines.append(f"  - {a.name}: {a.description}")
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
 def _specialists_block() -> str:
-    """Wrapper de `_specialists_section()` para `_build_system_prompt`: aplica
-    o toggle de config e só prefixa a quebra de linha quando há conteúdo real
-    (registry vazio não deve deixar um "\\n" solto no prompt)."""
+    """Compatibilidade para o contexto opcional de especialistas extraído."""
     return _specialists_block_impl()
-
-
-def _extract_text_from_pseudo_json(response: str) -> str | None:
-    """Se o modelo respondeu com {"action": "resposta/text", "args": {"conteudo": "..."}}
-    extrai apenas o texto. Fallback para modelos pequenos que abusam do formato JSON."""
-    import json as _json
-    try:
-        obj = _json.loads(response.strip())
-        if not isinstance(obj, dict):
-            return None
-        # Ação que não é uma tool real = o modelo está respondendo em texto via JSON
-        args = obj.get("args", {})
-        for key in ("conteudo", "content", "text", "resposta", "message", "mensagem", "response"):
-            if key in args and isinstance(args[key], str):
-                return args[key]
-    except Exception:
-        pass
-    return None
-
-
-def _normalize_tool_object(obj: object, available: set[str]) -> dict | None:
-    """Normaliza uma action emitida pelo modelo para o formato do Tool Bridge.
-
-    Alguns modelos OpenAI-compat em modo bridge emitem o shell call no formato
-    curto ``{"command": "docker ps -q"}``, em vez do contrato completo
-    ``{"action": "run_command", "args": {"command": ...}}``. Esse formato
-    só é aceito quando ``run_command`` está realmente disponível e o objeto não
-    contém campos fora do contrato de seus argumentos. A execução continua
-    passando por ``ToolRouter.execute`` e, portanto, pelos mesmos guards.
-    """
-    return _normalize_tool_object_impl(obj, available)
-
-
-def _extract_embedded_json_action(text: str, available: set[str]) -> dict | None:
-    """Acha o primeiro objeto JSON `{"action": ..., ...}` embutido em qualquer
-    posição do texto — não só no início.
-
-    Modelos sem tool calling nativo (bridge) às vezes ignoram a instrução de
-    responder SOMENTE com o JSON e escrevem uma frase de narração antes,
-    colado sem quebra de linha (ex.: "Vou verificar o diretório.{\"action\":
-    ...}"). ``JSONDecoder.raw_decode`` a partir de cada ``{`` encontrado lida
-    com chaves aninhadas corretamente, ao contrário de um regex ganancioso.
-    """
-    return _extract_embedded_json_action_impl(text, available)
-
 
 
 def _e_resposta_degenerada(texto: str) -> bool:

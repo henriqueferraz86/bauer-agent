@@ -6,6 +6,18 @@ import json
 from collections.abc import Callable
 
 
+def extract_text_from_pseudo_json(response: str) -> str | None:
+    try:
+        obj = json.loads(response.strip())
+        args = obj.get("args", {}) if isinstance(obj, dict) else {}
+        for key in ("conteudo", "content", "text", "resposta", "message", "mensagem", "response"):
+            if isinstance(args, dict) and isinstance(args.get(key), str):
+                return args[key]
+    except Exception:
+        pass
+    return None
+
+
 def normalize_tool_object(obj: object, available: set[str]) -> dict | None:
     """Aceita o contrato bridge e o atalho seguro de ``run_command``."""
     if not isinstance(obj, dict):

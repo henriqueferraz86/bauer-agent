@@ -2,6 +2,40 @@
 
 from __future__ import annotations
 
+SPEC_FORMAT_HINT = """
+# SPEC-DRIVEN DEVELOPMENT
+Quando o usuario pedir para criar um spec, gere um arquivo YAML em specs/<id>.yaml com este formato:
+
+id: nome-do-feature
+title: Título Descritivo
+version: "1.0.0"
+status: draft
+created: <data-hoje>
+purpose: |
+  O que este feature faz e por que existe (1-3 frases).
+behavior:
+  - Regra 1 que a implementação DEVE respeitar
+  - Regra 2
+interface:
+  inputs:
+    - name: param
+      type: str
+      required: true
+      description: descrição
+  outputs:
+    - name: resultado
+      type: str
+      description: descrição
+acceptance_criteria:
+  - Given X, when Y, then Z
+linked_files:
+  - bauer/arquivo.py
+  - tests/test_arquivo.py
+
+Status válidos: draft | review | approved | implemented | deprecated
+Use write_file para salvar em specs/<id>.yaml
+Diga ao usuario para rodar "bauer spec status <id> approved" quando o spec estiver pronto para implementar."""
+
 
 def specs_section(format_hint: str, specs_dir: str = "specs") -> str:
     try:
