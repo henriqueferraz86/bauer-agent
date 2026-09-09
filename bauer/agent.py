@@ -105,6 +105,7 @@ from .agent_native_execution import (
     parse_native_arguments as _parse_native_arguments,
     report_native_cost as _report_native_cost,
 )
+from .agent_turn_policy import maybe_reflect as _maybe_reflect
 from .provider_identity import (
     HOST_MARKERS as _MARCAS_DE_HOST,
     declared_provider as _provider_declarado,
@@ -1391,22 +1392,6 @@ def _collect_with_fallback(
 # Reflexão forçada: a cada N tool calls sem resposta final, injeta um nudge
 # pedindo ao modelo para resumir progresso e decidir o próximo passo. Evita
 # que o modelo "vagueie" por dezenas de calls sem convergir.
-_REFLECT_EVERY = 6
-
-_REFLECT_NUDGE = (
-    "[SISTEMA — ponto de reflexão] Você já executou {n} tool calls neste turno "
-    "sem dar uma resposta final. Pare e avalie: (1) resuma em 1 frase o que já "
-    "descobriu; (2) decida se falta UM passo concreto — se sim, execute apenas "
-    "ele; (3) caso contrário, responda ao usuário agora com o que tem."
-)
-
-
-def _maybe_reflect(ctx, n_calls: int) -> None:
-    """Injeta nudge de reflexão a cada _REFLECT_EVERY tool calls."""
-    if n_calls > 0 and n_calls % _REFLECT_EVERY == 0:
-        ctx.add_user(_REFLECT_NUDGE.format(n=n_calls))
-
-
 def _run_native_tool_turn(
     ctx,
     router: ToolRouter,
