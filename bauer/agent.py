@@ -95,6 +95,11 @@ from .agent_prompt_support import (
     specs_section as _specs_section_impl,
     specialists_block as _specialists_block_impl,
 )
+from .agent_native_protocol import (
+    NativeToolsUnsupported as _NativeToolsUnsupported,
+    client_supports_native_tools as _client_supports_native_tools,
+    is_native_unsupported_error as _is_native_unsupported_error,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -1428,43 +1433,6 @@ def _collect_with_fallback(
         collect_response_fn=_collect_response,
         thinking_status=_thinking_status,
     )
-
-
-class _NativeToolsUnsupported(Exception):
-    """Provider rejeitou o parâmetro tools= — downgrade definitivo para bridge."""
-
-
-# Códigos HTTP que indicam "provider não suporta native tools" (downgrade).
-# 429 (rate limit) e 5xx (transiente) NÃO entram — retry native é o correto.
-_NATIVE_UNSUPPORTED_CODES = {400, 404, 405, 422, 501}
-
-
-def _client_supports_native_tools(client) -> bool:
-    """True se este cliente sabe fazer function calling nativo.
-
-    Checa as CLASSES CONCRETAS (não duck typing) porque um MagicMock de teste
-    responderia True para qualquer getattr e ligaria o caminho native onde o
-    teste espera o bridge.
-
-    O OllamaClient entrou aqui junto do `chat_with_tools` dele: antes o gate
-    era `isinstance(client, OpenAIClient)`, então `provider: ollama` caía SEMPRE
-    no Tool Bridge por prompt — inclusive nos modelos que anunciam a capability
-    "tools" — e o `supports_tools: true` do models.yaml só mudava o que o
-    `bauer doctor` imprimia, nunca o caminho de execução.
-    """
-    from .ollama_client import OllamaClient as _OllamaClientCls
-    from .openai_client import OpenAIClient as _OpenAIClientCls
-
-    if not isinstance(client, _OpenAIClientCls | _OllamaClientCls):
-        return False
-    return bool(getattr(client, "supports_native_tools", False))
-
-
-def _is_native_unsupported_error(exc: Exception) -> bool:
-    """True se o erro indica que o provider não aceita o parâmetro tools=."""
-    import re as _re
-    m = _re.search(r"HTTP (\d{3})", str(exc))
-    return bool(m) and int(m.group(1)) in _NATIVE_UNSUPPORTED_CODES
 
 
 # Reflexão forçada: a cada N tool calls sem resposta final, injeta um nudge
