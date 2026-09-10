@@ -19,7 +19,13 @@ def extract_text_from_pseudo_json(response: str) -> str | None:
 
 
 def normalize_tool_object(obj: object, available: set[str]) -> dict | None:
-    """Aceita o contrato bridge e o atalho seguro de ``run_command``."""
+    """Aceita o contrato bridge e atalhos seguros de tools comuns.
+
+    Alguns modelos no modo bridge preservam apenas os argumentos da chamada
+    (por exemplo, ``{"query": "..."}``) e omitem o nome da ferramenta. Esses
+    atalhos só são normalizados quando o conjunto de chaves identifica uma
+    ferramenta sem ambiguidade.
+    """
     if not isinstance(obj, dict):
         return None
     if obj.get("action") in available:
@@ -34,6 +40,15 @@ def normalize_tool_object(obj: object, available: set[str]) -> dict | None:
             if key in obj:
                 args[key] = obj[key]
         return {"action": "run_command", "args": args}
+    if (
+        "action" not in obj
+        and "query" in obj
+        and "web_search" in available
+        and isinstance(obj.get("query"), str)
+        and obj["query"].strip()
+        and set(obj).issubset({"query", "max_results"})
+    ):
+        return {"action": "web_search", "args": dict(obj)}
     return None
 
 

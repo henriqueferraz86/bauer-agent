@@ -1326,8 +1326,7 @@ def create_app(
             deadline = time.monotonic() + _STREAM_TURN_TIMEOUT_SECONDS
 
             def _flush_gate() -> str:
-                leftover = _strip_action_block(gate.pending, available).strip("\n")
-                gate.pending = ""
+                leftover = _strip_action_block(gate.flush(), available).strip("\n")
                 return leftover
 
             def _emit_text(text: str):
@@ -1389,10 +1388,10 @@ def create_app(
                     round_raw = []
                     turn_sep = emitted_any
                 elif kind == "tool":
-                    # Narração pendente sai antes do chip da tool.
-                    frame = _emit_text(_flush_gate())
-                    if frame:
-                        yield frame
+                    # A rodada pode ter começado com uma narração falsa (ou
+                    # um JSON parcial). Só o resultado pós-tool deve chegar à
+                    # UI; descarta tudo que veio antes da chamada.
+                    gate.discard()
                     # Narração de fase (S37): além do nome cru, manda o passo
                     # humano ("Executando comando") + ícone para a UI mostrar.
                     try:
@@ -1533,15 +1532,18 @@ def create_app(
         return {"max_minutes": limits.max_minutes, "max_tool_calls": limits.max_tool_calls,
                 "max_cost_usd": limits.max_cost_usd}
 
-    @app.post("/loop")
-    def loop_start(req: LoopStartRequest, _: None = Depends(_verify_key)):
+    def _start_loop_impl(req: LoopStartRequest, _workspace_override: Path | None = None):
         import threading as _threading
 
         from .autonomous_budget import AutonomousBudget
         from .serve_loop import LoopState, loop_registry, run_loop_rounds
 
         sid = req.session_id or store.new_id()
-        active_router, active_project_id = _resolve_project_router(sid, req.project_id)
+        if _workspace_override is not None:
+            active_router = _build_project_router(_workspace_override)
+            active_project_id = req.project_id
+        else:
+            active_router, active_project_id = _resolve_project_router(sid, req.project_id)
         resolved = _resolve_request_context(req.message, _effective_ws(active_router))
         resolved["project_id"] = active_project_id
         request_agent_id = "serve.loop"
@@ -1784,6 +1786,10 @@ def create_app(
         return {"run_id": run.id, "session_id": sid, "status": "running",
                 "limits": limits}
 
+    @app.post("/loop")
+    def loop_start(req: LoopStartRequest, _: None = Depends(_verify_key)):
+        return _start_loop_impl(req)
+
     @app.get("/loop/{run_id}")
     def loop_status(run_id: str, _: None = Depends(_verify_key)):
         from .serve_loop import loop_registry
@@ -1859,6 +1865,9 @@ def create_app(
             get_workspace=(lambda: _dsk_workspace) if _dsk_workspace else None,
             get_config_path=(lambda: config_path) if config_path else None,
             resolve_project_workspace=_kanban_project_workspace,
+            start_loop=(lambda message, project_id, workspace_override: _start_loop_impl(
+                LoopStartRequest(message=message, project_id=project_id), workspace_override,
+            )),
         ))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("bauer.server").warning(

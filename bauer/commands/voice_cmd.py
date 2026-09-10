@@ -68,7 +68,7 @@ def cmd_voice_ask(
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
     speak: bool = typer.Option(
         False, "--speak", "-s",
-        help="Sintetiza e toca a resposta em voz (TTS_PROVIDER=auto|local|openai)",
+        help="Sintetiza e toca a resposta em voz (auto|local|openai|google|kokoro)",
     ),
 ) -> None:
     """Fala com o Bauer: grava, transcreve, envia ao agent e imprime resposta.

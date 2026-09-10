@@ -7,7 +7,7 @@ Providers (ordem padrão em TTS_PROVIDER=auto):
   2. OpenAI tts-1 (cloud, OPENAI_API_KEY)
 
 Selecione explicitamente com ``TTS_PROVIDER`` ou ``BAUER_TTS_PROVIDER`` =
-auto | local | openai | kokoro.
+auto | local | openai | google | kokoro.
 Para voz 100% offline::
 
     pip install coqui-tts               # ou: uv sync --extra voice-tts
@@ -37,6 +37,7 @@ de escondê-lo.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import tempfile
@@ -46,6 +47,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from .http_shared import shared_ssl_context
 from .voice_text import strip_emoji_for_speech
 
 logger = logging.getLogger("bauer.tts")
@@ -71,6 +73,12 @@ OPENAI_TTS_VOICE = os.environ.get("TTS_OPENAI_VOICE", "alloy")
 # duplicar a decisão de quais voices/models são aceitos, só o valor.
 _OPENAI_VALID_VOICES = ("alloy", "echo", "fable", "onyx", "nova", "shimmer")
 _OPENAI_VALID_MODELS = ("tts-1", "tts-1-hd")
+
+# Google Cloud Text-to-Speech Standard — pt-BR, voz masculina por padrão.
+GOOGLE_TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+GOOGLE_TTS_LANGUAGE = os.environ.get("GOOGLE_TTS_LANGUAGE", "pt-BR")
+GOOGLE_TTS_VOICE = os.environ.get("GOOGLE_TTS_VOICE", "pt-BR-Standard-B")
+GOOGLE_TTS_AUDIO_ENCODING = "LINEAR16"
 
 # Local (Coqui XTTS-v2) — roda os pesos open-source OFFLINE na máquina.
 # pip: coqui-tts (fork idiap mantido; o pacote original coqui-ai/TTS está sem
@@ -220,6 +228,48 @@ def _post_openai_tts(text: str, dest: Path) -> None:
     if not resp.content:
         raise RuntimeError("resposta de áudio vazia")
     dest.write_bytes(resp.content)
+
+
+def _google_tts_api_key() -> str:
+    """Retorna a chave Google dedicada, sem imprimir ou persistir o segredo."""
+    return os.environ.get("GOOGLE_TTS_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
+
+
+def _post_google_tts(text: str, dest: Path) -> None:
+    """Sintetiza usando o endpoint REST do Google Cloud TTS Standard."""
+    import httpx
+
+    api_key = _google_tts_api_key()
+    resp = httpx.post(
+        GOOGLE_TTS_URL,
+        params={"key": api_key},
+        headers={"Content-Type": "application/json"},
+        json={
+            "input": {"text": text},
+            "voice": {
+                "languageCode": GOOGLE_TTS_LANGUAGE,
+                "name": GOOGLE_TTS_VOICE,
+            },
+            "audioConfig": {"audioEncoding": GOOGLE_TTS_AUDIO_ENCODING},
+        },
+        timeout=_TIMEOUT_S,
+        verify=shared_ssl_context(),
+    )
+    if resp.status_code != 200:
+        detail = resp.text[:300]
+        try:
+            body = resp.json()
+            detail = str((body.get("error") or {}).get("message") or detail)
+        except Exception:  # noqa: BLE001 — corpo de erro pode não ser JSON
+            logger.debug("resposta de erro do Google TTS não era JSON", exc_info=True)
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+    try:
+        audio = base64.b64decode(resp.json()["audioContent"], validate=True)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("resposta do Google TTS sem áudio válido") from exc
+    if not audio:
+        raise RuntimeError("resposta de áudio vazia")
+    dest.write_bytes(audio)
 
 
 def _coqui_tts_available() -> bool:
@@ -430,11 +480,15 @@ def available_tts_provider() -> str | None:
         return "local" if _coqui_tts_available() else None
     if pref == "openai":
         return "openai" if os.environ.get("OPENAI_API_KEY", "").strip() else None
+    if pref in ("google", "google-standard", "google_cloud", "google-cloud"):
+        return "google" if _google_tts_api_key() else None
     # auto: local primeiro (offline, sem key), cloud como fallback
     if _coqui_tts_available():
         return "local"
     if os.environ.get("OPENAI_API_KEY", "").strip():
         return "openai"
+    if _google_tts_api_key():
+        return "google"
     return None
 
 
@@ -477,11 +531,16 @@ def synthesize_speech(
     elif pref == "openai":
         if openai_key:
             attempts.append("openai")
+    elif pref in ("google", "google-standard", "google_cloud", "google-cloud"):
+        if _google_tts_api_key():
+            attempts.append("google")
     else:  # auto: local primeiro (sem key), cloud como fallback
         if _coqui_tts_available():
             attempts.append("local")
         if openai_key:
             attempts.append("openai")
+        if _google_tts_api_key():
+            attempts.append("google")
 
     if not attempts:
         return {
@@ -490,7 +549,7 @@ def synthesize_speech(
             "error": (
                 "Nenhum provider TTS disponível. Opções: (1) local offline — "
                 "`pip install coqui-tts` (ou `uv sync --extra voice-tts`), ou "
-                "(2) OPENAI_API_KEY."
+                "(2) OPENAI_API_KEY, ou (3) GOOGLE_TTS_API_KEY."
             ),
         }
 
@@ -503,6 +562,8 @@ def synthesize_speech(
                 from .voice_kokoro import synthesize_kokoro_speech
 
                 synthesize_kokoro_speech(text, dest)
+            elif provider == "google":
+                _post_google_tts(text, dest)
             else:
                 _post_openai_tts(text, dest)
             logger.info(

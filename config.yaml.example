@@ -666,8 +666,8 @@ tools:
   shell_enabled: false
 
   # Se true, habilita tools de web (web_search, web_fetch).
-  # Requer ddgs, httpx ou crawl4ai instalados.
-  web_enabled: false
+  # A busca DuckDuckGo e a extração via httpx já vêm na instalação base.
+  web_enabled: true
 
   # Se true, ativa sandboxing de caminhos (bloqueia traversal ../../../).
   # false apenas se você precisar que o agente acesse arquivos fora do workspace.
@@ -1000,3 +1000,45 @@ observability:
   langfuse_secret_key: ""
   # Traces incluem: sessão, modelo, tool calls (nome, args, resultado, latência),
   # erros e timeouts. Não inclui conteúdo de mensagens do usuário por padrão.
+
+
+# =============================================================================
+# AUTONOMIA CONTÍNUA — monitoramento e recuperação opt-in
+# =============================================================================
+
+continuous_autonomy:
+  enabled: false
+  check_interval_s: 60
+  voice_enabled: false
+  alert_level: important  # off | important | all
+  allowlisted_actions: [retry_health_check, docker_recover, process_restart]
+  targets:
+    # HTTP simples: observa e recomenda, sem executar correção.
+    # - id: minha-api
+    #   name: Minha API
+    #   type: http_health
+    #   url: http://127.0.0.1:8000/health
+    #   enabled: true
+
+    # Docker: diagnostica inspect/logs, inicia ou reinicia e verifica o estado.
+    # O server também cadastra automaticamente todos os containers do host,
+    # pausados e com autocorreção inicial, sem exigir esta seção manual.
+    # - id: mt5-dashboard
+    #   name: Container mt5_dashboard
+    #   type: docker_container
+    #   url: http://127.0.0.1:8010/  # opcional; o estado Docker já é sondado
+    #   container_name: nautilus-mt5-dashboard
+    #   enabled: false
+    #   auto_recover: true
+    #   recovery_action: docker_recover
+    #   max_recovery_attempts: 2
+    #   recovery_cooldown_s: 60
+
+    # Processo: exige nome e comando de inicialização explícitos.
+    # - id: meu-processo
+    #   name: Meu processo
+    #   type: process
+    #   process_name: meu-processo.exe
+    #   process_command: [C:\\Apps\\meu-processo.exe, --serve]
+    #   auto_recover: true
+    #   recovery_action: process_restart

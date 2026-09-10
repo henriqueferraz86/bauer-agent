@@ -16,6 +16,7 @@ import Approvals from "./screens/Approvals";
 import Agents from "./screens/Agents";
 import Skills from "./screens/Skills";
 import Runtime from "./screens/Runtime";
+import Autonomy from "./screens/Autonomy";
 import Settings from "./screens/Settings";
 import Audit from "./screens/Audit";
 
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="/runs" element={<Runs />} />
           <Route path="/approvals" element={<Approvals />} />
           <Route path="/runtime" element={<Runtime />} />
+          <Route path="/autonomy" element={<Autonomy />} />
           <Route path="/observability" element={<Observability />} />
           <Route path="/audit" element={<Audit />} />
           <Route path="/audit/runs" element={<Audit />} />

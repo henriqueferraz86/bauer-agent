@@ -164,6 +164,12 @@ def test_tools_section_max_tool_turns_default_150():
     assert ToolsSection().max_tool_turns == 150
 
 
+def test_tools_section_web_search_enabled_by_default():
+    from bauer.config_loader import ToolsSection
+
+    assert ToolsSection().web_enabled is True
+
+
 def test_resolve_max_tool_turns_reads_config():
     from bauer.agent import _resolve_max_tool_turns
     from bauer.config_loader import BauerConfig, ModelSection, ToolsSection

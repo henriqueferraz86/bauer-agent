@@ -5,11 +5,12 @@ Provider padrão do /listen:
 
 Alternativas explícitas via STT_PROVIDER:
   ``groq`` — Groq Whisper (``whisper-large-v3-turbo``)
+  ``deepgram`` — Deepgram Nova (``nova-3``)
   ``openai`` — OpenAI Whisper (``whisper-1``)
   ``local`` — faster-whisper (``large-v3-turbo``), offline
 
 Selecione explicitamente com a env ``STT_PROVIDER`` = openrouter | auto | local |
-groq | openai. Sem a variável, o padrão é ``openrouter``. O idioma padrão é
+groq | deepgram | openai. Sem a variável, o padrão é ``openrouter``. O idioma padrão é
 português (``STT_LANGUAGE=pt``); deixe vazio para detecção automática.
 Para rodar o modelo open-source 100% offline::
 
@@ -38,6 +39,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .http_shared import shared_ssl_context
+
 logger = logging.getLogger("bauer.transcription")
 
 # Formatos aceitos pelos endpoints Whisper (Telegram voice = .ogg/opus)
@@ -48,6 +51,8 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024  # limite documentado dos dois providers
 
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_STT_MODEL = os.environ.get("STT_GROQ_MODEL", "whisper-large-v3-turbo")
+DEEPGRAM_STT_URL = "https://api.deepgram.com/v1/listen"
+DEEPGRAM_STT_MODEL = os.environ.get("STT_DEEPGRAM_MODEL", "nova-3")
 OPENAI_STT_URL = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_STT_MODEL = os.environ.get("STT_OPENAI_MODEL", "whisper-1")
 OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
@@ -102,6 +107,8 @@ def stt_unavailable_message() -> str:
         return openrouter_stt_setup_message()
     if pref == "groq":
         return "GROQ_API_KEY não configurada. Configure a chave ou use STT_PROVIDER=local."
+    if pref == "deepgram":
+        return "DEEPGRAM_API_KEY não configurada. Configure a chave ou use STT_PROVIDER=local."
     if pref == "openai":
         return "OPENAI_API_KEY não configurada. Configure a chave ou use STT_PROVIDER=local."
     if pref in ("local", "faster-whisper", "faster_whisper"):
@@ -111,7 +118,8 @@ def stt_unavailable_message() -> str:
         )
     return (
         "Nenhum provider STT disponível. Configure OPENROUTER_API_KEY, "
-        "GROQ_API_KEY/OPENAI_API_KEY, ou instale faster-whisper para uso local."
+        "GROQ_API_KEY/DEEPGRAM_API_KEY/OPENAI_API_KEY, ou instale faster-whisper "
+        "para uso local."
     )
 
 # Cache do modelo local — carregar os pesos é caro; reusa entre transcrições.
@@ -170,6 +178,52 @@ def _post_whisper(
             logger.debug("resposta de erro do provider não era JSON", exc_info=True)
         raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
     text = (resp.json().get("text") or "").strip()
+    if not text:
+        raise RuntimeError("transcrição vazia")
+    return {"success": True, "transcript": text}
+
+
+def _post_deepgram(
+    api_key: str,
+    model: str,
+    path: Path,
+    language: str = "",
+) -> dict[str, Any]:
+    """Transcreve pelo endpoint nativo da Deepgram."""
+    import httpx
+
+    params: dict[str, str] = {
+        "model": model,
+        "smart_format": "true",
+    }
+    if language:
+        params["language"] = language
+
+    with path.open("rb") as fh:
+        resp = httpx.post(
+            DEEPGRAM_STT_URL,
+            headers={"Authorization": f"Token {api_key}"},
+            params=params,
+            files={"file": (path.name, fh)},
+            timeout=_TIMEOUT_S,
+            verify=shared_ssl_context(),
+        )
+    if resp.status_code != 200:
+        detail = resp.text[:300]
+        try:
+            body = resp.json()
+            detail = str(body.get("err_msg") or body.get("message") or detail)
+        except Exception:  # noqa: BLE001 — corpo de erro pode não ser JSON
+            logger.debug("resposta de erro da Deepgram não era JSON", exc_info=True)
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+
+    try:
+        text = (
+            resp.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+            or ""
+        ).strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("resposta da Deepgram sem transcrição") from exc
     if not text:
         raise RuntimeError("transcrição vazia")
     return {"success": True, "transcript": text}
@@ -320,6 +374,8 @@ def available_stt_provider() -> str | None:
         return "local" if _faster_whisper_available() else None
     if pref == "groq":
         return "groq" if os.environ.get("GROQ_API_KEY", "").strip() else None
+    if pref == "deepgram":
+        return "deepgram" if os.environ.get("DEEPGRAM_API_KEY", "").strip() else None
     if pref == "openai":
         return "openai" if os.environ.get("OPENAI_API_KEY", "").strip() else None
     # auto: OpenRouter, outros clouds e local como fallback
@@ -327,6 +383,8 @@ def available_stt_provider() -> str | None:
         return "openrouter"
     if os.environ.get("GROQ_API_KEY", "").strip():
         return "groq"
+    if os.environ.get("DEEPGRAM_API_KEY", "").strip():
+        return "deepgram"
     if os.environ.get("OPENAI_API_KEY", "").strip():
         return "openai"
     if _faster_whisper_available():
@@ -351,6 +409,7 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
     attempts: list[tuple[str, str | None, str | None, str]] = []
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    deepgram_key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
     openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
     def _add_openrouter():
@@ -363,6 +422,10 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
     def _add_groq():
         if groq_key:
             attempts.append(("groq", GROQ_STT_URL, groq_key, model or GROQ_STT_MODEL))
+
+    def _add_deepgram():
+        if deepgram_key:
+            attempts.append(("deepgram", DEEPGRAM_STT_URL, deepgram_key, model or DEEPGRAM_STT_MODEL))
 
     def _add_openai():
         if openai_key:
@@ -378,11 +441,14 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
         _add_local()
     elif pref == "groq":
         _add_groq()
+    elif pref == "deepgram":
+        _add_deepgram()
     elif pref == "openai":
         _add_openai()
     else:  # auto: OpenRouter, outros clouds e local como fallback
         _add_openrouter()
         _add_groq()
+        _add_deepgram()
         _add_openai()
         if _faster_whisper_available():
             _add_local()
@@ -399,6 +465,8 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
         try:
             if provider == "openrouter":
                 result = _post_openrouter_whisper(key, mdl, path, language)
+            elif provider == "deepgram":
+                result = _post_deepgram(key, mdl, path, language)
             elif provider == "local":
                 result = _transcribe_local(path, mdl, language)
             else:
