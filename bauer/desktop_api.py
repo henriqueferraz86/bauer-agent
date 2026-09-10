@@ -328,6 +328,10 @@ def build_desktop_router(
     deps = [Depends(verify_key)] if verify_key else []
     router = APIRouter(prefix="/api", dependencies=deps, tags=["desktop"])
 
+    @router.on_event("shutdown")
+    def _shutdown_continuous_autonomy() -> None:
+        _continuous.close()
+
     # ── Projetos ──────────────────────────────────────────────────────────
     from . import projects_registry as pr
 

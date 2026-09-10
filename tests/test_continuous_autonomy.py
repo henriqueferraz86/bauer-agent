@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import yaml
@@ -141,6 +142,57 @@ def test_start_status_stop_e_incidente(tmp_path):
     assert events and events[0].message == "serviço indisponível"
     manager.stop()
     _wait_for(manager, "stopped")
+
+
+def test_start_reinicia_worker_antigo_ainda_vivo(tmp_path):
+    from bauer.config_loader import ContinuousAutonomySection, ContinuousAutonomyTarget
+    from bauer.continuous_autonomy import ContinuousAutonomy
+
+    section = ContinuousAutonomySection(enabled=True, targets=[ContinuousAutonomyTarget(
+        id="api", name="API", url="http://example.test/health", interval_s=1,
+    )])
+    manager = ContinuousAutonomy(
+        root=tmp_path, config=section,
+        probe=lambda target: (True, 200, 1.0, None),
+    )
+    old_finished = threading.Event()
+
+    def stale_worker():
+        while not manager._stop.is_set():
+            time.sleep(0.01)
+        old_finished.set()
+
+    old_thread = threading.Thread(target=stale_worker, daemon=True)
+    old_thread.start()
+    manager._thread = old_thread
+    manager._state.state = "stopped"
+    manager._state.owner_pid = None
+
+    manager.start()
+    _wait_for(manager, "running")
+    assert old_finished.wait(1.0)
+    manager.close()
+    _wait_for(manager, "stopped")
+
+
+def test_close_persiste_worker_parado(tmp_path):
+    from bauer.config_loader import ContinuousAutonomySection, ContinuousAutonomyTarget
+    from bauer.continuous_autonomy import ContinuousAutonomy
+
+    section = ContinuousAutonomySection(enabled=True, targets=[ContinuousAutonomyTarget(
+        id="api", name="API", url="http://example.test/health", interval_s=1,
+    )])
+    manager = ContinuousAutonomy(
+        root=tmp_path, config=section,
+        probe=lambda target: (True, 200, 1.0, None),
+    )
+    manager.start()
+    _wait_for(manager, "running")
+
+    manager.close()
+
+    assert manager.status()["state"]["state"] == "stopped"
+    assert manager.status()["state"]["owner_pid"] is None
 
 
 def test_alerta_de_voz_falha_vira_log_e_evento(tmp_path, monkeypatch):

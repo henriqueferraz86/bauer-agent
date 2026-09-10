@@ -126,6 +126,8 @@ def continuous_start_cmd(
             time.sleep(0.5)
     except KeyboardInterrupt:
         manager.stop()
+    finally:
+        manager.close()
 
 
 @continuous_app.command("stop")
