@@ -10,6 +10,12 @@ export function setApiKey(key: string): void {
   localStorage.setItem(API_KEY_STORAGE, key);
 }
 
+/** Silêncio/áudio sem fala não deve aparecer como erro no chat de voz. */
+export function isNoSpeechError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return message.includes("transcrição vazia") || message.includes("transcricao vazia");
+}
+
 function headers(extra: Record<string, string> = {}): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json", ...extra };
   const key = getApiKey();

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api/client";
+import { api, isNoSpeechError } from "../api/client";
 
 interface OsCommandResult {
   kind: string;
@@ -150,7 +150,7 @@ export default function CommandPalette() {
             applyResult(result);
           }
         } catch (error) {
-          setStatus(String(error));
+          if (!isNoSpeechError(error)) setStatus(String(error));
         } finally {
           setBusy(false);
         }

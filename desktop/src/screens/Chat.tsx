@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, streamSSE } from "../api/client";
+import { api, isNoSpeechError, streamSSE } from "../api/client";
 import Hud, { HudData } from "../components/Hud";
 import Markdown from "../components/Markdown";
 import {
@@ -543,17 +543,20 @@ export default function Chat() {
         recordingRef.current = false;
         setRecording(false);
         const blob = new Blob(chunksRef.current, { type: mime || "audio/webm" });
-        if (blob.size === 0) {
-          setVoiceStatus(voiceModeRef.current === "wake" ? "Escutando — diga 'bauer' + o comando." : "Pode falar novamente.");
-          return;
-        }
-        transcribingRef.current = true;
-        setTranscribing(true);
-        setVoiceStatus("Transcrevendo sua fala…");
+        // O VAD encerra o ciclo após alguns segundos sem voz. O MediaRecorder
+        // ainda produz um WebM com ruído/silêncio, mas não há motivo para
+        // enviar esse arquivo ao provider STT.
+        const mode = voiceModeRef.current;
         try {
+          if (blob.size === 0 || !heardSpeech) {
+            setVoiceStatus(mode === "wake" ? "Escutando — diga 'bauer' + o comando." : "Pode falar novamente.");
+            return;
+          }
+          transcribingRef.current = true;
+          setTranscribing(true);
+          setVoiceStatus("Transcrevendo sua fala…");
           const r = await api.upload<{ transcript: string; provider: string }>("/transcribe", blob, "voice.webm");
           let spoken = r.transcript?.trim() || "";
-          const mode = voiceModeRef.current;
           if (mode !== "once" && isVoiceStop(spoken)) {
             stopVoiceMode();
             return;
@@ -572,7 +575,9 @@ export default function Chat() {
             await send(spoken, { speak: true });
           }
         } catch (e) {
-          appendInfo(`[Erro na transcrição: ${e}]`);
+          if (!isNoSpeechError(e)) {
+            appendInfo(`[Erro na transcrição: ${e}]`);
+          }
         } finally {
           transcribingRef.current = false;
           setTranscribing(false);

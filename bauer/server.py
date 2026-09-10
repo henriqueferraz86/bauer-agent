@@ -1065,6 +1065,11 @@ def create_app(
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
 
+        if not result["success"] and result.get("no_speech"):
+            return {
+                "transcript": "",
+                "provider": str(result.get("provider") or ""),
+            }
         if not result["success"]:
             raise HTTPException(status_code=422, detail=result["error"])
         return {"transcript": result["transcript"], "provider": result["provider"]}
