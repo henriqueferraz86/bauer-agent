@@ -839,14 +839,26 @@ class ContinuousAutonomyTarget(_StrictSection):
         return self
 
 
+ContinuousAutonomyAction = Literal["retry_health_check", "docker_recover", "process_restart"]
+_DEFAULT_CONTINUOUS_AUTONOMY_ACTIONS: tuple[ContinuousAutonomyAction, ...] = (
+    "retry_health_check",
+    "docker_recover",
+    "process_restart",
+)
+
+
+def _default_continuous_autonomy_actions() -> list[ContinuousAutonomyAction]:
+    return list(_DEFAULT_CONTINUOUS_AUTONOMY_ACTIONS)
+
+
 class ContinuousAutonomySection(_StrictSection):
     enabled: bool = False
     check_interval_s: float = Field(ge=1.0, le=86400.0, default=60.0)
     targets: list[ContinuousAutonomyTarget] = Field(default_factory=list)
     voice_enabled: bool = False
     alert_level: Literal["off", "important", "all"] = "important"
-    allowlisted_actions: list[Literal["retry_health_check", "docker_recover", "process_restart"]] = Field(
-        default_factory=lambda: ["retry_health_check", "docker_recover", "process_restart"]
+    allowlisted_actions: list[ContinuousAutonomyAction] = Field(
+        default_factory=_default_continuous_autonomy_actions
     )
 
 
