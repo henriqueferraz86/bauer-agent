@@ -356,6 +356,25 @@ def test_transcribe_failure_returns_422(tmp_path: Path):
     assert "sem provider STT" in resp.json()["detail"]
 
 
+def test_transcribe_silence_returns_empty_success(tmp_path: Path):
+    """Silêncio não deve virar erro visível no chat nem no log HTTP."""
+    with patch("bauer.transcription.transcribe_audio") as mock_stt:
+        mock_stt.return_value = {
+            "success": False,
+            "transcript": "",
+            "error": "Transcrição falhou — deepgram: transcrição vazia",
+            "no_speech": True,
+        }
+        client = _make_app(tmp_path)
+        resp = client.post(
+            "/transcribe",
+            files={"file": ("voice.webm", b"silent-audio", "audio/webm")},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"transcript": "", "provider": ""}
+
+
 def test_transcribe_requires_auth(tmp_path: Path):
     client = _make_app(tmp_path, api_key="secret")
     resp = client.post("/transcribe", files={"file": ("voice.webm", b"abc", "audio/webm")})

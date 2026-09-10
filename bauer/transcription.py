@@ -479,10 +479,18 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
             return result
         except Exception as exc:  # noqa: BLE001 — tenta o próximo provider
             errors.append(f"{provider}: {exc}")
-            logger.warning("STT %s falhou: %s", provider, exc)
+            if str(exc).strip().casefold() == "transcrição vazia":
+                logger.info("STT %s não detectou fala no áudio %s", provider, path.name)
+            else:
+                logger.warning("STT %s falhou: %s", provider, exc)
 
+    no_speech = bool(errors) and all(
+        error.partition(": ")[2].strip().casefold() == "transcrição vazia"
+        for error in errors
+    )
     return {
         "success": False,
         "transcript": "",
         "error": "Transcrição falhou — " + "; ".join(errors),
+        "no_speech": no_speech,
     }

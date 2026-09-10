@@ -163,6 +163,7 @@ class TestProviders:
         _mock_post(monkeypatch, fake_post)
         result = transcribe_audio(audio_file)
         assert not result["success"]
+        assert result["no_speech"] is True
 
     def test_openrouter_sucesso_usa_json_com_audio_base64(self, audio_file, monkeypatch):
         monkeypatch.delenv("STT_PROVIDER", raising=False)
