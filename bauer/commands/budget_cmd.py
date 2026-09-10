@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.table import Table
@@ -110,7 +111,7 @@ def continuous_start_cmd(
     if not foreground:
         command = [sys.executable, "-m", "bauer.cli", "autonomy", "continuous", "start",
                    "--foreground", "--config", str(config), "--state-dir", str(state_dir)]
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         else:

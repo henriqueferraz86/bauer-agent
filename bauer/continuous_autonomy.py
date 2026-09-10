@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from .core.events.schema import EventType
+
 logger = logging.getLogger("bauer.continuous_autonomy")
 
 CONTINUOUS_STATES = {"off", "starting", "running", "stopping", "stopped", "error"}
@@ -720,7 +722,7 @@ class ContinuousAutonomy:
         with self._lock:
             self._state.incidents += 1
             self._persist()
-        self._publish("autonomy.incident", "incident", incident["message"], data=incident)
+        self._publish("autonomy.incident", "incident", str(incident["message"]), data=incident)
         self._alert("incident", f"Falha detectada em {target.name}: {incident['message']}")
         self._record_recommendation(target, status, recovery)
 
@@ -739,7 +741,7 @@ class ContinuousAutonomy:
         with self._lock:
             self._state.recommendations += 1
             self._persist()
-        self._publish("autonomy.recommendation", "recommendation", recommendation["message"], data=recommendation)
+        self._publish("autonomy.recommendation", "recommendation", str(recommendation["message"]), data=recommendation)
 
     def _alert(self, kind: str, message: str) -> None:
         level = self._state.alert_level or self.alert_level
@@ -763,7 +765,7 @@ class ContinuousAutonomy:
             except Exception as exc:
                 logger.debug("alert callback failed: %s", exc)
 
-    def _publish(self, event_type: str, status: str, message: str,
+    def _publish(self, event_type: EventType, status: str, message: str,
                  *, data: dict[str, Any] | None = None) -> None:
         try:
             self.event_bus.publish(event_type, status=status, message=message, data=data or {})
