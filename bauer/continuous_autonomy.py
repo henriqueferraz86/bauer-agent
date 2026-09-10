@@ -441,11 +441,33 @@ class ContinuousAutonomy:
                 )
                 self._persist()
             raise ValueError("nenhum alvo HTTP configurado")
+        old_thread: threading.Thread | None = None
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return self.status()
+                if self._state.state in {"starting", "running", "stopping"}:
+                    return self.status()
+                # O worker pode ainda estar terminando depois de persistir
+                # "stopped". Sinaliza e aguarda fora do lock porque o finally
+                # de _run precisa adquirir este mesmo lock.
+                old_thread = self._thread
+                self._stop.set()
+                self.store.upsert("continuous_control", {
+                    "id": "controller", "stop_requested": True,
+                })
             if self._state.state in {"starting", "running", "stopping"} and self._pid_alive(self._state.owner_pid):
                 raise ValueError(f"supervisor já está ativo (pid {self._state.owner_pid})")
+
+        if old_thread is not None:
+            old_thread.join(timeout=5.0)
+            if old_thread.is_alive():
+                raise ValueError(
+                    "worker anterior ainda está finalizando; tente novamente em instantes"
+                )
+
+        with self._lock:
+            # Evita dois workers se duas requisições de start chegarem juntas.
+            if self._thread and self._thread.is_alive():
+                return self.status()
             self._stop.clear()
             self.store.upsert("continuous_control", {"id": "controller", "stop_requested": False})
             self._state.state = "starting"
@@ -462,6 +484,34 @@ class ContinuousAutonomy:
                                              name="bauer-autonomy", daemon=True)
             self._thread.start()
         return self.status()
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Solicita a parada e aguarda o worker no shutdown do hospedeiro."""
+        with self._lock:
+            thread = self._thread
+            self._stop.set()
+            self.store.upsert("continuous_control", {
+                "id": "controller", "stop_requested": True,
+            })
+            if self._state.state in {"starting", "running"}:
+                self._state.state = "stopping"
+                self._state.message = "Encerrando a observação antes de desligar."
+                self._persist()
+                self._publish("autonomy.state.changed", "stopping", self._state.message)
+
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, timeout))
+
+        with self._lock:
+            if thread is not None and thread.is_alive():
+                logger.warning("worker de autonomia não encerrou no shutdown")
+                return
+            if self._state.state in {"starting", "running", "stopping"}:
+                self._state.state = "stopped"
+                self._state.message = "Autonomia contínua parada."
+                self._state.stopped_at = _now()
+                self._state.owner_pid = None
+                self._persist()
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
