@@ -8,6 +8,7 @@ const NAV = [
   { to: "/runs", icon: "ti-player-play", label: "Runs" },
   { to: "/approvals", icon: "ti-shield-question", label: "Approvals" },
   { to: "/runtime", icon: "ti-server-2", label: "Runtime" },
+  { to: "/autonomy", icon: "ti-eye", label: "Autonomia contínua" },
   { to: "/observability", icon: "ti-chart-bar", label: "Observabilidade" },
   { to: "/audit", icon: "ti-shield-check", label: "Auditoria" },
   { to: "/projects", icon: "ti-folders", label: "Projetos" },

@@ -632,9 +632,9 @@ def speak_response(
         if metrics is not None:
             metrics.mark("tts_synthesis_start")
         provider = _tts_provider_pref()
-        if provider not in {"auto", "local", "openai", "kokoro"}:
+        if provider not in {"auto", "local", "openai", "google", "google-standard", "google_cloud", "google-cloud", "kokoro"}:
             raise VoiceOutputError(
-                "BAUER_TTS_PROVIDER deve ser auto, local, openai ou kokoro"
+                "BAUER_TTS_PROVIDER deve ser auto, local, openai, google ou kokoro"
             )
         if provider == "kokoro":
             from .voice_kokoro import synthesize_kokoro_speech
@@ -648,6 +648,10 @@ def speak_response(
             result = synthesize_local_tts(text, output_path=path)
             if not result.get("success"):
                 raise VoiceOutputError(str(result.get("error") or "TTS local falhou"))
+        elif provider in {"google", "google-standard", "google_cloud", "google-cloud"}:
+            result = synthesize_local_tts(text, output_path=path)
+            if not result.get("success"):
+                raise VoiceOutputError(str(result.get("error") or "Google TTS falhou"))
         elif provider == "auto":
             try:
                 synthesize_local_speech(

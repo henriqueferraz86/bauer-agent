@@ -790,7 +790,10 @@ def test_stream_does_not_leak_action_json_after_narration(tmp_path: Path):
     assert resp.status_code == 200
     events = _sse_events(resp.text)
     text = _stream_text(resp.text)
-    assert "Vou verificar a hora." in text
+    # A rodada que antecede a tool call fica retida até sabermos se é
+    # narração ou payload de tool; quando a tool dispara, essa narração é
+    # descartada para não misturar preâmbulos com a resposta final.
+    assert "Vou verificar a hora." not in text
     assert "Agora sim: meio-dia." in text
     assert '"action"' not in text          # JSON não vaza pro chat
     assert "```" not in text               # fence do bloco também não
@@ -858,8 +861,8 @@ def test_stream_strips_all_action_json_from_narration(tmp_path: Path):
     assert resp.status_code == 200
     text = _stream_text(resp.text)
     assert '"action"' not in text          # nenhum JSON de action vaza
-    assert "Vou fazer uma análise completa do Docker." in text
-    assert "Vejo vários projetos" in text
+    assert "Vou fazer uma análise completa do Docker." not in text
+    assert "Vejo vários projetos" not in text
     assert "Pronto: ambiente mapeado." in text
 
 
@@ -922,7 +925,9 @@ def test_stream_runs_on_shared_agent_engine(tmp_path: Path):
     assert resp.status_code == 200
     events = _sse_events(resp.text)
     text = _stream_text(resp.text)
-    assert "Analisando o Docker…" in text
+    # Deltas emitidos antes da tool call são preâmbulo e não devem chegar ao
+    # cliente; a resposta da rodada final continua sendo entregue.
+    assert "Analisando o Docker…" not in text
     assert "## Relatório\n- tudo ok" in text
     assert _has_tool_event(events, "run_command")
 

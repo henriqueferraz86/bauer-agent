@@ -117,6 +117,20 @@ def test_try_parse_tools_batch_normalizes_short_shell_call():
     }]
 
 
+def test_try_parse_tool_normalizes_short_web_search_call():
+    """Modelos de voz podem omitir o nome da tool e emitir só a query."""
+    bridge_router = MagicMock()
+    bridge_router.available_tools.return_value = ["web_search"]
+    bridge_router._parse.side_effect = json.loads
+
+    result = _try_parse_tool('{"query":"clima atual em Guarulhos SP hoje"}', bridge_router)
+
+    assert result == {
+        "action": "web_search",
+        "args": {"query": "clima atual em Guarulhos SP hoje"},
+    }
+
+
 def test_try_parse_tool_unknown_action(router: ToolRouter):
     """Tool desconhecida retorna None."""
     result = _try_parse_tool('{"action": "fly_to_moon", "args": {}}', router)

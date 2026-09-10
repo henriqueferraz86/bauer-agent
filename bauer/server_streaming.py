@@ -14,38 +14,27 @@ def sse_frame(data: str, event: str | None = None) -> str:
 
 
 class StreamGate:
-    """Retém trechos que podem ser um JSON de chamada de ferramenta."""
-
-    _PROBE = 96
+    """Retém uma rodada até saber se ela é texto final ou chamada de tool."""
 
     def __init__(self) -> None:
         self.pending = ""
         self.sent_any = False
 
-    def _candidate_idx(self) -> int:
-        indexes = [index for index in (self.pending.find("{"), self.pending.find("```")) if index != -1]
-        return min(indexes) if indexes else -1
-
     def feed(self, chunk: str) -> str:
-        """Acumula um chunk e devolve a parte segura para enviar ao cliente."""
+        """Acumula um chunk; o chamador libera ou descarta no fim da rodada."""
         self.pending += chunk
-        output: list[str] = []
-        while True:
-            index = self._candidate_idx()
-            if index == -1:
-                output.append(self.pending)
-                self.pending = ""
-                break
-            output.append(self.pending[:index])
-            self.pending = self.pending[index:]
-            probe = self.pending[: self._PROBE]
-            if '"action"' in probe or len(self.pending) < self._PROBE:
-                break
-            output.append(self.pending[0])
-            self.pending = self.pending[1:]
-        text = "".join(output)
+        return ""
+
+    def flush(self) -> str:
+        """Libera uma rodada confirmada como resposta textual."""
+        text = self.pending
+        self.pending = ""
         self.sent_any = self.sent_any or bool(text)
         return text
+
+    def discard(self) -> None:
+        """Descarta narração e JSON de uma rodada que chamou uma ferramenta."""
+        self.pending = ""
 
 
 def strip_action_blocks(text: str, available: set[str]) -> str:
@@ -53,7 +42,14 @@ def strip_action_blocks(text: str, available: set[str]) -> str:
 
     def is_action(value: object) -> bool:
         if not isinstance(value, dict) or not isinstance(value.get("action"), str):
-            return False
+            return (
+                isinstance(value, dict)
+                and "query" in value
+                and "web_search" in available
+                and isinstance(value.get("query"), str)
+                and bool(value["query"].strip())
+                and set(value).issubset({"query", "max_results"})
+            )
         return value["action"] in available or "args" in value
 
     decoder = json.JSONDecoder()

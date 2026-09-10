@@ -298,7 +298,9 @@ name = "bauer-agent"
 version = "0.9.0b1"
 source = { editable = "." }
 dependencies = [
+    { name = "beautifulsoup4" },
     { name = "cryptography" },
+    { name = "ddgs" },
     { name = "httpx" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
@@ -368,10 +370,12 @@ web = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "beautifulsoup4", marker = "extra == 'all'", specifier = ">=4.12" },
     { name = "beautifulsoup4", marker = "extra == 'web'", specifier = ">=4.12" },
     { name = "coqui-tts", marker = "extra == 'voice-tts'", specifier = ">=0.27.0" },
     { name = "cryptography", specifier = ">=41.0" },
+    { name = "ddgs", specifier = ">=6.0" },
     { name = "ddgs", marker = "extra == 'all'", specifier = ">=6.0" },
     { name = "ddgs", marker = "extra == 'web'", specifier = ">=6.0" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110" },

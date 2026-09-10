@@ -196,15 +196,15 @@ bauer doctor
 
 | Extra | Instala | Para quê |
 |-------|---------|----------|
-| `[web]` | `ddgs`, `beautifulsoup4` | busca web geral (DuckDuckGo) + extração de conteúdo |
+| `[web]` | (mantido por compatibilidade; já vem na instalação base) | busca web geral (DuckDuckGo) + extração de conteúdo |
 | `[server]` | `fastapi`, `uvicorn` | `bauer serve` (API HTTP) |
 | `[gateway]` | + `websockets` | canais Telegram/Discord + `bauer shell` |
 | `[keychain]` | `keyring` | guardar credenciais no keychain do SO |
 | `[all]` | tudo acima | — |
 
-> Busca web **sem nenhum extra**: o backend **Wikipedia** (open-source, sem chave)
-> funciona só com as dependências core e é o fallback automático do `web_search`.
-> Para busca geral, `pip install -e ".[web]"`.
+> A busca web geral via DuckDuckGo já vem instalada e habilitada por padrão.
+> O backend Wikipedia continua como fallback automático se o DuckDuckGo estiver
+> temporariamente indisponível.
 
 ---
 
@@ -562,8 +562,82 @@ recua automaticamente para a validação pela transcrição.
     Coqui Public Model License — uso não-comercial. Testado de ponta a ponta
     (download + síntese real) em Ubuntu/CPU em 2026-08-30.
   - OpenAI: `OPENAI_API_KEY` (mesma key do STT cloud serve para os dois)
+  - Google Cloud Standard: `BAUER_TTS_PROVIDER=google` + `GOOGLE_TTS_API_KEY`.
+    A voz masculina brasileira padrão é `pt-BR-Standard-B`; a cobrança é por
+    caracteres e o Google oferece uma franquia mensal para as vozes Standard.
 
-`TTS_PROVIDER=auto` (default) tenta local primeiro, cai para OpenAI se
+### Variáveis de voz no Windows e Linux
+
+As variáveis podem ser definidas em um arquivo `.env` (recomendado para um
+projeto) ou no ambiente do sistema. Nunca coloque chaves reais no Git. O Bauer
+carrega o `.env` automaticamente a partir da pasta do `config.yaml` ou da pasta
+atual.
+
+Exemplo mínimo para usar **Deepgram no STT** e **Google Cloud Standard no TTS**:
+
+```env
+STT_PROVIDER=deepgram
+DEEPGRAM_API_KEY=sua-chave-deepgram
+STT_DEEPGRAM_MODEL=nova-3
+STT_LANGUAGE=pt
+
+BAUER_TTS_PROVIDER=google
+GOOGLE_TTS_API_KEY=sua-chave-google
+GOOGLE_TTS_LANGUAGE=pt-BR
+GOOGLE_TTS_VOICE=pt-BR-Standard-B
+```
+
+No Windows PowerShell, para a sessão atual:
+
+```powershell
+$env:STT_PROVIDER = "deepgram"
+$env:DEEPGRAM_API_KEY = "sua-chave-deepgram"
+$env:STT_LANGUAGE = "pt"
+$env:BAUER_TTS_PROVIDER = "google"
+$env:GOOGLE_TTS_API_KEY = "sua-chave-google"
+$env:GOOGLE_TTS_LANGUAGE = "pt-BR"
+$env:GOOGLE_TTS_VOICE = "pt-BR-Standard-B"
+bauer serve
+```
+
+Para persistir no perfil do usuário do Windows, execute uma vez e abra um
+novo terminal antes de iniciar o Bauer:
+
+```powershell
+[Environment]::SetEnvironmentVariable("STT_PROVIDER", "deepgram", "User")
+[Environment]::SetEnvironmentVariable("DEEPGRAM_API_KEY", "sua-chave-deepgram", "User")
+[Environment]::SetEnvironmentVariable("STT_LANGUAGE", "pt", "User")
+[Environment]::SetEnvironmentVariable("BAUER_TTS_PROVIDER", "google", "User")
+[Environment]::SetEnvironmentVariable("GOOGLE_TTS_API_KEY", "sua-chave-google", "User")
+[Environment]::SetEnvironmentVariable("GOOGLE_TTS_LANGUAGE", "pt-BR", "User")
+[Environment]::SetEnvironmentVariable("GOOGLE_TTS_VOICE", "pt-BR-Standard-B", "User")
+```
+
+No Linux, para a sessão atual:
+
+```bash
+export STT_PROVIDER=deepgram
+export DEEPGRAM_API_KEY='sua-chave-deepgram'
+export STT_LANGUAGE=pt
+export BAUER_TTS_PROVIDER=google
+export GOOGLE_TTS_API_KEY='sua-chave-google'
+export GOOGLE_TTS_LANGUAGE=pt-BR
+export GOOGLE_TTS_VOICE=pt-BR-Standard-B
+bauer serve
+```
+
+Para persistir no Linux, adicione os mesmos `export` ao `~/.bashrc` (ou
+`~/.zshrc`) e execute `source ~/.bashrc` antes de iniciar o Bauer.
+
+Alternativas de STT: `STT_PROVIDER=openrouter` com `OPENROUTER_API_KEY`,
+`STT_PROVIDER=groq` com `GROQ_API_KEY`, `STT_PROVIDER=openai` com
+`OPENAI_API_KEY`, ou `STT_PROVIDER=local` após instalar `faster-whisper`.
+Para TTS, use `BAUER_TTS_PROVIDER=openai` com `OPENAI_API_KEY`,
+`BAUER_TTS_PROVIDER=local` para XTTS-v2, ou `BAUER_TTS_PROVIDER=kokoro` para
+Kokoro local.
+
+`TTS_PROVIDER=auto` (default) tenta local primeiro, cai para OpenAI e depois
+Google Cloud se
 `coqui-tts` não estiver instalado. Com `--extra voice` + `--extra voice-tts`
 e nenhuma env configurada, `bauer voice chat` roda 100% offline.
 
@@ -1203,7 +1277,7 @@ O agente tem **~75 tools**. As principais, por categoria:
 ### 🌐 Web & navegador
 | Tool | Descrição |
 |---|---|
-| `web_search` | 🔍 Busca na web — **default Wikipedia (sem chave)**; geral com extra `[web]` |
+| `web_search` | 🔍 Busca na web — DuckDuckGo por padrão, com fallback para Wikipedia |
 | `web_fetch` · `http_request` | 📥 GET de URL (fallback p/ browser em SPA) / HTTP genérico |
 | `browser_*` (navigate, click, type, snapshot, vision…) | 🕹️ Navegador real via Playwright |
 

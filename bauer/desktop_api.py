@@ -23,8 +23,10 @@ import json
 import logging
 import re
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +279,7 @@ def build_desktop_router(
     spans_file: Optional[Path] = None,
     runtime_root: Optional[Path] = None,
     logs_dir: Optional[Path] = None,
+    start_loop: Optional[Callable[[str, Optional[str], Optional[Path]], Dict[str, Any]]] = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
 
@@ -294,6 +297,23 @@ def build_desktop_router(
     _spans_file = spans_file or (Path.home() / ".bauer" / "traces" / "spans.jsonl")
     _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
     _logs_dir = logs_dir or (Path.cwd() / "logs")
+
+    try:
+        from .config_loader import ContinuousAutonomySection, load_config
+        from .continuous_autonomy import sync_discovered_docker_targets
+
+        # O inventário é apenas cadastrado no boot. Os alvos entram pausados;
+        # nenhuma sondagem ou recuperação começa sem ativação explícita.
+        sync_discovered_docker_targets(get_config_path())
+
+        _continuous_config = load_config(get_config_path()).continuous_autonomy
+    except Exception:  # noqa: BLE001 - the dashboard remains usable with defaults
+        from .config_loader import ContinuousAutonomySection
+
+        _continuous_config = ContinuousAutonomySection()
+    from .continuous_autonomy import ContinuousAutonomy
+
+    _continuous = ContinuousAutonomy(root=_runtime_root, config=_continuous_config)
 
     def _kanban_workspace(project_id: Optional[str]) -> Path:
         """Workspace do board a exibir: projeto resolvido, com fallback seguro
@@ -559,6 +579,236 @@ def build_desktop_router(
 
         bus = EventBus(root=_runtime_root)
         return {"events": [EventBus.to_dict(event) for event in bus.list_events(limit=limit)]}
+
+    # ── Autonomia contínua ──────────────────────────────────────────────
+    @router.post("/autonomy/targets")
+    def autonomy_add_target(body: dict = Body(...)):
+        import yaml
+
+        from .config_admin import _read_raw_yaml
+        from .config_loader import ContinuousAutonomyTarget, load_config
+
+        name = str(body.get("name", "")).strip()
+        target_type = str(body.get("type", "http_health")).strip()
+        url = str(body.get("url", "")).strip()
+        if not name or (target_type == "http_health" and not url):
+            raise HTTPException(status_code=422, detail="name e url são obrigatórios para alvos HTTP")
+        target_id = str(body.get("id", "")).strip()
+        if not target_id:
+            target_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "target"
+        try:
+            interval_s = float(body.get("interval_s", 60))
+            timeout_s = float(body.get("timeout_s", 5))
+            expected_status = int(body.get("expected_status", 200))
+            candidate = ContinuousAutonomyTarget.model_validate({
+                "id": target_id, "name": name, "type": target_type, "url": url,
+                "interval_s": interval_s, "timeout_s": timeout_s,
+                "expected_status": expected_status, "enabled": bool(body.get("enabled", True)),
+                "auto_recover": bool(body.get("auto_recover", False)),
+                "recovery_action": body.get("recovery_action"),
+                "container_name": body.get("container_name"),
+                "process_name": body.get("process_name"),
+                "process_command": body.get("process_command", []),
+                "max_recovery_attempts": int(body.get("max_recovery_attempts", 2)),
+                "recovery_cooldown_s": float(body.get("recovery_cooldown_s", 60)),
+            })
+            raw = _read_raw_yaml(get_config_path())
+            if not isinstance(raw, dict):
+                raw = {}
+            section = raw.setdefault("continuous_autonomy", {})
+            if not isinstance(section, dict):
+                section = {}
+                raw["continuous_autonomy"] = section
+            targets = section.setdefault("targets", [])
+            if not isinstance(targets, list):
+                raise ValueError("continuous_autonomy.targets deve ser uma lista")
+            if any(isinstance(item, dict) and item.get("id") == candidate.id for item in targets):
+                raise ValueError(f"já existe um alvo com id '{candidate.id}'")
+            targets.append(candidate.model_dump())
+            config_path = Path(get_config_path())
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+            refreshed = load_config(config_path).continuous_autonomy
+            _continuous.reload_config(refreshed)
+            return {"target": candidate.model_dump(), "configured_targets": len(refreshed.targets)}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/autonomy/status")
+    def autonomy_status():
+        return _continuous.status()
+
+    @router.post("/autonomy/targets/{target_id}/enabled")
+    def autonomy_set_target_enabled(target_id: str, body: dict = Body(...)):
+        import yaml
+
+        from .config_admin import _read_raw_yaml
+        from .config_loader import load_config
+
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=422, detail="enabled deve ser booleano")
+        raw = _read_raw_yaml(get_config_path())
+        section = raw.get("continuous_autonomy", {}) if isinstance(raw, dict) else {}
+        targets = section.get("targets", []) if isinstance(section, dict) else []
+        target = next((item for item in targets if isinstance(item, dict) and item.get("id") == target_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"Alvo '{target_id}' não encontrado")
+        target["enabled"] = enabled
+        config_path = Path(get_config_path())
+        config_path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        try:
+            refreshed = load_config(config_path).continuous_autonomy
+            _continuous.reload_config(refreshed)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"target": target, "enabled": enabled}
+
+    @router.post("/autonomy/targets/{target_id}/auto-recover")
+    def autonomy_set_target_auto_recover(target_id: str, body: dict = Body(...)):
+        import yaml
+
+        from .config_admin import _read_raw_yaml
+        from .config_loader import load_config
+
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=422, detail="enabled deve ser booleano")
+        raw = _read_raw_yaml(get_config_path())
+        section = raw.get("continuous_autonomy", {}) if isinstance(raw, dict) else {}
+        targets = section.get("targets", []) if isinstance(section, dict) else []
+        target = next((item for item in targets if isinstance(item, dict) and item.get("id") == target_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"Alvo '{target_id}' não encontrado")
+        target_type = target.get("type", "http_health")
+        if target_type == "http_health":
+            raise HTTPException(status_code=422, detail="alvos HTTP não possuem autocorreção")
+        target["auto_recover"] = enabled
+        target["recovery_action"] = (
+            "docker_recover" if target_type == "docker_container" else "process_restart"
+        )
+        config_path = Path(get_config_path())
+        config_path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        try:
+            refreshed = load_config(config_path).continuous_autonomy
+            _continuous.reload_config(refreshed)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"target": target, "auto_recover": enabled}
+
+    @router.delete("/autonomy/targets/{target_id}")
+    def autonomy_delete_target(target_id: str):
+        import yaml
+
+        from .config_admin import _read_raw_yaml
+        from .config_loader import load_config
+
+        raw = _read_raw_yaml(get_config_path())
+        section = raw.get("continuous_autonomy", {}) if isinstance(raw, dict) else {}
+        targets = section.get("targets", []) if isinstance(section, dict) else []
+        if not isinstance(targets, list):
+            raise HTTPException(status_code=404, detail=f"Alvo '{target_id}' não encontrado")
+        kept = [
+            item for item in targets
+            if not (isinstance(item, dict) and item.get("id") == target_id)
+        ]
+        if len(kept) == len(targets):
+            raise HTTPException(status_code=404, detail=f"Alvo '{target_id}' não encontrado")
+        section["targets"] = kept
+        config_path = Path(get_config_path())
+        config_path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        try:
+            refreshed = load_config(config_path).continuous_autonomy
+            _continuous.reload_config(refreshed)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"removed": target_id, "configured_targets": len(refreshed.targets)}
+
+    @router.post("/autonomy/start")
+    def autonomy_start(body: dict = Body(default={} )):
+        target_ids = body.get("target_ids") if isinstance(body, dict) else None
+        if target_ids is not None and not isinstance(target_ids, list):
+            raise HTTPException(status_code=422, detail="target_ids deve ser uma lista")
+        try:
+            return _continuous.start(target_ids=target_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/autonomy/stop")
+    def autonomy_stop():
+        return _continuous.stop()
+
+    @router.post("/autonomy/alerts")
+    def autonomy_alerts(body: dict = Body(default={} )):
+        try:
+            return _continuous.set_alerts(
+                voice_enabled=body.get("voice_enabled"),
+                alert_level=body.get("alert_level"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/autonomy/incidents")
+    def autonomy_incidents(limit: int = Query(50, ge=1, le=500)):
+        return {"incidents": _continuous.status()["incidents"][-limit:]}
+
+    @router.get("/autonomy/recommendations")
+    def autonomy_recommendations(limit: int = Query(50, ge=1, le=500)):
+        return {"recommendations": _continuous.status()["recommendations"][-limit:]}
+
+    @router.get("/autonomy/delegations")
+    def autonomy_delegations(limit: int = Query(50, ge=1, le=500)):
+        return {"delegations": _continuous.status()["delegations"][-limit:]}
+
+    @router.post("/autonomy/delegate")
+    def autonomy_delegate(body: dict = Body(...)):
+        kind = str(body.get("kind", "application")).strip()
+        message = str(body.get("message", "")).strip()
+        project_id = body.get("project_id")
+        if kind not in {"application", "bauer_improvement"}:
+            raise HTTPException(status_code=422, detail="kind deve ser application ou bauer_improvement")
+        if not message:
+            raise HTTPException(status_code=422, detail="message é obrigatório")
+        if start_loop is None:
+            raise HTTPException(status_code=503, detail="delegação não disponível neste servidor")
+        from .continuous_autonomy import DelegationRecord, create_worktree_for_delegation
+        from .core.policy import ApprovalManager
+
+        delegation_id = f"delegation-{uuid4()}"
+        try:
+            isolated, branch = create_worktree_for_delegation(get_workspace(), delegation_id)
+            prefix = (
+                "Você está trabalhando em workspace isolado e branch temporária. "
+                "Não faça deploy, publicação, exclusão ou merge; entregue alterações para revisão humana.\n\n"
+            )
+            started = start_loop(prefix + message, project_id, isolated)
+            run_id = str(started.get("run_id", delegation_id))
+            record = DelegationRecord(
+                id=delegation_id, kind=kind, message=message, run_id=run_id,
+                workspace=str(isolated), branch=branch,
+            )
+            _continuous.record_delegation(record)
+            approval = ApprovalManager(root=_runtime_root).request(
+                operation="autonomy.merge_worktree", tool_name="git_worktree",
+                reason="Revisar e integrar alterações da delegação autônoma.",
+                risk_level="medium", payload={"branch": branch, "workspace": str(isolated), "kind": kind},
+                run_id=run_id,
+            )
+            return {"delegation": asdict(record), "approval": asdict(approval)}
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.get("/obs/budget")
     def obs_budget():

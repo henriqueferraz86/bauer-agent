@@ -108,6 +108,8 @@ button.btn {
 }
 button.btn:hover { background: var(--bg-3); }
 button.btn.primary { background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent); }
+button.btn.danger { border-color: var(--bauer-bad); color: var(--bauer-bad); }
+button.btn.danger:hover { background: color-mix(in srgb, var(--bauer-bad) 14%, transparent); }
 button.btn:disabled { opacity: 0.5; cursor: default; }
 input.in, select.in, textarea.in {
   background: var(--bg); border: 1px solid var(--border-2); border-radius: 6px;

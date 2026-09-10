@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 
@@ -84,6 +83,40 @@ class TestProviders:
         assert result["provider"] == "groq"
         assert "groq.com" in seen["url"]
         assert seen["auth"] == "Bearer gsk_test"
+
+    def test_deepgram_sucesso(self, audio_file, monkeypatch):
+        monkeypatch.setenv("STT_PROVIDER", "deepgram")
+        monkeypatch.setenv("DEEPGRAM_API_KEY", "dg_test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        seen = {}
+
+        def fake_post(url, **kwargs):
+            seen["url"] = url
+            seen["auth"] = kwargs["headers"]["Authorization"]
+            seen["params"] = kwargs["params"]
+            return httpx.Response(
+                200,
+                json={
+                    "results": {
+                        "channels": [{"alternatives": [{"transcript": "olá Deepgram"}]}]
+                    }
+                },
+            )
+
+        _mock_post(monkeypatch, fake_post)
+        result = transcribe_audio(audio_file)
+        assert result["success"]
+        assert result["transcript"] == "olá Deepgram"
+        assert result["provider"] == "deepgram"
+        assert seen["url"] == transcription.DEEPGRAM_STT_URL
+        assert seen["auth"] == "Token dg_test"
+        assert seen["params"] == {
+            "model": "nova-3",
+            "smart_format": "true",
+            "language": "pt",
+        }
 
     def test_fallback_groq_para_openai(self, audio_file, monkeypatch):
         monkeypatch.setenv("STT_PROVIDER", "auto")
@@ -178,6 +211,11 @@ class TestAvailableProvider:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
         monkeypatch.setenv("GROQ_API_KEY", "g")
         assert available_stt_provider() == "openrouter"
+
+    def test_deepgram_disponivel(self, monkeypatch):
+        monkeypatch.setenv("STT_PROVIDER", "deepgram")
+        monkeypatch.setenv("DEEPGRAM_API_KEY", "dg_test")
+        assert available_stt_provider() == "deepgram"
 
     def test_nenhum(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

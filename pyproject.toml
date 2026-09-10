@@ -19,6 +19,9 @@ dependencies = [
     "psutil>=5.9",
     "prompt-toolkit>=3.0",
     "cryptography>=41.0",
+    # Pesquisa web e extração funcionam na instalação base; não exigem extra.
+    "ddgs>=6.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]

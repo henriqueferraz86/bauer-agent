@@ -729,7 +729,8 @@ class LoggingSection(_StrictSection):
 
 class ToolsSection(_StrictSection):
     shell_enabled: bool = False
-    web_enabled: bool = False
+    # Pesquisa web é parte do runtime padrão; não exige edição manual do config.
+    web_enabled: bool = True
     safe_mode: bool = True
     timeout_seconds: int = Field(ge=1, le=300, default=30)
     max_output_kb: int = Field(ge=1, le=1000, default=50)
@@ -796,6 +797,57 @@ class LoopSection(_StrictSection):
     max_cost_usd: float = Field(ge=0.0, default=2.0)
     approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
     approval_risk_threshold: float = Field(ge=0.0, le=1.0, default=0.4)
+
+
+class ContinuousAutonomyTarget(_StrictSection):
+    id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    type: Literal["http_health", "docker_container", "process"] = "http_health"
+    url: str = Field(default="", max_length=2048)
+    interval_s: float = Field(ge=1.0, le=86400.0, default=60.0)
+    timeout_s: float = Field(ge=0.1, le=60.0, default=5.0)
+    expected_status: int = Field(ge=100, le=599, default=200)
+    enabled: bool = True
+    auto_recover: bool = False
+    recovery_action: Literal["docker_recover", "process_restart"] | None = None
+    container_name: str | None = Field(default=None, max_length=128)
+    process_name: str | None = Field(default=None, max_length=128)
+    process_command: list[str] = Field(default_factory=list, max_length=32)
+    max_recovery_attempts: int = Field(ge=0, le=5, default=2)
+    recovery_cooldown_s: float = Field(ge=1.0, le=86400.0, default=60.0)
+    auto_discovered: bool = False
+
+    @field_validator("url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("url deve começar com http:// ou https://")
+        return value
+
+    @model_validator(mode="after")
+    def _recovery_contract(self):
+        if self.type == "http_health" and not self.url:
+            raise ValueError("alvos HTTP precisam de url")
+        if self.type == "docker_container" and not self.container_name:
+            raise ValueError("docker_container precisa de container_name")
+        if self.type == "process" and (not self.process_name or not self.process_command):
+            raise ValueError("process precisa de process_name e process_command")
+        if self.auto_recover:
+            expected = "docker_recover" if self.type == "docker_container" else "process_restart" if self.type == "process" else None
+            if self.recovery_action != expected:
+                raise ValueError(f"recovery_action inválida para type={self.type}")
+        return self
+
+
+class ContinuousAutonomySection(_StrictSection):
+    enabled: bool = False
+    check_interval_s: float = Field(ge=1.0, le=86400.0, default=60.0)
+    targets: list[ContinuousAutonomyTarget] = Field(default_factory=list)
+    voice_enabled: bool = False
+    alert_level: Literal["off", "important", "all"] = "important"
+    allowlisted_actions: list[Literal["retry_health_check", "docker_recover", "process_restart"]] = Field(
+        default_factory=lambda: ["retry_health_check", "docker_recover", "process_restart"]
+    )
 
 
 class McpServerEntry(_StrictSection):
@@ -1074,6 +1126,7 @@ class BauerConfig(_StrictSection):
     tools: ToolsSection = ToolsSection()
     memory: MemorySection = MemorySection()
     loop: LoopSection = LoopSection()
+    continuous_autonomy: ContinuousAutonomySection = ContinuousAutonomySection()
     web: WebSection = WebSection()
     mcp: McpSection = McpSection()
     serve: ServeSection = ServeSection()

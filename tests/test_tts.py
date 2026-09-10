@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,8 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("BAUER_TTS_SPEAKER_WAV", raising=False)
     monkeypatch.delenv("TTS_SPEAKER_WAV", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_TTS_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(tts, "_kokoro_available", lambda: False)
 
 
@@ -77,6 +80,11 @@ class TestAvailableProvider:
     def test_pref_openai_sem_key(self, monkeypatch):
         monkeypatch.setenv("TTS_PROVIDER", "openai")
         assert available_tts_provider() is None
+
+    def test_google_key_presente(self, monkeypatch):
+        monkeypatch.setenv("TTS_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_TTS_API_KEY", "google-test")
+        assert available_tts_provider() == "google"
 
 
 class TestSynthesizeSemProvider:
@@ -135,6 +143,47 @@ class TestSynthesizeOpenAI:
         result = synthesize_speech("ola", output_path=tmp_path / "x.wav")
         assert not result["success"]
         assert not (tmp_path / "x.wav").exists()
+
+
+class TestSynthesizeGoogle:
+    def test_sucesso_voz_masculina_pt_br(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TTS_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_TTS_API_KEY", "google-test")
+        seen = {}
+        audio = b"RIFF-google-wav"
+
+        def fake_post(url, **kwargs):
+            seen["url"] = url
+            seen["params"] = kwargs["params"]
+            seen["json"] = kwargs["json"]
+            return httpx.Response(200, json={"audioContent": base64.b64encode(audio).decode()})
+
+        _mock_post(monkeypatch, fake_post)
+        out = tmp_path / "resp.wav"
+        result = synthesize_speech("Olá, mundo", output_path=out)
+
+        assert result["success"]
+        assert result["provider"] == "google"
+        assert out.read_bytes() == audio
+        assert seen["url"] == tts.GOOGLE_TTS_URL
+        assert seen["params"] == {"key": "google-test"}
+        assert seen["json"]["voice"] == {
+            "languageCode": "pt-BR",
+            "name": "pt-BR-Standard-B",
+        }
+        assert seen["json"]["audioConfig"] == {"audioEncoding": "LINEAR16"}
+
+    def test_http_error_reportado(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TTS_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_TTS_API_KEY", "google-test")
+
+        def fake_post(url, **kwargs):
+            return httpx.Response(403, json={"error": {"message": "API disabled"}})
+
+        _mock_post(monkeypatch, fake_post)
+        result = synthesize_speech("ola", output_path=tmp_path / "x.wav")
+        assert not result["success"]
+        assert "API disabled" in result["error"]
 
 
 class TestSynthesizeLocal:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 class _FakeRouter:
     def available_tools(self):
-        return ["write_file", "run_command", "list_dir"]
+        return ["write_file", "run_command", "list_dir", "web_search"]
 
     def tool_info(self, name):
         return {"args": ["path"], "description": f"tool {name}"}
@@ -35,6 +35,13 @@ def test_bridge_keeps_json_tool_format():
     p = _prompt("bridge")
     assert "responda SOMENTE com o JSON" in p
     assert '{"action": "NOME_DA_TOOL", "args": {"parametro": "valor"}}' in p
+
+
+def test_bridge_allows_current_web_queries():
+    p = _prompt("bridge")
+    assert "informacao atual na internet" in p
+    assert "prefira `web_search`" in p
+    assert '"action": "web_search"' in p
 
 
 def test_default_equals_bridge():
