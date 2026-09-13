@@ -150,6 +150,9 @@ class SqliteStateStore:
 
     @staticmethod
     def _insert(conn: sqlite3.Connection, collection: str, record: dict[str, Any]) -> None:
+        from ...privacy import redact_data
+
+        record = redact_data(record)
         conn.execute(
             "INSERT INTO runtime_records(collection, record_id, payload) VALUES (?, ?, ?)",
             (
@@ -160,7 +163,9 @@ class SqliteStateStore:
         )
 
     def append(self, collection: str, record: Any) -> dict[str, Any]:
-        data = JsonlStateStore._to_dict(record)
+        from ...privacy import redact_data
+
+        data = redact_data(JsonlStateStore._to_dict(record))
         safe_collection = self._safe_collection(collection)
         with self._connect() as conn, self._write(conn):
             self._insert(conn, safe_collection, data)
@@ -206,7 +211,9 @@ class SqliteStateStore:
         É a primitiva de compare-and-set usada por conclusões concorrentes de
         runs: o primeiro processo que grava terminal vence.
         """
-        data = JsonlStateStore._to_dict(record)
+        from ...privacy import redact_data
+
+        data = redact_data(JsonlStateStore._to_dict(record))
         safe_collection = self._safe_collection(collection)
         record_id = str(data.get("id") or "")
         with self._connect() as conn, self._write(conn):

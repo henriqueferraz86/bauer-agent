@@ -10,9 +10,6 @@ import {
   VOICE_LEVEL_THRESHOLD,
 } from "../voice";
 
-interface ToolCall { name: string; label?: string; icon?: string; }
-interface SkillTag { name: string; score: number | null; }
-interface RouteTag { tier: string; model: string; }
 interface LoopTag {
   runId: string;
   state: string;              // running | completed | stopped | failed
@@ -25,9 +22,6 @@ interface LoopTag {
 interface Message {
   role: "user" | "assistant";
   text: string;
-  tools?: ToolCall[];
-  skill?: SkillTag;
-  route?: RouteTag;
   loop?: LoopTag;
   streaming?: boolean;
 }
@@ -52,14 +46,36 @@ interface SlashCommand {
 type VoiceMode = "once" | "loop" | "wake";
 
 const CHAT_STATE_KEY = "bauer.chatState.v1";
+function redactLocalText(text: string): string {
+  return text
+    .replace(/(\b(?:PASSWORD|PASS|SECRET|TOKEN|API_KEY|KEY|DATABASE_URL|REDIS_URL|CONNECTION_STRING|AUTHORIZATION|COOKIE|PRIVATE_KEY)\b\s*[=:]\s*)[^\s,}]+/gi, "$1[REDACTED]")
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
+    .replace(/\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{30,})\b/g, "[REDACTED]");
+}
+
 function loadChatState(): { messages: Message[]; sessionId: string } {
   try {
     const raw = localStorage.getItem(CHAT_STATE_KEY);
     if (!raw) return { messages: [], sessionId: "" };
     const parsed = JSON.parse(raw) as { messages?: Message[]; sessionId?: string };
+    const isPublicMessage = (message: Message) => {
+      const candidate = message as Message & {
+        type?: string;
+        kind?: string;
+        visibility?: string;
+        tool_calls?: unknown;
+      };
+      const hiddenKinds = new Set(["tool", "tool_result", "system", "developer", "internal", "debug", "trace", "event", "command", "analysis"]);
+      return (candidate.role === "user" || candidate.role === "assistant")
+        && ![candidate.type, candidate.kind].some((kind) => hiddenKinds.has(String(kind || "").toLowerCase()))
+        && !["internal", "private", "hidden"].includes(String(candidate.visibility || "").toLowerCase())
+        && candidate.tool_calls == null;
+    };
     return {
       messages: Array.isArray(parsed.messages)
-        ? parsed.messages.map((m) => ({ ...m, streaming: false }))
+        ? parsed.messages
+          .filter((m) => m && isPublicMessage(m))
+          .map((m) => ({ ...m, streaming: false }))
         : [],
       sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : "",
     };
@@ -103,7 +119,11 @@ export default function Chat() {
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
 
   useEffect(() => {
-    const cleanMessages = messages.map((m) => ({ ...m, streaming: false }));
+    const cleanMessages = messages.map((m) => ({
+      ...m,
+      text: redactLocalText(m.text),
+      streaming: false,
+    }));
     localStorage.setItem(CHAT_STATE_KEY, JSON.stringify({ messages: cleanMessages, sessionId }));
   }, [messages, sessionId]);
 
@@ -405,7 +425,7 @@ export default function Chat() {
     busyRef.current = true;
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text }]);
-    setMessages((m) => [...m, { role: "assistant", text: "", tools: [], streaming: true }]);
+    setMessages((m) => [...m, { role: "assistant", text: "", streaming: true }]);
     scroll();
 
     // Zera a medição por TURNO: acumular entre turnos daria uma média da
@@ -422,30 +442,10 @@ export default function Chat() {
         setMessages((m) => {
           const copy = [...m];
           const last = copy[copy.length - 1];
-          if (e.event === "skill") {
-            try {
-              const s = JSON.parse(e.data) as { name: string; score: number | null };
-              if (s.name) last.skill = { name: s.name, score: s.score ?? null };
-            } catch { /* ignora payload malformado */ }
-          } else if (e.event === "route") {
-            try {
-              const r = JSON.parse(e.data) as { tier: string; model: string };
-              if (r.model) {
-                last.route = { tier: r.tier, model: r.model };
-                // O modelo que REALMENTE roda o turno. O HUD marca a
-                // divergência com `→` — mesma regra do terminal, pelo mesmo
-                // motivo: anunciar o configurado enquanto outro executa foi um
-                // bug real (ver tests/test_modelo_do_turno_visivel.py).
-                setHud((h) => ({ ...h, turnModel: r.model }));
-              }
-            } catch { /* ignora payload malformado */ }
-          } else if (e.event === "tool") {
-            let tc: ToolCall = { name: e.data };
-            try {
-              const parsed = JSON.parse(e.data);
-              if (parsed && parsed.name) tc = { name: parsed.name, label: parsed.label, icon: parsed.icon };
-            } catch { /* payload legado = nome cru */ }
-            last.tools = [...(last.tools || []), tc];
+          if (e.event === "skill" || e.event === "route" || e.event === "tool" || e.event === "tool_result" || e.event === "debug" || e.event === "internal") {
+            // Internal execution and routing events never become chat
+            // messages, even if an older/backend diagnostic mode sends them.
+            return copy;
           } else if (e.event === "done") {
             setSessionId(e.data);
             last.streaming = false;
@@ -453,8 +453,7 @@ export default function Chat() {
             last.text += e.data;
             responseText += e.data;
             // tok/s medido sobre o que chegou. ~4 chars por token é a
-            // aproximação usual; é estimativa e está rotulada como tal na UI
-            // (tok/s, não "tokens exatos") — o servidor não manda contagem.
+            // aproximação usual; o servidor não manda contagem.
             const agora = performance.now();
             if (!tps.current.t0) tps.current = { t0: agora, chars: 0 };
             tps.current.chars += e.data.length;
@@ -471,7 +470,11 @@ export default function Chat() {
     } catch (err) {
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1].text += `\n[Erro: ${err}]`;
+        // Do not echo transport/provider exceptions: they can contain
+        // commands, paths, headers or credentials. The server logs the
+        // sanitized diagnostic; the chat receives a safe summary only.
+        void err;
+        copy[copy.length - 1].text += "\nNão foi possível concluir a resposta. Tente novamente.";
         copy[copy.length - 1].streaming = false;
         return copy;
       });
@@ -696,14 +699,6 @@ export default function Chat() {
                   <span className="who">{m.role === "user" ? "Henrique" : "Bauer"}</span>
                   {m.streaming && <span className="when blink" style={{ color: "var(--accent)" }}>gerando…</span>}
                 </div>
-                {m.route && (
-                  <div className="routecall" title={`Roteado por tarefa: tier ${m.route.tier}`}>
-                    <i className="ti ti-arrows-shuffle" style={{ color: "var(--accent)" }} />
-                    <span className="rname">
-                      <strong>{m.route.tier}</strong> · <span className="mono">{m.route.model}</span>
-                    </span>
-                  </div>
-                )}
                 {m.loop && (
                   <div className={"loopcall" + (m.loop.state === "running" ? " running" : "")}>
                     <i className={"ti ti-refresh" + (m.loop.state === "running" || m.loop.state === "stopping" ? " spin" : "")}
@@ -717,10 +712,7 @@ export default function Chat() {
                           : m.loop.state === "stopped" ? "Parado"
                           : "Falhou"}
                       </strong>
-                      {" · "}rodada {m.loop.rounds} · {m.loop.toolCalls} tools · ${m.loop.costUsd.toFixed(3)}
-                      {m.loop.state === "running" && m.loop.activity && (
-                        <span className="lactivity"> · {m.loop.activity}…</span>
-                      )}
+                      {" · "}rodada {m.loop.rounds} · custo ${m.loop.costUsd.toFixed(3)}
                       {m.loop.stopReason && m.loop.state !== "completed" && (
                         <span className="mono"> · {m.loop.stopReason}</span>
                       )}
@@ -741,22 +733,6 @@ export default function Chat() {
                     )}
                   </div>
                 )}
-                {m.skill && (
-                  <div className="skillcall">
-                    <i className="ti ti-sparkles" style={{ color: "var(--accent)" }} />
-                    <span className="sname">
-                      skill <strong>{m.skill.name}</strong>
-                      {m.skill.score != null && ` · ${Math.round(m.skill.score * 100)}%`}
-                    </span>
-                  </div>
-                )}
-                {m.tools?.map((t, j) => (
-                  <div className="toolcall" key={j}>
-                    <i className={`ti ti-${t.icon || "tool"}`} style={{ color: "var(--green)" }} />
-                    <span className="tlabel">{t.label || t.name}</span>
-                    {t.label && <span className="tname">{t.name}</span>}
-                  </div>
-                ))}
                 {m.role === "user" ? (
                   <div className="text" style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
                 ) : (

@@ -10,6 +10,7 @@ from typing import Any
 
 from ..runtime.state_store import RuntimeStateStore, SqliteStateStore
 from .schema import Event, EventType
+from ...privacy import redact_data, redact_text
 
 Subscriber = Callable[[Event], None]
 logger = logging.getLogger(__name__)
@@ -44,8 +45,8 @@ class EventBus:
             skill_id=skill_id,
             tool_name=tool_name,
             status=status,
-            message=message,
-            data=data or {},
+            message=redact_text(message) if message is not None else None,
+            data=redact_data(data or {}),
         )
         self.store.append("events", event)
         self._record_observability(event)

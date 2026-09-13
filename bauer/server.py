@@ -155,6 +155,27 @@ def create_app(
     from .core.runtime.run_manager import RunManager
     from .core.runtime.session_manager import SessionManager
     from .session_store import SessionStore
+    from .privacy import redact_text
+
+    # UI defaults are intentionally fail-closed.  A malformed or unavailable
+    # config must not turn internal execution details into chat output.
+    _ui_settings = {
+        "show_tool_calls": False,
+        "show_tool_results": False,
+        "show_debug_events": False,
+        "redact_sensitive_data": True,
+    }
+    if isinstance(config_path, (str, bytes, Path)):
+        try:
+            from .config_loader import load_config
+
+            _ui = load_config(config_path).ui
+            for _key in _ui_settings:
+                _ui_settings[_key] = bool(getattr(_ui, _key, _ui_settings[_key]))
+        except Exception as _exc:  # noqa: BLE001 - safe defaults are sufficient
+            logging.getLogger("bauer.server").debug(
+                "ui privacy config unavailable: %s", redact_text(_exc)
+            )
 
     _access_logger = logging.getLogger("bauer.access")
     _log = logging.getLogger("bauer.server")
@@ -539,7 +560,24 @@ def create_app(
         text = str(response or "").replace("\r\n", "\n").replace("\r", "\n").strip()
         while "\n\n\n" in text:
             text = text.replace("\n\n\n", "\n\n")
-        return text
+        return redact_text(text) if _ui_settings["redact_sensitive_data"] else text
+
+    def _public_tool_log(tool_log: list[dict] | None) -> list[dict]:
+        """Optional development diagnostics, never raw by default."""
+        if not _ui_settings["show_tool_calls"]:
+            return []
+        result_visible = _ui_settings["show_tool_results"]
+        return [
+            {
+                "tool": str(item.get("tool", "")),
+                "result": (
+                    redact_text(str(item.get("result", "")))
+                    if result_visible else ""
+                ),
+            }
+            for item in (tool_log or [])
+            if isinstance(item, dict)
+        ]
 
     class _TurnCostRecorder:
         """Sink do cost_meter para um turno do serve.
@@ -1002,6 +1040,7 @@ def create_app(
         turn_cost_recorder=_TurnCostRecorder,
         record_turn_budget=_record_turn_budget,
         format_response=_format_server_response,
+        public_tool_log=_public_tool_log,
         run_one_turn_with_fallback=run_one_turn_with_fallback,
         logger=_log,
     )))
@@ -1304,6 +1343,7 @@ def create_app(
             if _selected_skill is not None:
                 yield _sse(
                     _json.dumps({
+                        "internal": True,
                         "name": getattr(_selected_skill, "name", ""),
                         "score": getattr(_selected_skill, "score", None),
                     }, ensure_ascii=False),
@@ -1313,8 +1353,12 @@ def create_app(
             # Modelo roteado deste turno (S34c) — indicador na UI.
             if _route is not None:
                 yield _sse(
-                    _json.dumps({"tier": _route.profile, "model": _route.model,
-                                 "task_type": _route.task_type}, ensure_ascii=False),
+                    _json.dumps({
+                        "internal": True,
+                        "tier": _route.profile,
+                        "model": _route.model,
+                        "task_type": _route.task_type,
+                    }, ensure_ascii=False),
                     event="route",
                 )
 
@@ -1334,15 +1378,16 @@ def create_app(
                 leftover = _strip_action_block(gate.flush(), available).strip("\n")
                 return leftover
 
-            def _emit_text(text: str):
+            def _emit_text(text: str, *, event: str | None = None):
                 nonlocal emitted_any, turn_sep
                 if not text.strip():
                     return None
+                text = redact_text(text)
                 if turn_sep:
                     text = "\n\n" + text.lstrip("\n")
                     turn_sep = False
                 emitted_any = True
-                return _sse(text)
+                return _sse(text, event=event)
 
             ended = False
             while not ended:
@@ -1395,19 +1440,22 @@ def create_app(
                 elif kind == "tool":
                     # A rodada pode ter começado com uma narração falsa (ou
                     # um JSON parcial). Só o resultado pós-tool deve chegar à
-                    # UI; descarta tudo que veio antes da chamada.
+                    # UI; descarta tudo que veio antes da chamada. O evento
+                    # em si permanece interno: o chat público nunca recebe
+                    # nomes, argumentos ou progresso de ferramentas.
                     gate.discard()
-                    # Narração de fase (S37): além do nome cru, manda o passo
-                    # humano ("Executando comando") + ícone para a UI mostrar.
+                    # Even when retained for internal diagnostics, the frame
+                    # is explicitly non-public and the frontend ignores it.
                     try:
                         from .core.ux import tool_phase
                         _ph = tool_phase(payload)
                         _tool_data = _json.dumps(
-                            {"name": payload, "label": _ph.label, "icon": _ph.icon},
+                            {"internal": True, "name": payload,
+                             "label": _ph.label, "icon": _ph.icon},
                             ensure_ascii=False,
                         )
-                    except Exception:  # noqa: BLE001 — fallback para o nome cru
-                        _tool_data = _json.dumps({"name": payload})
+                    except Exception:  # noqa: BLE001
+                        _tool_data = _json.dumps({"internal": True})
                     yield _sse(_tool_data, event="tool")
                 else:  # "end"
                     ended = True
@@ -1436,7 +1484,10 @@ def create_app(
             # segue sozinha até o fim e persiste por conta própria). Aqui só
             # resta emitir o texto final ao cliente ainda conectado.
             if "error" in result:
-                yield _sse(f"[Erro: {result['error']}]")
+                yield _sse(
+                    "[Erro: resposta indisponível — consulte os logs "
+                    "sanitizados e tente novamente.]",
+                )
                 yield _sse(sid, event="done")
                 return
 
@@ -1723,7 +1774,7 @@ def create_app(
                     stop_reason = "validacao_reprovou"
                     last_text = last_text or (_gov.error or "")
             except BaseException as exc:  # noqa: BLE001 — thread nunca morre muda
-                stop_reason, last_text, all_tools = "error", str(exc), []
+                stop_reason, last_text, all_tools = "error", redact_text(str(exc)), []
             finally:
                 reset_sink(sink_token)
                 cost_sink.reset(cost_token)

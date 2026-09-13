@@ -258,7 +258,7 @@ def test_chat_with_session_id(tmp_path: Path):
 
 
 def test_chat_with_tool_calls(tmp_path: Path):
-    """POST /chat com tool calls retornadas."""
+    """POST /chat mantém tool calls internas e devolve somente a resposta."""
     with patch("bauer.agent.run_one_turn") as mock_turn:
         mock_turn.return_value = (
             "listei os arquivos",
@@ -269,8 +269,8 @@ def test_chat_with_tool_calls(tmp_path: Path):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["tool_calls"]) == 1
-    assert data["tool_calls"][0]["tool"] == "list_dir"
+    assert data["tool_calls"] == []
+    assert data["response"] == "listei os arquivos"
 
 
 def test_chat_refreshes_system_prompt_each_request(tmp_path: Path):

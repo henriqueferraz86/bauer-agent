@@ -193,6 +193,10 @@ ui:
 
   # auto detecta o terminal; sim força 24 bits em SSH; nao testa a paleta ANSI.
   truecolor: auto
+  show_tool_calls: false
+  show_tool_results: false
+  show_debug_events: false
+  redact_sensitive_data: true
 
 
 # =============================================================================

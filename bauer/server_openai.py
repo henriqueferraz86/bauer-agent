@@ -188,18 +188,6 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
                                     yield "data: [DONE]\n\n"
                                     return
                                 parts.append(chunk)
-                                delta = json.dumps({
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": int(time.time()),
-                                    "model": active_model,
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {"content": chunk},
-                                        "finish_reason": None,
-                                    }],
-                                }, ensure_ascii=False)
-                                yield f"data: {delta}\n\n"
                         except Exception as exc:  # noqa: BLE001 - boundary SSE
                             deps.logger.exception(
                                 "Erro interno durante stream OpenAI (run=%s)", run.id
@@ -219,9 +207,12 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
                             yield "data: [DONE]\n\n"
                             return
 
-                        response = deps.format_response("".join(parts))
-                        ctx.add_assistant(response)
-                        action_dict = _try_parse_tool(response, deps.router)
+                        raw_response = "".join(parts)
+                        response = deps.format_response(raw_response)
+                        # Tool bridge parsing needs the internal response; the
+                        # public response is emitted only after sanitization.
+                        ctx.add_assistant(raw_response)
+                        action_dict = _try_parse_tool(raw_response, deps.router)
                         if action_dict and tool_count < MAX_TOOL_TURNS:
                             action_name = action_dict.get("action", "tool")
                             try:
@@ -231,12 +222,25 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
                                     "Erro ao executar tool no stream OpenAI (run=%s)", run.id
                                 )
                                 tool_result = "[Erro interno ao executar a ferramenta.]"
-                            tool_event = json.dumps({"tool": action_name, "label": action_name})
-                            yield f"event: hermes.tool.progress\ndata: {tool_event}\n\n"
+                            # Tool execution is internal state.  It is kept in
+                            # ctx for the next model round but never sent to a
+                            # user-facing OpenAI/SSE stream.
                             ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
                             tool_count += 1
                             deps.metrics.tool_calls_total += 1
                         else:
+                            safe_delta = json.dumps({
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": active_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": response},
+                                    "finish_reason": None,
+                                }],
+                            }, ensure_ascii=False)
+                            yield f"data: {safe_delta}\n\n"
                             final_delta = json.dumps({
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",

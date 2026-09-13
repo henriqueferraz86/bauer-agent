@@ -58,6 +58,7 @@ class ChatRouteDependencies:
     turn_cost_recorder: Callable[[str], Any]
     record_turn_budget: Callable[[Any, str, str], None]
     format_response: Callable[[str], str]
+    public_tool_log: Callable[[list[dict] | None], list[dict]]
     run_one_turn_with_fallback: Callable[[Any, Any, Any, str, list[Any]], tuple[str, list[Any]]]
     logger: logging.Logger
 
@@ -162,7 +163,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             response=out.output or "",
             session_id=session_id,
             model=deps.state["model"],
-            tool_calls=[ToolCallLog(**item) for item in captured.get("tool_log", [])],
+            tool_calls=[ToolCallLog(**item) for item in deps.public_tool_log(captured.get("tool_log"))],
         )
 
     @router.post("/chat", response_model=ChatResponse)
@@ -242,7 +243,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             response=response,
             session_id=session_id,
             model=deps.state["model"],
-            tool_calls=[ToolCallLog(**item) for item in tool_log],
+            tool_calls=[ToolCallLog(**item) for item in deps.public_tool_log(tool_log)],
         )
 
     return router
