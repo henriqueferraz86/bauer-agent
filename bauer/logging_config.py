@@ -41,6 +41,28 @@ class _SafeStreamHandler(logging.StreamHandler):
         super().handleError(record)
 
 
+class _SensitiveDataFilter(logging.Filter):
+    """Sanitize rendered log records before any handler writes them."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from .privacy import redact_text
+
+            rendered = record.getMessage()
+            record.msg = redact_text(rendered)
+            record.args = ()
+            # Traceback frames and exception messages can contain command
+            # output, environment values or connection strings.  Keep the
+            # sanitized one-line diagnostic, not the raw exception payload.
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        except Exception:
+            # Logging is auxiliary; a sanitizer failure must not break the app.
+            return True
+        return True
+
+
 def setup_logging(level: str = "info", file_path: str | None = None) -> logging.Logger:
     """Configura o logger raiz do Bauer. Idempotente."""
     logger = logging.getLogger("bauer")
@@ -67,6 +89,7 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
     # recebendo os registros para diagnóstico, quando configurado.
     stream.setLevel(_CONSOLE_SILENT_LEVEL)
     stream.setFormatter(fmt)
+    stream.addFilter(_SensitiveDataFilter())
     logger.addHandler(stream)
 
     # Guard de tipo: só trata file_path como caminho se for str/bytes/Path
@@ -91,6 +114,7 @@ def setup_logging(level: str = "info", file_path: str | None = None) -> logging.
             if fallback != Path(file_path):
                 file_handler = _make_file_handler(fallback, fmt)
         if file_handler is not None:
+            file_handler.addFilter(_SensitiveDataFilter())
             logger.addHandler(file_handler)
 
     return logger

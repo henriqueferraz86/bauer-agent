@@ -1064,7 +1064,7 @@ class GatewaySection(_StrictSection):
 
 
 class UiSection(_StrictSection):
-    """Aparência do terminal.
+    """Aparência e contrato de privacidade da interface.
 
     `truecolor` existe por um motivo específico: o SSH encaminha `TERM` e NÃO
     encaminha `COLORTERM`. Numa sessão remota o Bauer vê `TERM=xterm` e conclui
@@ -1089,6 +1089,12 @@ class UiSection(_StrictSection):
     truecolor: Literal["auto", "sim", "nao"] = "auto"
     mode: Literal["rich", "compact", "plain"] = "rich"
     emojis: bool = True
+    # Chat seguro por padrão: detalhes de execução continuam no contexto
+    # interno do agente, mas não atravessam a fronteira da interface.
+    show_tool_calls: bool = False
+    show_tool_results: bool = False
+    show_debug_events: bool = False
+    redact_sensitive_data: bool = True
 
 
 class BauerConfig(_StrictSection):

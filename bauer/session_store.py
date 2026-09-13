@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from .unicode_utils import safe_json_dumps as _safe_json_dumps
+from .privacy import public_messages, redact_data
 
 
 class SessionStore:
@@ -25,7 +26,9 @@ class SessionStore:
         p = self.dir / f"{session_id}.jsonl"
         with p.open("w", encoding="utf-8") as f:
             for msg in messages:
-                f.write(_safe_json_dumps(msg, ensure_ascii=False) + "\n")
+                # The in-memory context remains richer for the current turn;
+                # persisted history is the continuity copy and is sanitized.
+                f.write(_safe_json_dumps(redact_data(msg), ensure_ascii=False) + "\n")
 
     def load(self, session_id: str) -> list[dict]:
         p = self.dir / f"{session_id}.jsonl"
@@ -40,6 +43,10 @@ class SessionStore:
                 except json.JSONDecodeError:
                     pass
         return messages
+
+    def load_public(self, session_id: str) -> list[dict]:
+        """Return only conversational messages suitable for a chat client."""
+        return public_messages(self.load(session_id))
 
     def list_sessions(self) -> list[str]:
         return sorted(p.stem for p in self.dir.glob("*.jsonl"))
