@@ -66,6 +66,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [053](053-p4-sqlite-task-backend-rollout.md) | Rollout seguro e opt-in do backend SQLite de tarefas | Migração de dados/DX | P4 | L | 052 | DONE (merge `9c94778`; commit `ba236a5`) |
 | [054](054-p1-maturity-hardening.md) | Elevar o Bauer de beta avançado para pré-produção robusta | Segurança, performance, desktop, arquitetura | P1 | L | — | COMPLETE |
 | [055](055-production-operations-hardening.md) | Tornar a operação do Bauer segura, observável e recuperável | Segurança, confiabilidade, observabilidade, arquitetura | P1 | L | — | DONE |
+| [056](056-autopilot-mission-controller.md) | Integrar um autopilot persistente ao runtime always-on | Direção, arquitetura, confiabilidade | P1 | L | 055; 014 (contexto histórico) | TODO |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 

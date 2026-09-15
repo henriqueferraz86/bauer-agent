@@ -799,6 +799,34 @@ class LoopSection(_StrictSection):
     approval_risk_threshold: float = Field(ge=0.0, le=1.0, default=0.4)
 
 
+class AutopilotSection(_StrictSection):
+    """Contrato de configuração do autopilot persistente.
+
+    Esta seção descreve limites e intenção do controlador; ela não inicia
+    trabalho sozinha. A decisão de exigir uma missão quando não há objetivos
+    persistidos depende do estado do runtime e pertence ao controller, não ao
+    parser de YAML.
+    """
+
+    enabled: bool = False
+    # Vazio significa que o controller deve usar o workspace recebido pelo
+    # runtime; manter o caminho fora do parser evita resolver paths no boot.
+    workspace: str = Field(default="", max_length=2048)
+    poll_interval_s: float = Field(ge=1.0, le=86400.0, default=30.0)
+    max_active_goals: int = Field(ge=1, default=1)
+    max_replans_per_goal: int = Field(ge=0, default=1)
+    mission: str = Field(default="", max_length=4000)
+    # Propostas livres do modelo ficam opt-in; o MVP trabalha com missão e
+    # objetivos persistidos declarados pelo operador.
+    allow_model_proposals: bool = False
+    approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
+    # Limites por objetivo/ciclo. O controller futuro deve aplicar o mínimo
+    # entre estes valores e os limites globais do loop/runtime.
+    max_minutes: int = Field(ge=1, default=30)
+    max_tool_calls: int = Field(ge=1, default=500)
+    max_cost_usd: float = Field(ge=0.0, default=2.0)
+
+
 class ContinuousAutonomyTarget(_StrictSection):
     id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=200)
@@ -1144,6 +1172,7 @@ class BauerConfig(_StrictSection):
     tools: ToolsSection = ToolsSection()
     memory: MemorySection = MemorySection()
     loop: LoopSection = LoopSection()
+    autopilot: AutopilotSection = AutopilotSection()
     continuous_autonomy: ContinuousAutonomySection = ContinuousAutonomySection()
     web: WebSection = WebSection()
     mcp: McpSection = McpSection()

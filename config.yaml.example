@@ -1007,6 +1007,27 @@ observability:
 
 
 # =============================================================================
+# AUTOPILOT — ciclo persistente de objetivos (opt-in)
+# =============================================================================
+
+# O autopilot permanece desligado até haver uma política/missão revisada.
+# Mesmo ligado, propostas livres do modelo continuam desligadas por padrão;
+# a validação de missão sem objetivos persistidos pertence ao runtime.
+autopilot:
+  enabled: false
+  workspace: ""              # vazio = workspace recebido pelo runtime
+  poll_interval_s: 30.0
+  max_active_goals: 1
+  max_replans_per_goal: 1
+  mission: ""
+  allow_model_proposals: false
+  approval_mode: threshold    # threshold | deny_all | yolo
+  max_minutes: 30
+  max_tool_calls: 500
+  max_cost_usd: 2.0
+
+
+# =============================================================================
 # AUTONOMIA CONTÍNUA — monitoramento e recuperação opt-in
 # =============================================================================
 
