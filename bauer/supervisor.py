@@ -84,6 +84,7 @@ class SupervisorStatus:
     heartbeat_at: str = ""
     stop_requested: bool = False
     services: list[dict[str, Any]] = field(default_factory=list)
+    autopilot: dict[str, Any] | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -163,8 +164,9 @@ class RuntimeSupervisor:
         max_in_progress: int = 1,
         max_jobs: int = 10,
         delivery_limit: int = 20,
+        autopilot: bool = False,
     ) -> list[ServiceSpec]:
-        return [
+        specs = [
             ServiceSpec(
                 name="dispatcher",
                 enabled=dispatcher,
@@ -246,6 +248,29 @@ class RuntimeSupervisor:
                 description="Kanban dashboard HTTP server.",
             ),
         ]
+        if autopilot:
+            specs.append(
+                ServiceSpec(
+                    name="autopilot",
+                    enabled=True,
+                    command=[
+                        self.python,
+                        "-m",
+                        "bauer.cli",
+                        "runtime",
+                        "autopilot",
+                        "--workspace",
+                        str(self.workspace),
+                        "--config",
+                        str(self.config),
+                        "--models",
+                        str(self.models),
+                        "--enabled",
+                    ],
+                    description="Persistent governed mission controller.",
+                )
+            )
+        return specs
 
     def run_forever(
         self,
@@ -338,6 +363,14 @@ class RuntimeSupervisor:
             pid = _to_int(current.get("pid")) or None
             current["alive"] = _pid_alive(pid) if pid else False
             public_services.append(current)
+        autopilot = None
+        autopilot_file = self.store.runtime_dir / "autopilot.json"
+        if autopilot_file.exists():
+            try:
+                raw = json.loads(autopilot_file.read_text(encoding="utf-8"))
+                autopilot = raw if isinstance(raw, dict) else None
+            except (OSError, json.JSONDecodeError):
+                autopilot = None
         return SupervisorStatus(
             workspace=str(self.workspace),
             runtime_dir=str(self.store.runtime_dir),
@@ -348,6 +381,7 @@ class RuntimeSupervisor:
             heartbeat_at=str(state.get("heartbeat_at") or ""),
             stop_requested=self.store.stop_file.exists(),
             services=public_services,
+            autopilot=autopilot,
         )
 
     def start_background(
@@ -356,6 +390,15 @@ class RuntimeSupervisor:
         *,
         dry_run: bool = False,
     ) -> dict[str, Any]:
+        existing = self.store.read()
+        existing_pid = _to_int(existing.get("supervisor_pid"))
+        if existing_pid and _pid_alive(existing_pid):
+            return {
+                "command": [self.python, "-m", "bauer.cli", "runtime", "supervise", *args],
+                "pid": existing_pid,
+                "dry_run": dry_run,
+                "already_running": True,
+            }
         command = [self.python, "-m", "bauer.cli", "runtime", "supervise", *args]
         if dry_run:
             return {"command": command, "pid": None, "dry_run": True}

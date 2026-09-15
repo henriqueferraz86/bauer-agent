@@ -375,6 +375,7 @@ def _runtime_supervise_args(
     max_in_progress: int,
     max_jobs: int,
     delivery_limit: int,
+    autopilot: bool,
 ) -> list[str]:
     args = [
         "--workspace", str(workspace),
@@ -395,6 +396,7 @@ def _runtime_supervise_args(
     args.append("--cron" if cron else "--no-cron")
     args.append("--outbox" if outbox else "--no-outbox")
     args.append("--kanban" if kanban else "--no-kanban")
+    args.append("--autopilot" if autopilot else "--no-autopilot")
     return args
 
 
@@ -435,11 +437,22 @@ def runtime_start_cmd(
     max_in_progress: int = typer.Option(1, "--max-in-progress"),
     max_jobs: int = typer.Option(10, "--max-jobs"),
     delivery_limit: int = typer.Option(20, "--delivery-limit"),
+    autopilot: bool | None = typer.Option(
+        None, "--autopilot/--no-autopilot",
+        help="Ativa o controlador persistente; por padrão respeita autopilot.enabled",
+    ),
 ):
     """Sobe o runtime always-on: dispatcher, cron, outbox e kanban."""
     import json as _json
 
+    from ..config_loader import load_config
     from ..supervisor import RuntimeSupervisor
+
+    if autopilot is None:
+        try:
+            autopilot = bool(load_config(config).autopilot.enabled)
+        except Exception:
+            autopilot = False
 
     supervisor = RuntimeSupervisor(workspace, config=config, models=models)
     specs = supervisor.build_service_specs(
@@ -456,6 +469,7 @@ def runtime_start_cmd(
         max_in_progress=max_in_progress,
         max_jobs=max_jobs,
         delivery_limit=delivery_limit,
+        autopilot=autopilot,
     )
     if dry_run and not background:
         console.print(_runtime_specs_table(specs))
@@ -478,6 +492,7 @@ def runtime_start_cmd(
         max_in_progress=max_in_progress,
         max_jobs=max_jobs,
         delivery_limit=delivery_limit,
+        autopilot=autopilot,
     )
     if background:
         result = supervisor.start_background(args, dry_run=dry_run)
@@ -491,6 +506,75 @@ def runtime_start_cmd(
 
     console.print("[green]Runtime supervisor iniciado em foreground[/green] Ctrl+C para parar.")
     supervisor.run_forever(specs, supervisor_interval=supervisor_interval)
+
+
+@runtime_app.command("autopilot", hidden=True)
+def runtime_autopilot_cmd(
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    enabled: bool = typer.Option(False, "--enabled/--disabled"),
+):
+    """Processo interno do controlador persistente de missões."""
+    from ..autopilot import AutopilotController
+    from ..autopilot_planner import AutopilotPlanner
+    from ..config_loader import load_config
+    from ..core.runtime.resilience import RuntimeControl
+
+    cfg = load_config(config)
+    if enabled and not cfg.autopilot.enabled:
+        cfg = cfg.model_copy(
+            update={"autopilot": cfg.autopilot.model_copy(update={"enabled": True})}
+        )
+    if not cfg.autopilot.enabled:
+        console.print("Autopilot desativado; use autopilot.enabled ou --enabled.")
+        return
+
+    control = RuntimeControl(root=Path("memory/runtime"))
+    planner = AutopilotPlanner()
+    controller = AutopilotController(
+        workspace,
+        config=cfg,
+        plan_fn=planner.decompose,
+        kill_switch=control.kill_switch_enabled,
+    )
+    controller.run_forever()
+
+
+@runtime_app.command("autopilot-control")
+def runtime_autopilot_control_cmd(
+    action: str = typer.Argument(..., help="status | pause | resume | replan"),
+    workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
+):
+    """Controla o autopilot de forma idempotente sem tocar em tarefas."""
+    import json as _json
+
+    from ..supervisor import RuntimeSupervisor
+
+    runtime_dir = Path(workspace).resolve() / ".bauer_runtime"
+    pause_file = runtime_dir / "AUTOPILOT_PAUSE"
+    replan_file = runtime_dir / "AUTOPILOT_REPLAN"
+    normalized = action.strip().lower()
+    if normalized == "pause":
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        pause_file.write_text("operator_pause", encoding="utf-8")
+    elif normalized == "resume":
+        try:
+            pause_file.unlink()
+        except FileNotFoundError:
+            console.print("[dim]Autopilot já estava retomado[/dim]")
+    elif normalized == "replan":
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        replan_file.write_text("requested", encoding="utf-8")
+    elif normalized != "status":
+        console.print("[red]Uso:[/red] bauer runtime autopilot-control status|pause|resume|replan")
+        raise typer.Exit(code=1)
+
+    status = RuntimeSupervisor(workspace).status().to_public_dict()
+    if normalized == "status":
+        console.print(_json.dumps(status.get("autopilot") or {}, ensure_ascii=False, indent=2))
+    else:
+        console.print(f"[green]Autopilot {normalized} solicitado[/green]")
 
 
 @runtime_app.command("supervise", hidden=True)
@@ -512,9 +596,17 @@ def runtime_supervise_cmd(
     max_in_progress: int = typer.Option(1, "--max-in-progress"),
     max_jobs: int = typer.Option(10, "--max-jobs"),
     delivery_limit: int = typer.Option(20, "--delivery-limit"),
+    autopilot: bool | None = typer.Option(None, "--autopilot/--no-autopilot"),
 ):
     """Processo interno que supervisiona os servicos do runtime."""
+    from ..config_loader import load_config
     from ..supervisor import RuntimeSupervisor
+
+    if autopilot is None:
+        try:
+            autopilot = bool(load_config(config).autopilot.enabled)
+        except Exception:
+            autopilot = False
 
     supervisor = RuntimeSupervisor(workspace, config=config, models=models)
     specs = supervisor.build_service_specs(
@@ -531,6 +623,7 @@ def runtime_supervise_cmd(
         max_in_progress=max_in_progress,
         max_jobs=max_jobs,
         delivery_limit=delivery_limit,
+        autopilot=autopilot,
     )
     supervisor.run_forever(specs, supervisor_interval=supervisor_interval)
 
@@ -560,6 +653,13 @@ def runtime_status_cmd(
         f"[bold]Supervisor:[/bold] state={status['state']} "
         f"pid={status.get('supervisor_pid') or '-'} alive={status.get('supervisor_alive')}"
     )
+    autopilot_status = status.get("autopilot")
+    if isinstance(autopilot_status, dict):
+        console.print(
+            f"[bold]Autopilot:[/bold] state={autopilot_status.get('state', '-')} "
+            f"goal={autopilot_status.get('goal_id') or '-'} "
+            f"reason={autopilot_status.get('reason') or '-'}"
+        )
     for service in status.get("services", []):
         table.add_row(
             str(service.get("name", "")),
@@ -594,9 +694,17 @@ def runtime_restart_cmd(
     cron: bool = typer.Option(True, "--cron/--no-cron"),
     outbox: bool = typer.Option(True, "--outbox/--no-outbox"),
     kanban: bool = typer.Option(True, "--kanban/--no-kanban"),
+    autopilot: bool | None = typer.Option(None, "--autopilot/--no-autopilot"),
 ):
     """Para o runtime atual e sobe um novo supervisor em background."""
+    from ..config_loader import load_config
     from ..supervisor import RuntimeSupervisor
+
+    if autopilot is None:
+        try:
+            autopilot = bool(load_config(config).autopilot.enabled)
+        except Exception:
+            autopilot = False
 
     supervisor = RuntimeSupervisor(workspace, config=config, models=models)
     if not dry_run:
@@ -619,6 +727,7 @@ def runtime_restart_cmd(
         max_in_progress=1,
         max_jobs=10,
         delivery_limit=20,
+        autopilot=autopilot,
     )
     result = supervisor.start_background(args, dry_run=dry_run)
     console.print(f"[green]Runtime restart solicitado[/green] pid={result.get('pid') or '-'}")

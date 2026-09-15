@@ -26,6 +26,27 @@
   presente neste checkout
 - **Categoria**: direção / arquitetura / confiabilidade
 - **Planejado em**: commit `8335cb1`, 2026-09-15
+- **Status**: DONE — implementação e validação concluídas na branch
+  `codex/056-autopilot-mission-controller`.
+
+### Implementação entregue
+
+- `GoalTracker` agora possui claims atômicos com `BEGIN IMMEDIATE`, leases,
+  heartbeat, recovery de objetivos stale, contador de tentativas/replans e
+  migração SQLite compatível; o ledger `goal_materialized_tasks` fixa a
+  idempotência `(goal_id, step_key)`.
+- `AutopilotController` implementa os estados persistidos, missão declarada,
+  seleção limitada, ponte planner→Kanban, reconciliação DONE/FAILED/BLOCKED,
+  replanejamento limitado, kill-switch, budget, aprovação, pausa, retomada,
+  replan e eventos sem prompt/resposta/segredo.
+- `AutopilotPlanner` chama somente a fase de decomposição de
+  `AutonomousPlanner`; nenhuma execução inline foi adicionada. O dispatcher
+  continua encaminhando tasks para `bauer orchestrate run`/Kernel e worktree.
+- `RuntimeSupervisor` registra `autopilot` apenas quando habilitado ou
+  solicitado, preserva o default legado, expõe estado no status e mantém o
+  restart/backoff existentes. O runbook documenta o opt-in e a operação.
+- O backend exercitado nos testes é explicitamente Markdown e SQLite; ambos
+  preservam `dispatch`, `goal_id` e `step_key`.
 
 ## Por que isto importa
 
@@ -341,23 +362,23 @@ e os de planner/tracker pelo padrão de `tests/test_autonomous_planner.py`.
 
 ## Critérios de pronto
 
-- [ ] `bauer runtime start --dry-run` mostra o serviço autopilot somente quando
+- [x] `bauer runtime start --dry-run` mostra o serviço autopilot somente quando
   solicitado/habilitado; o default existente permanece sem autopilot.
-- [ ] Um objetivo persistido pode ser reivindicado por exatamente um
+- [x] Um objetivo persistido pode ser reivindicado por exatamente um
   controlador, retomado após lease expirado e não duplica tasks após restart.
-- [ ] O autopilot nunca chama provider, shell ou fechamento de run diretamente;
+- [x] O autopilot nunca chama provider, shell ou fechamento de run diretamente;
   tasks passam pelo dispatcher e execuções continuam governadas pelo Kernel.
-- [ ] Objetivo concluído, falho, bloqueado, replanejado e pausado aparecem no
+- [x] Objetivo concluído, falho, bloqueado, replanejado e pausado aparecem no
   status e nos eventos sem vazar conteúdo sensível.
-- [ ] Kill-switch, budget, approval boundary e SIGTERM impedem novo trabalho e
+- [x] Kill-switch, budget, approval boundary e SIGTERM impedem novo trabalho e
   deixam o estado recuperável.
-- [ ] `uv run pytest tests/ -q --tb=short` passa.
-- [ ] `uv run ruff check bauer/ --select E9,F63,F7,F82` passa.
-- [ ] `uv run mypy bauer/` passa sem ampliar a lista de dívida.
-- [ ] `uv lock --check` passa e `git diff --check` não reporta erros.
-- [ ] Nenhum arquivo fora do escopo foi alterado sem justificativa; nenhum
+- [x] `uv run pytest tests/ -q --tb=short` passa.
+- [x] `uv run ruff check bauer/ --select E9,F63,F7,F82` passa.
+- [x] `uv run mypy bauer/` passa sem ampliar a lista de dívida.
+- [x] `uv lock --check` passa e `git diff --check` não reporta erros.
+- [x] Nenhum arquivo fora do escopo foi alterado sem justificativa; nenhum
   segredo, banco de runtime ou artefato de execução entrou no diff.
-- [ ] README/runbook explica que o MVP trabalha sobre missão/objetivos
+- [x] README/runbook explica que o MVP trabalha sobre missão/objetivos
   declarados; propostas livres do modelo continuam desligadas por padrão.
 
 ## Condições de parada

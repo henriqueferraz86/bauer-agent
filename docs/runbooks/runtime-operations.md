@@ -17,6 +17,40 @@ Inspect and stop the supervised runtime:
 .\.venv\Scripts\python.exe -m bauer.cli runtime stop --workspace workspace
 ```
 
+## Governed Autopilot
+
+The persistent autopilot is opt-in. It works only from a declared mission or
+persisted goals, creates `READY` Kanban tasks, and leaves execution to the
+existing dispatcher/Kernel path. Free model proposals remain disabled by
+default.
+
+```yaml
+autopilot:
+  enabled: true
+  mission: "Deliver the declared MVP"
+  poll_interval_s: 30
+  max_active_goals: 1
+  max_replans_per_goal: 1
+  approval_mode: threshold
+  max_minutes: 30
+  max_tool_calls: 500
+  max_cost_usd: 2.0
+```
+
+Start it explicitly or let `runtime start` read `autopilot.enabled`:
+
+```powershell
+.\.venv\Scripts\python.exe -m bauer.cli runtime start --workspace workspace --autopilot
+.\.venv\Scripts\python.exe -m bauer.cli runtime status --workspace workspace --json
+.\.venv\Scripts\python.exe -m bauer.cli runtime autopilot-control pause --workspace workspace
+.\.venv\Scripts\python.exe -m bauer.cli runtime autopilot-control resume --workspace workspace
+.\.venv\Scripts\python.exe -m bauer.cli runtime autopilot-control replan --workspace workspace
+```
+
+Use `bauer runtime kill-switch on` to prevent new autonomous work. A paused,
+blocked, failed or budget-exhausted controller leaves its state under
+`workspace/.bauer_runtime/autopilot.json` for inspection and safe recovery.
+
 Manual fallback: start the durable automation scheduler and dispatcher in separate terminals:
 
 ```powershell
