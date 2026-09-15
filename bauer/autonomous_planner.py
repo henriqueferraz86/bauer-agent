@@ -384,6 +384,25 @@ class AutonomousPlanner:
     # Internal
     # ------------------------------------------------------------------
 
+    async def decompose_goal(self, title: str, description: str = "") -> list[PlanStep]:
+        """Return bounded planner steps without executing any of them.
+
+        The autopilot uses this explicit planning-only boundary to materialize
+        steps as governed Kanban tasks.  ``execute_goal`` remains the legacy
+        inline executor for callers that still need it; the persistent runtime
+        does not call it.
+        """
+        steps = await self._cfg.decompose_fn(title, description)
+        if not steps:
+            steps = [PlanStep(title=f"Execute: {title}")]
+        steps = steps[: self._cfg.max_steps]
+        for step in steps:
+            if step.max_retries == 2 and self._cfg.default_step_retries != 2:
+                step.max_retries = self._cfg.default_step_retries
+            if step.timeout_seconds is None and self._cfg.step_timeout_seconds is not None:
+                step.timeout_seconds = self._cfg.step_timeout_seconds
+        return steps
+
     async def _execute_step(
         self,
         step: PlanStep,

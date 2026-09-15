@@ -47,6 +47,8 @@ _META_KEYS = {
     "automation_run",
     "automation_schedule",
     "automation_name",
+    "goal_id",
+    "step_key",
 }
 
 

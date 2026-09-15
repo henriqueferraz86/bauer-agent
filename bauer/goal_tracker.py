@@ -21,6 +21,10 @@ Schema
     session_id  TEXT               (daemon session that owns this goal)
     error       TEXT               (last failure message)
 
+Additional lease fields allow a persistent controller to reclaim work after a
+restart.  ``goal_materialized_tasks`` is the idempotency ledger between goals
+and Kanban tasks.
+
 Usage::
 
     from bauer.goal_tracker import GoalTracker, GoalStatus
@@ -55,6 +59,7 @@ class GoalStatus(str, Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
 
 
@@ -73,10 +78,21 @@ class GoalRecord:
     completed_at: float | None = None
     session_id: str | None = None
     error: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: float | None = None
+    heartbeat_at: float | None = None
+    lease_seconds: int = 300
+    attempts: int = 0
+    replans: int = 0
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in (GoalStatus.DONE, GoalStatus.FAILED, GoalStatus.CANCELLED)
+        return self.status in (
+            GoalStatus.DONE,
+            GoalStatus.FAILED,
+            GoalStatus.BLOCKED,
+            GoalStatus.CANCELLED,
+        )
 
     @property
     def elapsed_seconds(self) -> float | None:
@@ -102,11 +118,36 @@ CREATE TABLE IF NOT EXISTS goals (
     started_at   REAL,
     completed_at REAL,
     session_id   TEXT,
-    error        TEXT
+    error        TEXT,
+    lease_owner  TEXT,
+    lease_expires_at REAL,
+    heartbeat_at REAL,
+    lease_seconds INTEGER NOT NULL DEFAULT 300,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    replans      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS goals_session ON goals(session_id);
+CREATE TABLE IF NOT EXISTS goal_materialized_tasks (
+    goal_id    TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    step_key   TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (goal_id, step_key),
+    UNIQUE (goal_id, task_id),
+    FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS goal_tasks_task ON goal_materialized_tasks(task_id);
 """
+
+_GOAL_MIGRATION_COLUMNS = {
+    "lease_owner": "TEXT",
+    "lease_expires_at": "REAL",
+    "heartbeat_at": "REAL",
+    "lease_seconds": "INTEGER NOT NULL DEFAULT 300",
+    "attempts": "INTEGER NOT NULL DEFAULT 0",
+    "replans": "INTEGER NOT NULL DEFAULT 0",
+}
 
 
 class GoalTracker:
@@ -221,8 +262,12 @@ class GoalTracker:
         if status_val == GoalStatus.RUNNING.value:
             fields.append("started_at = COALESCE(started_at, ?)")
             params.append(now)
-        if status_val in (GoalStatus.DONE.value, GoalStatus.FAILED.value,
-                          GoalStatus.CANCELLED.value):
+        if status_val in (
+            GoalStatus.DONE.value,
+            GoalStatus.FAILED.value,
+            GoalStatus.BLOCKED.value,
+            GoalStatus.CANCELLED.value,
+        ):
             fields.append("completed_at = ?")
             params.append(now)
         if error is not None:
@@ -248,6 +293,177 @@ class GoalTracker:
                 (json.dumps(steps), goal_id),
             )
         return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Durable claims and task materialization
+    # ------------------------------------------------------------------
+
+    def claim_next(self, session_id: str, lease_seconds: int = 300) -> GoalRecord | None:
+        """Atomically claim the next pending or stale running goal.
+
+        ``BEGIN IMMEDIATE`` serializes candidate selection and the update, so
+        two controller processes cannot claim the same goal. A running goal is
+        claimable only after its lease expires.
+        """
+        owner = str(session_id).strip()
+        if not owner:
+            raise ValueError("session_id nao pode ser vazio")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds deve ser positivo")
+
+        now = time.time()
+        expires = now + lease_seconds
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT * FROM goals
+                WHERE status = 'pending'
+                   OR (status = 'running' AND
+                       (lease_expires_at IS NULL OR lease_expires_at <= ?))
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            goal_id = str(row["id"])
+            cur = conn.execute(
+                """
+                UPDATE goals
+                SET status = 'running',
+                    started_at = COALESCE(started_at, ?),
+                    session_id = ?,
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    heartbeat_at = ?,
+                    lease_seconds = ?,
+                    attempts = attempts + 1,
+                    completed_at = NULL
+                WHERE id = ?
+                  AND (status = 'pending' OR
+                       (status = 'running' AND
+                        (lease_expires_at IS NULL OR lease_expires_at <= ?)))
+                """,
+                (now, owner, owner, expires, now, lease_seconds, goal_id, now),
+            )
+            if cur.rowcount != 1:
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM goals WHERE id = ?", (goal_id,)
+            ).fetchone()
+        return self._row_to_record(claimed) if claimed else None
+
+    def heartbeat(self, goal_id: str, session_id: str) -> bool:
+        """Renew a goal lease only when ``session_id`` is its current owner."""
+        owner = str(session_id).strip()
+        if not owner:
+            return False
+        now = time.time()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE goals
+                SET heartbeat_at = ?,
+                    lease_expires_at = ? + lease_seconds
+                WHERE id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (now, now, goal_id, owner),
+            )
+        return cur.rowcount > 0
+
+    def increment_replans(self, goal_id: str) -> int | None:
+        """Increment and return a goal's durable replan counter."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE goals SET replans = replans + 1 WHERE id = ?",
+                (goal_id,),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT replans FROM goals WHERE id = ?", (goal_id,)
+            ).fetchone()
+        return int(row[0]) if row else None
+
+    def release_or_requeue_stale(self, now: float | None = None) -> int:
+        """Return expired running goals to ``pending`` without losing history."""
+        cutoff = time.time() if now is None else float(now)
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE goals
+                SET status = 'pending',
+                    session_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    heartbeat_at = NULL,
+                    completed_at = NULL
+                WHERE status = 'running'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at <= ?
+                """,
+                (cutoff,),
+            )
+        return cur.rowcount
+
+    def record_materialized_task(self, goal_id: str, task_id: str, step_key: str) -> bool:
+        """Record a goal step/task link, returning whether it was newly added.
+
+        Replaying the exact same link is a no-op. A controller can call
+        :meth:`get_materialized_task` before creating a task to recover from a
+        crash between task creation and this ledger write.
+        """
+        clean_goal = str(goal_id).strip()
+        clean_task = str(task_id).strip()
+        clean_step = str(step_key).strip()
+        if not clean_goal or not clean_task or not clean_step:
+            raise ValueError("goal_id, task_id e step_key sao obrigatorios")
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO goal_materialized_tasks
+                    (goal_id, task_id, step_key, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (clean_goal, clean_task, clean_step, time.time()),
+            )
+        return cur.rowcount == 1
+
+    def get_materialized_task(self, goal_id: str, step_key: str) -> str | None:
+        """Return the task already linked to a goal step, if any."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT task_id FROM goal_materialized_tasks
+                WHERE goal_id = ? AND step_key = ?
+                """,
+                (goal_id, step_key),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def list_materialized_tasks(self, goal_id: str) -> list[dict[str, str]]:
+        """Return durable task links for one goal in insertion order."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT task_id, step_key FROM goal_materialized_tasks
+                WHERE goal_id = ? ORDER BY created_at ASC
+                """,
+                (goal_id,),
+            ).fetchall()
+        return [{"task_id": str(row[0]), "step_key": str(row[1])} for row in rows]
+
+    def clear_materialized_tasks(self, goal_id: str) -> int:
+        """Drop active step links before a new replan, preserving Kanban history."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM goal_materialized_tasks WHERE goal_id = ?",
+                (goal_id,),
+            )
+        return cur.rowcount
 
     def mark_complete(self, goal_id: str, *, summary: str = "") -> bool:
         """Convenience: mark a goal as DONE with an optional summary."""
@@ -323,6 +539,16 @@ class GoalTracker:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            existing = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(goals)").fetchall()
+            }
+            for name, declaration in _GOAL_MIGRATION_COLUMNS.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE goals ADD COLUMN {name} {declaration}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS goals_lease ON goals(status, lease_expires_at)"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -364,4 +590,10 @@ class GoalTracker:
             completed_at=d.get("completed_at"),
             session_id=d.get("session_id"),
             error=d.get("error"),
+            lease_owner=d.get("lease_owner"),
+            lease_expires_at=d.get("lease_expires_at"),
+            heartbeat_at=d.get("heartbeat_at"),
+            lease_seconds=int(d.get("lease_seconds") or 300),
+            attempts=int(d.get("attempts") or 0),
+            replans=int(d.get("replans") or 0),
         )

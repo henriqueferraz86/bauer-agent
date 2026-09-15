@@ -31,6 +31,19 @@ def test_runtime_supervisor_builds_default_services(tmp_path: Path):
     assert "--no-browser" in names["kanban"].command
 
 
+def test_runtime_supervisor_adds_autopilot_only_when_requested(tmp_path: Path):
+    supervisor = RuntimeSupervisor(tmp_path / "workspace", python="python")
+    default_names = {spec.name for spec in supervisor.build_service_specs()}
+    enabled = supervisor.build_service_specs(autopilot=True)
+    enabled_names = {spec.name for spec in enabled}
+
+    assert "autopilot" not in default_names
+    assert "autopilot" in enabled_names
+    autopilot = next(spec for spec in enabled if spec.name == "autopilot")
+    assert autopilot.restart is True
+    assert autopilot.command[-1] == "--enabled"
+
+
 def test_runtime_state_store_roundtrip_and_stop_file(tmp_path: Path):
     store = RuntimeStateStore(tmp_path / "workspace")
 
