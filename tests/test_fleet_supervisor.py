@@ -125,6 +125,12 @@ def test_fleet_runtime_args_disable_kanban_by_default(tmp_path):
     assert "--kanban" not in args
 
 
+def test_pid_alive_returns_false_for_a_nonexistent_windows_safe_pid():
+    from bauer.fleet_supervisor import _pid_alive
+
+    assert _pid_alive(2_000_000_000) is False
+
+
 def test_fleet_isolates_a_failed_project_from_other_projects(tmp_path, monkeypatch):
     from bauer import fleet_supervisor as module
 

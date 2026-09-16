@@ -537,11 +537,15 @@ class FleetSupervisor:
                 }
             )
         fleet_pid = _as_int(state.get("fleet_pid"))
+        fleet_alive = _pid_alive(fleet_pid)
+        fleet_state = str(state.get("state", "not_started"))
+        if fleet_state in {"starting", "running", "paused"} and not fleet_alive:
+            fleet_state = "stale"
         return FleetStatus(
             root=str(self.root),
-            state=str(state.get("state", "not_started")),
+            state=fleet_state,
             fleet_pid=fleet_pid,
-            fleet_alive=_pid_alive(fleet_pid),
+            fleet_alive=fleet_alive,
             generated_at=_now_iso(),
             paused=self.store.pause_file.exists(),
             kill_switch=self.store.kill_switch_file.exists(),
@@ -638,8 +642,14 @@ def _pid_alive(pid: int | None) -> bool:
     if pid == os.getpid():
         return True
     try:
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        logger.debug("psutil PID probe unavailable; using OS fallback", exc_info=True)
+    try:
         os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+    except (OSError, ProcessLookupError, SystemError):
         return False
     return True
 
