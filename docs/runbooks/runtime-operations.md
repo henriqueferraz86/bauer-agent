@@ -59,6 +59,21 @@ subpastas que contenham `.git`, `pyproject.toml`, `package.json`, `Cargo.toml`,
 `go.mod` ou `TASKS.md`. Symlinks e diretórios de build/dependências são
 ignorados. Confira a descoberta antes de iniciar processos:
 
+Na instalação nova, `bauer setup` já grava a missão padrão de manutenção
+contínua com aprovação `threshold`. Para ativar tudo em um único passo, use:
+
+```powershell
+uv run bauer runtime fleet up
+```
+
+Esse comando usa o config canônico em `~/.bauer/config.yaml` mesmo quando é
+executado de outra pasta, prepara defaults ausentes, descobre os projetos e
+inicia o supervisor em background. Uma missão específica pode ser informada
+com `--mission "..."`. O `up` é idempotente e não sobrescreve limites,
+credenciais ou escolhas já existentes.
+
+O fluxo detalhado abaixo continua disponível para inspeção e operação manual:
+
 ```powershell
 uv run bauer runtime fleet discover --root "$env:USERPROFILE\.bauer\workspace"
 uv run bauer runtime fleet start --root "$env:USERPROFILE\.bauer\workspace" --dry-run

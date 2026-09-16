@@ -41,6 +41,13 @@ class TestRenderConfig:
         assert data["serve"]["api_key"] == "deadbeef"
         assert data["serve"]["host"] == "127.0.0.1"  # local por padrão
 
+    def test_enables_safe_fleet_defaults(self):
+        data = render_config("qwen2.5:7b", "deadbeef")
+        assert data["autopilot"]["enabled"] is True
+        assert data["autopilot"]["mission"]
+        assert data["autopilot"]["approval_mode"] == "threshold"
+        assert data["fleet"]["enabled"] is True
+
     def test_generated_config_loads_in_strict_schema(self, tmp_path):
         """O config gerado precisa CARREGAR — BauerConfig é estrito e rejeita
         campos desconhecidos. Se algum campo não existir no schema, quebra aqui."""

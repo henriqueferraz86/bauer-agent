@@ -6,6 +6,7 @@ from rich.panel import Panel
 from pathlib import Path
 from rich.table import Table
 import sqlite3
+import time
 import typer
 
 from ._common import _PROJECT_WORKSPACE, console
@@ -27,8 +28,11 @@ runtime_app.add_typer(runtime_fleet_app, name="fleet")
 
 def _fleet_runtime(root: Path | None, config: Path, models: Path):
     from ..config_loader import load_config
+    from ..fleet_bootstrap import fleet_config_path, fleet_models_path
     from ..fleet_supervisor import FleetSupervisor, fleet_root_from_config
 
+    config = fleet_config_path(config)
+    models = fleet_models_path(models)
     cfg = load_config(config)
     fleet_cfg = cfg.fleet
     workspace_root = fleet_root_from_config(fleet_cfg, root)
@@ -93,6 +97,61 @@ def runtime_fleet_start_cmd(
         return
     console.print("[green]Fleet supervisor iniciado em foreground[/green] Ctrl+C para parar.")
     fleet.run_forever()
+
+
+@runtime_fleet_app.command("up")
+def runtime_fleet_up_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    mission: str | None = typer.Option(None, "--mission", help="Missão global; substitui a missão padrão"),
+    configure: bool = typer.Option(True, "--configure/--no-configure", help="Prepara defaults do Fleet antes de iniciar"),
+):
+    """Prepara e inicia o Fleet Autopilot em um único comando."""
+    from ..config_loader import ConfigError
+    from ..fleet_bootstrap import (
+        ensure_fleet_defaults,
+        fleet_config_path,
+        summarize_fleet_blockers,
+    )
+
+    effective_config = fleet_config_path(config)
+    changed: list[str] = []
+    if configure:
+        try:
+            effective_config, changed = ensure_fleet_defaults(effective_config, mission=mission)
+        except ConfigError as exc:
+            console.print(f"[red]Fleet não configurado:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+
+    fleet = _fleet_runtime(root, effective_config, models)
+    current_status = fleet.status()
+    if changed and current_status.fleet_alive:
+        # A configuração é lida no boot dos filhos. Depois de um bootstrap que
+        # alterou o config, encerra o processo antigo e aguarda a liberação do
+        # lock para que este mesmo comando aplique a configuração nova.
+        previous_pid = current_status.fleet_pid
+        fleet.request_stop(terminate=True)
+        deadline = time.monotonic() + 15.0
+        while previous_pid and fleet.status().fleet_alive and time.monotonic() < deadline:
+            time.sleep(0.25)
+
+    projects = fleet.projects()
+    result = fleet.start_background()
+    status = fleet.status().to_dict()
+    action = "reiniciado" if changed else "iniciado"
+    if result.get("already_running"):
+        action = "já estava ativo"
+    console.print(
+        f"[green]Fleet {action}[/green] pid={result.get('pid') or '-'} "
+        f"projetos={len(projects)} config={effective_config}"
+    )
+    if changed:
+        console.print(f"[dim]Defaults preparados: {', '.join(changed)}[/dim]")
+    blockers = summarize_fleet_blockers(status)
+    if blockers:
+        console.print("[yellow]Bloqueios atuais:[/yellow] " + "; ".join(blockers))
+        console.print("[dim]Confira credenciais/modelo e rode 'bauer runtime fleet status'.[/dim]")
 
 
 @runtime_fleet_app.command("supervise", hidden=True)

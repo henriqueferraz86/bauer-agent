@@ -107,6 +107,8 @@ def render_config(
     Só campos que existem no schema (BauerConfig é estrito). `auto_tool_allowlist`
     fica no default True — o runtime enxuga as tools sozinho em modelo local.
     """
+    from ..fleet_bootstrap import DEFAULT_AUTOPILOT_MISSION
+
     return {
         "model": {
             "provider": provider,
@@ -126,6 +128,14 @@ def render_config(
         "tools": {
             "web_enabled": True,
             "shell_enabled": True,
+        },
+        "autopilot": {
+            "enabled": True,
+            "mission": DEFAULT_AUTOPILOT_MISSION,
+            "approval_mode": "threshold",
+        },
+        "fleet": {
+            "enabled": True,
         },
     }
 
@@ -225,3 +235,4 @@ def setup(
         console.print(f"  1. Baixe o modelo: [bold]ollama pull {chosen}[/bold]")
     console.print("  2. Cheque o ambiente: [bold]bauer doctor[/bold]")
     console.print("  3. Suba o servidor:  [bold]bauer serve[/bold]")
+    console.print("  4. Ative a manutenção de todos os projetos: [bold]bauer runtime fleet up[/bold]")
