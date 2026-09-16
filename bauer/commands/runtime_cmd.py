@@ -13,6 +13,7 @@ from ._common import _PROJECT_WORKSPACE, console
 runtime_app = typer.Typer(help="Supervisor always-on: dispatcher, cron, outbox e kanban")
 runtime_agents_app = typer.Typer(help="Agents formais registrados no runtime")
 runtime_teams_app = typer.Typer(help="Times formais e delegacao governada")
+runtime_fleet_app = typer.Typer(help="Supervisor multi-projeto do Autopilot")
 
 runtime_service_app = typer.Typer(
     help="Runtime como SERVICO do sistema (systemd/Task Scheduler) — sobe no boot, reinicia em crash"
@@ -21,6 +22,179 @@ runtime_service_app = typer.Typer(
 runtime_app.add_typer(runtime_agents_app, name="agents")
 runtime_app.add_typer(runtime_teams_app, name="teams")
 runtime_app.add_typer(runtime_service_app, name="service")
+runtime_app.add_typer(runtime_fleet_app, name="fleet")
+
+
+def _fleet_runtime(root: Path | None, config: Path, models: Path):
+    from ..config_loader import load_config
+    from ..fleet_supervisor import FleetSupervisor, fleet_root_from_config
+
+    cfg = load_config(config)
+    fleet_cfg = cfg.fleet
+    workspace_root = fleet_root_from_config(fleet_cfg, root)
+    return FleetSupervisor(
+        workspace_root,
+        config=config,
+        models=models,
+        fleet_config=fleet_cfg,
+    )
+
+
+@runtime_fleet_app.command("discover")
+def runtime_fleet_discover_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Lista os projetos elegíveis sem iniciar nenhum processo."""
+    import json as _json
+
+    fleet = _fleet_runtime(root, config, models)
+    result = fleet.discover_status()
+    if as_json:
+        console.print(_json.dumps(result, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+    table = Table(title=f"Fleet projects — {result['root']}", show_lines=False)
+    table.add_column("ID", style="cyan")
+    table.add_column("Projeto")
+    table.add_column("Marcador")
+    for project in result["projects"]:
+        table.add_row(project["id"], project["path"], project["marker"])
+    console.print(table)
+    console.print(f"[dim]{result['count']} projeto(s) elegível(is); nenhum processo iniciado.[/dim]")
+
+
+@runtime_fleet_app.command("start")
+def runtime_fleet_start_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    background: bool = typer.Option(True, "--background/--foreground"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Inicia um runtime Autopilot isolado para cada projeto descoberto."""
+    import json as _json
+
+    fleet = _fleet_runtime(root, config, models)
+    projects = fleet.projects()
+    if dry_run:
+        result = fleet.discover_status()
+        result["would_start"] = [str(project.path) for project in projects]
+        console.print(_json.dumps(result, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+    if background:
+        result = fleet.start_background()
+        console.print(
+            f"[green]Fleet supervisor iniciado[/green] pid={result.get('pid') or '-'} "
+            f"projetos_detectados={len(projects)}"
+        )
+        console.print(f"[dim]Logs: {result.get('log_path', fleet.store.log_file)}[/dim]")
+        return
+    console.print("[green]Fleet supervisor iniciado em foreground[/green] Ctrl+C para parar.")
+    fleet.run_forever()
+
+
+@runtime_fleet_app.command("supervise", hidden=True)
+def runtime_fleet_supervise_cmd(
+    root: Path = typer.Option(..., "--root"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+):
+    """Processo interno que coordena os runtimes dos projetos."""
+    fleet = _fleet_runtime(root, config, models)
+    fleet.run_forever()
+
+
+@runtime_fleet_app.command("status")
+def runtime_fleet_status_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Mostra o estado do fleet e de cada projeto supervisionado."""
+    import json as _json
+
+    fleet = _fleet_runtime(root, config, models)
+    result = fleet.status().to_dict()
+    if as_json:
+        console.print(_json.dumps(result, ensure_ascii=False, indent=2), soft_wrap=True)
+        return
+    console.print(
+        f"[bold]Fleet:[/bold] state={result['state']} pid={result.get('fleet_pid') or '-'} "
+        f"alive={result['fleet_alive']} paused={result['paused']} kill_switch={result['kill_switch']}"
+    )
+    table = Table(title=f"Fleet projects — {result['root']}", show_lines=False)
+    table.add_column("Projeto", style="cyan")
+    table.add_column("Fleet")
+    table.add_column("Runtime")
+    table.add_column("PID")
+    table.add_column("Autopilot")
+    for project in result["projects"]:
+        autopilot = project.get("autopilot") or {}
+        table.add_row(
+            Path(project["path"]).name,
+            str(project.get("state", "-")),
+            str(project.get("runtime_state", "-")),
+            str(project.get("supervisor_pid") or "-"),
+            str(autopilot.get("state", "-")),
+        )
+    console.print(table)
+
+
+@runtime_fleet_app.command("stop")
+def runtime_fleet_stop_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    no_terminate: bool = typer.Option(False, "--no-terminate"),
+):
+    """Para o fleet e solicita parada de todos os runtimes filhos."""
+    fleet = _fleet_runtime(root, config, models)
+    result = fleet.request_stop(terminate=not no_terminate)
+    console.print(f"[green]Fleet stop solicitado[/green] root={result['root']}")
+
+
+@runtime_fleet_app.command("pause")
+def runtime_fleet_pause_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+):
+    """Pausa o Autopilot em todos os projetos sem apagar tarefas."""
+    fleet = _fleet_runtime(root, config, models)
+    fleet.set_paused(True)
+    console.print("[green]Fleet pausado[/green]")
+
+
+@runtime_fleet_app.command("resume")
+def runtime_fleet_resume_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+):
+    """Retoma o Autopilot em todos os projetos."""
+    fleet = _fleet_runtime(root, config, models)
+    fleet.set_paused(False)
+    console.print("[green]Fleet retomado[/green]")
+
+
+@runtime_fleet_app.command("kill-switch")
+def runtime_fleet_kill_switch_cmd(
+    action: str = typer.Argument(..., help="on | off"),
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    models: Path = typer.Option(Path("models.yaml"), "--models"),
+):
+    """Ativa ou desativa o bloqueio global de trabalho autônomo."""
+    fleet = _fleet_runtime(root, config, models)
+    normalized = action.strip().lower()
+    if normalized not in {"on", "off"}:
+        console.print("[red]Uso:[/red] bauer runtime fleet kill-switch on|off")
+        raise typer.Exit(code=1)
+    fleet.set_kill_switch(normalized == "on")
+    console.print(f"[green]Fleet kill-switch {normalized}[/green]")
 
 
 @runtime_app.command("snapshot")

@@ -1028,6 +1028,30 @@ autopilot:
 
 
 # =============================================================================
+# FLEET — supervisor multi-projeto (opt-in)
+# =============================================================================
+
+# Coordena um Autopilot isolado por projeto dentro da raiz informada.
+# A raiz nunca é tratada como um projeto; por padrão só entram subpastas com
+# marcador de projeto (.git, pyproject.toml, package.json, Cargo.toml, go.mod
+# ou TASKS.md). Use include/exclude para tornar a seleção explícita.
+fleet:
+  enabled: false
+  root: ""                 # vazio = ~/.bauer/workspace
+  poll_interval_s: 30.0
+  max_projects: 20
+  max_parallel_projects: 20
+  max_depth: 1
+  require_project_marker: true
+  include: []
+  exclude: []              # nomes/padrões relativos, além das exclusões seguras
+  auto_restart: true
+  max_restarts_per_project: 5
+  start_kanban: false      # evita conflito de portas entre projetos
+  kanban_base_port: 8765
+
+
+# =============================================================================
 # AUTONOMIA CONTÍNUA — monitoramento e recuperação opt-in
 # =============================================================================
 
