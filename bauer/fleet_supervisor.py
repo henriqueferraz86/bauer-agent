@@ -268,21 +268,25 @@ class FleetSupervisor:
         self,
         root: str | Path,
         *,
-        config: str | Path = "config.yaml",
-        models: str | Path = "models.yaml",
+        config: str | Path | None = None,
+        models: str | Path | None = None,
         fleet_config: Any | None = None,
+        autopilot_enabled: bool = True,
         python: str | None = None,
         cwd: str | Path | None = None,
     ):
+        from .paths import config_path, models_path
+
         self.cwd = Path(cwd or Path.cwd()).resolve()
-        self.config = Path(config).expanduser()
-        self.models = Path(models).expanduser()
+        self.config = Path(config or config_path()).expanduser()
+        self.models = Path(models or models_path()).expanduser()
         if not self.config.is_absolute():
             self.config = (self.cwd / self.config).resolve()
         if not self.models.is_absolute():
             self.models = (self.cwd / self.models).resolve()
         self.python = python or sys.executable
         self.fleet_config = fleet_config
+        self.autopilot_enabled = autopilot_enabled
         self.store = FleetStateStore(root)
         self._project_runtime: dict[str, FleetProjectRuntime] = {}
 
@@ -561,12 +565,13 @@ class FleetSupervisor:
             str(self.config),
             "--models",
             str(self.models),
-            "--autopilot",
             "--max-spawn",
             "1",
             "--max-in-progress",
             "1",
         ]
+        if self.autopilot_enabled:
+            args.insert(args.index("--max-spawn"), "--autopilot")
         if bool(getattr(cfg, "start_kanban", False)):
             args.extend(
                 [
@@ -586,7 +591,9 @@ def fleet_root_from_config(config: Any, explicit: str | Path | None = None) -> P
     configured = str(getattr(config, "root", "") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path.home() / ".bauer" / "workspace"
+    from .paths import workspace_dir
+
+    return workspace_dir().resolve()
 
 
 def _project_marker(path: Path) -> str:
