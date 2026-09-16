@@ -81,8 +81,8 @@ def test_explicit_mission_overrides_existing_mission(tmp_path):
 def test_summarize_fleet_blockers_is_concise():
     status = {
         "projects": [
-            {"path": r"C:\workspace\alpha", "autopilot": {"state": "blocked", "reason": "mission_required"}},
-            {"path": r"C:\workspace\beta", "autopilot": {"state": "planning", "reason": ""}},
+            {"path": "workspace/alpha", "autopilot": {"state": "blocked", "reason": "mission_required"}},
+            {"path": "workspace/beta", "autopilot": {"state": "planning", "reason": ""}},
         ]
     }
 
