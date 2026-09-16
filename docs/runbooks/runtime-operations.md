@@ -53,18 +53,41 @@ blocked, failed or budget-exhausted controller leaves its state under
 
 ## Fleet multi-projeto
 
-Para supervisionar todos os projetos Bauer dentro de `~/.bauer/workspace`, use
-o fleet. A raiz não é executada como um projeto: por padrão entram apenas
-subpastas que contenham `.git`, `pyproject.toml`, `package.json`, `Cargo.toml`,
-`go.mod` ou `TASKS.md`. Symlinks e diretórios de build/dependências são
-ignorados. Confira a descoberta antes de iniciar processos:
+Para supervisionar continuamente bugs, melhorias, manutenção e qualidade dos
+projetos Bauer dentro de `~/.bauer/workspace`, use o bootstrap idempotente
+`fleet up`. Ele prepara `~/.bauer/config.yaml`, aplica somente defaults
+ausentes (missão global, `autopilot.enabled`, `approval_mode: threshold`,
+`fleet.enabled` e a raiz), descobre os projetos e inicia o supervisor em uma
+única chamada. Não grava segredos e não altera tarefas TODO.
+
+O comando funciona a partir de qualquer diretório; os defaults de config e
+models são sempre canônicos (`~/.bauer/config.yaml` e `~/.bauer/models.yaml`).
+Use `--root` para uma raiz diferente ou `--mission` para substituir
+explicitamente a missão:
+
+```powershell
+uv run bauer runtime fleet up
+uv run bauer runtime fleet up --root D:\repos --mission "Revisar bugs e cobertura de testes"
+```
+
+Resumo e bloqueios aparecem ao final. Se faltar credencial, configure a
+variável indicada no ambiente/.env; para Ollama, confirme o serviço e rode
+`ollama pull <modelo>`. Se não houver projetos, o Fleet continua ativo e
+passará a descobri-los nos próximos ciclos.
+
+Para inspecionar sem iniciar processos, use `discover`; para consultar estado,
+use `status`:
 
 ```powershell
 uv run bauer runtime fleet discover --root "$env:USERPROFILE\.bauer\workspace"
-uv run bauer runtime fleet start --root "$env:USERPROFILE\.bauer\workspace" --dry-run
+uv run bauer runtime fleet status --root "$env:USERPROFILE\.bauer\workspace"
 ```
 
-Depois, inicie um runtime isolado por projeto:
+`discover` é somente inspeção. `status` é somente consulta. O fluxo antigo de
+três comandos (`discover` → configurar YAML manualmente → `start`) foi
+substituído por `up`; `start` permanece disponível para operação avançada.
+
+Cada projeto recebe um runtime isolado:
 
 ```powershell
 uv run bauer runtime fleet start --root "$env:USERPROFILE\.bauer\workspace"
@@ -89,6 +112,12 @@ uv run bauer runtime fleet stop --root "$env:USERPROFILE\.bauer\workspace"
 Use `fleet.include` e `fleet.exclude` no config para transformar a seleção em
 uma allowlist explícita quando a raiz contiver pastas que não devem ser
 supervisionadas.
+
+O dispatcher preserva a semântica de segurança do Kanban: TODO continua fora
+da fila. O Autopilot só materializa os passos da missão como READY e nenhuma
+rotina Fleet promove TODO existente arbitrariamente; faça essa transição por
+uma decisão explícita do operador (`bauer task ready <id>` ou a interface
+equivalente).
 
 Manual fallback: start the durable automation scheduler and dispatcher in separate terminals:
 

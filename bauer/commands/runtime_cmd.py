@@ -25,10 +25,21 @@ runtime_app.add_typer(runtime_service_app, name="service")
 runtime_app.add_typer(runtime_fleet_app, name="fleet")
 
 
-def _fleet_runtime(root: Path | None, config: Path, models: Path):
+def _fleet_paths(config: Path | None, models: Path | None) -> tuple[Path, Path]:
+    """Resolve Fleet paths at call time, independent of the current directory."""
+    from ..paths import config_path, models_path
+
+    return (
+        (config or config_path()).expanduser().resolve(),
+        (models or models_path()).expanduser().resolve(),
+    )
+
+
+def _fleet_runtime(root: Path | None, config: Path | None, models: Path | None):
     from ..config_loader import load_config
     from ..fleet_supervisor import FleetSupervisor, fleet_root_from_config
 
+    config, models = _fleet_paths(config, models)
     cfg = load_config(config)
     fleet_cfg = cfg.fleet
     workspace_root = fleet_root_from_config(fleet_cfg, root)
@@ -37,14 +48,107 @@ def _fleet_runtime(root: Path | None, config: Path, models: Path):
         config=config,
         models=models,
         fleet_config=fleet_cfg,
+        autopilot_enabled=bool(cfg.autopilot.enabled),
     )
+
+
+def _fleet_config_option() -> Path | None:
+    """Typer helper kept separate to make the canonical default explicit."""
+    return None
+
+
+def _fleet_print_summary(fleet, *, prefix: str = "Fleet") -> None:
+    """Print a compact operational summary after ``up`` or ``status``."""
+    result = fleet.status().to_dict()
+    projects = result.get("projects", [])
+    print_fn = console.print
+    print_fn(
+        f"[bold]{prefix}:[/bold] state={result['state']} "
+        f"alive={result['fleet_alive']} projetos={len(projects)} "
+        f"root={result['root']}"
+    )
+    blockers: list[str] = []
+    for project in projects:
+        autopilot = project.get("autopilot") or {}
+        reason = str(autopilot.get("reason") or "").strip()
+        if reason:
+            blockers.append(f"{Path(project['path']).name}: {reason}")
+    if not projects:
+        print_fn(
+            "[yellow]Nenhum projeto descoberto.[/yellow] "
+            "Adicione um projeto com .git, pyproject.toml, package.json, "
+            "Cargo.toml, go.mod ou TASKS.md sob a raiz."
+        )
+    elif blockers:
+        print_fn("[yellow]Bloqueios:[/yellow] " + "; ".join(blockers))
+        if any("mission_required" in item for item in blockers):
+            print_fn(
+                "[dim]Missão ausente: use `bauer runtime fleet up --mission \"...\"` "
+                "ou configure autopilot.mission no config canônico.[/dim]"
+            )
+
+    try:
+        from ..config_loader import load_config
+        from ..provider_profile import get_profile
+
+        cfg = load_config(fleet.config)
+        profile = get_profile(cfg.model.provider)
+        if profile is not None and not profile.is_configured():
+            env_name = ", ".join(profile.env_vars) or "a credencial do provider"
+            print_fn(
+                f"[yellow]Credencial ausente:[/yellow] configure {env_name} "
+                "no ambiente/.env antes de executar tarefas."
+            )
+        elif cfg.model.provider == "ollama":
+            print_fn(
+                f"[dim]Modelo local: confirme o Ollama ativo e, se necessário, "
+                f"execute `ollama pull {cfg.model.name}`.[/dim]"
+            )
+    except Exception:
+        print_fn("[dim]Diagnóstico de provider indisponível; consulte `bauer doctor`.[/dim]")
+
+
+@runtime_fleet_app.command("up")
+def runtime_fleet_up_cmd(
+    root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
+    mission: str | None = typer.Option(None, "--mission", help="Missão global; sobrescreve autopilot.mission explicitamente"),
+    background: bool = typer.Option(True, "--background/--foreground"),
+):
+    """Prepara defaults seguros, descobre projetos e inicia o Fleet idempotentemente."""
+    from ..fleet_bootstrap import FleetBootstrapError, prepare_fleet_config
+
+    config_path, models_path = _fleet_paths(config, models)
+    try:
+        prepared = prepare_fleet_config(config_path, root=root, mission=mission)
+        fleet = _fleet_runtime(root, prepared.config_path, models_path)
+        projects = fleet.projects()
+        if background:
+            result = fleet.start_background()
+            console.print(
+                f"[green]Fleet pronto[/green] pid={result.get('pid') or '-'} "
+                f"projetos_descobertos={len(projects)} "
+                f"config={prepared.config_path}"
+            )
+            console.print(f"[dim]Logs: {result.get('log_path', fleet.store.log_file)}[/dim]")
+            _fleet_print_summary(fleet, prefix="Resumo")
+            return
+        console.print(f"[green]Fleet preparado[/green] config={prepared.config_path}")
+        fleet.run_forever()
+    except FleetBootstrapError as exc:
+        console.print(f"[red]Bootstrap do Fleet falhou:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    except Exception as exc:
+        console.print(f"[red]Fleet não iniciou:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @runtime_fleet_app.command("discover")
 def runtime_fleet_discover_cmd(
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Lista os projetos elegíveis sem iniciar nenhum processo."""
@@ -68,8 +172,8 @@ def runtime_fleet_discover_cmd(
 @runtime_fleet_app.command("start")
 def runtime_fleet_start_cmd(
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
     background: bool = typer.Option(True, "--background/--foreground"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ):
@@ -98,8 +202,8 @@ def runtime_fleet_start_cmd(
 @runtime_fleet_app.command("supervise", hidden=True)
 def runtime_fleet_supervise_cmd(
     root: Path = typer.Option(..., "--root"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
 ):
     """Processo interno que coordena os runtimes dos projetos."""
     fleet = _fleet_runtime(root, config, models)
@@ -109,8 +213,8 @@ def runtime_fleet_supervise_cmd(
 @runtime_fleet_app.command("status")
 def runtime_fleet_status_cmd(
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Mostra o estado do fleet e de cada projeto supervisionado."""
@@ -131,6 +235,7 @@ def runtime_fleet_status_cmd(
     table.add_column("Runtime")
     table.add_column("PID")
     table.add_column("Autopilot")
+    table.add_column("Motivo")
     for project in result["projects"]:
         autopilot = project.get("autopilot") or {}
         table.add_row(
@@ -139,15 +244,17 @@ def runtime_fleet_status_cmd(
             str(project.get("runtime_state", "-")),
             str(project.get("supervisor_pid") or "-"),
             str(autopilot.get("state", "-")),
+            str(autopilot.get("reason", "-")),
         )
     console.print(table)
+    _fleet_print_summary(fleet, prefix="Diagnóstico")
 
 
 @runtime_fleet_app.command("stop")
 def runtime_fleet_stop_cmd(
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
     no_terminate: bool = typer.Option(False, "--no-terminate"),
 ):
     """Para o fleet e solicita parada de todos os runtimes filhos."""
@@ -159,8 +266,8 @@ def runtime_fleet_stop_cmd(
 @runtime_fleet_app.command("pause")
 def runtime_fleet_pause_cmd(
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
 ):
     """Pausa o Autopilot em todos os projetos sem apagar tarefas."""
     fleet = _fleet_runtime(root, config, models)
@@ -171,8 +278,8 @@ def runtime_fleet_pause_cmd(
 @runtime_fleet_app.command("resume")
 def runtime_fleet_resume_cmd(
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
 ):
     """Retoma o Autopilot em todos os projetos."""
     fleet = _fleet_runtime(root, config, models)
@@ -184,8 +291,8 @@ def runtime_fleet_resume_cmd(
 def runtime_fleet_kill_switch_cmd(
     action: str = typer.Argument(..., help="on | off"),
     root: Path | None = typer.Option(None, "--root", help="Raiz dos projetos; default: ~/.bauer/workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
-    models: Path = typer.Option(Path("models.yaml"), "--models"),
+    config: Path | None = typer.Option(_fleet_config_option(), "--config", help="Config canônico: ~/.bauer/config.yaml"),
+    models: Path | None = typer.Option(None, "--models", help="Registry canônico: ~/.bauer/models.yaml"),
 ):
     """Ativa ou desativa o bloqueio global de trabalho autônomo."""
     fleet = _fleet_runtime(root, config, models)

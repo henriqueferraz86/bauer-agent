@@ -34,6 +34,11 @@ def config_path() -> Path:
     return get_bauer_home() / "config.yaml"
 
 
+def models_path() -> Path:
+    """Caminho canônico da curadoria local de modelos."""
+    return get_bauer_home() / "models.yaml"
+
+
 def agents_path() -> Path:
     """Caminho canônico do agents.yaml do usuário (agents customizados/
     remotos — NÃO os especialistas embutidos do pacote, ver
