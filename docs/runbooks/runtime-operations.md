@@ -51,6 +51,45 @@ Use `bauer runtime kill-switch on` to prevent new autonomous work. A paused,
 blocked, failed or budget-exhausted controller leaves its state under
 `workspace/.bauer_runtime/autopilot.json` for inspection and safe recovery.
 
+## Fleet multi-projeto
+
+Para supervisionar todos os projetos Bauer dentro de `~/.bauer/workspace`, use
+o fleet. A raiz não é executada como um projeto: por padrão entram apenas
+subpastas que contenham `.git`, `pyproject.toml`, `package.json`, `Cargo.toml`,
+`go.mod` ou `TASKS.md`. Symlinks e diretórios de build/dependências são
+ignorados. Confira a descoberta antes de iniciar processos:
+
+```powershell
+uv run bauer runtime fleet discover --root "$env:USERPROFILE\.bauer\workspace"
+uv run bauer runtime fleet start --root "$env:USERPROFILE\.bauer\workspace" --dry-run
+```
+
+Depois, inicie um runtime isolado por projeto:
+
+```powershell
+uv run bauer runtime fleet start --root "$env:USERPROFILE\.bauer\workspace"
+uv run bauer runtime fleet status --root "$env:USERPROFILE\.bauer\workspace"
+```
+
+Cada projeto mantém o próprio `.bauer_runtime`, dispatcher, estado e logs. O
+fleet mantém somente coordenação e estado global em `.bauer_fleet` na raiz.
+Falha em um projeto não interrompe os demais. O Kanban HTTP fica desligado no
+fleet por padrão para evitar conflito de portas; habilite `fleet.start_kanban`
+somente se precisar dele.
+
+Controles globais:
+
+```powershell
+uv run bauer runtime fleet pause --root "$env:USERPROFILE\.bauer\workspace"
+uv run bauer runtime fleet resume --root "$env:USERPROFILE\.bauer\workspace"
+uv run bauer runtime fleet kill-switch on --root "$env:USERPROFILE\.bauer\workspace"
+uv run bauer runtime fleet stop --root "$env:USERPROFILE\.bauer\workspace"
+```
+
+Use `fleet.include` e `fleet.exclude` no config para transformar a seleção em
+uma allowlist explícita quando a raiz contiver pastas que não devem ser
+supervisionadas.
+
 Manual fallback: start the durable automation scheduler and dispatcher in separate terminals:
 
 ```powershell

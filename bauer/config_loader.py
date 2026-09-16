@@ -827,6 +827,29 @@ class AutopilotSection(_StrictSection):
     max_cost_usd: float = Field(ge=0.0, default=2.0)
 
 
+class FleetSection(_StrictSection):
+    """Configuração do supervisor que coordena vários workspaces.
+
+    O fleet é opt-in e nunca trata a raiz como um workspace executável. Ele
+    descobre somente subdiretórios que parecem projetos e inicia um runtime
+    isolado para cada um.
+    """
+
+    enabled: bool = False
+    root: str = ""
+    poll_interval_s: float = Field(ge=1.0, le=86400.0, default=30.0)
+    max_projects: int = Field(ge=1, le=1000, default=20)
+    max_parallel_projects: int = Field(ge=1, le=1000, default=20)
+    max_depth: int = Field(ge=1, le=8, default=1)
+    require_project_marker: bool = True
+    include: list[str] = Field(default_factory=list, max_length=1000)
+    exclude: list[str] = Field(default_factory=list, max_length=1000)
+    auto_restart: bool = True
+    max_restarts_per_project: int = Field(ge=0, le=100, default=5)
+    start_kanban: bool = False
+    kanban_base_port: int = Field(ge=1024, le=65500, default=8765)
+
+
 class ContinuousAutonomyTarget(_StrictSection):
     id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=200)
@@ -1173,6 +1196,7 @@ class BauerConfig(_StrictSection):
     memory: MemorySection = MemorySection()
     loop: LoopSection = LoopSection()
     autopilot: AutopilotSection = AutopilotSection()
+    fleet: FleetSection = FleetSection()
     continuous_autonomy: ContinuousAutonomySection = ContinuousAutonomySection()
     web: WebSection = WebSection()
     mcp: McpSection = McpSection()
