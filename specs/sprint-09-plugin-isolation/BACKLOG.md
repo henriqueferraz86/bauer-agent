@@ -8,7 +8,7 @@
   restart limitado e prevenção de processos duplicados.
 - [x] Integrar hooks gerenciados ao broker, preservando compatibilidade apenas
   com flag explícita.
-- [ ] Adicionar testes de falha, timeout, payload inválido, autorização,
+- [x] Adicionar testes de falha, timeout, payload inválido, autorização,
   restart e shutdown em `tmp_path`.
 - [ ] Atualizar documentação operacional e executar suíte/gates completos.
 

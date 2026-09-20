@@ -66,3 +66,46 @@ def test_plugin_process_timeout_does_not_leave_child_running(tmp_path):
     assert time.monotonic() - started < 1.0
     process.close()
     assert process.state is PluginProcessState.STOPPED
+
+
+def test_plugin_process_reports_child_exit_during_handshake(tmp_path):
+    path = _plugin(
+        tmp_path,
+        """
+        import os
+        os._exit(0)
+        """,
+    )
+    process = PluginProcess(PluginProcessConfig("dead", path))
+    with pytest.raises(PluginProcessError, match="stdout closed"):
+        process.start()
+    process.close()
+
+
+def test_plugin_process_rejects_protocol_output_from_plugin(tmp_path):
+    path = _plugin(
+        tmp_path,
+        """
+        import sys
+        from bauer.plugin_hooks import hooks
+
+        @hooks.on("session_start")
+        def corrupt(**kwargs):
+            sys.__stdout__.write("this is not JSON\\n")
+            sys.__stdout__.flush()
+        """,
+    )
+    process = PluginProcess(PluginProcessConfig("corrupt", path))
+    process.start()
+    with pytest.raises(PluginProcessError, match="invalid JSON"):
+        process.event("session_start", {})
+    process.close()
+
+
+def test_plugin_process_shutdown_is_idempotent(tmp_path):
+    path = _plugin(tmp_path, "")
+    process = PluginProcess(PluginProcessConfig("demo", path))
+    process.start()
+    process.close()
+    process.close()
+    assert process.state is PluginProcessState.STOPPED

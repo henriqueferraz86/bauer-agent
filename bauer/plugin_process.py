@@ -227,8 +227,7 @@ class PluginProcess:
             while True:
                 line = process.stdout.readline(self.config.max_message_bytes + 1)
                 if not line:
-                    if process.poll() is None:
-                        self._responses.put(PluginProcessError("plugin stdout closed unexpectedly"))
+                    self._responses.put(PluginProcessError("plugin stdout closed unexpectedly"))
                     return
                 if len(line) > self.config.max_message_bytes:
                     self._responses.put(PluginProcessProtocolError("incoming plugin line is too large"))
