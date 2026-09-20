@@ -178,6 +178,41 @@ def test_allowlist_stem_strips_exe_extension(runner_unsafe: ShellRunner):
         assert result.returncode == 0
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "free -h",
+        "df -h",
+        "uptime",
+        "uname -a",
+        "whoami",
+        "id",
+        "nproc",
+        "lscpu",
+        "lsblk",
+        "vmstat",
+        "iostat",
+        "ss -tuln",
+    ],
+)
+def test_linux_readonly_diagnostics_are_allowed_by_default(
+    runner: ShellRunner, command: str
+):
+    """Diagnósticos Linux sem escrita não exigem allowlist por máquina."""
+    with patch("subprocess.run", return_value=_mock_proc(stdout="diagnostic")):
+        result = runner.run(command)
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize("command", ["ip link set eth0 down", "systemctl stop bauer"])
+def test_mutating_linux_commands_are_not_default_allowed(
+    runner_unsafe: ShellRunner, command: str
+):
+    """Ferramentas com subcomandos mutáveis continuam opt-in."""
+    with pytest.raises(BlockedCommandError, match="allowlist"):
+        runner_unsafe.run(command)
+
+
 # === EXTRA_ALLOWED_COMMANDS (config.tools.extra_allowed_commands) ===========
 # Regressão: usuário perguntou se a allowlist "esta totalmente liberada" ao
 # esbarrar em 'docker nao esta na allowlist' — não estava, e não havia
@@ -234,6 +269,9 @@ def test_allowlist_error_message_mentions_config_and_extras(ws: Path):
     msg = str(exc_info.value)
     assert "extra_allowed_commands" in msg
     assert "docker" in msg  # extra liberado aparece na lista de permitidos
+    assert "autoriza" in msg
+    assert "permanentemente" in msg
+    assert "confirmacao explicita" in msg
 
 
 def test_default_extra_allowed_commands_is_empty(ws: Path):

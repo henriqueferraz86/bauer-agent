@@ -1115,7 +1115,8 @@ def _make_cli_allowlist_callback(console: Console):
         return _prompt_cmd_decision(
             console, f"{_glifo_aviso()} comando fora da allowlist",
             f"[white]'{base}'[/white] [{_warn()}]não está na allowlist[/].\n"
-            f"Liberar para o Bauer executar comandos [bold]{base}[/bold]?",
+            f"Você autoriza adicionar [bold]{base}[/bold] permanentemente à "
+            "allowlist do Bauer?",
         )
     return _cb
 
