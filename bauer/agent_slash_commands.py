@@ -759,6 +759,8 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
                 f"[magenta]{counts.get('FAILED', 0)} FAILED[/magenta] | "
                 f"{pct}% concluido[/dim]"
             )
+
+
     except Exception:
         pass
 
@@ -824,3 +826,90 @@ def _handle_project_cmd(console, workspace: Any = "workspace") -> None:  # type:
         pass
 
     console.print()
+
+
+# ─── slash-command handler ────────────────────────────────────────────────
+
+def _handle_autopilot_cmd(user_input: str, console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
+    """Controla o Autopilot/Fleet diretamente dentro da sessão do agente."""
+    from pathlib import Path as _Path
+    from rich.table import Table
+
+    parts = user_input.strip().split(maxsplit=1)
+    sub = parts[1].strip().lower() if len(parts) > 1 else "status"
+    if sub in ("help", "-h", "--help"):
+        console.print(
+            "[bold]Uso:[/bold]\n"
+            "  /autopilot start   inicia o Fleet em background\n"
+            "  /autopilot status  mostra estado e bloqueios\n"
+            "  /autopilot pause   pausa novos ciclos\n"
+            "  /autopilot resume  retoma novos ciclos\n"
+            "  /autopilot stop    para o Fleet e os runtimes filhos"
+        )
+        return
+
+    if sub not in {"start", "up", "status", "pause", "resume", "stop"}:
+        console.print(f"[yellow]Subcomando desconhecido: [bold]/autopilot {sub}[/bold][/yellow]")
+        console.print("[dim]Disponiveis: start | status | pause | resume | stop | help[/dim]")
+        return
+
+    try:
+        from .config_loader import load_config
+        from .fleet_bootstrap import prepare_fleet_config
+        from .fleet_supervisor import FleetSupervisor, fleet_root_from_config
+        from .paths import config_path as _config_path, models_path as _models_path
+
+        config_file = _Path(_config_path()).expanduser().resolve()
+        models_file = _Path(_models_path()).expanduser().resolve()
+        prepared = prepare_fleet_config(config_file)
+        cfg = load_config(prepared.config_path)
+        root = fleet_root_from_config(cfg.fleet)
+        fleet = FleetSupervisor(
+            root,
+            config=prepared.config_path,
+            models=models_file,
+            fleet_config=cfg.fleet,
+            autopilot_enabled=bool(cfg.autopilot.enabled),
+        )
+
+        if sub in ("start", "up"):
+            result = fleet.start_background()
+            verb = "já estava ativo" if result.get("already_running") else "iniciado"
+            console.print(
+                f"[green]Autopilot {verb}[/green] — "
+                f"projetos={len(fleet.projects())} root={root}"
+            )
+            return
+        if sub == "pause":
+            fleet.set_paused(True)
+            console.print("[yellow]Autopilot pausado.[/yellow]")
+            return
+        if sub == "resume":
+            fleet.set_paused(False)
+            console.print("[green]Autopilot retomado.[/green]")
+            return
+        if sub == "stop":
+            fleet.request_stop(terminate=True)
+            console.print("[yellow]Parada do Autopilot solicitada.[/yellow]")
+            return
+
+        status = fleet.status().to_dict()
+        console.print(
+            f"[bold]Autopilot:[/bold] state={status['state']} "
+            f"alive={status['fleet_alive']} root={status['root']}"
+        )
+        table = Table(show_lines=False, box=None)
+        table.add_column("Projeto", style="cyan")
+        table.add_column("Estado")
+        table.add_column("Motivo", style="yellow")
+        for project in status.get("projects", []):
+            autopilot = project.get("autopilot") or {}
+            table.add_row(
+                _Path(str(project.get("path", ""))).name or "-",
+                str(autopilot.get("state") or project.get("runtime_state") or "-"),
+                str(autopilot.get("reason") or "-"),
+            )
+        if status.get("projects"):
+            console.print(table)
+    except Exception as exc:  # slash-command não deve derrubar a sessão
+        console.print(f"[red]Erro no Autopilot:[/red] {exc}")

@@ -49,6 +49,7 @@ _META_KEYS = {
     "automation_name",
     "goal_id",
     "step_key",
+    "autopilot_mission",
 }
 
 

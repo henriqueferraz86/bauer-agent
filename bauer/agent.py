@@ -39,6 +39,7 @@ from .skill_registry import SkillRegistry
 from .tool_router import SandboxError, ToolError, ToolRouter
 from .agent_slash_commands import (
     _handle_agent_cmd,
+    _handle_autopilot_cmd,
     _handle_dispatch_cmd,
     _handle_kanban_cmd,
     _handle_memory_cmd,
@@ -133,6 +134,7 @@ _LOOP_SKILL_CMDS = {"/loop-skill", "/loop-skills"}
 _DISPATCH_CMDS = {"/dispatch"}
 _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
+_AUTOPILOT_CMDS = {"/autopilot", "/autonomia"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 _LISTEN_CMDS = {"/listen", "/ouvir"}
 _LISTEN_LOOP_CMDS = {"/listen loop", "/listen auto", "/ouvir loop", "/ouvir auto"}
@@ -175,6 +177,12 @@ _SLASH_BASE = [
     "/memory list",
     "/memory note",
     "/project",
+    "/autopilot",
+    "/autopilot start",
+    "/autopilot status",
+    "/autopilot pause",
+    "/autopilot resume",
+    "/autopilot stop",
     "/thumbsup",
     "/thumbsdown",
     "/agents",
@@ -217,6 +225,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/memory list":    "lista arquivos de memória",
     "/memory note":    "adiciona nota: /memory note <texto>",
     "/project":        "mostra PROJECT.md e resumo de tarefas",
+    "/autopilot":      "inicia e controla o Autopilot/Fleet",
     "/agents":         "lista agents criados",
     "/agent list":     "lista agents criados",
     "/agent create":   "cria novo agent (wizard interativo)",
@@ -2831,6 +2840,7 @@ def run_agent_session(
                 ("/clear", "limpar"),
                 ("/memory", "memoria"),
                 ("/loop", "autonomo"),
+                ("/autopilot", "fleet"),
                 ("/exit", "sair"),
             ],
         )
@@ -3467,6 +3477,11 @@ def run_agent_session(
             continue
         if user_input.lower() in _PROJECT_CMDS:
             _handle_project_cmd(console, active_workspace)
+            continue
+        if user_input.lower() in _AUTOPILOT_CMDS or user_input.lower().startswith(
+            ("/autopilot ", "/autonomia ")
+        ):
+            _handle_autopilot_cmd(user_input, console, active_workspace)
             continue
 
         # L7: feedback de usuário — /thumbsup / /thumbsdown

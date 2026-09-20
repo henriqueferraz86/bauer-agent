@@ -32,9 +32,9 @@ autopilot:
   max_active_goals: 1
   max_replans_per_goal: 1
   approval_mode: threshold
-  max_minutes: 30
-  max_tool_calls: 500
-  max_cost_usd: 2.0
+  max_minutes: 525600
+  max_tool_calls: 100000000
+  max_cost_usd: 1000000
 ```
 
 Start it explicitly or let `runtime start` read `autopilot.enabled`:

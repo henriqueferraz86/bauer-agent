@@ -18,7 +18,8 @@
     Remove completamente o Bauer Agent (workspace não é tocado).
 
 .PARAMETER Extra
-    Extras pip a instalar (padrão: gateway,voice,voice-kokoro). Use "all" para todos.
+    Extras pip a instalar (padrão: gateway,voice,voice-kokoro). Use "agno" para
+    Agno + SQLAlchemy ou "all" para os extras gerais.
 
 .PARAMETER NoExtra
     Instala só dependências core, sem extras.

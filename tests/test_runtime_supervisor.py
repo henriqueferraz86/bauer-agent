@@ -123,6 +123,23 @@ def test_no_console_window_kwargs_on_posix():
     assert kwargs == {}
 
 
+def test_runtime_start_background_hides_windows_console(tmp_path: Path):
+    supervisor = RuntimeSupervisor(tmp_path / "workspace", python="python")
+    captured = {}
+
+    with patch.object(supervisor_module, "subprocess") as mock_subprocess, \
+         patch.object(supervisor_module.os, "name", "nt"), \
+         patch.object(supervisor_module, "_no_console_window_kwargs", return_value={"creationflags": 999}):
+        mock_subprocess.STDOUT = subprocess.STDOUT
+        mock_subprocess.DEVNULL = subprocess.DEVNULL
+        process = _fake_popen()
+        mock_subprocess.Popen.side_effect = lambda *args, **kwargs: captured.update(kwargs) or process
+
+        supervisor.start_background(["--workspace", str(tmp_path / "workspace")])
+
+    assert captured["creationflags"] == 999
+
+
 def test_start_service_applies_no_console_window_kwargs(tmp_path: Path):
     """_start_service de fato repassa _no_console_window_kwargs() pro Popen."""
     supervisor = RuntimeSupervisor(tmp_path / "workspace", python="python")

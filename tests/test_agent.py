@@ -136,6 +136,67 @@ def test_project_command_uses_active_workspace(tmp_path: Path):
     assert "From active workspace" in output
 
 
+def test_autopilot_start_command_uses_internal_fleet(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from bauer.agent import _handle_autopilot_cmd
+    from rich.console import Console
+
+    config_path = tmp_path / "config.yaml"
+    models_path = tmp_path / "models.yaml"
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    config = SimpleNamespace(
+        fleet=SimpleNamespace(root=str(projects_root)),
+        autopilot=SimpleNamespace(enabled=True),
+    )
+    prepared = SimpleNamespace(config_path=config_path)
+    calls: list[str] = []
+
+    class FakeFleet:
+        def __init__(self, root, **kwargs):
+            assert root == projects_root.resolve()
+            assert kwargs["config"] == config_path
+            assert kwargs["models"] == models_path
+            assert kwargs["autopilot_enabled"] is True
+
+        def projects(self):
+            return ["project-a"]
+
+        def start_background(self):
+            calls.append("start")
+            return {"pid": 1234, "already_running": False}
+
+    monkeypatch.setattr("bauer.paths.config_path", lambda: config_path)
+    monkeypatch.setattr("bauer.paths.models_path", lambda: models_path)
+    monkeypatch.setattr("bauer.fleet_bootstrap.prepare_fleet_config", lambda path: prepared)
+    monkeypatch.setattr("bauer.config_loader.load_config", lambda path: config)
+    monkeypatch.setattr("bauer.fleet_supervisor.FleetSupervisor", FakeFleet)
+
+    console = Console(record=True, width=120)
+    _handle_autopilot_cmd("/autopilot start", console, tmp_path / "active")
+
+    assert calls == ["start"]
+    assert "Autopilot iniciado" in console.export_text()
+
+
+def test_run_agent_session_autopilot_command_stays_inside_chat(tmp_path: Path):
+    from bauer.agent import run_agent_session
+    from rich.console import Console
+
+    active_ws = tmp_path / "active"
+    router = ToolRouter(workspace=active_ws)
+    client = _make_client()
+    console = Console()
+
+    with patch("bauer.agent._handle_autopilot_cmd") as handler:
+        with patch("builtins.input", side_effect=["/autopilot start", EOFError]):
+            run_agent_session(client, "test-model", 4096, console, router)
+
+    handler.assert_called_once_with("/autopilot start", console, active_ws)
+    client.chat_stream.assert_not_called()
+
+
 def test_run_agent_session_task_command_uses_router_workspace(tmp_path: Path):
     from bauer.agent import run_agent_session
     from rich.console import Console

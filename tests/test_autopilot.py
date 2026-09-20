@@ -170,16 +170,177 @@ def test_deny_all_is_observable_and_does_not_create_tasks(tmp_path):
     assert manager.tasks == []
 
 
-def test_enabled_without_mission_or_persisted_goal_is_blocked(tmp_path):
+def test_enabled_without_mission_adopts_existing_kanban_task(tmp_path, monkeypatch):
     controller, tracker, manager = _controller(
         tmp_path,
         config=_config(mission=""),
     )
+    manager.tasks.append(FakeTask("001", "Task existente", "TODO", {}))
+
+    class FakeDispatcher:
+        def __init__(self, _workspace):
+            pass
+
+        def mark_ready(self, task_id):
+            task = manager.get_task(task_id)
+            task.status = "READY"
+            return task
+
+    monkeypatch.setattr("bauer.task_dispatcher.TaskDispatcher", FakeDispatcher)
+
     result = controller.tick()
-    assert result.state == AutopilotState.BLOCKED
-    assert result.reason == "mission_required"
+    assert result.state == AutopilotState.DISPATCHING
+    assert result.reason == "kanban_task_adopted"
     assert tracker.count() == 0
-    assert manager.tasks == []
+    assert manager.tasks[0].status == "READY"
+
+
+def test_mission_restarts_after_terminal_historical_goal(tmp_path):
+    controller, tracker, manager = _controller(tmp_path, config=_config(mission="inspecionar"))
+    old_goal = tracker.create("missão anterior")
+    tracker.mark_complete(old_goal)
+
+    result = controller.tick()
+
+    assert result.state == AutopilotState.DISPATCHING
+    assert tracker.count(GoalStatus.RUNNING) == 1
+    assert len(manager.tasks) == 1
+
+
+def test_configured_mission_does_not_duplicate_unfinished_legacy_task(tmp_path):
+    mission = "Revisar bugs e melhorias"
+    controller, tracker, manager = _controller(
+        tmp_path,
+        config=_config(mission=mission),
+    )
+    manager.tasks.append(
+        FakeTask(
+            "057",
+            f"Execute: {mission}",
+            "FAILED",
+            {"dispatch": "true", "goal_id": "old-goal"},
+        )
+    )
+
+    result = controller.tick()
+
+    assert result.state == AutopilotState.BLOCKED
+    assert result.reason == "mission_task_failed"
+    assert tracker.count() == 0
+    assert len(manager.tasks) == 1
+
+
+def test_configured_mission_waits_for_existing_task_instead_of_seeding_goal(tmp_path):
+    mission = "Revisar bugs e melhorias"
+    controller, tracker, manager = _controller(
+        tmp_path,
+        config=_config(mission=mission),
+    )
+    manager.tasks.append(
+        FakeTask(
+            "057",
+            f"Execute: {mission}",
+            "READY",
+            {"dispatch": "true", "goal_id": "old-goal"},
+        )
+    )
+
+    result = controller.tick()
+
+    assert result.state == AutopilotState.DISPATCHING
+    assert result.reason == "mission_task_in_flight"
+    assert tracker.count() == 0
+    assert len(manager.tasks) == 1
+
+
+def test_completed_latest_mission_supersedes_older_failed_duplicates(tmp_path):
+    mission = "Revisar bugs e melhorias"
+    controller, tracker, manager = _controller(
+        tmp_path,
+        config=_config(mission=mission),
+    )
+    manager.tasks.extend(
+        [
+            FakeTask(
+                "057",
+                f"Execute: {mission}",
+                "FAILED",
+                {"dispatch": "true", "goal_id": "old-goal"},
+            ),
+            FakeTask(
+                "058",
+                f"Execute: {mission}",
+                "DONE",
+                {"dispatch": "true", "goal_id": "latest-goal"},
+            ),
+        ]
+    )
+
+    result = controller.tick()
+
+    assert result.state == AutopilotState.IDLE
+    assert result.reason == "mission_completed"
+    assert tracker.count() == 0
+
+
+def test_completed_mission_falls_back_to_existing_kanban_task(tmp_path, monkeypatch):
+    mission = "Revisar bugs e melhorias"
+    controller, tracker, manager = _controller(
+        tmp_path,
+        config=_config(mission=mission),
+    )
+    manager.tasks.extend(
+        [
+            FakeTask(
+                "057",
+                f"Execute: {mission}",
+                "DONE",
+                {"dispatch": "true", "goal_id": "completed-goal"},
+            ),
+            FakeTask("003", "Criar PROJECT_CONTEXT.md", "TODO", {}),
+        ]
+    )
+
+    class FakeDispatcher:
+        def __init__(self, _workspace):
+            pass
+
+        def mark_ready(self, task_id):
+            task = manager.get_task(task_id)
+            task.status = "READY"
+            return task
+
+    monkeypatch.setattr("bauer.task_dispatcher.TaskDispatcher", FakeDispatcher)
+
+    result = controller.tick()
+
+    assert result.state == AutopilotState.DISPATCHING
+    assert result.reason == "kanban_task_adopted"
+    assert tracker.count() == 0
+    assert manager.get_task("003").status == "READY"
+
+
+def test_completed_mission_does_not_reseed_without_backlog(tmp_path):
+    mission = "Revisar bugs e melhorias"
+    controller, tracker, manager = _controller(
+        tmp_path,
+        config=_config(mission=mission),
+    )
+    manager.tasks.append(
+        FakeTask(
+            "057",
+            f"Execute: {mission}",
+            "DONE",
+            {"dispatch": "true", "goal_id": "completed-goal"},
+        )
+    )
+
+    result = controller.tick()
+
+    assert result.state == AutopilotState.IDLE
+    assert result.reason == "mission_completed"
+    assert tracker.count() == 0
+    assert len(manager.tasks) == 1
 
 
 def test_pause_resume_and_operator_replan_are_idempotent(tmp_path):

@@ -94,6 +94,24 @@ def test_fleet_start_background_is_persistent_and_idempotent(tmp_path, monkeypat
     assert fleet.store.read()["fleet_pid"] == 4312
 
 
+def test_fleet_start_background_hides_windows_console_on_windows(tmp_path, monkeypatch):
+    from bauer import fleet_supervisor as module
+
+    class FakeProcess:
+        pid = 4312
+
+    captured = {}
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: captured.update(kwargs) or FakeProcess())
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(module, "_no_console_window_kwargs", lambda: {"creationflags": 0x08000000})
+
+    fleet = FleetSupervisor(tmp_path / "workspace", fleet_config=_fleet_config())
+    fleet.start_background()
+
+    assert captured["creationflags"] == 0x08000000
+
+
 def test_fleet_pause_and_kill_switch_are_project_scoped(tmp_path):
     root = tmp_path / "workspace"
     project = root / "alpha"

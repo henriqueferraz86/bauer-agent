@@ -15,10 +15,16 @@ Roteamento de chave (``is_env_key``):
 from __future__ import annotations
 
 import re
+import os
+import shutil
+import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .config_loader import ConfigError, load_config
 
 # Env vars que são segredos/host mesmo sem sufixo óbvio
 _KNOWN_ENV_KEYS = {
@@ -36,6 +42,124 @@ def get_config_path(config: str | Path = "config.yaml") -> Path:
 
 def get_env_path(env: str | Path = ".env") -> Path:
     return Path(env).resolve()
+
+
+def _merge_mapping(target: dict[str, Any], patch: dict[str, Any]) -> None:
+    """Apply a recursive patch without dropping unrelated user keys."""
+    for key, value in patch.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(target.get(key), dict)
+        ):
+            _merge_mapping(target[key], value)
+        else:
+            target[key] = deepcopy(value)
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    """Copy *source* to *destination* through a same-directory replace."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "wb") as stream, source.open("rb") as original:
+            shutil.copyfileobj(original, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        shutil.copystat(source, tmp, follow_symlinks=True)
+        os.replace(tmp, destination)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text and atomically replace *path* on the same filesystem."""
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.exists():
+            shutil.copystat(path, tmp, follow_symlinks=True)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def safe_update_config(
+    config_path: str | Path,
+    *,
+    patch: dict[str, Any],
+    backup_path: str | Path | None = None,
+) -> Path:
+    """Safely merge *patch* into a complete Bauer config.
+
+    The candidate is parsed and validated before the original is replaced.
+    The original is copied to ``config.yaml.bak`` immediately before the
+    atomic replace and is used for rollback if post-write validation fails.
+    Unknown/user YAML keys are preserved by patching the raw mapping rather
+    than serializing a Pydantic model.
+    """
+    path = Path(config_path).expanduser().resolve()
+    if not path.exists():
+        raise ConfigError(f"Arquivo de config não encontrado: {path}")
+    if not isinstance(patch, dict) or not patch:
+        raise ConfigError("Atualização de config precisa ser um patch YAML não vazio.")
+
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"YAML inválido em {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"Conteúdo de {path} precisa ser um mapeamento YAML no topo.")
+
+    candidate = deepcopy(raw)
+    _merge_mapping(candidate, patch)
+    candidate_text = yaml.safe_dump(
+        candidate,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+
+    # Validate before touching the original. The temporary file is in the
+    # same directory so the eventual replace remains atomic on Windows too.
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".candidate", dir=path.parent
+    )
+    candidate_path = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(candidate_text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        load_config(candidate_path)
+    finally:
+        candidate_path.unlink(missing_ok=True)
+
+    backup = Path(backup_path).expanduser().resolve() if backup_path else path.with_name(f"{path.name}.bak")
+    try:
+        _atomic_copy(path, backup)
+        _atomic_write_text(path, candidate_text)
+        load_config(path)
+    except Exception as exc:  # noqa: BLE001 - transaction boundary
+        if backup.exists():
+            try:
+                _atomic_copy(backup, path)
+            except Exception as rollback_exc:  # noqa: BLE001
+                raise ConfigError(
+                    f"Falha ao atualizar {path}: {exc}; rollback também falhou: {rollback_exc}"
+                ) from exc
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError(f"Falha ao atualizar {path}: {exc}") from exc
+    return backup
 
 
 # ─────────────────────────────────────────────────────────────────────────────

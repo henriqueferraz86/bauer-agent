@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .supervisor import RuntimeSupervisor
+from .supervisor import RuntimeSupervisor, _no_console_window_kwargs
 
 logger = logging.getLogger("bauer.fleet_supervisor")
 
@@ -452,10 +452,7 @@ class FleetSupervisor:
                     "close_fds": True,
                 }
                 if os.name == "nt":
-                    kwargs["creationflags"] = (
-                        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                        | getattr(subprocess, "DETACHED_PROCESS", 0)
-                    )
+                    kwargs.update(_no_console_window_kwargs())
                 else:
                     kwargs["start_new_session"] = True
                 process = subprocess.Popen(command, **kwargs)
