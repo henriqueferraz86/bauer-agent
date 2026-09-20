@@ -51,11 +51,13 @@ VALID_HOOKS = frozenset({
 
 
 class HookRegistry:
-    """Registro central de hooks. Singleton acessível via `hooks`."""
+    """Registro local de hooks com ponte opcional para plugins gerenciados."""
 
-    def __init__(self) -> None:
+    def __init__(self, broker: Any | None = None) -> None:
         self._handlers: dict[str, list[Callable]] = defaultdict(list)
         self._plugins_loaded: bool = False
+        self._managed_plugins_loaded: bool = False
+        self._broker = broker
 
     # ── Registro de handlers ──────────────────────────────────────────────────
 
@@ -110,6 +112,11 @@ class HookRegistry:
                     event,
                     exc,
                 )
+        if self._broker is not None:
+            try:
+                self._broker.dispatch(event, kwargs)
+            except Exception as exc:  # broker is an auxiliary boundary
+                log.warning("plugin_hooks: broker falhou no evento '%s': %s", event, exc)
 
     # ── Carregamento automático de plugins ────────────────────────────────────
 
@@ -151,6 +158,45 @@ class HookRegistry:
 
         self._plugins_loaded = True
         return loaded
+
+    def load_managed_plugins(self, plugin_root: Path | None = None) -> list[str]:
+        """Validate and connect managed plugins through the isolated broker.
+
+        ``plugin_root`` is the PluginManager root (the directory containing
+        ``installed/`` and ``registry.json``), not the legacy flat hook folder.
+        Legacy imports are never performed by this method.
+        """
+        from .plugin_broker import PluginBroker
+        from .plugin_manager import PluginManager, PluginManagerError
+
+        manager = PluginManager(root=plugin_root) if plugin_root is not None else PluginManager()
+        if self._broker is None:
+            self._broker = PluginBroker()
+        loaded: list[str] = []
+        for plugin in manager.list_plugins():
+            if not plugin.enabled:
+                continue
+            try:
+                validated = manager.reload(plugin.manifest.id)
+                self._broker.register(validated)
+                loaded.append(validated.manifest.id)
+            except (PluginManagerError, OSError, ValueError) as exc:
+                log.warning(
+                    "plugin_hooks: managed plugin '%s' not connected: %s",
+                    plugin.manifest.id,
+                    exc,
+                )
+        self._managed_plugins_loaded = True
+        return loaded
+
+    def close_managed_plugins(self) -> None:
+        """Stop all isolated managed plugins without affecting local handlers."""
+        if self._broker is not None:
+            try:
+                self._broker.close()
+            except Exception as exc:  # shutdown is best-effort at session end
+                log.debug("plugin_hooks: managed plugin shutdown failed: %s", exc)
+        self._managed_plugins_loaded = False
 
     def ensure_plugins_loaded(self, plugin_dir: Path | None = None) -> None:
         """Carrega plugins na primeira chamada; no-op nas chamadas seguintes."""

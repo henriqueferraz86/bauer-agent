@@ -6,7 +6,7 @@
   e responder `hello`, `health`, `event` e `shutdown`.
 - [x] Criar `PluginBroker` com política de capability/permissão, estado,
   restart limitado e prevenção de processos duplicados.
-- [ ] Integrar hooks gerenciados ao broker, preservando compatibilidade apenas
+- [x] Integrar hooks gerenciados ao broker, preservando compatibilidade apenas
   com flag explícita.
 - [ ] Adicionar testes de falha, timeout, payload inválido, autorização,
   restart e shutdown em `tmp_path`.
