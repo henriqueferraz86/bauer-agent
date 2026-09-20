@@ -4,7 +4,7 @@
   timeout, limite de mensagem e shutdown idempotente.
 - [x] Criar `plugin_worker` mínimo para carregar somente entrypoints validados
   e responder `hello`, `health`, `event` e `shutdown`.
-- [ ] Criar `PluginBroker` com política de capability/permissão, estado,
+- [x] Criar `PluginBroker` com política de capability/permissão, estado,
   restart limitado e prevenção de processos duplicados.
 - [ ] Integrar hooks gerenciados ao broker, preservando compatibilidade apenas
   com flag explícita.
