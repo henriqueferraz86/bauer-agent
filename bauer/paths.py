@@ -81,3 +81,20 @@ def loop_skills_dir() -> Path:
     d = get_bauer_home() / "loop_skills"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+
+def plugins_dir() -> Path:
+    d = get_bauer_home() / "plugins"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def plugin_registry_path() -> Path:
+    return plugins_dir() / "registry.json"
+
+
+def installed_plugins_dir() -> Path:
+    d = plugins_dir() / "installed"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
