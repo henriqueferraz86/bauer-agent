@@ -7,6 +7,7 @@ criar uma segunda fonte de verdade para sessões, runs, policy ou métricas.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -63,6 +64,29 @@ class ChatRouteDependencies:
     logger: logging.Logger
 
 
+def _allowlist_authorization_prompt(tool_log: list[dict] | None) -> str | None:
+    """Converte um bloqueio de shell em pergunta explícita ao operador.
+
+    O modelo pode resumir um erro de tool de forma vaga. O gateway precisa
+    preservar o gate humano de allowlist de forma determinística, inclusive
+    quando a resposta será encaminhada ao TTS.
+    """
+    for item in tool_log or []:
+        if not isinstance(item, dict):
+            continue
+        result = str(item.get("result", ""))
+        if "Antes de continuar, pergunte ao usuario" not in result:
+            continue
+        match = re.search(r"Comando '([^']+)' nao esta na allowlist", result)
+        base = match.group(1) if match else "este comando"
+        return (
+            f"O comando '{base}' está fora da allowlist. "
+            f"Você autoriza adicioná-lo permanentemente à allowlist para eu "
+            f"executá-lo?"
+        )
+    return None
+
+
 def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
     """Cria a rota ``/chat`` e preserva os dois caminhos de execução."""
 
@@ -116,7 +140,8 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
 
             deps.metrics.tool_calls_total += len(tool_log)
             deps.record_turn_budget(cost, run_id, request_agent_id)
-            formatted = deps.format_response(response)
+            authorization_prompt = _allowlist_authorization_prompt(tool_log)
+            formatted = authorization_prompt or deps.format_response(response)
             deps.store.save(session_id, ctx.messages)
             deps.session_manager.touch_session(session_id, state={"last_run_id": run_id})
             captured["tool_log"] = tool_log
@@ -230,7 +255,8 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
 
         deps.metrics.tool_calls_total += len(tool_log)
         deps.record_turn_budget(cost, run.id, request_agent_id)
-        response = deps.format_response(response)
+        authorization_prompt = _allowlist_authorization_prompt(tool_log)
+        response = authorization_prompt or deps.format_response(response)
         deps.store.save(session_id, ctx.messages)
         deps.session_manager.touch_session(session_id, state={"last_run_id": run.id})
         deps.run_manager.complete_run(

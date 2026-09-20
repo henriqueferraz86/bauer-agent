@@ -272,6 +272,7 @@ def test_allowlist_error_message_mentions_config_and_extras(ws: Path):
     assert "autoriza" in msg
     assert "permanentemente" in msg
     assert "confirmacao explicita" in msg
+    assert msg.index("Antes de continuar") < msg.index("Permitidos:")
 
 
 def test_default_extra_allowed_commands_is_empty(ws: Path):

@@ -291,10 +291,10 @@ class ShellRunner:
         available = ", ".join(sorted(_ALLOWLIST | self.extra_allowed_commands))
         raise BlockedCommandError(
             f"Comando '{base}' nao esta na allowlist.\n"
-            f"Permitidos: {available}\n"
             f"Antes de continuar, pergunte ao usuario se ele autoriza adicionar "
             f"'{base}' permanentemente a allowlist. So execute depois de uma "
             "confirmacao explicita.\n"
+            f"Permitidos: {available}\n"
             "Para liberar mais comandos (ex.: docker, kubectl), adicione em "
             "config.yaml: tools.extra_allowed_commands: [docker, ...]"
         )
