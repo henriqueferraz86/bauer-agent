@@ -479,6 +479,48 @@ def runtime_teams_delegate_cmd(
     console.print(f"[green]delegated[/green] {record.id} run={record.run_id} to={record.to_agent_id}")
 
 
+@runtime_teams_app.command("run")
+def runtime_teams_run_cmd(
+    team_id: str = typer.Argument(...),
+    message: str = typer.Argument(...),
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+    session_id: str = typer.Option("", "--session-id"),
+    estimated_cost_usd: float = typer.Option(0.0, "--estimated-cost-usd", min=0.0),
+    autonomous: bool = typer.Option(False, "--autonomous"),
+):
+    """Executa um time Agno inteiro sob a governança do Bauer Kernel."""
+    from .kernel_cmd import _build
+    from ..core.runtime import AgnoTeamOrchestrator, TeamOrchestrationError
+
+    kernel, cfg = _build(config, state_dir, with_policy=True)
+    orchestrator = AgnoTeamOrchestrator(
+        kernel=kernel,
+        config=cfg,
+        root=state_dir,
+        event_bus=kernel.bus,
+    )
+    try:
+        result = orchestrator.run(
+            team_id,
+            message,
+            session_id=session_id or None,
+            estimated_cost_usd=estimated_cost_usd,
+            autonomous=autonomous,
+        )
+    except TeamOrchestrationError as exc:
+        console.print(f"[red]Team recusado:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    color = "green" if result.ok else "red"
+    console.print(f"[{color}]{result.status}[/{color}] run={result.run_id}")
+    if result.error:
+        console.print(f"[red]{result.error}[/red]")
+    if result.output:
+        console.print(str(result.output))
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
 @runtime_teams_app.command("budget")
 def runtime_teams_budget_cmd(
     team_id: str = typer.Argument(...),
@@ -547,7 +589,7 @@ def runtime_list_cmd(
 
     cfg = load_config(config)
     configured = getattr(cfg.runtime, "adapters", {}) or {}
-    default_adapter = getattr(cfg.runtime, "default_adapter", "bauer_native")
+    default_adapter = getattr(cfg.runtime, "default_adapter", "agno")
 
     table = Table(title="Bauer Runtime Adapters", show_lines=False)
     table.add_column("Adapter", style="cyan")

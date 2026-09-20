@@ -710,7 +710,9 @@ class RuntimeSection(_StrictSection):
     profile: Literal["low", "medium", "high"] = "low"
     ram_limit_mb: int = Field(ge=512, default=4096)
     safety_margin_mb: int = Field(ge=0, default=1024)
-    default_adapter: str = "bauer_native"
+    # Agno is the governed default for both individual agents and formal teams.
+    # Bauer native remains registered as an explicit compatibility adapter.
+    default_adapter: str = "agno"
     adapters: dict[str, dict[str, Any]] = Field(default_factory=_adapters_padrao)
 
 

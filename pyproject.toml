@@ -22,6 +22,9 @@ dependencies = [
     # Pesquisa web e extração funcionam na instalação base; não exigem extra.
     "ddgs>=6.0",
     "beautifulsoup4>=4.12",
+    "agno>=1.7",
+    "sqlalchemy>=2.0",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
