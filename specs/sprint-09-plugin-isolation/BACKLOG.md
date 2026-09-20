@@ -10,6 +10,6 @@
   com flag explícita.
 - [x] Adicionar testes de falha, timeout, payload inválido, autorização,
   restart e shutdown em `tmp_path`.
-- [ ] Atualizar documentação operacional e executar suíte/gates completos.
+- [x] Atualizar documentação operacional e executar suíte/gates completos.
 
-Status: em andamento na branch `codex/sprint-09-plugin-isolation`.
+Status: concluído na branch `codex/sprint-09-plugin-isolation`.

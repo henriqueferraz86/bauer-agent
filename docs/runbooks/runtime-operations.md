@@ -153,6 +153,39 @@ Resume a durable orchestration:
 .\.venv\Scripts\python.exe -m bauer.cli orchestrate resume <run_id> --workspace workspace
 ```
 
+## Managed Plugin Isolation
+
+Plugins installed through `PluginManager` can be connected through the
+isolated broker instead of importing their Python module into the Bauer
+process. The managed root contains `installed/` and `registry.json`:
+
+```python
+from pathlib import Path
+
+from bauer.plugin_hooks import HookRegistry
+
+registry = HookRegistry()
+loaded = registry.load_managed_plugins(Path.home() / ".bauer" / "plugins")
+registry.emit("session_start", session_id="session-1", model="local")
+registry.close_managed_plugins()
+```
+
+Only enabled plugins with a valid manifest and entrypoint are connected. The
+broker filters events by the manifest capability and runtime permission,
+limits message size, enforces a per-call timeout, and allows at most one
+restart in its configured window. A failed or malformed plugin is marked
+unhealthy and does not fail the Bauer session.
+
+The process boundary contains crashes, blocking calls and protocol failures;
+it is not an operating-system sandbox. A plugin still has the permissions of
+the user running the child process. Do not treat manifest permissions as a
+replacement for a container or OS policy. Payloads sent through the broker
+remove prompts, responses, tokens, headers and other sensitive fields.
+
+The legacy flat-folder loader remains a compatibility path. New integrations
+should call `load_managed_plugins()` explicitly and close the broker during
+their lifecycle shutdown.
+
 ## Gateway Delivery
 
 Configure named outbound channels. Secrets stay in environment variables, not in
