@@ -131,11 +131,11 @@ def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
 
 def _validate_permission_rules(value: Any) -> dict[str, Any]:
     if isinstance(value, list):
-        rules: dict[str, Any] = {item: True for item in _string_tuple(value, "permissions")}
-        unknown = set(rules) - ALLOWED_PERMISSIONS
+        list_rules: dict[str, Any] = {item: True for item in _string_tuple(value, "permissions")}
+        unknown = set(list_rules) - ALLOWED_PERMISSIONS
         if unknown:
             raise PluginManifestError("permissões desconhecidas: " + ", ".join(sorted(unknown)))
-        return rules
+        return list_rules
     if not isinstance(value, dict) or not value:
         raise PluginManifestError("manifest.permissions deve declarar pelo menos uma permissão")
 

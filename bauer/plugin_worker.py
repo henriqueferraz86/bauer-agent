@@ -15,8 +15,11 @@ from .plugin_process import PROTOCOL_VERSION
 
 
 def _write(response: dict[str, Any]) -> None:
-    sys.__stdout__.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.__stdout__.flush()
+    stdout = sys.__stdout__
+    if stdout is None:
+        raise RuntimeError("managed plugin worker has no stdout")
+    stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
+    stdout.flush()
 
 
 def _load_entrypoint(path: Path, plugin_id: str) -> None:

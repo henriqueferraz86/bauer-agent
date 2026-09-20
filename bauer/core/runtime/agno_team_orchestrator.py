@@ -136,6 +136,8 @@ class AgnoTeamOrchestrator:
                 f"team concurrency limit reached: {team.id} max={self._max_parallel(team)}"
             )
         try:
+            if self.kernel is None:
+                raise TeamOrchestrationError("team streaming requires a Bauer Kernel")
             from ..kernel.schemas import KernelRequest
 
             request = KernelRequest(
