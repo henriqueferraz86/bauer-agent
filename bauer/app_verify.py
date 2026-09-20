@@ -215,7 +215,12 @@ def _candidatos_python(root: Path) -> List[str]:
         achado = shutil.which(nome)
         if achado:
             cands.append(achado)
+    # O Python atual pode aparecer no PATH com outro alias (por exemplo,
+    # ``python3`` dentro de um venv criado pelo uv).  Remova a ocorrência
+    # anterior antes de anexá-lo ao fim, para que ele continue sendo o último
+    # recurso mesmo quando os caminhos apontam para o mesmo executável.
     if sys.executable:
+        cands = [c for c in cands if c != sys.executable]
         cands.append(sys.executable)
     vistos: set[str] = set()
     return [c for c in cands if not (c in vistos or vistos.add(c))]
