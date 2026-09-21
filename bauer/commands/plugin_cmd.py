@@ -32,23 +32,23 @@ def plugin_list(
     table.add_column("Hooks")
     table.add_column("Manifest")
     table.add_column("Descrição")
-    for p in managed:
+    for managed_plugin in managed:
         table.add_row(
-            p.manifest.id,
-            p.manifest.version,
-            "[green]sim[/green]" if p.enabled else "[red]não[/red]",
-            ", ".join(p.manifest.permissions) or "-",
+            managed_plugin.manifest.id,
+            managed_plugin.manifest.version,
+            "[green]sim[/green]" if managed_plugin.enabled else "[red]não[/red]",
+            ", ".join(managed_plugin.manifest.permissions) or "-",
             "[green]✓[/green] gerenciado",
-            p.error or p.manifest.name,
+            managed_plugin.error or managed_plugin.manifest.name,
         )
-    for p in plugins:
+    for registry_plugin in plugins:
         table.add_row(
-            p.name,
-            p.version or "-",
-            "[green]sim[/green]" if p.enabled else "[red]não[/red]",
-            ", ".join(p.hooks) or "-",
-            "[green]✓[/green]" if p.has_manifest else "[dim]-[/dim]",
-            p.description or p.error or "-",
+            registry_plugin.name,
+            registry_plugin.version or "-",
+            "[green]sim[/green]" if registry_plugin.enabled else "[red]não[/red]",
+            ", ".join(registry_plugin.hooks) or "-",
+            "[green]✓[/green]" if registry_plugin.has_manifest else "[dim]-[/dim]",
+            registry_plugin.description or registry_plugin.error or "-",
         )
     console.print(table)
 

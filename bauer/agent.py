@@ -2634,6 +2634,7 @@ def run_agent_session(
     route_profiles_by_provider: "dict[str, dict] | None" = None,
     kernel: "Any | None" = None,
     render_header: "Any | None" = None,
+    decision_config: "Any | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -2667,6 +2668,8 @@ def run_agent_session(
             via kernel.execute() com o corpo do turno como executor: run
             auditável + kill-switch/policy/budget antes da chamada LLM.
             None (default) = comportamento de sempre, sem kernel.
+        decision_config: configuração opcional do decisor Jev/fallback. None
+            mantém o roteador heurístico sem chamadas externas.
     """
     # MAX_TOOL_TURNS é lido por dezenas de call sites como global do módulo
     # (inclusive dentro de funções aninhadas em _run_tool_loop_body) — em vez
@@ -3562,8 +3565,9 @@ def run_agent_session(
             # sobre o ModelRouter legado. CONSERVADOR: tier sem profile, provider
             # sem client, ou falha → o turno segue no modelo padrão da sessão.
             try:
-                from .model_router import decide as _hr_decide
-                _d = _hr_decide(user_input, _tier_profiles)
+                from .decision_router import decide_with_fallback as _hr_decide
+                _d = _hr_decide(user_input, _tier_profiles, decision_config)
+                route_kind = "orchestrate" if _d.orchestrate else "direct"
                 if _d.model:
                     if not _d.provider or _d.provider == _provider:
                         _c = client  # mesmo provider → reusa o client vivo da sessão
@@ -3577,7 +3581,8 @@ def run_agent_session(
                         # como tag de markup e o engoliria do output
                         console.print(
                             f"[dim]  → tier {_d.profile}: {_d.model} "
-                            f"({_d.task_type}/{_d.complexity})[/dim]"
+                            f"({_d.task_type}/{_d.complexity}; {_d.source}; "
+                            f"confiança {_d.confidence:.2f})[/dim]"
                         )
             except Exception as _hr_exc:  # noqa: BLE001 — routing é otimização; nunca bloqueia o turno
                 from .logging_config import log_suppressed as _hr_log

@@ -1013,7 +1013,9 @@ def heuristic_route_kit(cfg, *, conjunto: str = "default"):
     certo para cada tipo de tarefa.
     """
     try:
-        enabled = bool(getattr(cfg.model, "router_enabled", False))
+        enabled = bool(getattr(cfg.model, "router_enabled", False)) or bool(
+            getattr(getattr(cfg, "decision", None), "jev_enabled", False)
+        )
         if not enabled:
             return None, None
         from ..model_router import profiles_from_config
@@ -1061,7 +1063,10 @@ def route_profiles_by_provider(cfg) -> "dict[str, dict] | None":
     cair no `route_profiles` fixo de sempre (mesmo comportamento de hoje).
     """
     try:
-        if not bool(getattr(cfg.model, "router_enabled", False)):
+        if not (
+            bool(getattr(cfg.model, "router_enabled", False))
+            or bool(getattr(getattr(cfg, "decision", None), "jev_enabled", False))
+        ):
             return None
         from ..model_router import profiles_by_provider_from_config
         by_provider = profiles_by_provider_from_config(cfg)

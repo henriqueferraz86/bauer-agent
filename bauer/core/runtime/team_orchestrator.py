@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from ..events import EventBus
@@ -164,9 +164,10 @@ class TeamRunManager:
         return TeamRun(**data) if data else None
 
     def list_tasks(self, team_run_id: str) -> list[TeamTask]:
+        records = cast(list[dict[str, Any]], self.store.list_latest("team_tasks"))
         return [
             TeamTask(**item)
-            for item in self.store.list_latest("team_tasks")
+            for item in records
             if item.get("team_run_id") == team_run_id
         ]
 

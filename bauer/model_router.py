@@ -183,6 +183,10 @@ class RouteDecision:
     matched: list[str] = field(default_factory=list)  # sinais que dispararam
     provider: str = ""           # resolvido se profiles configurados
     model: str = ""
+    confidence: float = 1.0
+    source: str = "heuristic"
+    error: str = ""
+    orchestrate: bool = False
 
 
 def _has(text: str, needles: tuple[str, ...]) -> list[str]:

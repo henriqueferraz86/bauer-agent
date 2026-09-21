@@ -108,6 +108,16 @@ def config_show(
     model_tbl.add_row("Contexto mínimo:", str(cfg.model.minimum_context))
     console.print(Panel(model_tbl, title="◆ Modelo", border_style="cyan", title_align="left"))
 
+    decision_tbl = Table(show_header=False, box=None, padding=(0, 1))
+    decision_tbl.add_row(
+        "Jev:",
+        "[green]ativo[/green]" if cfg.decision.jev_enabled else "[dim]desativado[/dim]",
+    )
+    decision_tbl.add_row("Fallback:", "[green]ativo[/green]" if cfg.decision.fallback_enabled else "[yellow]desativado[/yellow]")
+    decision_tbl.add_row("Chave:", "[green]configurada[/green]" if cfg.decision.api_key else "[dim]não configurada[/dim]")
+    decision_tbl.add_row("Confiança mínima:", f"{cfg.decision.min_confidence:.2f}")
+    console.print(Panel(decision_tbl, title="◆ Decisão estruturada", border_style="cyan", title_align="left"))
+
     # ── Providers & API keys (✓/○ por env var) ──
     prov_tbl = Table(box=None, padding=(0, 1))
     prov_tbl.add_column("Provider", style="cyan")

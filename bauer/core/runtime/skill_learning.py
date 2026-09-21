@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from ...skill_learning import draft_skill_yaml, find_skill_candidates
@@ -93,7 +93,8 @@ class SkillLearningManager:
         return SkillProposal(**data) if data else None
 
     def list_proposals(self, *, status: str | None = None) -> list[SkillProposal]:
-        proposals = [SkillProposal(**item) for item in self.store.list_latest("skill_proposals")]
+        records = cast(list[dict[str, Any]], self.store.list_latest("skill_proposals"))
+        proposals = [SkillProposal(**item) for item in records]
         if status is not None:
             proposals = [proposal for proposal in proposals if proposal.status == status]
         return proposals
@@ -106,12 +107,13 @@ class _RuntimeExperienceView:
         self.store = store
 
     def list_sessions(self) -> list[str]:
-        return sorted({str(item.get("session_id")) for item in self.store.list("skill_experiences")})
+        records = cast(list[dict[str, Any]], self.store.list("skill_experiences"))
+        return sorted({str(item.get("session_id")) for item in records})
 
     def load(self, session_id: str) -> list[dict[str, str]]:
+        records = cast(list[dict[str, Any]], self.store.list("skill_experiences"))
         return [
             {"role": "user", "content": str(item.get("user_message") or "")}
-            for item in self.store.list("skill_experiences")
+            for item in records
             if str(item.get("session_id")) == session_id
         ]
-

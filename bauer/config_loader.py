@@ -729,6 +729,22 @@ class RouterSection(_StrictSection):
     direct_model: str = "qwen3:0.6b"
 
 
+class DecisionSection(_StrictSection):
+    """Decisor estruturado opcional para classificação e roteamento.
+
+    Jev nunca executa tools nem substitui Kernel/policy. Quando desligado, o
+    Bauer mantém o roteador heurístico local e não faz nenhuma chamada externa.
+    """
+
+    jev_enabled: bool = False
+    fallback_enabled: bool = True
+    api_key: str = ""  # prefira TYPESAFE_API_KEY no ambiente/.env
+    endpoint: str = "https://api.typesafe.ai/v1/systemone"
+    model: str = "jev-latest"
+    timeout_seconds: float = Field(ge=0.1, le=30.0, default=2.0)
+    min_confidence: float = Field(ge=0.0, le=1.0, default=0.65)
+
+
 class LoggingSection(_StrictSection):
     level: Literal["debug", "info", "warning", "error"] = "info"
     file: str | None = "./logs/bauer.log"
@@ -1216,6 +1232,7 @@ class BauerConfig(_StrictSection):
     postiz: PostizSection = PostizSection()
     gateway: GatewaySection = GatewaySection()
     observability: ObservabilitySection = ObservabilitySection()
+    decision: DecisionSection = DecisionSection()
 
 
 def _valid_fields_for(section_name: str) -> str:

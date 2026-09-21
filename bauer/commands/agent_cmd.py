@@ -669,6 +669,7 @@ def agent(
             route_profiles=_route_profiles,
             route_client_fn=_route_client_fn,
             route_profiles_by_provider=_route_profiles_by_provider,
+            decision_config=cfg,
             kernel=_kernel_inst,
             render_header=_render_cabecalho,
         )

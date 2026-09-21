@@ -87,7 +87,7 @@ class NexusRealtimeSession:
         self.session_id = session_id
         self.detect_voice = detect_voice
         self.recognize = recognize
-        self.stream_llm = stream_llm or (lambda _text: [])
+        self.stream_llm: StreamingLLM = stream_llm or (lambda _text: [])
         self.synthesize = synthesize or (lambda text: text)
         self.emit = emit or (lambda _event, _data: None)
         self.state = RealtimeState.IDLE
@@ -141,4 +141,3 @@ class NexusRealtimeSession:
 
     def _emit(self, event: str, **data: Any) -> None:
         self.emit(event, {"session_id": self.session_id, "state": self.state.value, **data})
-

@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from ..events import EventBus
@@ -321,7 +321,8 @@ class AgentManager:
         return AgentProcess(**data) if data else None
 
     def list_agents(self) -> list[AgentProcess]:
-        return [AgentProcess(**item) for item in self.store.list_latest("agent_processes")]
+        records = cast(list[dict[str, Any]], self.store.list_latest("agent_processes"))
+        return [AgentProcess(**item) for item in records]
 
     def _change_status(self, process_id: str, status: str, *, event: str) -> AgentProcess:
         process = self.inspect_agent(process_id)
