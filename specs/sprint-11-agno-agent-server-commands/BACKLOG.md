@@ -5,5 +5,5 @@
 - [x] S11-03 — expor API de times no desktop router do `bauer serve`.
 - [x] S11-04 — criar tela Teams e navegação do frontend.
 - [x] S11-05 — adicionar testes Python de slash command e HTTP.
-- [ ] S11-06 — executar validações locais, build e smoke na Beelink.
+- [x] S11-06 — executar validações locais, build e smoke na Beelink.
 - [ ] S11-07 — revisar, commitar e abrir PR.
