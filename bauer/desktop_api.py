@@ -280,6 +280,7 @@ def build_desktop_router(
     runtime_root: Optional[Path] = None,
     logs_dir: Optional[Path] = None,
     start_loop: Optional[Callable[[str, Optional[str], Optional[Path]], Dict[str, Any]]] = None,
+    kernel: Any | None = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
 
@@ -297,6 +298,7 @@ def build_desktop_router(
     _spans_file = spans_file or (Path.home() / ".bauer" / "traces" / "spans.jsonl")
     _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
     _logs_dir = logs_dir or (Path.cwd() / "logs")
+    _team_kernel = kernel
 
     try:
         from .config_loader import ContinuousAutonomySection, load_config
@@ -314,6 +316,28 @@ def build_desktop_router(
     from .continuous_autonomy import ContinuousAutonomy
 
     _continuous = ContinuousAutonomy(root=_runtime_root, config=_continuous_config)
+
+    def _team_orchestrator():
+        """Retorna o orquestrador Agno compartilhando a governança do server."""
+        nonlocal _team_kernel
+        if _team_kernel is None:
+            try:
+                from .config_loader import load_config
+                from .core.kernel import build_kernel
+
+                cfg = load_config(get_config_path())
+                _team_kernel = build_kernel(
+                    cfg, root=str(_runtime_root), workspace=str(get_workspace()),
+                )
+            except Exception as exc:  # noqa: BLE001 - mantém o painel consultável
+                logger.debug("team kernel unavailable: %s", exc)
+        from .core.runtime import AgnoTeamOrchestrator
+
+        return AgnoTeamOrchestrator(
+            kernel=_team_kernel,
+            config=getattr(_team_kernel, "config", None),
+            root=_runtime_root,
+        )
 
     def _kanban_workspace(project_id: Optional[str]) -> Path:
         """Workspace do board a exibir: projeto resolvido, com fallback seguro
@@ -621,6 +645,139 @@ def build_desktop_router(
                 item.update(status="idle", current_run_id=None)
 
         return {"agents": activity}
+    # ── Teams Agno -------------------------------------------------------
+    @router.get("/teams")
+    def team_list():
+        orchestrator = _team_orchestrator()
+        return {
+            "teams": [
+                {
+                    **team.to_dict(),
+                    "members": [
+                        orchestrator.agent_registry.get(agent_id).to_dict()
+                        for agent_id in team.agents
+                        if orchestrator.agent_registry.get(agent_id) is not None
+                    ],
+                }
+                for team in orchestrator.team_registry.list()
+            ],
+            "default_orchestrator": "agno",
+        }
+
+    @router.get("/teams/{team_id}")
+    def team_detail(team_id: str):
+        orchestrator = _team_orchestrator()
+        team = orchestrator.team_registry.get(team_id)
+        if team is None:
+            raise HTTPException(status_code=404, detail=f"time não encontrado: {team_id}")
+        return {
+            **team.to_dict(),
+            "members": [
+                orchestrator.agent_registry.get(agent_id).to_dict()
+                for agent_id in team.agents
+                if orchestrator.agent_registry.get(agent_id) is not None
+            ],
+        }
+
+    @router.get("/teams/{team_id}/budget")
+    def team_budget(team_id: str):
+        orchestrator = _team_orchestrator()
+        if orchestrator.team_registry.get(team_id) is None:
+            raise HTTPException(status_code=404, detail=f"time não encontrado: {team_id}")
+        return orchestrator.delegations.team_budget_status(team_id)
+
+    @router.get("/teams/{team_id}/stream")
+    def team_stream(
+        team_id: str,
+        task: str = Query(..., min_length=1),
+        session_id: str = Query(""),
+        user_id: str = Query("local-user"),
+    ):
+        from fastapi.encoders import jsonable_encoder
+        from fastapi.responses import StreamingResponse
+
+        orchestrator = _team_orchestrator()
+        if orchestrator.team_registry.get(team_id) is None:
+            raise HTTPException(status_code=404, detail=f"time não encontrado: {team_id}")
+
+        def _events():
+            try:
+                for event in orchestrator.stream(
+                    team_id, task.strip(), session_id=session_id or None, user_id=user_id,
+                ):
+                    encoded = json.dumps(jsonable_encoder(event), ensure_ascii=False)
+                    yield f"event: team\ndata: {encoded}\n\n"
+            except Exception as exc:  # noqa: BLE001
+                encoded = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                yield f"event: error\ndata: {encoded}\n\n"
+
+        return StreamingResponse(
+            _events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @router.post("/teams/{team_id}/runs")
+    def team_run(team_id: str, body: dict = Body(...)):
+        task = str(body.get("task") or body.get("message") or "").strip()
+        if not task:
+            raise HTTPException(status_code=422, detail="task é obrigatório")
+        orchestrator = _team_orchestrator()
+        if orchestrator.team_registry.get(team_id) is None:
+            raise HTTPException(status_code=404, detail=f"time não encontrado: {team_id}")
+        try:
+            result = orchestrator.run(
+                team_id,
+                task,
+                session_id=str(body.get("session_id") or "") or None,
+                user_id=str(body.get("user_id") or "local-user"),
+                estimated_cost_usd=float(body.get("estimated_cost_usd") or 0.0),
+                autonomous=bool(body.get("autonomous", False)),
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - traduz falha de execução para API
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        payload = asdict(result)
+        payload["ok"] = result.ok
+        payload["team_id"] = team_id
+        return payload
+
+    @router.get("/teams/runs/{run_id}")
+    def team_run_status(run_id: str):
+        from .core.runtime.run_manager import RunManager
+
+        run = RunManager(root=_runtime_root).get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"run não encontrada: {run_id}")
+        return asdict(run)
+
+    @router.get("/teams/runs/{run_id}/events")
+    def team_run_events(run_id: str, limit: int = Query(300, ge=1, le=2000)):
+        from .core.events import EventBus
+        from .core.runtime.run_manager import RunManager
+
+        if RunManager(root=_runtime_root).get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail=f"run não encontrada: {run_id}")
+        bus = EventBus(root=_runtime_root)
+        return {"events": [EventBus.to_dict(event) for event in bus.list_events(run_id=run_id, limit=limit)]}
+
+    @router.post("/teams/runs/{run_id}/cancel")
+    def team_run_cancel(run_id: str):
+        from .core.runtime.run_manager import RunManager
+
+        manager = RunManager(root=_runtime_root)
+        if manager.get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail=f"run não encontrada: {run_id}")
+        try:
+            if _team_kernel is not None:
+                _team_kernel.cancel(run_id)
+            else:
+                manager.cancel_run(run_id)
+            run = manager.get_run(run_id)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return asdict(run) if run is not None else {"id": run_id, "status": "cancelled"}
 
     @router.get("/obs/approvals")
     def obs_approvals(status: str = Query("pending", description="pending | approved | denied")):
