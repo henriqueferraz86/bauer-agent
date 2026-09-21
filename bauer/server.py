@@ -706,8 +706,8 @@ def create_app(
         if not _router_enabled or not _router_profiles:
             return _state["client"], _state["model"], None
         try:
-            from .decision_router import decide_with_fallback
-            d = decide_with_fallback(message, _router_profiles, _router_cfg)
+            from .routing_runtime import decide_route
+            d = decide_route(message, _router_profiles, _router_cfg)
         except Exception:  # noqa: BLE001
             return _state["client"], _state["model"], None
         if not d.model:
@@ -721,14 +721,12 @@ def create_app(
         if decision is None:
             return
         try:
+            from .routing_runtime import route_event_data
             event_bus.publish(
                 "model.route.selected",
                 run_id=run_id, session_id=sid, agent_id=agent_id,
                 status=decision.profile, message=decision.reason,
-                data={"task_type": decision.task_type, "complexity": decision.complexity,
-                      "tier": decision.profile, "provider": decision.provider, "model": decision.model,
-                      "source": decision.source, "confidence": decision.confidence,
-                      "orchestrate": decision.orchestrate},
+                data=route_event_data(decision),
             )
         except Exception as exc:  # noqa: BLE001
             from .logging_config import log_suppressed

@@ -3565,7 +3565,7 @@ def run_agent_session(
             # sobre o ModelRouter legado. CONSERVADOR: tier sem profile, provider
             # sem client, ou falha → o turno segue no modelo padrão da sessão.
             try:
-                from .decision_router import decide_with_fallback as _hr_decide
+                from .routing_runtime import decide_route as _hr_decide
                 _d = _hr_decide(user_input, _tier_profiles, decision_config)
                 route_kind = "orchestrate" if _d.orchestrate else "direct"
                 if _d.model:
