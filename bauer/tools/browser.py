@@ -85,7 +85,6 @@ class BrowserToolsMixin:
 
     def _browser_snapshot(self, args: dict) -> str:
         page = self._ensure_browser()
-        include_hidden = bool(args.get("include_hidden", False))
         try:
             # Retorna texto acessível via innerText em estrutura simplificada
             script = """
@@ -153,7 +152,6 @@ class BrowserToolsMixin:
     def _browser_scroll(self, args: dict) -> str:
         direction = str(args.get("direction", "down")).lower()
         amount = self._coerce_int(args.get("amount", 500), default=500, minimum=1)
-        selector = args.get("selector")
         page = self._ensure_browser()
         try:
             if direction == "top":

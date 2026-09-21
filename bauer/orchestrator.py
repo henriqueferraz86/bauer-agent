@@ -248,7 +248,7 @@ class AgentOrchestrator:
             if self.console and stream_prefix:
                 self.console.print()
             return "".join(parts)
-        except Exception as exc:
+        except Exception:
             # Fallback gracioso: se o planner falhou e nao e o mesmo do client principal,
             # tenta de novo com o client principal + seu modelo default.
             if self._planner_client is not self.client:

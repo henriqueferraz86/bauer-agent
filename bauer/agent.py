@@ -235,7 +235,6 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import CompleteEvent, Completer, Completion
-    from prompt_toolkit.completion import ThreadedCompleter
     from prompt_toolkit.cursor_shapes import CursorShape
     from prompt_toolkit.document import Document as PtDocument
     from prompt_toolkit.formatted_text import HTML
@@ -1957,7 +1956,6 @@ def _ledger_block(workspace_dir: str | None) -> str:
         if not tasks_file.is_file():
             return ""
         from .workspace_manager import WorkspaceManager as _WM
-        from .workspace_manager_factory import get_workspace_manager
         wm = _WM(str(workspace_dir))
         _PENDING = {"TODO", "READY", "IN_PROGRESS", "BLOCKED"}
         pending = [t for t in wm.list_tasks() if t.status in _PENDING]

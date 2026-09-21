@@ -13,11 +13,12 @@ from typing import Any, cast
 
 from .core.runtime.memory import MemoryRecord, RuntimeMemoryManager
 from .memory_manager import MemoryManager
+from .memory_provider import MemoryProvider
 
 _log = logging.getLogger("bauer.memory_facade")
 
 
-class UnifiedMemory:
+class UnifiedMemory(MemoryProvider):
     """Coordena memória auditável e a projeção Markdown legível."""
 
     def __init__(
@@ -32,6 +33,95 @@ class UnifiedMemory:
         self.runtime = runtime or RuntimeMemoryManager(
             root=runtime_root or Path(memory_dir) / "runtime"
         )
+        self._workspace: Path | None = None
+        self._prefetched = ""
+        self._initialized = False
+
+    def initialize(self, workspace: str | Path) -> None:
+        """Inicializa os stores no workspace da sessão do agente."""
+        self._workspace = Path(workspace)
+        memory_dir = self._workspace / "memory"
+        self.markdown = MemoryManager(memory_dir)
+        self.runtime = RuntimeMemoryManager(root=memory_dir / "runtime")
+        self.markdown.init_files()
+        self._initialized = True
+
+    def prefetch(self) -> None:
+        """Carrega a parte humana da memória para o prompt do agente."""
+        if not self._initialized:
+            return
+        parts: list[str] = []
+        for filename in ("MEMORY.md", "USER_PREFERENCES.md", "RUNTIME_LESSONS.md"):
+            try:
+                content = self.markdown.read_file(filename)
+                if content and not content.startswith("[arquivo"):
+                    parts.append(f"### {filename}\n" + "\n".join(content.splitlines()[-40:]))
+            except Exception as exc:  # noqa: BLE001 - memória é acessória
+                _log.debug("unified memory prefetch failed: %s", exc)
+        self._prefetched = "\n\n".join(parts)
+
+    def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
+        if not self._initialized:
+            return
+        query = next(
+            (
+                str(message.get("content", ""))
+                for message in reversed(messages)
+                if message.get("role") == "user" and message.get("content")
+            ),
+            "",
+        )
+        if query:
+            hits = self.search(query, top_k=3)
+            if hits:
+                self._prefetched = "\n\n".join(
+                    [
+                        self._prefetched,
+                        "### Memória unificada\n"
+                        + "\n".join(f"- {hit['snippet'][:240]}" for hit in hits),
+                    ]
+                ).strip()
+        elif turn_index % 5 == 0:
+            self.prefetch()
+
+    def sync_turn(self, turn_index: int, messages: list[dict]) -> None:
+        return None
+
+    def on_session_end(self, messages: list[dict]) -> None:
+        if self._initialized:
+            self.remember(
+                scope="agent",
+                content=f"Sessão encerrada com {len(messages)} mensagens.",
+                source="session",
+                title="Sessão finalizada",
+            )
+
+    def on_pre_compress(self, messages: list[dict]) -> None:
+        if self._initialized:
+            self.remember(
+                scope="agent",
+                content=f"Contexto comprimido com {len(messages)} mensagens.",
+                source="context",
+                title="Compressão de contexto",
+                markdown_file="RUNTIME_LESSONS.md",
+            )
+
+    def on_memory_write(self, key: str, value: str) -> None:
+        return None
+
+    def system_prompt_block(self) -> str:
+        return f"## Memória do Projeto\n\n{self._prefetched[:4000]}" if self._prefetched else ""
+
+    def get_config_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Diretório de trabalho da memória unificada.",
+                }
+            },
+        }
 
     def remember(
         self,
@@ -43,6 +133,7 @@ class UnifiedMemory:
         confidence: float = 1.0,
         valid_until: str | None = None,
         project_to_markdown: bool = True,
+        markdown_file: str = "MEMORY.md",
     ) -> MemoryRecord:
         """Grava um fato e, por padrão, projeta-o em ``MEMORY.md``.
 
@@ -61,18 +152,16 @@ class UnifiedMemory:
             try:
                 note_title = (title or content.strip().splitlines()[0][:120]).strip()
                 note_title = note_title.replace("\n", " ") or "Memória runtime"
-                self.markdown.add_note(
+                self.markdown.append_entry(
+                    markdown_file,
                     note_title,
-                    "\n".join(
-                        (
-                            content.strip(),
-                            "",
-                            f"- memory_id: {record.id}",
-                            f"- scope: {record.scope}",
-                            f"- source: {record.source}",
-                            f"- confidence: {record.confidence:.2f}",
-                        )
-                    ),
+                    fields={
+                        "memory_id": record.id,
+                        "scope": record.scope,
+                        "source": record.source,
+                        "confidence": f"{record.confidence:.2f}",
+                    },
+                    body=content.strip(),
                 )
             except Exception as exc:  # noqa: BLE001 - projeção é acessória
                 _log.debug("memory markdown projection failed: %s", exc)

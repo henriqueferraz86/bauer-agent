@@ -283,7 +283,6 @@ def _handle_task_cmd(user_input: str, console, workspace: Any = "workspace") -> 
     from rich.table import Table
 
     try:
-        from .workspace_manager import WorkspaceError
         from .workspace_manager_factory import get_workspace_manager
     except ImportError:
         console.print("[red]WorkspaceManager nao disponivel.[/red]")

@@ -182,6 +182,7 @@ class LocalMemoryProvider(MemoryProvider):
 
     def __init__(self) -> None:
         self._manager: Any = None  # MemoryManager, lazy-loaded
+        self._unified: Any = None  # UnifiedMemory, lazy-loaded
         self._workspace: Path | None = None
         self._prefetched: str = ""
         self._nudge_state = _NudgeState()
@@ -195,8 +196,15 @@ class LocalMemoryProvider(MemoryProvider):
         self._workspace = Path(workspace)
         memory_dir = self._workspace / "memory"
         from .memory_manager import MemoryManager
+        from .memory_facade import UnifiedMemory
         self._manager = MemoryManager(memory_dir=memory_dir)
         self._manager.init_files()
+        self._unified = UnifiedMemory(
+            markdown=self._manager,
+            runtime_root=memory_dir / "runtime",
+        )
+        self._unified._workspace = self._workspace
+        self._unified._initialized = True
         self._initialized = True
 
     def prefetch(self) -> None:
@@ -217,6 +225,11 @@ class LocalMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:
         if not self._initialized or self._manager is None:
             return
+        if self._unified is not None:
+            self._unified.on_turn_start(turn_index, messages)
+            self._prefetched = self._unified.system_prompt_block().removeprefix(
+                "## Memória do Projeto\n\n"
+            )
         if turn_index % 5 == 0 and turn_index > 0:
             # Atualiza prefetch a cada 5 turnos para pegar novas entradas de memória
             self.prefetch()
@@ -228,10 +241,10 @@ class LocalMemoryProvider(MemoryProvider):
         if not self._initialized or self._manager is None:
             return
         try:
-            self._manager.add_note(
-                "Sessão finalizada",
-                f"Sessão encerrada com {len(messages)} mensagens.",
-            )
+            if self._unified is not None:
+                self._unified.on_session_end(messages)
+            else:
+                self._manager.add_note("Sessão finalizada", f"Sessão encerrada com {len(messages)} mensagens.")
         except Exception:
             pass
 
@@ -239,10 +252,10 @@ class LocalMemoryProvider(MemoryProvider):
         if not self._initialized or self._manager is None:
             return
         try:
-            self._manager.add_runtime_lesson(
-                "Compressão de contexto",
-                f"Contexto comprimido com {len(messages)} mensagens.",
-            )
+            if self._unified is not None:
+                self._unified.on_pre_compress(messages)
+            else:
+                self._manager.add_runtime_lesson("Compressão de contexto", f"Contexto comprimido com {len(messages)} mensagens.")
         except Exception:
             pass
 
@@ -278,10 +291,15 @@ class LocalMemoryProvider(MemoryProvider):
             return
         try:
             summary = result[:300].replace("\n", " ")
-            self._manager.add_note(
-                "Delegação registrada",
-                f"Subtarefa: {sub_task[:120]}\nResultado: {summary}",
-            )
+            if self._unified is not None:
+                self._unified.remember(
+                    scope="agent",
+                    content=f"Subtarefa: {sub_task[:120]}\nResultado: {summary}",
+                    source="delegation",
+                    title="Delegação registrada",
+                )
+            else:
+                self._manager.add_note("Delegação registrada", f"Subtarefa: {sub_task[:120]}\nResultado: {summary}")
         except Exception:
             pass
 

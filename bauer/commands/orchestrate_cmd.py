@@ -206,7 +206,7 @@ def orchestrate_run(
             else:
                 console.print("[dim]Usando agent padrao.[/dim]")
 
-    state = _get_or_run_state(cfg, reg, state_file)
+    _get_or_run_state(cfg, reg, state_file)
 
     # Cliente principal (pode ser Ollama, OpenAI, etc.)
     client = _build_client(cfg)

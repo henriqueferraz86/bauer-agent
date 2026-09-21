@@ -140,7 +140,8 @@ def _build_client(cfg):
                         "[red]Nao foi possivel renovar o token Copilot.[/red]\n"
                         "Execute: [bold]bauer auth login -p copilot[/bold]"
                     )
-                    import sys; sys.exit(1)
+                    import sys
+                    sys.exit(1)
             # ChatGPT via browser (OAuth): token sem api_key → usa o backend
             # ChatGPT (Responses API) billando na assinatura, igual ao Codex.
             if (

@@ -6,7 +6,6 @@ from pathlib import Path
 from rich.table import Table
 from ..workspace_manager import WorkspaceError
 from ..workspace_manager_factory import get_workspace_manager
-from ..workspace_manager_factory import get_workspace_manager
 import typer
 
 from ._common import _PROJECT_WORKSPACE, console
