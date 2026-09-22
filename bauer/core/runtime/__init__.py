@@ -23,6 +23,8 @@ __all__ = [
     "TeamRegistry",
     "TeamRegistryError",
     "TeamSpec",
+    "AgnoTeamOrchestrator",
+    "TeamOrchestrationError",
     "TeamRun",
     "TeamRunManager",
     "TeamTask",
@@ -92,6 +94,11 @@ def __getattr__(name: str):
             "TeamRegistryError": TeamRegistryError,
             "TeamSpec": TeamSpec,
         }[name]
+    if name in {"AgnoTeamOrchestrator", "TeamOrchestrationError"}:
+        from .agno_team_orchestrator import AgnoTeamOrchestrator, TeamOrchestrationError
+
+        return {"AgnoTeamOrchestrator": AgnoTeamOrchestrator,
+                "TeamOrchestrationError": TeamOrchestrationError}[name]
     if name in {"TeamRun", "TeamRunManager", "TeamTask"}:
         from .team_orchestrator import TeamRun, TeamRunManager, TeamTask
 

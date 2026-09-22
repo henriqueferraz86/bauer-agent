@@ -28,6 +28,7 @@ class AgnoRuntimeAdapter:
         self.tool_context = str(self.adapter_config.get("tool_context") or "worker")
         self.tool_policy_path = self.adapter_config.get("tool_policy_path")
         self._agents: dict[str, Any] = {}
+        self._teams: dict[str, Any] = {}
         self._runs: dict[str, dict[str, Any]] = {}
 
     def create_agent(self, spec: dict[str, Any]) -> dict[str, Any]:
@@ -65,6 +66,130 @@ class AgnoRuntimeAdapter:
         }
         self._runs[run_id] = result
         return result
+
+    def create_team(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """Build an Agno Team from normalized Bauer member specs.
+
+        The SDK is intentionally hidden behind this adapter.  The Kernel and
+        the team orchestrator deal only in Bauer dictionaries and events, so a
+        future runtime SDK can be added without spreading vendor imports.
+        """
+        normalized = self._normalize_team_spec(spec)
+        team_id = str(normalized.get("id") or normalized.get("name") or f"agno-team-{uuid4()}")
+        team = self._build_team({**normalized, "id": team_id})
+        self._teams[team_id] = team
+        return {
+            "status": "created",
+            "runtime_adapter": self.name,
+            "team_id": team_id,
+            "mode": self.mode,
+            "members": [str(member.get("id") or member.get("name")) for member in normalized["members"]],
+            "spec": normalized,
+        }
+
+    def run_team(self, request: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(request.get("run_id") or f"run-{uuid4()}")
+        chunks: list[str] = []
+        last_event: dict[str, Any] = {}
+        for event in self.stream_team({**request, "run_id": run_id}):
+            last_event = event
+            if event.get("event") == "message.delta":
+                chunks.append(str(event.get("content", "")))
+            elif event.get("event") == "run.failed":
+                self._runs[run_id] = event
+                return event
+        result = {
+            "status": "completed",
+            "event": "run.completed",
+            "run_id": run_id,
+            "runtime_adapter": self.name,
+            "output": "".join(chunks) or str(last_event.get("output") or ""),
+            "metadata": last_event.get("metadata", {}),
+        }
+        self._runs[run_id] = result
+        return result
+
+    def stream_team(self, request: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        run_id = str(request.get("run_id") or f"run-{uuid4()}")
+        session_id = str(request.get("session_id") or f"session-{uuid4()}")
+        user_id = str(request.get("user_id") or "local-user")
+        yield {
+            "event": "run.started",
+            "status": "running",
+            "run_id": run_id,
+            "session_id": session_id,
+            "runtime_adapter": self.name,
+            "mode": "team",
+        }
+        try:
+            team = self._legacy_team_for_request(request, session_id=session_id, user_id=user_id)
+            prompt = self._prompt_from_request(request)
+            final_content = ""
+            agno_run_id = None
+            member_events: list[dict[str, Any]] = []
+            for event in team.run(
+                prompt,
+                stream=True,
+                run_id=run_id,
+                session_id=session_id,
+                user_id=user_id,
+            ):
+                agno_run_id = getattr(event, "run_id", agno_run_id)
+                event_name = str(getattr(event, "event", "") or "").lower()
+                if "error" in event_name or "cancel" in event_name:
+                    failed = {
+                        "event": "run.failed" if "error" in event_name else "run.cancelled",
+                        "status": "failed" if "error" in event_name else "cancelled",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "runtime_adapter": self.name,
+                        "error": str(getattr(event, "error", None) or getattr(event, "content", None) or event_name),
+                    }
+                    self._runs[run_id] = failed
+                    yield failed
+                    return
+                content = getattr(event, "content", None)
+                if content:
+                    final_content += str(content)
+                    yield {
+                        "event": "message.delta",
+                        "status": "running",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "runtime_adapter": self.name,
+                        "content": str(content),
+                    }
+                member_responses = getattr(event, "member_responses", None)
+                if member_responses:
+                    member_events.append({"count": len(member_responses)})
+        except Exception as exc:  # noqa: BLE001 — adapter boundary returns a run failure
+            failed = {
+                "event": "run.failed",
+                "status": "failed",
+                "run_id": run_id,
+                "session_id": session_id,
+                "runtime_adapter": self.name,
+                "error": str(exc),
+            }
+            self._runs[run_id] = failed
+            yield failed
+            return
+
+        completed = {
+            "event": "run.completed",
+            "status": "completed",
+            "run_id": run_id,
+            "session_id": session_id,
+            "runtime_adapter": self.name,
+            "output": final_content,
+            "metadata": {
+                "agno_run_id": agno_run_id or run_id,
+                "mode": "coordinate",
+                "member_events": member_events,
+            },
+        }
+        self._runs[run_id] = completed
+        yield completed
 
     def stream_agent(self, request: dict[str, Any]) -> Iterator[dict[str, Any]]:
         run_id = str(request.get("run_id") or f"run-{uuid4()}")
@@ -453,7 +578,7 @@ class AgnoRuntimeAdapter:
         return Agent(
             id=str(spec.get("id") or spec.get("name") or f"agno-agent-{uuid4()}"),
             name=str(spec.get("name") or "Agno Bauer Agent"),
-            model=spec.get("agno_model") or OfflineAgnoModel(id=str(spec.get("model") or "offline-echo")),
+            model=self._build_model(spec),
             db=self._build_db(),
             tools=self._map_tools(spec.get("tools")),
             user_id=str(spec.get("user_id") or "local-user"),
@@ -462,6 +587,119 @@ class AgnoRuntimeAdapter:
             add_history_to_context=True,
             num_history_runs=int(spec.get("num_history_runs") or 3),
         )
+
+    def _build_team(self, spec: dict[str, Any]) -> Any:
+        _, _, _ = self._require_agno()
+        try:
+            from agno.team import Team
+            from agno.team.mode import TeamMode
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise RuntimeAdapterError("Agno Team support requires a current 'agno' installation.") from exc
+
+        members = [self._build_agent(member) for member in spec.get("members", [])]
+        supervisor = dict(spec.get("supervisor") or {})
+        mode = str(spec.get("mode") or "coordinate").strip().lower()
+        team_mode = getattr(TeamMode, mode, TeamMode.coordinate)
+        instructions = self._instructions_from_spec(supervisor)
+        return Team(
+            id=str(spec.get("id") or f"agno-team-{uuid4()}"),
+            name=str(spec.get("name") or "Bauer Agno Team"),
+            role=str(spec.get("role") or "Coordenador do time Bauer"),
+            mode=team_mode,
+            members=members,
+            model=self._build_model(supervisor),
+            db=self._build_db(),
+            user_id=str(spec.get("user_id") or "local-user"),
+            session_id=str(spec.get("session_id") or f"session-{uuid4()}"),
+            instructions=instructions or None,
+            determine_input_for_members=bool(spec.get("determine_input_for_members", True)),
+            delegate_to_all_members=bool(spec.get("delegate_to_all_members", False)),
+            max_iterations=int(spec.get("max_iterations") or 10),
+            add_history_to_context=True,
+            num_history_runs=int(spec.get("num_history_runs") or 3),
+            stream_member_events=True,
+        )
+
+    def _legacy_team_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
+        team_id = str(request.get("team_id") or "").strip()
+        if team_id and team_id in self._teams:
+            return self._teams[team_id]
+        raw = dict(request.get("team_spec") or {})
+        raw.setdefault("id", team_id or f"agno-team-{uuid4()}")
+        raw.setdefault("session_id", session_id)
+        raw.setdefault("user_id", user_id)
+        members = [dict(member) for member in request.get("agent_specs", []) if isinstance(member, dict)]
+        raw["members"] = members
+        raw.setdefault("supervisor", request.get("supervisor_spec") or (members[0] if members else {}))
+        team = self._build_team(self._normalize_team_spec(raw))
+        if team_id:
+            self._teams[team_id] = team
+        return team
+
+    @staticmethod
+    def _normalize_team_spec(spec: dict[str, Any]) -> dict[str, Any]:
+        members = []
+        for member in spec.get("members", []) or []:
+            normalized = AgnoRuntimeAdapter._normalize_spec(member)
+            normalized["id"] = str(normalized.get("id") or normalized.get("name") or f"agno-agent-{uuid4()}")
+            members.append(normalized)
+        supervisor = AgnoRuntimeAdapter._normalize_spec(spec.get("supervisor") or (members[0] if members else {}))
+        return {
+            "id": str(spec.get("id") or ""),
+            "name": str(spec.get("name") or "Bauer Agno Team"),
+            "mode": str((spec.get("coordination") or {}).get("mode") or spec.get("mode") or "coordinate"),
+            "members": members,
+            "supervisor": supervisor,
+            "max_iterations": int(spec.get("max_iterations") or (spec.get("limits") or {}).get("max_iterations") or 10),
+            "determine_input_for_members": bool(spec.get("determine_input_for_members", True)),
+            "delegate_to_all_members": bool(spec.get("delegate_to_all_members", False)),
+            "session_id": spec.get("session_id"),
+            "user_id": spec.get("user_id"),
+        }
+
+    def _build_model(self, spec: dict[str, Any]) -> Any:
+        if spec.get("agno_model") is not None:
+            return spec["agno_model"]
+        provider, model_name = self._effective_model_spec(spec)
+        if not model_name or provider in {"", "local", "offline"} or model_name.startswith("offline"):
+            return OfflineAgnoModel(id=model_name or "offline-echo")
+        try:
+            from agno.models.openai import OpenAIChat
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise RuntimeAdapterError("Agno provider support requires the 'openai' package.") from exc
+        base_url, api_key = self._provider_connection(provider)
+        kwargs: dict[str, Any] = {"id": model_name}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if base_url:
+            kwargs["base_url"] = base_url
+        return OpenAIChat(**kwargs)
+
+    def _effective_model_spec(self, spec: dict[str, Any]) -> tuple[str, str]:
+        model_value = str(spec.get("model") or "").strip()
+        provider = str(spec.get("provider") or "").strip().lower()
+        model_cfg = getattr(self.config, "model", None)
+        config_provider = str(getattr(model_cfg, "provider", "") or "").strip().lower()
+        config_model = str(getattr(model_cfg, "name", "") or "").strip()
+        if not provider or provider in {"local", "openrouter"} and model_value in {"", "auto"}:
+            provider = config_provider
+        if not model_value or model_value == "auto":
+            model_value = config_model
+        return provider, model_value
+
+    def _provider_connection(self, provider: str) -> tuple[str, str]:
+        cfg = self.config
+        section = getattr(cfg, provider, None)
+        key = str(getattr(section, "api_key", "") or "")
+        if provider == "openrouter":
+            return "https://openrouter.ai/api/v1", key
+        if provider == "ollama":
+            host = str(getattr(section, "host", "http://127.0.0.1:11434") or "http://127.0.0.1:11434").rstrip("/")
+            return f"{host}/v1", key or "ollama"
+        host = str(getattr(section, "host", "") or "").strip().rstrip("/")
+        if host and not host.endswith("/v1"):
+            host = f"{host}/v1"
+        return host, key
 
     def _build_db(self) -> Any:
         _, SqliteDb, _ = self._require_agno()

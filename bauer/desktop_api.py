@@ -1242,7 +1242,7 @@ def build_desktop_router(
         from .core.runtime.adapters import list_runtime_adapters
         from .core.runtime.resilience import RuntimeControl, WorkerRegistry
 
-        default_adapter = "bauer_native"
+        default_adapter = "agno"
         configured: Dict[str, Any] = {}
         try:
             from .config_loader import load_config

@@ -18,10 +18,10 @@ class _FakeClient:
         return iter(["hel", "lo"])
 
 
-def test_factory_returns_bauer_native_by_default():
+def test_factory_returns_agno_by_default():
     adapter = get_runtime_adapter()
 
-    assert adapter.name == "bauer_native"
+    assert adapter.name == "agno"
     assert "bauer_native" in list_runtime_adapters()
     assert "agno" in list_runtime_adapters()
 
