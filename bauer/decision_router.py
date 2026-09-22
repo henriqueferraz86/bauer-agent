@@ -386,7 +386,7 @@ def _probabilities(
             if isinstance(item, dict):
                 key = item.get("option") or item.get("choice") or item.get("profile")
                 value = item.get("probability", item.get("confidence", 0))
-                if key:
+                if key and value is not None:
                     try:
                         probabilities[str(key)] = float(value)
                     except (TypeError, ValueError):

@@ -247,12 +247,12 @@ class AgnoRuntimeAdapter:
         from ..agent_registry import RuntimeAgentRegistry
         from ..team_registry import TeamRegistry
 
-        agent_roots = [Path(__file__).resolve().parents[2] / "data" / "agent_specs"]
+        agent_roots: list[str | Path] = [Path(__file__).resolve().parents[2] / "data" / "agent_specs"]
         workspace_agents = self.workspace / "agents.yaml"
         if workspace_agents.exists():
             agent_roots.insert(0, workspace_agents)
         agents = RuntimeAgentRegistry(roots=agent_roots)
-        team_roots = [Path(__file__).resolve().parents[2] / "data" / "team_specs"]
+        team_roots: list[str | Path] = [Path(__file__).resolve().parents[2] / "data" / "team_specs"]
         workspace_teams = self.workspace / "teams"
         if workspace_teams.exists():
             team_roots.insert(0, workspace_teams)

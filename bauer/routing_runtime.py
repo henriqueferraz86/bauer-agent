@@ -51,12 +51,12 @@ def decision_catalog(workspace: str | Path | None = None) -> tuple[list[str], li
         from .core.runtime.agent_registry import RuntimeAgentRegistry
         from .core.runtime.team_registry import TeamRegistry
 
-        roots = []
+        roots: list[str | Path] = []
         if workspace is not None:
             roots.append(Path(workspace) / "agents.yaml")
         agents_registry = RuntimeAgentRegistry(roots=roots or None)
         specs = agents_registry.list()
-        team_roots = []
+        team_roots: list[str | Path] = []
         if workspace is not None:
             team_roots.append(Path(workspace) / "teams")
         teams_registry = TeamRegistry(roots=team_roots or None, agent_registry=agents_registry)
