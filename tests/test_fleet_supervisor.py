@@ -103,7 +103,7 @@ def test_fleet_start_background_hides_windows_console_on_windows(tmp_path, monke
     captured = {}
     monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: captured.update(kwargs) or FakeProcess())
     monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
-    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(module, "_is_windows_platform", lambda: True)
     monkeypatch.setattr(module, "_no_console_window_kwargs", lambda: {"creationflags": 0x08000000})
 
     fleet = FleetSupervisor(tmp_path / "workspace", fleet_config=_fleet_config())
