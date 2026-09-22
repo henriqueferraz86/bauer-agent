@@ -3,6 +3,19 @@ export const VOICE_NO_SPEECH_TIMEOUT_MS = 15000;
 export const VOICE_MAX_RECORDING_MS = 120000;
 export const VOICE_LEVEL_THRESHOLD = 0.035;
 
+export function requestMicrophone(): Promise<MediaStream> {
+  const mediaDevices = globalThis.navigator?.mediaDevices;
+  if (!mediaDevices || typeof mediaDevices.getUserMedia !== "function") {
+    const insecureContext = typeof window !== "undefined" && !window.isSecureContext;
+    throw new Error(
+      insecureContext
+        ? "O microfone exige um contexto seguro. Abra o Bauer em https:// ou em http://localhost."
+        : "Este navegador não disponibilizou acesso ao microfone para o Bauer.",
+    );
+  }
+  return mediaDevices.getUserMedia({ audio: true });
+}
+
 export interface RecordingStopSample {
   heardSpeech: boolean;
   silentForMs: number;
