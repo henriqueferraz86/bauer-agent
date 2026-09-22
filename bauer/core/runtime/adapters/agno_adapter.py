@@ -81,7 +81,7 @@ class AgnoRuntimeAdapter:
         }
 
         try:
-            agent = self._agent_for_request(request, session_id=session_id, user_id=user_id)
+            agent = self._runtime_for_request(request, session_id=session_id, user_id=user_id)
             prompt = self._prompt_from_request(request)
             final_content = ""
             agno_run_id = None
@@ -125,6 +125,9 @@ class AgnoRuntimeAdapter:
             "metadata": {
                 "agno_run_id": agno_run_id or run_id,
                 "mode": self.mode,
+                "runtime_kind": "team" if self._is_team_request(request) else "agent",
+                "team_id": self._decision_value(request, "team_id"),
+                "agent_id": self._decision_value(request, "agent_id") or request.get("agent_id", ""),
                 "tools": tools,
             },
         }
@@ -195,7 +198,11 @@ class AgnoRuntimeAdapter:
         return dict(raw)
 
     def _agent_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
-        agent_id = str(request.get("agent_id") or request.get("agent", "")).strip()
+        agent_id = str(
+            self._decision_value(request, "agent_id")
+            or request.get("agent_id")
+            or request.get("agent", "")
+        ).strip()
         if agent_id and agent_id in self._agents:
             return self._agents[agent_id]
 
@@ -209,6 +216,98 @@ class AgnoRuntimeAdapter:
         if agent_id:
             self._agents[agent_id] = agent
         return agent
+
+    def _runtime_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
+        """Resolve a decisão para um Team Agno ou para um Agent individual.
+
+        A decisão chega ao adapter somente depois do preflight do Kernel. O
+        adapter não decide permissões: ele apenas materializa a escolha que já
+        foi validada e registrada. Sem ``team_id`` o caminho individual segue
+        exatamente o comportamento anterior.
+        """
+        team_id = self._decision_value(request, "team_id")
+        if not team_id:
+            return self._agent_for_request(request, session_id=session_id, user_id=user_id)
+        return self._team_for_request(
+            request,
+            team_id=team_id,
+            session_id=session_id,
+            user_id=user_id,
+        )
+
+    def _team_for_request(
+        self,
+        request: dict[str, Any],
+        *,
+        team_id: str,
+        session_id: str,
+        user_id: str,
+    ) -> Any:
+        Team, TeamMode = self._require_agno_team()
+        from ..agent_registry import RuntimeAgentRegistry
+        from ..team_registry import TeamRegistry
+
+        agent_roots = [Path(__file__).resolve().parents[2] / "data" / "agent_specs"]
+        workspace_agents = self.workspace / "agents.yaml"
+        if workspace_agents.exists():
+            agent_roots.insert(0, workspace_agents)
+        agents = RuntimeAgentRegistry(roots=agent_roots)
+        team_roots = [Path(__file__).resolve().parents[2] / "data" / "team_specs"]
+        workspace_teams = self.workspace / "teams"
+        if workspace_teams.exists():
+            team_roots.insert(0, workspace_teams)
+        team = TeamRegistry(roots=team_roots, agent_registry=agents).get(team_id)
+        if team is None:
+            raise RuntimeAdapterError(f"Agno team not found: {team_id}")
+
+        members = []
+        for member_id in team.agents:
+            spec = agents.get(member_id)
+            if spec is None:
+                raise RuntimeAdapterError(f"Agno team member not found: {member_id}")
+            member_spec = spec.to_dict()
+            member_spec.update({"session_id": session_id, "user_id": user_id})
+            members.append(self._build_agent(member_spec))
+
+        coordination = team.coordination or {}
+        mode_name = str(coordination.get("mode") or "coordinate").strip().lower()
+        # Bauer uses "supervisor" for a governed coordinator; Agno's closest
+        # native mode is coordinate. Keep the mapping explicit for auditability.
+        mode_name = {"supervisor": "coordinate"}.get(mode_name, mode_name)
+        mode = getattr(TeamMode, mode_name, TeamMode.coordinate)
+        coordinator = next(
+            (member for member in members if getattr(member, "id", "") == team.coordinator),
+            members[0],
+        )
+        instructions = [
+            f"Coordene o time {team.name} conforme a política do Bauer.",
+            "Respeite as permissões e ferramentas de cada agente membro.",
+        ]
+        return Team(
+            id=team.id,
+            name=team.name,
+            model=getattr(coordinator, "model", None),
+            db=self._build_db(),
+            members=members,
+            mode=mode,
+            instructions=instructions,
+            add_history_to_context=True,
+            num_history_runs=3,
+        )
+
+    @staticmethod
+    def _decision_value(request: dict[str, Any], key: str) -> str:
+        decision = request.get("decision")
+        if isinstance(decision, dict):
+            value = decision.get(key)
+            if value:
+                return str(value).strip()
+        value = request.get(key)
+        return str(value).strip() if value else ""
+
+    @classmethod
+    def _is_team_request(cls, request: dict[str, Any]) -> bool:
+        return bool(cls._decision_value(request, "team_id"))
 
     def _build_agent(self, spec: dict[str, Any]) -> Any:
         Agent, _, _ = self._require_agno()
@@ -239,6 +338,14 @@ class AgnoRuntimeAdapter:
         except ModuleNotFoundError as exc:
             raise RuntimeAdapterError("Agno adapter requires 'agno' and 'sqlalchemy' installed in the environment.") from exc
         return Agent, SqliteDb, ModelResponse
+
+    @staticmethod
+    def _require_agno_team() -> tuple[Any, Any]:
+        try:
+            from agno.team import Team, TeamMode
+        except ModuleNotFoundError as exc:
+            raise RuntimeAdapterError("Agno team execution requires the installed 'agno' package with Team support.") from exc
+        return Team, TeamMode
 
     @staticmethod
     def _instructions_from_spec(spec: dict[str, Any]) -> list[str]:
