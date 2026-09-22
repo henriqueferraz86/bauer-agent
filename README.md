@@ -38,6 +38,7 @@ Principais comandos do beta:
 | Observability | `GET /runs`, `GET /events`, `GET /audit`, dashboard local |
 
 Roteiro de demo fechado: [docs/BETA_CLOSED.md](docs/BETA_CLOSED.md).
+Agentes especialistas e limites: [docs/bauer-specialist-agents.md](docs/bauer-specialist-agents.md).
 
 ---
 
@@ -118,9 +119,12 @@ bauer serve                  # UI web (chat + modo autônomo no browser)
 bauer chat                   # chat mínimo com o modelo
 ```
 
-`bauer update` busca a versão mais recente da `master` e reinstala os extras
+`bauer update` captura o estado funcional antes de buscar a versão mais recente
+da `master`, sincroniza as dependências pelo `uv.lock` e reinstala os extras
 padrão (`gateway`, `voice` e `voice-kokoro`). Configurações, credenciais,
-memória e modelos ficam fora do repositório e não são sobrescritos.
+memória, modelos, agentes e estado são restaurados e verificados depois da
+atualização. Se alguma etapa falhar, o código e o estado anterior são
+repostos automaticamente.
 
 No chat web, o botão do microfone envia a fala para o mesmo STT do `bauer
 agent` e reproduz a resposta por TTS quando o provider de voz está disponível.

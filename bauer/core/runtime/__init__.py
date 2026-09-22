@@ -6,6 +6,12 @@ __all__ = [
     "RuntimeAgentRegistry",
     "RuntimeAgentRegistryError",
     "AgentSpec",
+    "AgentManager",
+    "AgentMailbox",
+    "AgentMessage",
+    "AgentProcess",
+    "AgentSession",
+    "AgentSupervisor",
     "DelegationManager",
     "DelegationRecord",
     "MemoryRecord",
@@ -19,6 +25,23 @@ __all__ = [
     "TeamSpec",
     "AgnoTeamOrchestrator",
     "TeamOrchestrationError",
+    "TeamRun",
+    "TeamRunManager",
+    "TeamTask",
+    "SkillExperience",
+    "SkillLearningManager",
+    "SkillProposal",
+    "SkillValidation",
+    "SkillWorkshopManager",
+    "AudioFrame",
+    "AudioStream",
+    "InterruptionManager",
+    "NexusRealtimeSession",
+    "RealtimeState",
+    "AdaptiveLatency",
+    "DuplexMode",
+    "JarvisDuplexSession",
+    "SentenceBuffer",
 ]
 
 
@@ -31,6 +54,24 @@ def __getattr__(name: str):
         from .agent_spec import AgentSpec
 
         return AgentSpec
+    if name in {"AgentManager", "AgentMailbox", "AgentMessage", "AgentProcess", "AgentSession", "AgentSupervisor"}:
+        from .agent_manager import (
+            AgentMailbox,
+            AgentManager,
+            AgentMessage,
+            AgentProcess,
+            AgentSession,
+            AgentSupervisor,
+        )
+
+        return {
+            "AgentManager": AgentManager,
+            "AgentMailbox": AgentMailbox,
+            "AgentMessage": AgentMessage,
+            "AgentProcess": AgentProcess,
+            "AgentSession": AgentSession,
+            "AgentSupervisor": AgentSupervisor,
+        }[name]
     if name in {"Run", "RunManager"}:
         from .run_manager import Run, RunManager
 
@@ -58,4 +99,39 @@ def __getattr__(name: str):
 
         return {"AgnoTeamOrchestrator": AgnoTeamOrchestrator,
                 "TeamOrchestrationError": TeamOrchestrationError}[name]
+    if name in {"TeamRun", "TeamRunManager", "TeamTask"}:
+        from .team_orchestrator import TeamRun, TeamRunManager, TeamTask
+
+        return {"TeamRun": TeamRun, "TeamRunManager": TeamRunManager, "TeamTask": TeamTask}[name]
+    if name in {"SkillExperience", "SkillLearningManager", "SkillProposal"}:
+        from .skill_learning import SkillExperience, SkillLearningManager, SkillProposal
+
+        return {
+            "SkillExperience": SkillExperience,
+            "SkillLearningManager": SkillLearningManager,
+            "SkillProposal": SkillProposal,
+        }[name]
+    if name in {"SkillValidation", "SkillWorkshopManager"}:
+        from .skill_workshop import SkillValidation, SkillWorkshopManager
+
+        return {"SkillValidation": SkillValidation, "SkillWorkshopManager": SkillWorkshopManager}[name]
+    if name in {"AudioFrame", "AudioStream", "InterruptionManager", "NexusRealtimeSession", "RealtimeState"}:
+        from .nexus_realtime import AudioFrame, AudioStream, InterruptionManager, NexusRealtimeSession, RealtimeState
+
+        return {
+            "AudioFrame": AudioFrame,
+            "AudioStream": AudioStream,
+            "InterruptionManager": InterruptionManager,
+            "NexusRealtimeSession": NexusRealtimeSession,
+            "RealtimeState": RealtimeState,
+        }[name]
+    if name in {"AdaptiveLatency", "DuplexMode", "JarvisDuplexSession", "SentenceBuffer"}:
+        from .jarvis_duplex import AdaptiveLatency, DuplexMode, JarvisDuplexSession, SentenceBuffer
+
+        return {
+            "AdaptiveLatency": AdaptiveLatency,
+            "DuplexMode": DuplexMode,
+            "JarvisDuplexSession": JarvisDuplexSession,
+            "SentenceBuffer": SentenceBuffer,
+        }[name]
     raise AttributeError(name)

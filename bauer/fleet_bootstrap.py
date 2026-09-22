@@ -13,13 +13,10 @@ from typing import Any
 
 import yaml
 
+from .config_loader import DEFAULT_AUTOPILOT_MISSION
 from .paths import models_path, workspace_dir
 
-DEFAULT_MISSION = (
-    "Continuously inspect the discovered projects for bugs, improvements, "
-    "maintenance, and quality issues. Propose small, reviewable changes "
-    "through the governed dispatcher; never make destructive changes silently."
-)
+DEFAULT_MISSION = DEFAULT_AUTOPILOT_MISSION
 DEFAULT_MODEL = {"provider": "ollama", "name": "qwen2.5:7b"}
 
 

@@ -606,6 +606,31 @@ class TestRuntimeDashboardEndpoints:
         r = env["client"].get("/api/agents")
         assert r.status_code == 200
         assert isinstance(r.json()["agents"], list)
+        assert any(agent.get("id") == "bauer.architect" for agent in r.json()["agents"])
+
+    def test_agent_activity_dashboard_joins_lifecycle_to_running_run(self, env):
+        from bauer.core.events import EventBus
+        from bauer.core.runtime.run_manager import RunManager
+
+        bus = EventBus(root=env["runtime_root"])
+        runs = RunManager(root=env["runtime_root"], event_bus=bus)
+        run = runs.create_run(session_id="session-agent", agent_id="bauer.product", status="running")
+        bus.publish(
+            "agent.started",
+            run_id=run.id,
+            session_id=run.session_id,
+            agent_id="bauer.research",
+            status="running",
+            data={"team_id": "bauer.software_team", "agent_name": "Bauer Research Agent"},
+        )
+
+        response = env["client"].get("/api/obs/agent-activity")
+        assert response.status_code == 200
+        activity = response.json()["agents"]["bauer.research"]
+        assert activity["status"] == "running"
+        assert activity["current_run_id"] == run.id
+        assert activity["team_id"] == "bauer.software_team"
+        assert activity["run_count"] == 1
 
     def test_skills_dashboard(self, env):
         r = env["client"].get("/api/skills")

@@ -82,7 +82,12 @@ class PluginRegistry:
 
     def __init__(self, workspace: str | Path = "workspace", user_dir: str | Path | None = None):
         self.workspace = Path(workspace).resolve()
-        self.user_dir = Path(user_dir) if user_dir is not None else Path.home() / ".bauer" / "plugins"
+        if user_dir is not None:
+            self.user_dir = Path(user_dir)
+        else:
+            from .paths import plugins_dir
+
+            self.user_dir = plugins_dir()
         self.workspace_dir = self.workspace / ".bauer" / "plugins"
 
     def list_plugins(self) -> list[PluginInfo]:

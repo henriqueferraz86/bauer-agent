@@ -41,6 +41,7 @@ Variáveis reconhecidas:
   VERTEX_ACCESS_TOKEN    — Google Vertex AI Bearer token
   VERTEX_PROJECT_ID      — Google Vertex AI project ID
   VERTEX_REGION          — Google Vertex AI region
+  TYPESAFE_API_KEY       — TypeSafe/Jev structured decision API
 """
 
 from __future__ import annotations
@@ -204,6 +205,10 @@ def apply_env_to_config(cfg) -> None:
         cfg.vertex.project_id = project
     if region := os.environ.get("VERTEX_REGION"):
         cfg.vertex.region = region
+
+    # --- TypeSafe / Jev ---
+    if key := os.environ.get("TYPESAFE_API_KEY"):
+        cfg.decision.api_key = key
 
     # --- G16a: new providers ---
     if key := os.environ.get("REPLICATE_API_KEY"):

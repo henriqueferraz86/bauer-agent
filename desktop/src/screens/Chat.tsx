@@ -6,6 +6,8 @@ import Markdown from "../components/Markdown";
 import {
   extractWakeCommand,
   isVoiceStop,
+  requestMicrophone,
+  speakBrowserFallback,
   shouldStopRecording,
   VOICE_LEVEL_THRESHOLD,
 } from "../voice";
@@ -394,8 +396,13 @@ export default function Chat() {
       };
       await audio.play();
     } catch {
-      // O texto continua disponível se o TTS estiver sem provider ou se o
-      // navegador bloquear autoplay.
+      // O servidor continua sendo a primeira opção. Em instalações sem
+      // provider TTS, a Web Speech API mantém a conversa audível no browser.
+      if (speakBrowserFallback(text)) {
+        setVoiceStatus("Falando pelo navegador…");
+      } else {
+        setVoiceStatus("Resposta disponível em texto; áudio indisponível.");
+      }
     }
   }
 
@@ -521,7 +528,7 @@ export default function Chat() {
   async function beginRecording() {
     if (recordingRef.current || busyRef.current || transcribingRef.current) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await requestMicrophone();
       const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
       const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       const audioContext = voiceAudioContextRef.current ?? new AudioContext();

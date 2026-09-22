@@ -23,7 +23,7 @@ from dataclasses import asdict
 import json
 import threading
 import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -1069,6 +1069,13 @@ setInterval(fetchAndRender, REFRESH_MS);
 # ── Handler HTTP ───────────────────────────────────────────────────────────────
 
 
+class BauerKanbanServer(ThreadingHTTPServer):
+    """Servidor concorrente e encerrável sem manter threads vivas."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class _KanbanHandler(BaseHTTPRequestHandler):
     """Handler minimalista — serve HTML e JSON, suporta GET e POST."""
 
@@ -1351,12 +1358,18 @@ class _KanbanHandler(BaseHTTPRequestHandler):
         self._send(code, "application/json; charset=utf-8", body)
 
     def _send(self, code: int, content_type: str, body: bytes):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # O browser pode fechar a aba enquanto uma resposta está sendo
+            # montada. Isso não deve gerar uma segunda resposta de erro nem
+            # poluir o log do servidor.
+            return
 
 
 # ── API pública ───────────────────────────────────────────────────────────────
@@ -1381,7 +1394,7 @@ def run_kanban_server(
     workspace = Path(workspace).resolve()
 
     # Injeta workspace e company_name no handler via class attributes
-    server = HTTPServer((host, port), _KanbanHandler)
+    server = BauerKanbanServer((host, port), _KanbanHandler)
     server.RequestHandlerClass.workspace = workspace        # type: ignore[attr-defined]
     server.RequestHandlerClass.company_name = company_name  # type: ignore[attr-defined]
 

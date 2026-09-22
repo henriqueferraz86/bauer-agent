@@ -54,10 +54,16 @@ class EventBus:
         return event
 
     def list_events(self, *, run_id: str | None = None, limit: int | None = None) -> list[Event]:
-        records = self.store.list("events")
+        recent = getattr(self.store, "list_recent", None)
+        recent_query = limit is not None and limit >= 0 and run_id is None and callable(recent)
+        if recent_query:
+            assert callable(recent)
+            records = recent("events", limit)
+        else:
+            records = self.store.list("events")
         if run_id:
             records = [record for record in records if record.get("run_id") == run_id]
-        if limit is not None and limit >= 0:
+        if limit is not None and limit >= 0 and not recent_query:
             records = records[-limit:]
         return [Event(**record) for record in records]
 

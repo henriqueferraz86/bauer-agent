@@ -13,7 +13,7 @@ import yaml
 from ..events import EventBus
 from ..policy import PolicyEngine
 from .agent_registry import RuntimeAgentRegistry
-from .run_manager import Run, RunManager
+from .run_manager import RunManager
 from .state_store import SqliteStateStore
 
 
@@ -30,6 +30,8 @@ class TeamSpec:
     id: str
     name: str
     agents: list[str]
+    coordinator: str | None = None
+    members: list[str] = field(default_factory=list)
     coordination: dict[str, Any] = field(default_factory=dict)
     limits: dict[str, Any] = field(default_factory=dict)
     policies: list[str] = field(default_factory=list)
@@ -39,6 +41,8 @@ class TeamSpec:
             "id": self.id,
             "name": self.name,
             "agents": list(self.agents),
+            "coordinator": self.coordinator,
+            "members": list(self.members or self.agents),
             "coordination": dict(self.coordination),
             "limits": dict(self.limits),
             "policies": list(self.policies),
@@ -295,11 +299,30 @@ class DelegationManager:
 
 
 def team_spec_from_mapping(raw: dict[str, Any]) -> TeamSpec:
+    if isinstance(raw.get("team"), dict):
+        raw = {**raw["team"], **{key: value for key, value in raw.items() if key != "team"}}
+    coordination = dict(raw.get("coordination") or {}) if isinstance(raw.get("coordination"), dict) else {}
+    coordinator_value = raw.get("coordinator")
+    if isinstance(coordinator_value, dict):
+        coordinator = str(coordinator_value.get("agent") or "").strip() or None
+    else:
+        coordinator = str(coordinator_value or "").strip() or None
+    coordinator = coordinator or str(coordination.get("supervisor") or "").strip() or None
+    members = _str_list(raw.get("members") or raw.get("agents"))
+    if not coordinator and members:
+        coordinator = members[0]
+    if coordinator:
+        coordination.setdefault("mode", "supervisor")
+        coordination["supervisor"] = coordinator
+    name = str(raw.get("name") or raw.get("id") or "").strip()
+    team_id = str(raw.get("id") or _team_id(name)).strip()
     return TeamSpec(
-        id=str(raw.get("id") or "").strip(),
-        name=str(raw.get("name") or "").strip(),
-        agents=_str_list(raw.get("agents")),
-        coordination=dict(raw.get("coordination") or {}) if isinstance(raw.get("coordination"), dict) else {},
+        id=team_id,
+        name=name,
+        agents=members,
+        coordinator=coordinator,
+        members=members,
+        coordination=coordination,
         limits=dict(raw.get("limits") or {}) if isinstance(raw.get("limits"), dict) else {},
         policies=_str_list(raw.get("policies")),
     )
@@ -315,3 +338,8 @@ def _str_list(value: Any) -> list[str]:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _team_id(name: str) -> str:
+    normalized = "-".join(name.lower().split())
+    return f"team.{normalized}" if normalized else ""

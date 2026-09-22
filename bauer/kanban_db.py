@@ -570,21 +570,29 @@ def update_task_metadata(
     sets: list[str] = []
     params: list[Any] = []
     if assignee is not None:
-        sets.append("assignee = ?"); params.append(assignee)
+        sets.append("assignee = ?")
+        params.append(assignee)
     if priority is not None:
-        sets.append("priority = ?"); params.append(_normalize_priority(priority))
+        sets.append("priority = ?")
+        params.append(_normalize_priority(priority))
     if body is not None:
-        sets.append("body = ?"); params.append(body)
+        sets.append("body = ?")
+        params.append(body)
     if title is not None:
-        sets.append("title = ?"); params.append(title)
+        sets.append("title = ?")
+        params.append(title)
     if spec_id is not None:
-        sets.append("spec_id = ?"); params.append(spec_id)
+        sets.append("spec_id = ?")
+        params.append(spec_id)
     if max_retries is not None:
-        sets.append("max_retries = ?"); params.append(max(1, int(max_retries)))
+        sets.append("max_retries = ?")
+        params.append(max(1, int(max_retries)))
     if max_runtime_seconds is not None:
-        sets.append("max_runtime_seconds = ?"); params.append(max(0, int(max_runtime_seconds)))
+        sets.append("max_runtime_seconds = ?")
+        params.append(max(0, int(max_runtime_seconds)))
     if skills is not None:
-        sets.append("skills = ?"); params.append(_coerce_skills(skills))
+        sets.append("skills = ?")
+        params.append(_coerce_skills(skills))
     if not sets:
         return get_task(conn, task_id)
     params.append(task_id)
@@ -1029,7 +1037,8 @@ def _has_cycle(edges: list[tuple[str, str]]) -> bool:
     in_deg: dict[str, int] = {}
     out_adj: dict[str, list[str]] = {}
     for parent, child in edges:
-        nodes.add(parent); nodes.add(child)
+        nodes.add(parent)
+        nodes.add(child)
         in_deg[child] = in_deg.get(child, 0) + 1
         in_deg.setdefault(parent, in_deg.get(parent, 0))
         out_adj.setdefault(parent, []).append(child)

@@ -88,14 +88,6 @@ from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
 
 logger = logging.getLogger(__name__)
 
-# Wave 4.5: lazy imports so the tool_router stays importable even if the
-# security modules are somehow unavailable (e.g. stripped install).
-try:
-    from .url_safety import UrlSafetyError, is_safe_url as _is_safe_url
-    _URL_SAFETY_AVAILABLE = True
-except ImportError:
-    _URL_SAFETY_AVAILABLE = False
-
 try:
     from .schema_sanitizer import sanitize_tool_schemas as _sanitize_schemas
     _SCHEMA_SANITIZER_AVAILABLE = True

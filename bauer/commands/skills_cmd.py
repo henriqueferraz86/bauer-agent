@@ -18,6 +18,74 @@ skills_app.add_typer(skills_hub_app, name="hub")
 skills_app.add_typer(skills_bundle_app, name="bundle")
 
 
+@skills_app.command("proposals")
+def skills_proposals_cmd(
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+) -> None:
+    """Lista propostas de skills aguardando revisão humana."""
+    from ..core.runtime import SkillLearningManager
+
+    proposals = SkillLearningManager(root=state_dir).list_proposals()
+    console.print(json.dumps([proposal.__dict__ for proposal in proposals], ensure_ascii=False, indent=2))
+
+
+@skills_app.command("approve")
+def skills_approve_cmd(
+    slug: str = typer.Argument(...),
+    destination: Path = typer.Option(Path("skills"), "--destination"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+) -> None:
+    """Aprova explicitamente e materializa uma proposta validada."""
+    from ..core.runtime import SkillWorkshopManager
+
+    try:
+        proposal = SkillWorkshopManager(root=state_dir).approve(slug, destination=destination)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]erro:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]approved[/green] {proposal.slug}")
+
+
+@skills_app.command("reject")
+def skills_reject_cmd(
+    slug: str = typer.Argument(...),
+    reason: str = typer.Option(..., "--reason"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+) -> None:
+    """Rejeita uma proposta e grava o motivo no histórico."""
+    from ..core.runtime import SkillWorkshopManager
+
+    try:
+        proposal = SkillWorkshopManager(root=state_dir).reject(slug, reason=reason)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]erro:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[yellow]rejected[/yellow] {proposal.slug}")
+
+
+@skills_app.command("history")
+def skills_history_cmd(
+    slug: str | None = typer.Option(None, "--slug"),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+) -> None:
+    """Mostra o histórico de decisões das propostas."""
+    from ..core.runtime import SkillWorkshopManager
+
+    history = SkillWorkshopManager(root=state_dir).history(slug)
+    console.print(json.dumps(history, ensure_ascii=False, indent=2))
+
+
+@skills_app.command("benchmark")
+def skills_benchmark_cmd(
+    slug: str = typer.Argument(...),
+    state_dir: Path = typer.Option(Path("memory/runtime"), "--state-dir"),
+) -> None:
+    """Mostra métricas agregadas de uso de uma skill."""
+    from ..core.runtime import SkillWorkshopManager
+
+    console.print(json.dumps(SkillWorkshopManager(root=state_dir).benchmark(slug), ensure_ascii=False, indent=2))
+
+
 @skills_app.command("insights")
 def skills_insights_cmd(
     last: str = typer.Option("7d", "--last", help="Janela: 24h, 7d, 2w, 30d."),

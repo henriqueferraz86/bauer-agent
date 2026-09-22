@@ -483,7 +483,6 @@ class DurableDAGExecutionEngine:
 
     def _ensure_node_task(self, run_id: str, step: dict[str, Any], wm: Any):
         from .workspace_manager import WorkspaceError
-        from .workspace_manager_factory import get_workspace_manager
 
         step_id = int(step["id"])
         node = self.store.get_node(run_id, step_id)

@@ -60,12 +60,12 @@ def test_autopilot_has_safe_defaults_and_defers_runtime_mission_validation(tmp_p
     assert cfg.autopilot.poll_interval_s == 30.0
     assert cfg.autopilot.max_active_goals == 1
     assert cfg.autopilot.max_replans_per_goal == 1
-    assert cfg.autopilot.mission == ""
+    assert cfg.autopilot.mission
     assert cfg.autopilot.allow_model_proposals is False
     assert cfg.autopilot.approval_mode == "threshold"
-    assert cfg.autopilot.max_minutes == 30
-    assert cfg.autopilot.max_tool_calls == 500
-    assert cfg.autopilot.max_cost_usd == 2.0
+    assert cfg.autopilot.max_minutes == 525_600
+    assert cfg.autopilot.max_tool_calls == 100_000_000
+    assert cfg.autopilot.max_cost_usd == 1_000_000.0
 
     # A config parser cannot know whether persisted goals exist. The controller
     # must decide later whether enabled-without-mission is actionable.

@@ -183,6 +183,20 @@ class RouteDecision:
     matched: list[str] = field(default_factory=list)  # sinais que dispararam
     provider: str = ""           # resolvido se profiles configurados
     model: str = ""
+    confidence: float = 1.0
+    source: str = "heuristic"
+    error: str = ""
+    orchestrate: bool = False
+    probabilities: dict[str, float] = field(default_factory=dict)
+    alternatives: list[Any] = field(default_factory=list)
+    runtime: str = "bauer_native"
+    team_id: str = ""
+    agent_id: str = ""
+    tools: list[str] = field(default_factory=list)
+    strategy: str = "direct"
+    plan: list[str] = field(default_factory=list)
+    memory_hits: list[dict[str, Any]] = field(default_factory=list)
+    memory_decision_id: str = ""
 
 
 def _has(text: str, needles: tuple[str, ...]) -> list[str]:

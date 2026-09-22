@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .supervisor import RuntimeSupervisor
+from .supervisor import RuntimeSupervisor, _no_console_window_kwargs
 
 logger = logging.getLogger("bauer.fleet_supervisor")
 
@@ -49,6 +49,12 @@ DEFAULT_EXCLUDES = {
     ".backup",
     "_backup_root",
 }
+
+
+def _is_windows_platform() -> bool:
+    """Return whether child processes need Windows creation flags."""
+
+    return os.name == "nt"
 
 
 class FleetError(Exception):
@@ -277,9 +283,9 @@ class FleetSupervisor:
     ):
         from .paths import config_path, models_path
 
-        self.cwd = Path(cwd or Path.cwd()).resolve()
-        self.config = Path(config or config_path()).expanduser()
-        self.models = Path(models or models_path()).expanduser()
+        self.cwd = Path(cwd if cwd is not None else Path.cwd()).resolve()
+        self.config = Path(config if config is not None else config_path()).expanduser()
+        self.models = Path(models if models is not None else models_path()).expanduser()
         if not self.config.is_absolute():
             self.config = (self.cwd / self.config).resolve()
         if not self.models.is_absolute():
@@ -451,11 +457,8 @@ class FleetSupervisor:
                     "stdin": subprocess.DEVNULL,
                     "close_fds": True,
                 }
-                if os.name == "nt":
-                    kwargs["creationflags"] = (
-                        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                        | getattr(subprocess, "DETACHED_PROCESS", 0)
-                    )
+                if _is_windows_platform():
+                    kwargs.update(_no_console_window_kwargs())
                 else:
                     kwargs["start_new_session"] = True
                 process = subprocess.Popen(command, **kwargs)

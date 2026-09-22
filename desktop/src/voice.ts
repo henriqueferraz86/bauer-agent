@@ -3,6 +3,43 @@ export const VOICE_NO_SPEECH_TIMEOUT_MS = 15000;
 export const VOICE_MAX_RECORDING_MS = 120000;
 export const VOICE_LEVEL_THRESHOLD = 0.035;
 
+export function requestMicrophone(): Promise<MediaStream> {
+  const mediaDevices = globalThis.navigator?.mediaDevices;
+  if (!mediaDevices || typeof mediaDevices.getUserMedia !== "function") {
+    const insecureContext = typeof window !== "undefined" && !window.isSecureContext;
+    throw new Error(
+      insecureContext
+        ? "O microfone exige um contexto seguro. Abra o Bauer em https:// ou em http://localhost."
+        : "Este navegador não disponibilizou acesso ao microfone para o Bauer.",
+    );
+  }
+  return mediaDevices.getUserMedia({ audio: true });
+}
+
+/**
+ * Usa a fala nativa do navegador quando o servidor não tem provider TTS.
+ * Retorna false sem lançar quando a Web Speech API não está disponível.
+ */
+export function speakBrowserFallback(text: string): boolean {
+  const value = text.trim();
+  const synthesis = globalThis.speechSynthesis;
+  const Utterance = globalThis.SpeechSynthesisUtterance;
+  if (!value || !synthesis || typeof synthesis.speak !== "function" || typeof Utterance !== "function") {
+    return false;
+  }
+  try {
+    synthesis.cancel();
+    const utterance = new Utterance(value);
+    utterance.lang = "pt-BR";
+    const portugueseVoice = synthesis.getVoices().find((voice) => voice.lang.toLowerCase().startsWith("pt"));
+    if (portugueseVoice) utterance.voice = portugueseVoice;
+    synthesis.speak(utterance);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface RecordingStopSample {
   heardSpeech: boolean;
   silentForMs: number;

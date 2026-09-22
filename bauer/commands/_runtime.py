@@ -140,7 +140,8 @@ def _build_client(cfg):
                         "[red]Nao foi possivel renovar o token Copilot.[/red]\n"
                         "Execute: [bold]bauer auth login -p copilot[/bold]"
                     )
-                    import sys; sys.exit(1)
+                    import sys
+                    sys.exit(1)
             # ChatGPT via browser (OAuth): token sem api_key → usa o backend
             # ChatGPT (Responses API) billando na assinatura, igual ao Codex.
             if (
@@ -1013,7 +1014,9 @@ def heuristic_route_kit(cfg, *, conjunto: str = "default"):
     certo para cada tipo de tarefa.
     """
     try:
-        enabled = bool(getattr(cfg.model, "router_enabled", False))
+        enabled = bool(getattr(cfg.model, "router_enabled", False)) or bool(
+            getattr(getattr(cfg, "decision", None), "jev_enabled", False)
+        )
         if not enabled:
             return None, None
         from ..model_router import profiles_from_config
@@ -1061,7 +1064,10 @@ def route_profiles_by_provider(cfg) -> "dict[str, dict] | None":
     cair no `route_profiles` fixo de sempre (mesmo comportamento de hoje).
     """
     try:
-        if not bool(getattr(cfg.model, "router_enabled", False)):
+        if not (
+            bool(getattr(cfg.model, "router_enabled", False))
+            or bool(getattr(getattr(cfg, "decision", None), "jev_enabled", False))
+        ):
             return None
         from ..model_router import profiles_by_provider_from_config
         by_provider = profiles_by_provider_from_config(cfg)

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import threading
-from http.server import HTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 import bauer.task_dispatcher as task_dispatcher_module
-from bauer.kanban_server import _KanbanHandler
+from bauer.kanban_server import BauerKanbanServer, _KanbanHandler
 from bauer.kanban_store import KanbanStore
 from bauer.orchestration_store import OrchestrationStore
 from bauer.task_dispatcher import TaskDispatcher
@@ -23,7 +22,7 @@ def _workspace(tmp_path: Path) -> Path:
 
 
 def _server(workspace: Path):
-    server = HTTPServer(("127.0.0.1", 0), _KanbanHandler)
+    server = BauerKanbanServer(("127.0.0.1", 0), _KanbanHandler)
     server.RequestHandlerClass.workspace = workspace  # type: ignore[attr-defined]
     server.RequestHandlerClass.company_name = "TestCo"  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)

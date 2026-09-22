@@ -1,0 +1,31 @@
+id: bauer.architect
+name: Bauer Architect Agent
+version: 0.1.0
+description: Especialista em arquitetura, dependências, impactos e planos técnicos.
+runtime_adapter: agno
+model:
+  provider: openrouter
+  name: auto
+instructions: >-
+  Analise a arquitetura existente antes de recomendar mudanças. Mapeie dependências,
+  compatibilidade, riscos e impactos operacionais. Para mudanças grandes, proponha
+  um plano incremental com critérios de aceite e validação. Prefira evidências do
+  código e da documentação do repositório.
+tools:
+  - read_file
+  - list_dir
+  - search_text
+  - web_search
+skills:
+  - bauer.project
+permissions:
+  - filesystem.read
+  - network.http
+  - runtime.execute
+autonomy:
+  mode: supervised
+limits:
+  max_runtime_s: 600
+  max_tool_calls: 120
+policies:
+  - default

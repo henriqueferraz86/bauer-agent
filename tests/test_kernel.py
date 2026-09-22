@@ -636,6 +636,23 @@ def test_broken_gate_does_not_reprove():
     assert v.passed  # gate quebrado é problema do gate, não do resultado
 
 
+def test_broken_critical_gate_blocks_completion():
+    from bauer.core.kernel.evaluator import Evaluator
+
+    class CriticalBrokenGate:
+        name = "critical_broken"
+        critical = True
+
+        def check(self, *, request, result):
+            raise RuntimeError("infra indisponível")
+
+    v = Evaluator([CriticalBrokenGate()]).evaluate(
+        run_id="r", request=None, result={"output": "ok"}
+    )
+    assert not v.passed
+    assert "bloqueante" in v.reason
+
+
 def test_replan_fixes_on_second_execution(kit):
     """Gate reprova a 1ª execução → replan re-executa com feedback → passa."""
     from bauer.core.kernel.evaluator import Evaluator
@@ -848,6 +865,35 @@ def test_stream_forwards_intermediate_events_passthrough(kit):
     final = events[-1]["run"]
     assert final.ok and final.output == "olá mundo"
     assert runs.get_run(final.run_id).tool_calls_count == 1
+
+
+def test_stream_persists_agent_activity_without_breaking_sse(kit):
+    _, bus, runs = kit
+
+    def _stream(_payload):
+        yield {
+            "event": "agent.started",
+            "status": "running",
+            "agent_id": "bauer.research",
+            "data": {"team_id": "bauer.software_team", "agno_event": "RunStarted"},
+        }
+        yield {"event": "agent.message.sent", "status": "working", "agent_id": "bauer.research"}
+        yield {"event": "message.delta", "content": "feito"}
+        yield {"event": "agent.completed", "status": "completed", "agent_id": "bauer.research"}
+        yield {"event": "run.completed"}
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    events = list(kernel.stream(KernelRequest(task="pesquise"), executor=_stream))
+    assert [event["event"] for event in events] == [
+        "agent.started", "agent.message.sent", "message.delta", "agent.completed", "final",
+    ]
+    persisted = bus.list_events(run_id=events[-1]["run"].run_id)
+    assert [event.event_type for event in persisted if event.event_type.startswith("agent.")] == [
+        "agent.started", "agent.message.sent", "agent.completed",
+    ]
+    started = next(event for event in persisted if event.event_type == "agent.started")
+    assert started.agent_id == "bauer.research"
+    assert started.data["team_id"] == "bauer.software_team"
 
 
 def test_stream_client_disconnect_cancels_run(kit):

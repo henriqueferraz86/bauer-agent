@@ -122,7 +122,7 @@ class AgnoRuntimeAdapter:
             "mode": "team",
         }
         try:
-            team = self._team_for_request(request, session_id=session_id, user_id=user_id)
+            team = self._legacy_team_for_request(request, session_id=session_id, user_id=user_id)
             prompt = self._prompt_from_request(request)
             final_content = ""
             agno_run_id = None
@@ -206,15 +206,53 @@ class AgnoRuntimeAdapter:
         }
 
         try:
-            agent = self._agent_for_request(request, session_id=session_id, user_id=user_id)
+            agent = self._runtime_for_request(request, session_id=session_id, user_id=user_id)
             prompt = self._prompt_from_request(request)
             final_content = ""
             agno_run_id = None
             tools: list[dict[str, Any]] = []
-            for event in agent.run(prompt, stream=True, run_id=run_id, session_id=session_id, user_id=user_id):
+            team_request = self._is_team_request(request)
+            observed_member_messages: set[str] = set()
+            for event in agent.run(
+                prompt, stream=True, stream_events=True,
+                run_id=run_id, session_id=session_id, user_id=user_id,
+            ):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
+                agno_event = self._agno_event_name(event)
+                member_id = str(getattr(event, "agent_id", "") or "").strip()
+                member_name = str(getattr(event, "agent_name", "") or "").strip()
+                parent_run_id = getattr(event, "parent_run_id", None)
+                is_member_event = team_request and not agno_event.startswith("Team") and bool(
+                    member_id or parent_run_id
+                )
+
+                normalized = self._normalize_agent_event(
+                    event,
+                    run_id=run_id,
+                    session_id=session_id,
+                    team_id=self._decision_value(request, "team_id"),
+                    member_event=is_member_event,
+                )
+                if normalized:
+                    event_key = (member_id or member_name or "").lower()
+                    if normalized["event"] == "agent.message.sent":
+                        if event_key in observed_member_messages:
+                            normalized = None
+                        else:
+                            observed_member_messages.add(event_key)
+                    if normalized:
+                        yield normalized
+
+                if not is_member_event and agno_event in {
+                    "RunError", "TeamRunError", "RunCancelled", "TeamRunCancelled",
+                }:
+                    outcome = "cancelled" if agno_event.endswith("Cancelled") else "failed"
+                    raise RuntimeAdapterError(f"Agno reported run {outcome}.")
+
                 content = getattr(event, "content", None)
-                if content:
+                is_team_content = agno_event == "TeamRunContent"
+                is_final_content = is_team_content if team_request else agno_event == "RunContent"
+                if content and (not is_member_event) and is_final_content:
                     final_content += str(content)
                     yield {
                         "event": "message.delta",
@@ -250,6 +288,9 @@ class AgnoRuntimeAdapter:
             "metadata": {
                 "agno_run_id": agno_run_id or run_id,
                 "mode": self.mode,
+                "runtime_kind": "team" if self._is_team_request(request) else "agent",
+                "team_id": self._decision_value(request, "team_id"),
+                "agent_id": self._decision_value(request, "agent_id") or request.get("agent_id", ""),
                 "tools": tools,
             },
         }
@@ -320,7 +361,11 @@ class AgnoRuntimeAdapter:
         return dict(raw)
 
     def _agent_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
-        agent_id = str(request.get("agent_id") or request.get("agent", "")).strip()
+        agent_id = str(
+            self._decision_value(request, "agent_id")
+            or request.get("agent_id")
+            or request.get("agent", "")
+        ).strip()
         if agent_id and agent_id in self._agents:
             return self._agents[agent_id]
 
@@ -334,6 +379,198 @@ class AgnoRuntimeAdapter:
         if agent_id:
             self._agents[agent_id] = agent
         return agent
+
+    def _runtime_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
+        """Resolve a decisão para um Team Agno ou para um Agent individual.
+
+        A decisão chega ao adapter somente depois do preflight do Kernel. O
+        adapter não decide permissões: ele apenas materializa a escolha que já
+        foi validada e registrada. Sem ``team_id`` o caminho individual segue
+        exatamente o comportamento anterior.
+        """
+        team_id = self._decision_value(request, "team_id")
+        if not team_id:
+            return self._agent_for_request(request, session_id=session_id, user_id=user_id)
+        return self._team_for_request(
+            request,
+            team_id=team_id,
+            session_id=session_id,
+            user_id=user_id,
+        )
+
+    def _team_for_request(
+        self,
+        request: dict[str, Any],
+        *,
+        team_id: str,
+        session_id: str,
+        user_id: str,
+    ) -> Any:
+        Team, TeamMode = self._require_agno_team()
+        from ..agent_registry import RuntimeAgentRegistry
+        from ..team_registry import TeamRegistry
+
+        agent_roots: list[str | Path] = [Path(__file__).resolve().parents[2] / "data" / "agent_specs"]
+        workspace_agents = self.workspace / "agents.yaml"
+        if workspace_agents.exists():
+            agent_roots.insert(0, workspace_agents)
+        agents = RuntimeAgentRegistry(roots=agent_roots)
+        team_roots: list[str | Path] = [Path(__file__).resolve().parents[2] / "data" / "team_specs"]
+        workspace_teams = self.workspace / "teams"
+        if workspace_teams.exists():
+            team_roots.insert(0, workspace_teams)
+        team = TeamRegistry(roots=team_roots, agent_registry=agents).get(team_id)
+        if team is None:
+            raise RuntimeAdapterError(f"Agno team not found: {team_id}")
+
+        members = []
+        for member_id in team.agents:
+            spec = agents.get(member_id)
+            if spec is None:
+                raise RuntimeAdapterError(f"Agno team member not found: {member_id}")
+            member_spec = spec.to_dict()
+            member_spec.update({"session_id": session_id, "user_id": user_id})
+            members.append(self._build_agent(member_spec))
+
+        coordination = team.coordination or {}
+        mode_name = str(coordination.get("mode") or "coordinate").strip().lower()
+        # Bauer uses "supervisor" for a governed coordinator; Agno's closest
+        # native mode is coordinate. Keep the mapping explicit for auditability.
+        mode_name = {"supervisor": "coordinate"}.get(mode_name, mode_name)
+        mode = getattr(TeamMode, mode_name, TeamMode.coordinate)
+        coordinator = next(
+            (member for member in members if getattr(member, "id", "") == team.coordinator),
+            members[0],
+        )
+        instructions = [
+            f"Coordene o time {team.name} conforme a política do Bauer.",
+            "Respeite as permissões e ferramentas de cada agente membro.",
+            "Delegue cada tarefa somente aos especialistas relevantes e consolide as evidências.",
+        ]
+        configured_instructions = coordination.get("instructions", [])
+        if isinstance(configured_instructions, str):
+            configured_instructions = [configured_instructions]
+        instructions.extend(
+            str(item).strip()
+            for item in configured_instructions
+            if str(item).strip()
+        )
+        return Team(
+            id=team.id,
+            name=team.name,
+            model=getattr(coordinator, "model", None),
+            db=self._build_db(),
+            members=members,
+            mode=mode,
+            instructions=instructions,
+            add_history_to_context=True,
+            num_history_runs=3,
+        )
+
+    @staticmethod
+    def _decision_value(request: dict[str, Any], key: str) -> str:
+        decision = request.get("decision")
+        if isinstance(decision, dict):
+            value = decision.get(key)
+            if value:
+                return str(value).strip()
+        value = request.get(key)
+        return str(value).strip() if value else ""
+
+    @classmethod
+    def _is_team_request(cls, request: dict[str, Any]) -> bool:
+        return bool(cls._decision_value(request, "team_id"))
+
+    @staticmethod
+    def _agno_event_name(event: Any) -> str:
+        value = getattr(event, "event", None)
+        if value is None:
+            raw = type(event).__name__
+        else:
+            raw = str(getattr(value, "value", value)).split(".")[-1]
+        aliases = {
+            "run_started": "RunStarted", "run_content": "RunContent",
+            "run_intermediate_content": "RunIntermediateContent",
+            "run_completed": "RunCompleted", "run_error": "RunError",
+            "run_cancelled": "RunCancelled", "tool_call_started": "ToolCallStarted",
+            "tool_call_completed": "ToolCallCompleted", "tool_call_error": "ToolCallError",
+            "team_task_created": "TeamTaskCreated", "team_task_updated": "TeamTaskUpdated",
+            "team_tool_call_started": "ToolCallStarted",
+            "team_tool_call_completed": "ToolCallCompleted",
+            "team_tool_call_error": "ToolCallError",
+            # Agno 3.x enum values are CamelCase strings (for example,
+            # TeamToolCallStarted), while older versions exposed snake_case.
+            "teamtoolcallstarted": "ToolCallStarted",
+            "teamtoolcallcompleted": "ToolCallCompleted",
+            "teamtoolcallerror": "ToolCallError",
+        }
+        return aliases.get(raw.lower(), raw)
+
+    @classmethod
+    def _normalize_agent_event(
+        cls,
+        event: Any,
+        *,
+        run_id: str,
+        session_id: str,
+        team_id: str,
+        member_event: bool,
+    ) -> dict[str, Any] | None:
+        """Map Agno lifecycle/tool events to a privacy-safe Bauer event."""
+        name = cls._agno_event_name(event)
+        agent_id = str(getattr(event, "agent_id", "") or "").strip()
+        agent_name = str(getattr(event, "agent_name", "") or "").strip()
+        agno_run_id = str(getattr(event, "run_id", "") or "")
+        data: dict[str, Any] = {
+            "agno_event": name,
+            "team_id": team_id or None,
+            "member_run_id": agno_run_id or None,
+            "parent_run_id": str(getattr(event, "parent_run_id", "") or "") or None,
+            "agent_name": agent_name or None,
+        }
+        common = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "agent_id": agent_id or None,
+            "data": data,
+        }
+
+        if name == "RunStarted" and (member_event or agent_id):
+            return {"event": "agent.started", "status": "running", **common}
+        if name in {"RunContent", "RunIntermediateContent"} and member_event:
+            return {"event": "agent.message.sent", "status": "working", **common}
+        if name == "RunCompleted" and (member_event or agent_id):
+            return {"event": "agent.completed", "status": "completed", **common}
+        if name == "RunCancelled" and (member_event or agent_id):
+            return {"event": "agent.cancelled", "status": "cancelled", **common}
+        if name == "RunError" and (member_event or agent_id):
+            return {"event": "agent.failed", "status": "failed", **common}
+
+        if name in {"ToolCallStarted", "ToolCallCompleted", "ToolCallError"}:
+            tool = getattr(event, "tool", None)
+            tool_name = str(
+                getattr(tool, "tool_name", None) or getattr(tool, "name", None) or "tool"
+            )
+            event_type = {
+                "ToolCallStarted": "tool.call.requested",
+                "ToolCallCompleted": "tool.call.completed",
+                "ToolCallError": "tool.call.failed",
+            }[name]
+            data["member_event"] = member_event
+            return {
+                "event": event_type,
+                "status": "running" if name == "ToolCallStarted" else "failed" if name == "ToolCallError" else "completed",
+                "tool_name": tool_name,
+                **common,
+            }
+
+        if name in {"TeamTaskCreated", "TeamTaskUpdated"}:
+            assignee = str(getattr(event, "assignee", "") or "").strip()
+            if assignee:
+                data.update({"task_id": getattr(event, "task_id", None), "assignee": assignee})
+                return {"event": "task.delegated", "status": "running", "agent_id": assignee,
+                        "run_id": run_id, "session_id": session_id, "data": data}
+        return None
 
     def _build_agent(self, spec: dict[str, Any]) -> Any:
         Agent, _, _ = self._require_agno()
@@ -383,7 +620,7 @@ class AgnoRuntimeAdapter:
             stream_member_events=True,
         )
 
-    def _team_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
+    def _legacy_team_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
         team_id = str(request.get("team_id") or "").strip()
         if team_id and team_id in self._teams:
             return self._teams[team_id]
@@ -479,6 +716,14 @@ class AgnoRuntimeAdapter:
         return Agent, SqliteDb, ModelResponse
 
     @staticmethod
+    def _require_agno_team() -> tuple[Any, Any]:
+        try:
+            from agno.team import Team, TeamMode
+        except ModuleNotFoundError as exc:
+            raise RuntimeAdapterError("Agno team execution requires the installed 'agno' package with Team support.") from exc
+        return Team, TeamMode
+
+    @staticmethod
     def _instructions_from_spec(spec: dict[str, Any]) -> list[str]:
         instructions: list[str] = []
         for key in ("system", "system_prompt", "instructions"):
@@ -528,6 +773,14 @@ class AgnoRuntimeAdapter:
                 return router.execute_native_call("list_dir", {"path": path})
             return list_dir
 
+        if normalized == "search_text":
+            def search_text(pattern: str, path: str = ".") -> str:
+                return router.execute_native_call(
+                    "search_text",
+                    {"pattern": pattern, "path": path},
+                )
+            return search_text
+
         if normalized == "run_command":
             def run_command(command: str, confirm: bool = False, background: bool = False) -> str:
                 return router.execute_native_call(
@@ -568,7 +821,10 @@ class AgnoRuntimeAdapter:
             policy_enabled=True,
             policy_rules_path=self.adapter_config.get("policy_rules_path"),
             policy_root=self.adapter_config.get("policy_root", "memory/runtime"),
-            tool_allowlist=["read_file", "write_file", "list_dir", "run_command", "web_search", "memory"],
+            tool_allowlist=[
+                "read_file", "write_file", "list_dir", "search_text",
+                "run_command", "web_search", "memory",
+            ],
         )
 
     @staticmethod

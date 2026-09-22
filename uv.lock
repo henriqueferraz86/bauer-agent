@@ -350,6 +350,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+agno = [
+    { name = "agno" },
+    { name = "sqlalchemy" },
+]
 all = [
     { name = "beautifulsoup4" },
     { name = "ddgs" },
@@ -410,6 +414,7 @@ web = [
 [package.metadata]
 requires-dist = [
     { name = "agno", specifier = ">=1.7" },
+    { name = "agno", marker = "extra == 'agno'" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "beautifulsoup4", marker = "extra == 'all'", specifier = ">=4.12" },
     { name = "beautifulsoup4", marker = "extra == 'web'", specifier = ">=4.12" },
@@ -449,6 +454,7 @@ requires-dist = [
     { name = "soundfile", marker = "extra == 'all'", specifier = ">=0.12" },
     { name = "soundfile", marker = "extra == 'voice'", specifier = ">=0.12" },
     { name = "sqlalchemy", specifier = ">=2.0" },
+    { name = "sqlalchemy", marker = "extra == 'agno'" },
     { name = "transformers", marker = "extra == 'voice-tts'", specifier = ">=4.57,<5" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'all'", specifier = ">=0.27" },
@@ -459,7 +465,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'dev'", specifier = ">=12.0" },
     { name = "websockets", marker = "extra == 'gateway'", specifier = ">=12.0" },
 ]
-provides-extras = ["keychain", "dev", "server", "gateway", "web", "voice", "voice-kokoro", "voice-tts", "all"]
+provides-extras = ["keychain", "agno", "dev", "server", "gateway", "web", "voice", "voice-kokoro", "voice-tts", "all"]
 
 [[package]]
 name = "beautifulsoup4"
@@ -3141,7 +3147,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "3.16.2"
+version = "3.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3151,9 +3157,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e2/c6/770171ef28854d8092ee2c3df68ef97d127362b28771e6b423c948894e07/openai-3.16.2.tar.gz", hash = "sha256:e129455fc6a744276cda63a9e2f0759207bc0cf24afc4cf356bf5029e631e955", size = 1696266, upload-time = "2026-09-18T21:27:23.586Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/7b/a960e698f7126f31113764d7b441d7fe73caada32b6e65c6ca42c5343265/openai-3.18.0.tar.gz", hash = "sha256:780946991bc825f110ddde12c8c84885dd012ae64143d56d494922b7bb879b78", size = 1711178, upload-time = "2026-09-22T18:26:31.81Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/72/2b1fe3e303db76ab2ba0c2de2b57822869bcb588db82334d4ff3aea8acf2/openai-3.16.2-py3-none-any.whl", hash = "sha256:660a7f8307e6605342ae84ff4425412e7cd19e5e9b298f975502df2a1a9a5d5f", size = 2053568, upload-time = "2026-09-18T21:27:20.885Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/c3/262e12d6dc544e215c3f4f76525b0fadf749f8092e525772b9f868d89ea9/openai-3.18.0-py3-none-any.whl", hash = "sha256:31f170b59865cbf35ceb15699bd33b190fa660eb2f36591c74a161afc67152e7", size = 2068693, upload-time = "2026-09-22T18:26:29.518Z" },
 ]
 
 [[package]]

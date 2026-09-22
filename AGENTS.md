@@ -177,6 +177,20 @@ modos de falha conhecidos.
   outra máquina, atualize o código primeiro.
 - **Commits**: fixes pequenos vão direto no master; features novas via branch+PR.
 
+## Spec Driven Development
+
+Features e sprints novas seguem o fluxo obrigatório:
+
+```text
+SPEC.md → ARCHITECTURE.md → BACKLOG.md → implementação → testes → revisão
+```
+
+Antes de editar código, crie a pasta correspondente em `specs/`, defina o
+escopo, fora de escopo, skills, critérios de aceite e plano de validação.
+Implemente uma tarefa pequena por vez, atualize o `BACKLOG.md` e mantenha uma
+branch `codex/sprint-XX-*` por sprint. Não avance para a próxima sprint sem
+passar os testes e gates da sprint atual.
+
 ## Planos de trabalho
 
 `plans/` guarda planos de implementação (gerados por auditoria) com índice em
