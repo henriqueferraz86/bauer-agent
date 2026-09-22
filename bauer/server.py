@@ -1295,7 +1295,10 @@ def create_app(
                     resp, tool_log = run_one_turn_with_fallback(
                         ctx, active_router, _turn_client, _turn_model, _fallback_clients,
                     )
-                    result["response"] = resp
+                    from .server_chat import _allowlist_authorization_prompt
+                    result["response"] = (
+                        _allowlist_authorization_prompt(tool_log) or resp
+                    )
                     result["tool_log"] = tool_log
                 except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
                     result["error"] = exc

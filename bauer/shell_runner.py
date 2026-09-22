@@ -63,6 +63,25 @@ _DENYLIST: list[re.Pattern] = [
     re.compile(r"\b(curl|wget)\b.*\|", re.IGNORECASE),
 ]
 
+# Diagnósticos Linux somente leitura. Estes comandos não recebem uma entrada
+# que altere o sistema; por isso podem ser usados sem confirmação em
+# safe_mode. Comandos com subcomandos mutáveis (ip, systemctl, mount, etc.)
+# continuam exigindo liberação explícita em tools.extra_allowed_commands.
+_LINUX_READONLY_COMMANDS: frozenset[str] = frozenset({
+    "df",       # espaço dos sistemas de arquivos
+    "free",     # memória e swap
+    "iostat",   # CPU e I/O
+    "lscpu",    # topologia e recursos da CPU
+    "lsblk",    # dispositivos e partições
+    "nproc",    # número de CPUs disponíveis
+    "ss",       # sockets e conexões
+    "uname",    # kernel e arquitetura
+    "uptime",   # tempo ligado e carga
+    "vmstat",   # memória, processos e I/O
+    "whoami",   # identidade efetiva
+    "id",        # identidade e grupos
+})
+
 # Comandos permitidos (stem do executável, sem path e sem extensão .exe).
 _ALLOWLIST: frozenset[str] = frozenset({
     # Leitura e navegação
@@ -84,7 +103,7 @@ _ALLOWLIST: frozenset[str] = frozenset({
     "bauer",
     # Outros
     "type",
-})
+}) | _LINUX_READONLY_COMMANDS
 
 # Risco médio — requerem confirm=True quando safe_mode=True.
 _MEDIUM_RISK: list[re.Pattern] = [
@@ -272,6 +291,9 @@ class ShellRunner:
         available = ", ".join(sorted(_ALLOWLIST | self.extra_allowed_commands))
         raise BlockedCommandError(
             f"Comando '{base}' nao esta na allowlist.\n"
+            f"Antes de continuar, pergunte ao usuario se ele autoriza adicionar "
+            f"'{base}' permanentemente a allowlist. So execute depois de uma "
+            "confirmacao explicita.\n"
             f"Permitidos: {available}\n"
             "Para liberar mais comandos (ex.: docker, kubectl), adicione em "
             "config.yaml: tools.extra_allowed_commands: [docker, ...]"
