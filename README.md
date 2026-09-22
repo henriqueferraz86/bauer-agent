@@ -38,6 +38,7 @@ Principais comandos do beta:
 | Observability | `GET /runs`, `GET /events`, `GET /audit`, dashboard local |
 
 Roteiro de demo fechado: [docs/BETA_CLOSED.md](docs/BETA_CLOSED.md).
+Agentes especialistas e limites: [docs/bauer-specialist-agents.md](docs/bauer-specialist-agents.md).
 
 ---
 

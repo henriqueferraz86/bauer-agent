@@ -63,3 +63,9 @@ confiança abaixo do limite, `fallback_enabled: true` usa o classificador
 heurístico local. Para operar sem qualquer chamada externa de decisão, deixe
 `decision.jev_enabled: false`. A chave é armazenada no `.env` pelo comando de
 configuração e não aparece no painel nem nos eventos.
+# Agentes especialistas
+
+O catálogo padrão também contém Bauer Architect, Security, Research, Docs e
+Data. O fallback local pode escolhê-los por sinais da solicitação sem exigir
+Jev. Os papéis, ferramentas e limites estão em
+[`bauer-specialist-agents.md`](bauer-specialist-agents.md).
