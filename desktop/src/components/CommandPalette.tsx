@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, isNoSpeechError } from "../api/client";
+import { requestMicrophone } from "../voice";
 
 interface OsCommandResult {
   kind: string;
@@ -129,7 +130,7 @@ export default function CommandPalette() {
     }
     if (busy) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await requestMicrophone();
       const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
       const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       chunksRef.current = [];

@@ -1,12 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   extractWakeCommand,
   isVoiceStop,
+  requestMicrophone,
   shouldStopRecording,
   VOICE_MAX_RECORDING_MS,
   VOICE_NO_SPEECH_TIMEOUT_MS,
   VOICE_SILENCE_MS,
 } from "./voice";
+
+describe("microphone access", () => {
+  it("reports when the browser hides mediaDevices", async () => {
+    const originalNavigator = globalThis.navigator;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {},
+    });
+    try {
+      expect(() => requestMicrophone()).toThrow("não disponibilizou acesso");
+    } finally {
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: originalNavigator,
+      });
+    }
+  });
+
+  it("delegates to the browser microphone API", async () => {
+    const getUserMedia = vi.fn().mockResolvedValue("stream");
+    const originalNavigator = globalThis.navigator;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { mediaDevices: { getUserMedia } },
+    });
+    try {
+      await expect(requestMicrophone()).resolves.toBe("stream");
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
+    } finally {
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: originalNavigator,
+      });
+    }
+  });
+});
 
 describe("voice command parsing", () => {
   it("accepts stop commands independent of accents and case", () => {

@@ -6,6 +6,7 @@ import Markdown from "../components/Markdown";
 import {
   extractWakeCommand,
   isVoiceStop,
+  requestMicrophone,
   shouldStopRecording,
   VOICE_LEVEL_THRESHOLD,
 } from "../voice";
@@ -521,7 +522,7 @@ export default function Chat() {
   async function beginRecording() {
     if (recordingRef.current || busyRef.current || transcribingRef.current) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await requestMicrophone();
       const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
       const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       const audioContext = voiceAudioContextRef.current ?? new AudioContext();
