@@ -316,6 +316,18 @@ def _fallback_decision(
 def _agent_for_task(task_type: str, candidates: list[str], message: str = "") -> str:
     """Escolhe o agente formal mais próximo quando Jev está desligado."""
     text = message.lower()
+    specialist_hints = (
+        (("security", "segurança", "seguranca", "vulnerabilidade", "secret", "segredo", "pentest"), "security"),
+        (("research", "pesquisa", "pesquise", "pesquisar", "investigue", "investigar", "documentação oficial", "fontes"), "research"),
+        (("documentação", "documentacao", "documente", "documentar", "readme", "guia técnico", "guia tecnico", "tutorial"), "docs"),
+        (("dados", "dataset", "data pipeline", "etl", "sql", "csv", "database", "banco de dados", "análise de dados", "analise de dados"), "data"),
+        (("arquitetura", "architecture", "dependências", "dependencias", "impacto técnico", "impacto tecnico"), "architect"),
+    )
+    for markers, hint in specialist_hints:
+        if any(marker in text for marker in markers):
+            specialist = next((item for item in candidates if hint in item.lower()), "")
+            if specialist:
+                return specialist
     if task_type == "architecture" and any(
         marker in text for marker in ("implemente", "implement", "código", "codigo", "teste", "testes")
     ):

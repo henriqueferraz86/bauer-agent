@@ -282,7 +282,16 @@ class AgnoRuntimeAdapter:
         instructions = [
             f"Coordene o time {team.name} conforme a política do Bauer.",
             "Respeite as permissões e ferramentas de cada agente membro.",
+            "Delegue cada tarefa somente aos especialistas relevantes e consolide as evidências.",
         ]
+        configured_instructions = coordination.get("instructions", [])
+        if isinstance(configured_instructions, str):
+            configured_instructions = [configured_instructions]
+        instructions.extend(
+            str(item).strip()
+            for item in configured_instructions
+            if str(item).strip()
+        )
         return Team(
             id=team.id,
             name=team.name,
@@ -397,6 +406,14 @@ class AgnoRuntimeAdapter:
                 return router.execute_native_call("list_dir", {"path": path})
             return list_dir
 
+        if normalized == "search_text":
+            def search_text(pattern: str, path: str = ".") -> str:
+                return router.execute_native_call(
+                    "search_text",
+                    {"pattern": pattern, "path": path},
+                )
+            return search_text
+
         if normalized == "run_command":
             def run_command(command: str, confirm: bool = False, background: bool = False) -> str:
                 return router.execute_native_call(
@@ -437,7 +454,10 @@ class AgnoRuntimeAdapter:
             policy_enabled=True,
             policy_rules_path=self.adapter_config.get("policy_rules_path"),
             policy_root=self.adapter_config.get("policy_root", "memory/runtime"),
-            tool_allowlist=["read_file", "write_file", "list_dir", "run_command", "web_search", "memory"],
+            tool_allowlist=[
+                "read_file", "write_file", "list_dir", "search_text",
+                "run_command", "web_search", "memory",
+            ],
         )
 
     @staticmethod

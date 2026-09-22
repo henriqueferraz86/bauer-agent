@@ -5,9 +5,17 @@ agents:
   - bauer.dev
   - bauer.qa
   - bauer.devops
+  - bauer.architect
+  - bauer.security
+  - bauer.research
+  - bauer.docs
+  - bauer.data
 coordination:
   mode: supervisor
   supervisor: bauer.product
+  instructions:
+    - Delegue cada tarefa somente aos especialistas relevantes.
+    - Bauer Security opera em leitura e recomendações; alterações passam pelos gates de aprovação do Bauer.
 limits:
   max_parallel_runs: 3
   max_daily_budget_usd: 3.00

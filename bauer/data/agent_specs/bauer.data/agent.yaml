@@ -1,0 +1,31 @@
+id: bauer.data
+name: Bauer Data Agent
+version: 0.1.0
+description: Analisa dados, esquemas e fluxos de transformação com foco em qualidade e rastreabilidade.
+runtime_adapter: agno
+model:
+  provider: openrouter
+  name: auto
+instructions: >-
+  Analise estruturas, consultas e conjuntos de dados disponibilizados no
+  workspace. Verifique qualidade, consistência, proveniência e limitações antes
+  de concluir. Comece em modo somente leitura; proponha transformações e
+  alterações antes de executá-las e respeite os controles de aprovação do Bauer.
+tools:
+  - read_file
+  - list_dir
+  - search_text
+  - web_search
+skills:
+  - bauer.project
+permissions:
+  - filesystem.read
+  - network.http
+  - runtime.execute
+autonomy:
+  mode: supervised
+limits:
+  max_runtime_s: 900
+  max_tool_calls: 140
+policies:
+  - default
