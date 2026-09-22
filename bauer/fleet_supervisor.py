@@ -51,6 +51,20 @@ DEFAULT_EXCLUDES = {
 }
 
 
+def _resolved_path(value: str | Path) -> Path:
+    """Resolve a path without re-selecting its platform flavour.
+
+    Tests simulate Windows on Linux by replacing ``os.name``. Calling the
+    ``Path`` factory on an already-created ``PosixPath`` in that situation
+    attempts to construct ``WindowsPath`` and raises ``NotImplementedError``.
+    Preserving existing ``Path`` instances keeps path handling portable while
+    retaining the normal factory behaviour for strings.
+    """
+
+    path = value if isinstance(value, Path) else Path(value)
+    return path.expanduser().resolve()
+
+
 class FleetError(Exception):
     """Erro operacional do fleet."""
 
@@ -152,7 +166,7 @@ class FleetStateStore:
     """Estado persistente global do fleet, separado dos projetos."""
 
     def __init__(self, root: str | Path):
-        self.root = Path(root).expanduser().resolve()
+        self.root = _resolved_path(root)
         self.runtime_dir = self.root / ".bauer_fleet"
         self.state_file = self.runtime_dir / "fleet.json"
         self.stop_file = self.runtime_dir / "STOP"
@@ -277,9 +291,9 @@ class FleetSupervisor:
     ):
         from .paths import config_path, models_path
 
-        self.cwd = Path(cwd or Path.cwd()).resolve()
-        self.config = Path(config or config_path()).expanduser()
-        self.models = Path(models or models_path()).expanduser()
+        self.cwd = _resolved_path(cwd if cwd is not None else Path.cwd())
+        self.config = _resolved_path(config if config is not None else config_path())
+        self.models = _resolved_path(models if models is not None else models_path())
         if not self.config.is_absolute():
             self.config = (self.cwd / self.config).resolve()
         if not self.models.is_absolute():
