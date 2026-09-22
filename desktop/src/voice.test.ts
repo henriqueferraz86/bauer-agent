@@ -3,6 +3,7 @@ import {
   extractWakeCommand,
   isVoiceStop,
   requestMicrophone,
+  speakBrowserFallback,
   shouldStopRecording,
   VOICE_MAX_RECORDING_MS,
   VOICE_NO_SPEECH_TIMEOUT_MS,
@@ -41,6 +42,46 @@ describe("microphone access", () => {
         configurable: true,
         value: originalNavigator,
       });
+    }
+  });
+});
+
+describe("browser speech fallback", () => {
+  it("speaks in Brazilian Portuguese and cancels previous speech", () => {
+    const speak = vi.fn();
+    const cancel = vi.fn();
+    const voice = { lang: "pt-BR", name: "Português" } as SpeechSynthesisVoice;
+    const synthesis = { speak, cancel, getVoices: () => [voice] } as unknown as SpeechSynthesis;
+    class FakeUtterance {
+      lang = "";
+      voice?: SpeechSynthesisVoice;
+      constructor(public text: string) {}
+    }
+    const originalSynthesis = globalThis.speechSynthesis;
+    const originalUtterance = globalThis.SpeechSynthesisUtterance;
+    Object.defineProperty(globalThis, "speechSynthesis", { configurable: true, value: synthesis });
+    Object.defineProperty(globalThis, "SpeechSynthesisUtterance", { configurable: true, value: FakeUtterance });
+    try {
+      expect(speakBrowserFallback("Olá, Bauer")).toBe(true);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(speak).toHaveBeenCalledOnce();
+      expect(speak.mock.calls[0][0]).toMatchObject({ text: "Olá, Bauer", lang: "pt-BR", voice });
+    } finally {
+      Object.defineProperty(globalThis, "speechSynthesis", { configurable: true, value: originalSynthesis });
+      Object.defineProperty(globalThis, "SpeechSynthesisUtterance", { configurable: true, value: originalUtterance });
+    }
+  });
+
+  it("returns false when the browser has no speech API", () => {
+    const originalSynthesis = globalThis.speechSynthesis;
+    const originalUtterance = globalThis.SpeechSynthesisUtterance;
+    Object.defineProperty(globalThis, "speechSynthesis", { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, "SpeechSynthesisUtterance", { configurable: true, value: undefined });
+    try {
+      expect(speakBrowserFallback("teste")).toBe(false);
+    } finally {
+      Object.defineProperty(globalThis, "speechSynthesis", { configurable: true, value: originalSynthesis });
+      Object.defineProperty(globalThis, "SpeechSynthesisUtterance", { configurable: true, value: originalUtterance });
     }
   });
 });
