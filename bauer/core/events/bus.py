@@ -57,6 +57,7 @@ class EventBus:
         recent = getattr(self.store, "list_recent", None)
         recent_query = limit is not None and limit >= 0 and run_id is None and callable(recent)
         if recent_query:
+            assert callable(recent)
             records = recent("events", limit)
         else:
             records = self.store.list("events")
