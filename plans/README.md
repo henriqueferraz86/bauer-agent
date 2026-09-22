@@ -67,6 +67,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [054](054-p1-maturity-hardening.md) | Elevar o Bauer de beta avançado para pré-produção robusta | Segurança, performance, desktop, arquitetura | P1 | L | — | COMPLETE |
 | [055](055-production-operations-hardening.md) | Tornar a operação do Bauer segura, observável e recuperável | Segurança, confiabilidade, observabilidade, arquitetura | P1 | L | — | DONE |
 | [056](056-autopilot-mission-controller.md) | Integrar um autopilot persistente ao runtime always-on | Direção, arquitetura, confiabilidade | P1 | L | 055; 014 (contexto histórico) | DONE |
+| [057](057-agno-capability-expansion.md) | Abrir o catálogo completo compatível do Agno no Bauer com governança por agente | Agentes, tools, dados, workflows e governança | P1 | XXL (fatiado em sprints) | Sprint 17 (#151) | TODO |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
