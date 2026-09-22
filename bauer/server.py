@@ -701,13 +701,19 @@ def create_app(
             _log.debug("build profile client failed (%s): %s", provider, exc)
             return None
 
-    def _resolve_turn_model(message: str):
+    def _resolve_turn_model(message: str, session_id: str | None = None):
         """(client, model, decision). Sem routing / na dúvida → (primário, None)."""
         if not _router_enabled or not _router_profiles:
             return _state["client"], _state["model"], None
         try:
             from .routing_runtime import decide_route
-            d = decide_route(message, _router_profiles, _router_cfg)
+            d = decide_route(
+                message,
+                _router_profiles,
+                _router_cfg,
+                workspace=workspace,
+                session_id=session_id,
+            )
         except Exception:  # noqa: BLE001
             return _state["client"], _state["model"], None
         if not d.model:
@@ -1244,7 +1250,7 @@ def create_app(
         # Roteamento por-turno resolvido AQUI (fora da thread): o par
         # (client, model) é capturado pelo worker; a decisão vira evento SSE
         # `route` no gerador + evento de runtime na Observabilidade.
-        _turn_client, _turn_model, _route = _resolve_turn_model(message)
+        _turn_client, _turn_model, _route = _resolve_turn_model(message, sid)
         _publish_route(run.id, sid, request_agent_id, _route)
 
         def _event_stream():
@@ -1649,7 +1655,7 @@ def create_app(
         ctx = _new_context()
         ctx.messages = store.load(sid)
         _apply_request_context(ctx, resolved)
-        _turn_client, _turn_model, _route = _resolve_turn_model(req.message)
+        _turn_client, _turn_model, _route = _resolve_turn_model(req.message, sid)
         _publish_route(run.id, sid, request_agent_id, _route)
 
         budget = AutonomousBudget(

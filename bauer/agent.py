@@ -3565,7 +3565,13 @@ def run_agent_session(
             # sem client, ou falha → o turno segue no modelo padrão da sessão.
             try:
                 from .routing_runtime import decide_route as _hr_decide
-                _d = _hr_decide(user_input, _tier_profiles, decision_config)
+                _d = _hr_decide(
+                    user_input,
+                    _tier_profiles,
+                    decision_config,
+                    workspace=active_workspace,
+                    session_id=session_id,
+                )
                 route_kind = "orchestrate" if _d.orchestrate else "direct"
                 if _d.model:
                     if not _d.provider or _d.provider == _provider:

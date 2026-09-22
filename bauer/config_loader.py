@@ -743,6 +743,7 @@ class DecisionSection(_StrictSection):
     model: str = "jev-latest"
     timeout_seconds: float = Field(ge=0.1, le=30.0, default=2.0)
     min_confidence: float = Field(ge=0.0, le=1.0, default=0.65)
+    memory_enabled: bool = True
 
 
 class LoggingSection(_StrictSection):

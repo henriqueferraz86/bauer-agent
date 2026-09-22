@@ -1,10 +1,17 @@
 # Jev no Bauer
 
-O Bauer usa Jev apenas como decisor estruturado opcional. Jev pode classificar
-uma tarefa, estimar complexidade, escolher o tier (`fast`, `balanced`, `coding`
-ou `heavy`) e indicar se há necessidade de orquestração. A execução continua
-passando pelo roteador de modelos, Kernel, policy, approval, allowlist e gates
-do Bauer.
+O Bauer usa Jev como uma camada de decisão estruturada opcional. Jev compara
+alternativas com probabilidades normalizadas, escolhe o tier (`fast`,
+`balanced`, `coding` ou `heavy`), runtime, time, agente, ferramentas,
+estratégia e plano. A execução continua passando pelo Kernel, policy,
+approval, allowlist, orçamento e gates do Bauer.
+
+O resultado é uma recomendação auditável. Jev não executa ferramentas e não
+pode conceder permissões. O Kernel grava a decisão no run e publica o evento
+`decision.selected` antes da execução. Se o runtime escolhido for `agno` e
+houver `team_id`, o adapter resolve o time pelo `TeamRegistry` e materializa
+um `agno.team.Team` com os agentes registrados. Sem time, usa o agente
+individual selecionado.
 
 Jev fica desligado por padrão. Para habilitar no perfil atual:
 
@@ -29,9 +36,21 @@ model:
 decision:
   jev_enabled: true
   fallback_enabled: true
+  memory_enabled: true
   timeout_seconds: 2.0
   min_confidence: 0.65
 ```
+
+O catálogo enviado ao Jev contém somente IDs de times e agentes registrados no
+Bauer e ferramentas disponíveis para o contexto. Decisões anteriores com
+resultado positivo são consultadas na `DecisionMemory`; cada nova decisão é
+registrada com `memory_decision_id` para receber feedback posterior da sessão.
+
+Quando Jev está desligado ou sem chave, o fallback local mantém o mesmo
+contrato: produz probabilidades heurísticas, escolhe o time Agno formal para
+tarefas com múltiplas etapas, seleciona um agente por tipo de tarefa, sugere
+ferramentas permitidas e cria um plano curto. Assim a integração pode ser
+testada antes da ativação da API.
 
 Para desligar Jev e voltar imediatamente ao classificador local:
 

@@ -23,6 +23,9 @@ class KernelRequest:
     input: dict[str, Any] = field(default_factory=dict)
     operation: str = "runtime.execute"
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Snapshot opcional produzido pela camada de decisão durante planning.
+    # Fica separado do input para facilitar auditoria e não autoriza execução.
+    decision: dict[str, Any] = field(default_factory=dict)
     # resiliência (Sprint 4)
     max_retries: int = 0               # re-tentativas no MESMO executor (estado retrying)
     retry_backoff_s: float = 0.0       # espera entre tentativas (linear: n * backoff)

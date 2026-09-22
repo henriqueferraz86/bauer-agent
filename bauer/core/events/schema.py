@@ -39,6 +39,7 @@ EventType = Literal[
     "budget.exceeded",
     "autonomy.changed",
     "model.route.selected",
+    "decision.selected",
     "loop.round.completed",
     "autonomy.state.changed",
     "autonomy.started",

@@ -115,14 +115,19 @@ class BauerKernel:
         ``execute`` e ``stream`` (mesmo preflight, um só lugar p/ divergir)."""
         session_id = request.session_id or f"session-{uuid4()}"
         adapter = None
-        adapter_name = request.runtime_adapter
+        decision = self._select_decision(request)
+        # A rota selecionada preenche apenas o que o caller não informou.
+        # Uma escolha explícita do request continua tendo precedência.
+        adapter_name = request.runtime_adapter or str((decision or {}).get("runtime") or "")
         if executor is None:
-            adapter = self.adapter_factory(request.runtime_adapter or None, config=self.config)
+            adapter = self.adapter_factory(adapter_name or None, config=self.config)
             adapter_name = getattr(adapter, "name", adapter_name or "bauer_native")
 
-        stored_input = _persistable(
-            {**request.input, "task": request.task} if request.task else dict(request.input)
-        )
+        base_input = {**request.input, "task": request.task} if request.task else dict(request.input)
+        if decision:
+            base_input["decision"] = decision
+            request.metadata.setdefault("decision", decision)
+        stored_input = _persistable(base_input)
         # Persistido no run: sem isso, "quantos runs autônomos tinham contrato?"
         # só daria para responder olhando o código, e a resposta mudaria a cada
         # refactor. Gravado, vira contagem sobre o histórico real.
@@ -131,15 +136,75 @@ class BauerKernel:
             stored_input["task_contract"] = self.contract is not None
         run = self.runs.create_run(
             session_id=session_id,
-            agent_id=request.agent_id,
+            agent_id=str((decision or {}).get("agent_id") or request.agent_id),
             runtime_adapter=adapter_name or "bauer_native",
             input=stored_input,
             status="created",
         )
+        if decision:
+            self._publish(
+                "decision.selected",
+                run,
+                status=str(decision.get("profile") or "balanced"),
+                message=str(decision.get("reason") or "decisão estruturada selecionada"),
+                data=decision,
+            )
         payload = {**request.input, "run_id": run.id}
         if request.task and "task" not in payload:
             payload["task"] = request.task
+        if decision:
+            payload["decision"] = decision
         return run, session_id, ["created"], adapter, payload
+
+    def _select_decision(self, request: KernelRequest) -> dict[str, Any] | None:
+        """Seleciona uma rota estruturada durante o planejamento do Kernel.
+
+        O Jev é consultado somente quando explicitamente habilitado. Toda
+        decisão vira metadado auditável; policy, approval, budget e gates
+        continuam sendo as autoridades para permitir ou executar efeitos.
+        """
+        if request.decision:
+            return dict(request.decision)
+        if request.metadata.get("decision"):
+            return dict(request.metadata["decision"])
+        config = self.config
+        decision_cfg = getattr(config, "decision", None)
+        if not bool(getattr(decision_cfg, "jev_enabled", False)):
+            return None
+        message = request.task or str(
+            request.input.get("message") or request.input.get("task") or ""
+        ).strip()
+        if not message:
+            return None
+        try:
+            from ...decision_router import decide_with_fallback
+            from ...routing_runtime import decision_catalog, route_event_data
+            from ...model_router import profiles_from_config
+            from ...decision_memory import DecisionMemory
+
+            profiles = profiles_from_config(config)
+            workspace = request.metadata.get("workspace") or request.input.get("workspace")
+            teams, agents, tools = decision_catalog(workspace)
+            root = getattr(getattr(self.runs, "store", None), "root", None)
+            memory = DecisionMemory(db_path=(root / "decisions.db") if root else ":memory:")
+            selected = decide_with_fallback(
+                message,
+                profiles,
+                config,
+                teams=teams,
+                agents=agents,
+                available_tools=tools,
+                decision_memory=memory,
+                session_id=request.session_id or None,
+            )
+            return route_event_data(selected)
+        except Exception as exc:  # noqa: BLE001 — decisão é fallback do planejamento
+            try:
+                from ...logging_config import log_suppressed
+                log_suppressed("kernel.select_decision", exc)
+            except Exception as log_exc:
+                _ = log_exc
+            return None
 
     def _preflight(self, request: KernelRequest, run: Any, session_id: str,
                    trajectory: list[str]):
