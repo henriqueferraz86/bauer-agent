@@ -353,6 +353,24 @@ class BauerKernel:
                     elif kind in ("run.completed", "run.started"):
                         meta.update(evt)  # o "final" do kernel já sinaliza
                         # início/fim; não re-emite
+                    elif kind in {
+                        "agent.started", "agent.message.sent", "agent.paused",
+                        "agent.resumed", "agent.cancelled", "agent.completed",
+                        "agent.failed", "task.delegated", "tool.call.requested",
+                        "tool.call.completed", "tool.call.failed",
+                    }:
+                        self._publish(
+                            kind,
+                            run,
+                            agent_id=str(evt.get("agent_id") or run.agent_id),
+                            tool_name=evt.get("tool_name"),
+                            status=evt.get("status"),
+                            message=evt.get("message"),
+                            data=evt.get("data") if isinstance(evt.get("data"), dict) else {},
+                        )
+                        # O caller SSE também recebe o mesmo evento para que a
+                        # interface possa mostrar atividade sem esperar polling.
+                        yield evt
                     else:
                         # passthrough (6c): eventos intermediários do executor —
                         # tool/fase/rota — atravessam para o front-end (SSE) sem
@@ -873,13 +891,14 @@ class BauerKernel:
             log_suppressed("kernel.release_budget", exc)
 
     def _publish(self, event_type: str, run: Any, *, status: str | None = None,
-                 message: str | None = None, data: dict | None = None) -> None:
+                 message: str | None = None, data: dict | None = None,
+                 agent_id: str | None = None, tool_name: str | None = None) -> None:
         if self.bus is None:
             return
         try:
             self.bus.publish(event_type, run_id=run.id, session_id=run.session_id,
-                             agent_id=run.agent_id, status=status, message=message,
-                             data=data or {})
+                             agent_id=agent_id or run.agent_id, tool_name=tool_name,
+                             status=status, message=message, data=data or {})
         except Exception as exc:  # noqa: BLE001 — telemetria nunca derruba o run
             from ...logging_config import log_suppressed
             log_suppressed("kernel.publish", exc)

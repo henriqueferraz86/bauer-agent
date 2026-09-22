@@ -85,6 +85,7 @@ OPERACOES_API = {
     "GET /api/obs/cost",
     "GET /api/obs/runs",
     "GET /api/obs/runs/{run_id}/events",
+    "GET /api/obs/agent-activity",
     "GET /api/obs/runs/{run_id}/trace",
     "GET /api/obs/summary",
     "GET /api/obs/traces",

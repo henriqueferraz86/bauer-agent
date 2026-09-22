@@ -36,6 +36,15 @@ def test_missing_collection_is_empty(tmp_path: Path):
     assert store.latest("nada", "x") is None
 
 
+def test_list_recent_returns_last_records_in_chronological_order(tmp_path: Path):
+    store = SqliteStateStore(root=tmp_path)
+    for index in range(5):
+        store.append("events", {"id": f"event-{index}", "value": index})
+
+    assert [item["value"] for item in store.list_recent("events", 3)] == [2, 3, 4]
+    assert store.list_recent("events", 0) == []
+
+
 def test_concurrent_appends_do_not_corrupt(tmp_path: Path):
     """Múltiplas instâncias preservam todos os registros no mesmo banco."""
     n_threads = 8

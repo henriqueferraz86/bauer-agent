@@ -569,6 +569,59 @@ def build_desktop_router(
         bus = EventBus(root=_runtime_root)
         return {"events": [EventBus.to_dict(event) for event in bus.list_events(run_id=run_id)]}
 
+    @router.get("/obs/agent-activity")
+    def obs_agent_activity(limit: int = Query(4000, ge=1, le=10000)):
+        """Resumo recente por agente, correlacionado com o estado do run pai."""
+        from .core.events import EventBus
+        from .core.runtime.run_manager import RunManager
+
+        bus = EventBus(root=_runtime_root)
+        runs = RunManager(root=_runtime_root).list_runs()
+        run_status = {run.id: run.status for run in runs}
+        activity: dict[str, dict[str, Any]] = {}
+        lifecycle = {"agent.started", "agent.completed", "agent.failed", "agent.cancelled"}
+        activity_events = lifecycle | {
+            "agent.message.sent", "tool.call.requested", "tool.call.completed",
+            "tool.call.failed", "task.delegated",
+        }
+
+        for event in bus.list_events(limit=limit):
+            agent_id = str(event.agent_id or "").strip()
+            if not agent_id or event.event_type not in activity_events:
+                continue
+            item = activity.setdefault(agent_id, {
+                "agent_id": agent_id,
+                "status": "idle",
+                "run_count": 0,
+                "last_used_at": None,
+                "current_run_id": None,
+                "team_id": None,
+                "last_event": None,
+                "last_tool": None,
+            })
+            if event.event_type == "agent.started":
+                item["run_count"] += 1
+                item["last_used_at"] = event.timestamp
+                if run_status.get(event.run_id) == "running":
+                    item.update(status="running", current_run_id=event.run_id)
+                    item["team_id"] = (event.data or {}).get("team_id")
+            elif item.get("current_run_id") == event.run_id:
+                terminal_status = "failed" if event.event_type == "agent.failed" else "idle"
+                item.update(status=terminal_status, current_run_id=None)
+            if event.event_type.startswith("tool.call"):
+                item["last_tool"] = event.tool_name
+            item["last_event"] = event.event_type
+            item["last_event_at"] = event.timestamp
+
+        # Terminal parent runs must not leave a member displayed as working if
+        # Agno did not emit that member's terminal event before failing/cancelling.
+        for item in activity.values():
+            run_id = item.get("current_run_id")
+            if run_id and run_status.get(run_id) != "running":
+                item.update(status="idle", current_run_id=None)
+
+        return {"agents": activity}
+
     @router.get("/obs/approvals")
     def obs_approvals(status: str = Query("pending", description="pending | approved | denied")):
         from dataclasses import asdict
@@ -1229,11 +1282,19 @@ def build_desktop_router(
 
             agents.extend({**agent.to_dict(), "source": "agents.yaml"} for agent in AgentRegistry(Path("agents.yaml")).list_agents())
             agents.extend({**agent.to_dict(), "source": "builtin"} for agent in list_builtin_specialists())
+            from .core.runtime.agent_registry import RuntimeAgentRegistry
+
+            agents.extend({**agent.to_dict(), "source": "runtime"} for agent in RuntimeAgentRegistry().list())
         except Exception as exc:  # noqa: BLE001
             logger.debug("agents dashboard load failed: %s", exc)
         seen: Dict[str, Dict[str, Any]] = {}
+        public_fields = ("id", "name", "description", "tools", "capabilities", "provider", "model", "source")
         for agent in agents:
-            seen.setdefault(str(agent.get("name") or ""), agent)
+            key = str(agent.get("id") or agent.get("name") or "")
+            public_agent = {field: agent[field] for field in public_fields if field in agent}
+            if "id" not in public_agent:
+                public_agent["id"] = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
+            seen.setdefault(key, public_agent)
         return {"agents": sorted(seen.values(), key=lambda item: str(item.get("name", "")))}
 
     @router.get("/skills")
