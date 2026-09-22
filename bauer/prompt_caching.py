@@ -105,11 +105,9 @@ def apply_anthropic_cache_control(
 
     # Mark the system message (if any). There can be more than one in some flows;
     # mark only the first to preserve the breakpoint budget for tail messages.
-    system_marked = False
     for msg in out:
         if msg.get("role") == "system":
             _apply_cache_marker_to_message(msg, cache_marker)
-            system_marked = True
             break
 
     # Mark the last `tail_size` non-system messages.

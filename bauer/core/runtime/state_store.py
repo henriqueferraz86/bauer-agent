@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
+
+
+_SQLITE_LOCK_GUARD = threading.Lock()
+_SQLITE_WRITE_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _sqlite_write_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _SQLITE_LOCK_GUARD:
+        return _SQLITE_WRITE_LOCKS.setdefault(key, threading.RLock())
+
 
 class JsonlStateStore:
     """Fachada legada para o store SQLite, mantendo ``*.jsonl`` como auditoria.
@@ -84,30 +96,38 @@ class SqliteStateStore:
         conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=5.0)
         try:
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout = 5000")
-            for attempt in range(6):
-                try:
-                    conn.execute("PRAGMA journal_mode = WAL")
-                    break
-                except sqlite3.OperationalError as exc:
-                    if "locked" not in str(exc).lower() or attempt == 5:
-                        raise
-                    time.sleep(0.05 * (attempt + 1))
+            conn.execute("PRAGMA busy_timeout = 30000")
+            with _sqlite_write_lock(self.path):
+                for attempt in range(12):
+                    try:
+                        conn.execute("PRAGMA journal_mode = WAL")
+                        break
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc).lower() or attempt == 11:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
             conn.execute("PRAGMA synchronous = NORMAL")
             yield conn
         finally:
             conn.close()
 
-    @staticmethod
     @contextmanager
-    def _write(conn: sqlite3.Connection):
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+    def _write(self, conn: sqlite3.Connection):
+        with _sqlite_write_lock(self.path):
+            for attempt in range(12):
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or attempt == 11:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+            try:
+                yield
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     @staticmethod
     def _init(conn: sqlite3.Connection) -> None:

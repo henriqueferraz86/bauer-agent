@@ -668,7 +668,9 @@ def create_app(
             from .config_loader import load_config as _load_cfg
             from .model_router import profiles_from_config
             _router_cfg = _load_cfg(config_path)
-            _router_enabled = bool(getattr(_router_cfg.model, "router_enabled", False))
+            _router_enabled = bool(getattr(_router_cfg.model, "router_enabled", False)) or bool(
+                getattr(getattr(_router_cfg, "decision", None), "jev_enabled", False)
+            )
             # `profile_set='local'` lê `model.profiles_local` — é como o
             # `--local` do serve mantém o roteamento e só troca o destino.
             _router_profiles = profiles_from_config(_router_cfg,
@@ -704,8 +706,8 @@ def create_app(
         if not _router_enabled or not _router_profiles:
             return _state["client"], _state["model"], None
         try:
-            from .model_router import decide
-            d = decide(message, _router_profiles)
+            from .routing_runtime import decide_route
+            d = decide_route(message, _router_profiles, _router_cfg)
         except Exception:  # noqa: BLE001
             return _state["client"], _state["model"], None
         if not d.model:
@@ -719,12 +721,12 @@ def create_app(
         if decision is None:
             return
         try:
+            from .routing_runtime import route_event_data
             event_bus.publish(
                 "model.route.selected",
                 run_id=run_id, session_id=sid, agent_id=agent_id,
                 status=decision.profile, message=decision.reason,
-                data={"task_type": decision.task_type, "complexity": decision.complexity,
-                      "tier": decision.profile, "provider": decision.provider, "model": decision.model},
+                data=route_event_data(decision),
             )
         except Exception as exc:  # noqa: BLE001
             from .logging_config import log_suppressed

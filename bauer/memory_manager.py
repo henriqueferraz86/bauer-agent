@@ -102,7 +102,7 @@ class MemoryManager:
             p = self.memory_dir / name
             if p.exists():
                 lines = p.read_text(encoding="utf-8").splitlines()
-                entries = sum(1 for l in lines if l.startswith("## ["))
+                entries = sum(1 for line in lines if line.startswith("## ["))
             else:
                 lines = []
                 entries = 0

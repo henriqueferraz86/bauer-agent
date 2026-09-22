@@ -57,6 +57,17 @@ def _fleet_config_option() -> Path | None:
     return None
 
 
+def _runtime_config_path(config: Path | None) -> Path:
+    """Resolve runtime config defaults canonically, never from the CWD."""
+    from ..config_loader import ConfigError
+    from ..paths import config_path
+
+    path = (config if config is not None else config_path()).expanduser().resolve()
+    if config is not None and not path.exists():
+        raise ConfigError(f"Arquivo de config explícito não encontrado: {path}")
+    return path
+
+
 def _fleet_print_summary(fleet, *, prefix: str = "Fleet") -> None:
     """Print a compact operational summary after ``up`` or ``status``."""
     result = fleet.status().to_dict()
@@ -539,12 +550,13 @@ def runtime_kill_switch_cmd(
 
 @runtime_app.command("list")
 def runtime_list_cmd(
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
 ):
     """Lista adapters de runtime registrados."""
     from ..config_loader import load_config
     from ..core.runtime.adapters import list_runtime_adapters
 
+    config = _runtime_config_path(config)
     cfg = load_config(config)
     configured = getattr(cfg.runtime, "adapters", {}) or {}
     default_adapter = getattr(cfg.runtime, "default_adapter", "bauer_native")
@@ -570,7 +582,7 @@ def runtime_list_cmd(
 @runtime_app.command("test")
 def runtime_test_cmd(
     adapter_name: str = typer.Argument(..., help="Adapter para testar, ex: agno"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
 ):
     """Executa um smoke test basico de um runtime adapter."""
     from uuid import uuid4
@@ -578,6 +590,7 @@ def runtime_test_cmd(
     from ..config_loader import load_config
     from ..core.runtime.adapters import get_runtime_adapter
 
+    config = _runtime_config_path(config)
     cfg = load_config(config)
     adapter = get_runtime_adapter(adapter_name, config=cfg)
     created = adapter.create_agent({"id": "runtime-test-agent", "name": "Runtime Test Agent"})
@@ -600,41 +613,61 @@ def runtime_test_cmd(
 @runtime_app.command("use")
 def runtime_use_cmd(
     adapter_name: str = typer.Argument(..., help="Adapter para tornar default"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Valida sem gravar o config"),
 ):
-    """Define o adapter default em config.yaml."""
-    import yaml
-
-    from ..core.runtime.adapters import list_runtime_adapters
+    """Define o adapter default com healthcheck e escrita transacional."""
+    from ..config_admin import safe_update_config
+    from ..config_loader import ConfigError, load_config
+    from ..core.runtime.adapters import adapter_healthcheck, get_runtime_adapter, list_runtime_adapters
 
     normalized = adapter_name.strip().lower().replace("-", "_")
     if normalized not in list_runtime_adapters():
         console.print(f"[red]Adapter nao registrado:[/red] {adapter_name}")
         raise typer.Exit(code=1)
 
-    data = yaml.safe_load(config.read_text(encoding="utf-8")) if config.exists() else {}
-    if not isinstance(data, dict):
-        data = {}
-    runtime = data.setdefault("runtime", {})
-    if not isinstance(runtime, dict):
-        runtime = {}
-        data["runtime"] = runtime
-    adapters = runtime.setdefault("adapters", {})
-    if not isinstance(adapters, dict):
-        adapters = {}
-        runtime["adapters"] = adapters
-    adapter_cfg = adapters.setdefault(normalized, {})
-    if not isinstance(adapter_cfg, dict):
-        adapter_cfg = {}
-        adapters[normalized] = adapter_cfg
-    adapter_cfg["enabled"] = True
-    if normalized == "agno":
-        adapter_cfg.setdefault("mode", "sdk")
-        adapter_cfg.setdefault("base_url", "http://localhost:7777")
-        adapter_cfg.setdefault("timeout_s", 120)
-    runtime["default_adapter"] = normalized
-    config.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    console.print(f"[green]Runtime default_adapter={normalized}[/green] em {config}")
+    try:
+        config = _runtime_config_path(config)
+        cfg = load_config(config)
+        previous = str(getattr(cfg.runtime, "default_adapter", "bauer_native"))
+        adapter = get_runtime_adapter(normalized, config=cfg)
+        health = adapter_healthcheck(adapter)
+    except ConfigError as exc:
+        console.print(f"[red]Config inválido:[/red] {exc}")
+        raise typer.Exit(code=2)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        console.print(f"[red]Não foi possível preparar o adapter:[/red] {exc}")
+        raise typer.Exit(code=1)
+
+    health_status = str(health.get("status", "unknown")).lower()
+    if health_status != "healthy":
+        console.print(
+            f"[red]Healthcheck falhou:[/red] adapter={normalized} "
+            f"status={health_status} {health.get('error') or health.get('message') or ''}"
+        )
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        console.print(f"[green]Healthcheck: healthy[/green] adapter={normalized}")
+        console.print(f"[dim]Dry-run: não alterado {config}[/dim]")
+        return
+
+    try:
+        backup = safe_update_config(
+            config,
+            patch={"runtime": {"default_adapter": normalized}},
+        )
+    except ConfigError as exc:
+        console.print(f"[red]Config não alterado:[/red] {exc}")
+        raise typer.Exit(code=2)
+
+    console.print("[green]Runtime adapter alterado:[/green]")
+    console.print(f"  anterior: {previous}")
+    console.print(f"  novo:     {normalized}")
+    console.print(f"\nConfig:\n  {config}")
+    console.print("\nValidation:\n  OK")
+    console.print(f"\nHealthcheck:\n  {normalized}: healthy")
+    console.print(f"\n[dim]Backup: {backup}[/dim]")
 
 
 def _runtime_supervise_args(
@@ -700,7 +733,7 @@ def _runtime_specs_table(specs) -> Table:
 @runtime_app.command("start")
 def runtime_start_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     background: bool = typer.Option(True, "--background/--foreground", help="Roda supervisor em background ou prende este terminal"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Mostra o que seria iniciado sem subir processos"),
@@ -729,6 +762,7 @@ def runtime_start_cmd(
     from ..config_loader import load_config
     from ..supervisor import RuntimeSupervisor
 
+    config = _runtime_config_path(config)
     if autopilot is None:
         try:
             autopilot = bool(load_config(config).autopilot.enabled)
@@ -792,7 +826,7 @@ def runtime_start_cmd(
 @runtime_app.command("autopilot", hidden=True)
 def runtime_autopilot_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     enabled: bool = typer.Option(False, "--enabled/--disabled"),
 ):
@@ -802,6 +836,7 @@ def runtime_autopilot_cmd(
     from ..config_loader import load_config
     from ..core.runtime.resilience import RuntimeControl
 
+    config = _runtime_config_path(config)
     cfg = load_config(config)
     if enabled and not cfg.autopilot.enabled:
         cfg = cfg.model_copy(
@@ -861,7 +896,7 @@ def runtime_autopilot_control_cmd(
 @runtime_app.command("supervise", hidden=True)
 def runtime_supervise_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
     cron: bool = typer.Option(True, "--cron/--no-cron"),
@@ -883,6 +918,7 @@ def runtime_supervise_cmd(
     from ..config_loader import load_config
     from ..supervisor import RuntimeSupervisor
 
+    config = _runtime_config_path(config)
     if autopilot is None:
         try:
             autopilot = bool(load_config(config).autopilot.enabled)
@@ -968,7 +1004,7 @@ def runtime_stop_cmd(
 @runtime_app.command("restart")
 def runtime_restart_cmd(
     workspace: Path = typer.Option(_PROJECT_WORKSPACE, "--workspace"),
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Config; default: ~/.bauer/config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     dispatcher: bool = typer.Option(True, "--dispatcher/--no-dispatcher"),
@@ -981,6 +1017,7 @@ def runtime_restart_cmd(
     from ..config_loader import load_config
     from ..supervisor import RuntimeSupervisor
 
+    config = _runtime_config_path(config)
     if autopilot is None:
         try:
             autopilot = bool(load_config(config).autopilot.enabled)

@@ -39,6 +39,7 @@ from .skill_registry import SkillRegistry
 from .tool_router import SandboxError, ToolError, ToolRouter
 from .agent_slash_commands import (
     _handle_agent_cmd,
+    _handle_autopilot_cmd,
     _handle_dispatch_cmd,
     _handle_kanban_cmd,
     _handle_memory_cmd,
@@ -133,6 +134,7 @@ _LOOP_SKILL_CMDS = {"/loop-skill", "/loop-skills"}
 _DISPATCH_CMDS = {"/dispatch"}
 _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
+_AUTOPILOT_CMDS = {"/autopilot", "/autonomia"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
 _LISTEN_CMDS = {"/listen", "/ouvir"}
 _LISTEN_LOOP_CMDS = {"/listen loop", "/listen auto", "/ouvir loop", "/ouvir auto"}
@@ -175,6 +177,12 @@ _SLASH_BASE = [
     "/memory list",
     "/memory note",
     "/project",
+    "/autopilot",
+    "/autopilot start",
+    "/autopilot status",
+    "/autopilot pause",
+    "/autopilot resume",
+    "/autopilot stop",
     "/thumbsup",
     "/thumbsdown",
     "/agents",
@@ -217,6 +225,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/memory list":    "lista arquivos de memória",
     "/memory note":    "adiciona nota: /memory note <texto>",
     "/project":        "mostra PROJECT.md e resumo de tarefas",
+    "/autopilot":      "inicia e controla o Autopilot/Fleet",
     "/agents":         "lista agents criados",
     "/agent list":     "lista agents criados",
     "/agent create":   "cria novo agent (wizard interativo)",
@@ -226,7 +235,6 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import CompleteEvent, Completer, Completion
-    from prompt_toolkit.completion import ThreadedCompleter
     from prompt_toolkit.cursor_shapes import CursorShape
     from prompt_toolkit.document import Document as PtDocument
     from prompt_toolkit.formatted_text import HTML
@@ -1949,7 +1957,6 @@ def _ledger_block(workspace_dir: str | None) -> str:
         if not tasks_file.is_file():
             return ""
         from .workspace_manager import WorkspaceManager as _WM
-        from .workspace_manager_factory import get_workspace_manager
         wm = _WM(str(workspace_dir))
         _PENDING = {"TODO", "READY", "IN_PROGRESS", "BLOCKED"}
         pending = [t for t in wm.list_tasks() if t.status in _PENDING]
@@ -2626,6 +2633,7 @@ def run_agent_session(
     route_profiles_by_provider: "dict[str, dict] | None" = None,
     kernel: "Any | None" = None,
     render_header: "Any | None" = None,
+    decision_config: "Any | None" = None,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -2659,6 +2667,8 @@ def run_agent_session(
             via kernel.execute() com o corpo do turno como executor: run
             auditável + kill-switch/policy/budget antes da chamada LLM.
             None (default) = comportamento de sempre, sem kernel.
+        decision_config: configuração opcional do decisor Jev/fallback. None
+            mantém o roteador heurístico sem chamadas externas.
     """
     # MAX_TOOL_TURNS é lido por dezenas de call sites como global do módulo
     # (inclusive dentro de funções aninhadas em _run_tool_loop_body) — em vez
@@ -2832,6 +2842,7 @@ def run_agent_session(
                 ("/clear", "limpar"),
                 ("/memory", "memoria"),
                 ("/loop", "autonomo"),
+                ("/autopilot", "fleet"),
                 ("/exit", "sair"),
             ],
         )
@@ -3469,6 +3480,11 @@ def run_agent_session(
         if user_input.lower() in _PROJECT_CMDS:
             _handle_project_cmd(console, active_workspace)
             continue
+        if user_input.lower() in _AUTOPILOT_CMDS or user_input.lower().startswith(
+            ("/autopilot ", "/autonomia ")
+        ):
+            _handle_autopilot_cmd(user_input, console, active_workspace)
+            continue
 
         # L7: feedback de usuário — /thumbsup / /thumbsdown
         if user_input.lower() in _THUMBSUP_CMDS or user_input.lower() in _THUMBSDOWN_CMDS:
@@ -3548,8 +3564,9 @@ def run_agent_session(
             # sobre o ModelRouter legado. CONSERVADOR: tier sem profile, provider
             # sem client, ou falha → o turno segue no modelo padrão da sessão.
             try:
-                from .model_router import decide as _hr_decide
-                _d = _hr_decide(user_input, _tier_profiles)
+                from .routing_runtime import decide_route as _hr_decide
+                _d = _hr_decide(user_input, _tier_profiles, decision_config)
+                route_kind = "orchestrate" if _d.orchestrate else "direct"
                 if _d.model:
                     if not _d.provider or _d.provider == _provider:
                         _c = client  # mesmo provider → reusa o client vivo da sessão
@@ -3563,7 +3580,8 @@ def run_agent_session(
                         # como tag de markup e o engoliria do output
                         console.print(
                             f"[dim]  → tier {_d.profile}: {_d.model} "
-                            f"({_d.task_type}/{_d.complexity})[/dim]"
+                            f"({_d.task_type}/{_d.complexity}; {_d.source}; "
+                            f"confiança {_d.confidence:.2f})[/dim]"
                         )
             except Exception as _hr_exc:  # noqa: BLE001 — routing é otimização; nunca bloqueia o turno
                 from .logging_config import log_suppressed as _hr_log

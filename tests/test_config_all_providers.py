@@ -140,6 +140,29 @@ def test_bauerconfig_defaults_are_sensible():
     assert cfg.logging.level in ("debug", "info", "warning", "error")
     assert cfg.tools.safe_mode is True
     assert cfg.agent.tool_timeout_s > 0
+    assert cfg.decision.jev_enabled is False
+    assert cfg.decision.fallback_enabled is True
+
+
+def test_decision_section_accepts_jev_settings():
+    from bauer.config_loader import BauerConfig
+
+    cfg = BauerConfig(
+        model={"provider": "ollama", "name": "m"},
+        decision={"jev_enabled": True, "min_confidence": 0.8},
+    )
+    assert cfg.decision.jev_enabled is True
+    assert cfg.decision.min_confidence == 0.8
+
+
+def test_typesafe_api_key_is_applied_to_decision(monkeypatch):
+    from bauer.config_loader import BauerConfig
+    from bauer.env_loader import apply_env_to_config
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "jev-test-key")
+    cfg = BauerConfig(model={"provider": "ollama", "name": "m"})
+    apply_env_to_config(cfg)
+    assert cfg.decision.api_key == "jev-test-key"
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic", "groq", "mistral", "xai"])

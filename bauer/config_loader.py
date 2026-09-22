@@ -42,6 +42,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
+DEFAULT_AUTOPILOT_MISSION = (
+    "Revisar bugs, segurança, testes e melhorias dos projetos descobertos. "
+    "Propor mudanças pequenas e revisáveis pelo dispatcher governado; "
+    "nunca fazer alterações destrutivas silenciosamente."
+)
+
+
 class ConfigError(Exception):
     """Erro de configuração com mensagem amigável."""
 
@@ -722,6 +729,22 @@ class RouterSection(_StrictSection):
     direct_model: str = "qwen3:0.6b"
 
 
+class DecisionSection(_StrictSection):
+    """Decisor estruturado opcional para classificação e roteamento.
+
+    Jev nunca executa tools nem substitui Kernel/policy. Quando desligado, o
+    Bauer mantém o roteador heurístico local e não faz nenhuma chamada externa.
+    """
+
+    jev_enabled: bool = False
+    fallback_enabled: bool = True
+    api_key: str = ""  # prefira TYPESAFE_API_KEY no ambiente/.env
+    endpoint: str = "https://api.typesafe.ai/v1/systemone"
+    model: str = "jev-latest"
+    timeout_seconds: float = Field(ge=0.1, le=30.0, default=2.0)
+    min_confidence: float = Field(ge=0.0, le=1.0, default=0.65)
+
+
 class LoggingSection(_StrictSection):
     level: Literal["debug", "info", "warning", "error"] = "info"
     file: str | None = "./logs/bauer.log"
@@ -789,12 +812,12 @@ class LoopSection(_StrictSection):
 
     NB: max_tool_calls é o orçamento do LOOP INTEIRO e precisa ser
     confortavelmente MAIOR que tools.max_tool_turns (teto por rodada, default
-    150) — senão UMA rodada esgota o loop antes da rodada 2. Por isso o default
-    aqui é 500 (≈3 rodadas cheias), alinhado a tools.max_tool_calls.
+    150). O default operacional é deliberadamente muito alto; ainda existem
+    limites internos de chamadas LLM/tokens no AutonomousBudget.
     """
-    max_minutes: int = Field(ge=1, default=30)
-    max_tool_calls: int = Field(ge=1, default=500)
-    max_cost_usd: float = Field(ge=0.0, default=2.0)
+    max_minutes: int = Field(ge=1, default=525_600)
+    max_tool_calls: int = Field(ge=1, default=100_000_000)
+    max_cost_usd: float = Field(ge=0.0, default=1_000_000.0)
     approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
     approval_risk_threshold: float = Field(ge=0.0, le=1.0, default=0.4)
 
@@ -815,16 +838,16 @@ class AutopilotSection(_StrictSection):
     poll_interval_s: float = Field(ge=1.0, le=86400.0, default=30.0)
     max_active_goals: int = Field(ge=1, default=1)
     max_replans_per_goal: int = Field(ge=0, default=1)
-    mission: str = Field(default="", max_length=4000)
+    mission: str = Field(default=DEFAULT_AUTOPILOT_MISSION, max_length=4000)
     # Propostas livres do modelo ficam opt-in; o MVP trabalha com missão e
     # objetivos persistidos declarados pelo operador.
     allow_model_proposals: bool = False
     approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
     # Limites por objetivo/ciclo. O controller futuro deve aplicar o mínimo
     # entre estes valores e os limites globais do loop/runtime.
-    max_minutes: int = Field(ge=1, default=30)
-    max_tool_calls: int = Field(ge=1, default=500)
-    max_cost_usd: float = Field(ge=0.0, default=2.0)
+    max_minutes: int = Field(ge=1, default=525_600)
+    max_tool_calls: int = Field(ge=1, default=100_000_000)
+    max_cost_usd: float = Field(ge=0.0, default=1_000_000.0)
 
 
 class FleetSection(_StrictSection):
@@ -1209,6 +1232,7 @@ class BauerConfig(_StrictSection):
     postiz: PostizSection = PostizSection()
     gateway: GatewaySection = GatewaySection()
     observability: ObservabilitySection = ObservabilitySection()
+    decision: DecisionSection = DecisionSection()
 
 
 def _valid_fields_for(section_name: str) -> str:

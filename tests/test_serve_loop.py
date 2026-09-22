@@ -276,7 +276,11 @@ def _app(tmp_path: Path, cfg: Path, client: MagicMock):
         )
 
 
-def _wait_done(tc: TestClient, run_id: str, timeout_s: float = 10.0) -> dict:
+def _wait_done(tc: TestClient, run_id: str, timeout_s: float = 30.0) -> dict:
+    # O worker do /loop inclui a avaliação governada do Kernel. Em Windows,
+    # sob a carga do xdist, essa finalização pode esperar o agendamento do
+    # processo por mais de 10s mesmo quando a rodada já terminou. O limite
+    # continua finito, mas não transforma contenção normal do CI em falha.
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         body = tc.get(f"/loop/{run_id}").json()

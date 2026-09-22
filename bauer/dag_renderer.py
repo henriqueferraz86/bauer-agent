@@ -129,7 +129,6 @@ class DAGGraph:
         """Gera Rich Tree para exibição no terminal."""
         try:
             from rich.tree import Tree
-            from rich.text import Text
         except ImportError:
             raise RuntimeError("rich não instalado")
 

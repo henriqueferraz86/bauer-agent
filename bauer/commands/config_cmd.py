@@ -15,6 +15,15 @@ from ._common import console
 config_app = typer.Typer(help="Operacoes com config.yaml")
 
 
+def _config_cli_path(config: Path | None) -> tuple[Path, str]:
+    """Resolve config commands without allowing a local shadow by default."""
+    if config is None:
+        from ..paths import config_path
+
+        return config_path().expanduser().resolve(), "canonical"
+    return config.expanduser().resolve(), "explicit"
+
+
 def _config_para_escrita(pedido: Path) -> Path:
     """Resolve QUAL config será escrito — o mesmo que o load_config leria.
 
@@ -47,10 +56,14 @@ def _config_para_escrita(pedido: Path) -> Path:
 
 @config_app.command("validate")
 def config_validate(
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+    config: Path | None = typer.Option(None, "--config", help="Caminho explícito do config.yaml"),
 ):
     """Valida o config.yaml sem rodar diagnostico."""
-    ok, msg = validate_config_file(config)
+    config, _ = _config_cli_path(config)
+    if not config.exists():
+        ok, msg = False, f"Arquivo de config não encontrado: {config}"
+    else:
+        ok, msg = validate_config_file(config)
     if ok:
         console.print(f"[green]{msg}[/green]")
     else:
@@ -95,6 +108,16 @@ def config_show(
     model_tbl.add_row("Contexto mínimo:", str(cfg.model.minimum_context))
     console.print(Panel(model_tbl, title="◆ Modelo", border_style="cyan", title_align="left"))
 
+    decision_tbl = Table(show_header=False, box=None, padding=(0, 1))
+    decision_tbl.add_row(
+        "Jev:",
+        "[green]ativo[/green]" if cfg.decision.jev_enabled else "[dim]desativado[/dim]",
+    )
+    decision_tbl.add_row("Fallback:", "[green]ativo[/green]" if cfg.decision.fallback_enabled else "[yellow]desativado[/yellow]")
+    decision_tbl.add_row("Chave:", "[green]configurada[/green]" if cfg.decision.api_key else "[dim]não configurada[/dim]")
+    decision_tbl.add_row("Confiança mínima:", f"{cfg.decision.min_confidence:.2f}")
+    console.print(Panel(decision_tbl, title="◆ Decisão estruturada", border_style="cyan", title_align="left"))
+
     # ── Providers & API keys (✓/○ por env var) ──
     prov_tbl = Table(box=None, padding=(0, 1))
     prov_tbl.add_column("Provider", style="cyan")
@@ -132,10 +155,15 @@ def config_show(
 
 @config_app.command("path", help="Mostra o caminho absoluto do config.yaml")
 def config_path_cmd(
-    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    config: Path | None = typer.Option(None, "--config", help="Caminho explícito do config.yaml"),
 ):
-    from bauer.config_admin import get_config_path
-    console.print(str(get_config_path(config)))
+    path, source = _config_cli_path(config)
+    from ..paths import config_path as canonical_config_path
+
+    canonical = canonical_config_path().expanduser().resolve()
+    console.print(f"Canonical : {canonical}")
+    console.print(f"Effective : {path}")
+    console.print(f"Source    : {source}")
 
 
 @config_app.command("env-path", help="Mostra o caminho absoluto do .env")

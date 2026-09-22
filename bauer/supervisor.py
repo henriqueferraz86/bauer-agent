@@ -415,10 +415,7 @@ class RuntimeSupervisor:
                 "close_fds": True,
             }
             if os.name == "nt":
-                popen_kwargs["creationflags"] = (
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    | getattr(subprocess, "DETACHED_PROCESS", 0)
-                )
+                popen_kwargs.update(_no_console_window_kwargs())
             else:
                 popen_kwargs["start_new_session"] = True
             process = subprocess.Popen(command, **popen_kwargs)

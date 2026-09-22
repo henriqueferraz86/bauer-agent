@@ -83,6 +83,10 @@ class SecretsGate:
     """Reprova o run que introduziu credencial no código."""
 
     name = "secrets"
+    # Um scanner de segredos quebrado não pode liberar uma execução governada
+    # como se tivesse verificado o diff. O custo de parar para revisão humana
+    # é menor que o de concluir com uma credencial potencialmente exposta.
+    critical = True
 
     def __init__(self, workspace: "str | Path", *, diff_fn: Any = None,
                  timeout_s: int = 30) -> None:

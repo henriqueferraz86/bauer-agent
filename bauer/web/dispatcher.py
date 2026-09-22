@@ -120,7 +120,7 @@ def clean_html_text(html: str) -> str:
             flags=_re.IGNORECASE | _re.DOTALL,
         )
         text = _re.sub(r"<[^>]+>", " ", _no_blocks)
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     return "\n".join(lines)
 
 

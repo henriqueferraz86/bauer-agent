@@ -9,8 +9,9 @@ compõe de módulos existentes. O Evaluator roda no estado ``evaluating`` (entre
   re-executa com ``replan_feedback`` no payload;
 - esgotou o orçamento → run ``failed`` com o motivo do gate.
 
-Falha de INFRA de um gate (exceção) não reprova o run — gate quebrado é
-problema do gate, não do resultado; conta como passed com ressalva no reason.
+Falha de INFRA de um gate auxiliar (exceção) não reprova o run — gate quebrado
+é problema do gate, não do resultado. Gates críticos podem declarar
+``critical = True`` e então uma exceção bloqueia a conclusão com segurança.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ class Verdict:
 
 class QualityGate(Protocol):
     name: str
+    critical: bool
 
     def check(self, *, request: Any, result: dict[str, Any]) -> GateResult:
         ...
@@ -131,8 +133,12 @@ class Evaluator:
             try:
                 outcome = gate.check(request=request, result=result or {})
             except Exception as exc:  # noqa: BLE001 — gate quebrado não reprova o run
-                outcome = GateResult(getattr(gate, "name", "gate"), True,
-                                     f"gate falhou ao rodar (ignorado): {exc}")
+                critical = bool(getattr(gate, "critical", False))
+                outcome = GateResult(
+                    getattr(gate, "name", "gate"),
+                    not critical,
+                    f"gate falhou ao rodar ({'bloqueante' if critical else 'ignorado'}): {exc}",
+                )
             results.append(outcome)
             if not outcome.passed:
                 return Verdict(False, f"{outcome.gate}: {outcome.reason}", results)

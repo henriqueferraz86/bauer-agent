@@ -636,6 +636,23 @@ def test_broken_gate_does_not_reprove():
     assert v.passed  # gate quebrado é problema do gate, não do resultado
 
 
+def test_broken_critical_gate_blocks_completion():
+    from bauer.core.kernel.evaluator import Evaluator
+
+    class CriticalBrokenGate:
+        name = "critical_broken"
+        critical = True
+
+        def check(self, *, request, result):
+            raise RuntimeError("infra indisponível")
+
+    v = Evaluator([CriticalBrokenGate()]).evaluate(
+        run_id="r", request=None, result={"output": "ok"}
+    )
+    assert not v.passed
+    assert "bloqueante" in v.reason
+
+
 def test_replan_fixes_on_second_execution(kit):
     """Gate reprova a 1ª execução → replan re-executa com feedback → passa."""
     from bauer.core.kernel.evaluator import Evaluator

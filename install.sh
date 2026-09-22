@@ -8,7 +8,7 @@
 #   --update          Atualiza instalação existente
 #   --uninstall       Remove completamente
 #   --extra=<extras>  Extras pip (padrão: gateway,web,voice,voice-kokoro).
-#                     Ex: --extra=all
+#                     Ex: --extra=agno (Agno + SQLAlchemy) ou --extra=all
 #   --no-extra        Instala só dependências core
 
 set -euo pipefail

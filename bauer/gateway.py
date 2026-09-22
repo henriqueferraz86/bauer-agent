@@ -522,7 +522,8 @@ async def run_gateway(
             "Instale com: pip install websockets"
         ) from exc
 
-    handler = lambda ws: _client_handler(ws, bauer_url, api_key)
+    async def handler(ws):
+        await _client_handler(ws, bauer_url, api_key)
 
     logger.info("Bauer Gateway iniciando em ws://%s:%d", host, port)
     logger.info("Backend Bauer: %s", bauer_url)

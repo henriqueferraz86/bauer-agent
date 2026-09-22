@@ -169,8 +169,8 @@ def run(
     if not model:
         _perfis, _cliente_do_provider = heuristic_route_kit(cfg)
         if _perfis:
-            from ..model_router import classify_task
-            _rota = classify_task(task)
+            from ..routing_runtime import decide_route
+            _rota = decide_route(task, _perfis, cfg)
             _perfil = _perfis.get(_rota.profile)
             _alvo = getattr(_perfil, "model", "") if _perfil else ""
             if _alvo:

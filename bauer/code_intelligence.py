@@ -116,7 +116,6 @@ def get_imports(file_path: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                name = alias.asname if alias.asname else alias.name
                 imports.append(f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else ""))
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""

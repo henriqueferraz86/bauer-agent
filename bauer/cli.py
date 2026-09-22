@@ -75,6 +75,7 @@ from bauer.commands.learning_cmd import learning_app  # noqa: E402
 from bauer.commands.auth_cmd import auth_app  # noqa: E402
 from bauer.commands.orchestrate_cmd import orchestrate_app  # noqa: E402
 from bauer.commands.agent_cmd import agent_app  # noqa: E402
+from bauer.commands.agents_cmd import agents_app  # noqa: E402
 from bauer.commands.spec_cmd import spec_app  # noqa: E402
 from bauer.commands.company_cmd import company_app  # noqa: E402
 from bauer.commands.migrate_cmd import migrate_app  # noqa: E402
@@ -104,6 +105,7 @@ from bauer.commands.home_cmd import home_app  # noqa: E402
 from bauer.commands.voice_cmd import voice_app  # noqa: E402
 from bauer.commands.setup_cmd import setup as _setup_command  # noqa: E402
 from bauer.commands.update_cmd import update as _update_command  # noqa: E402
+from bauer.commands.maturity_cmd import maturity_app  # noqa: E402
 
 # Registro agrupado por painel (Fatia B). A ordem AQUI é a ordem de exibição no
 # --help; por isso "Começar aqui" vem primeiro. Nada foi removido/renomeado.
@@ -111,8 +113,10 @@ from bauer.commands.update_cmd import update as _update_command  # noqa: E402
 # ── Começar aqui ──────────────────────────────────────────────────────────────
 app.command("setup", rich_help_panel=PANEL_START)(_setup_command)
 app.command("update", rich_help_panel=PANEL_START)(_update_command)
+app.add_typer(maturity_app, name="maturity", rich_help_panel=PANEL_OBS)
 app.command("run", rich_help_panel=PANEL_START)(_run_command)
 app.add_typer(agent_app, name="agent", rich_help_panel=PANEL_START)
+app.add_typer(agents_app, name="agents", rich_help_panel=PANEL_START)
 app.add_typer(serve_app, name="serve", rich_help_panel=PANEL_START)
 app.add_typer(models_app, name="models", rich_help_panel=PANEL_START)
 
@@ -257,7 +261,7 @@ def _grafo_desatualizado(probe, nome: str) -> str:
                  f"--since=@{int(grafo.stat().st_mtime)}"],
                 capture_output=True, text=True, timeout=10,
             )
-            n = len([l for l in atraso.stdout.splitlines() if l.strip()])
+            n = len([line for line in atraso.stdout.splitlines() if line.strip()])
             return (
                 f"grafo desatualizado ({n} commit(s) depois do ultimo build) — "
                 "rode `python -m graphify . --code-only`"
@@ -318,7 +322,7 @@ def _agentic_doctor_notes(cfg, state) -> list[str]:
 
 @app.command(rich_help_panel=PANEL_START)
 def doctor(
-    config: Path = typer.Option(Path("config.yaml"), "--config", help="Caminho do config.yaml"),
+    config: Path | None = typer.Option(None, "--config", help="Caminho explícito; default: ~/.bauer/config.yaml"),
     models: Path = typer.Option(Path("models.yaml"), "--models", help="Caminho do models.yaml"),
     state_file: Path = typer.Option(
         _RUNTIME_STATE_DEFAULT,
@@ -330,6 +334,19 @@ def doctor(
     ),
 ):
     """Diagnostico completo do ambiente. Gera .runtime_state.json."""
+    from .paths import config_path as _canonical_config_path
+
+    canonical_config = _canonical_config_path().expanduser().resolve()
+    local_config = (Path.cwd() / "config.yaml").resolve()
+    config = (config if config is not None else canonical_config).expanduser().resolve()
+    if local_config.exists() and local_config != canonical_config:
+        console.print(f"Config canônico: {canonical_config}")
+        console.print(f"Config local detectado: {local_config}")
+        console.print(
+            "[yellow]AVISO:[/yellow] existe um config.yaml no diretório atual. "
+            "Os comandos de runtime usam o config canônico por padrão; use "
+            "--config explicitamente para selecionar outro arquivo."
+        )
     cfg, reg = _load_or_die(config, models)
     setup_logging(cfg.logging.level, cfg.logging.file)
 
@@ -684,7 +701,7 @@ def status(
         _exp_file = _mm2.memory_dir / "MODEL_EXPERIENCE.md"
         if _exp_file.exists():
             _lines = _exp_file.read_text(encoding="utf-8").splitlines()
-            _sections = [l for l in _lines if l.startswith("## [")]
+            _sections = [line for line in _lines if line.startswith("## [")]
             if _sections:
                 perf_summary = f"Ultima sessao: {_sections[-1].lstrip('## ').strip()[:60]}"
     except Exception:

@@ -232,12 +232,49 @@ class AutopilotController:
             seeded = self._seed_mission_if_needed()
             if seeded is not None:
                 current = self._claim_goal()
+            else:
+                mission = str(getattr(self.config, "mission", "") or "").strip()
+                existing = self._find_existing_mission_task(mission)
+                if existing is not None:
+                    status = str(getattr(existing, "status", "")).upper()
+                    if status in {"FAILED", "BLOCKED"}:
+                        return self._result(
+                            AutopilotState.BLOCKED,
+                            reason="mission_task_failed",
+                        )
+                    if status != "DONE":
+                        return self._result(
+                            AutopilotState.DISPATCHING,
+                            reason="mission_task_in_flight",
+                        )
         if current is None:
+            mission = str(getattr(self.config, "mission", "") or "").strip()
+            existing = self._find_existing_mission_task(mission)
+            mission_completed = (
+                existing is not None
+                and str(getattr(existing, "status", "")).upper() == "DONE"
+            )
+            adopted = self._adopt_existing_kanban_task(
+                allow_configured_mission=mission_completed,
+            )
+            if adopted is not None:
+                return adopted
+            if mission_completed:
+                return self._result(AutopilotState.IDLE, reason="mission_completed")
             if not self.tracker.list_active():
                 return self._result(AutopilotState.BLOCKED, reason="mission_required")
             current = self._claim_goal()
         if current is None:
             return self._result(AutopilotState.IDLE, actions=actions, reason="no_goal")
+
+        # A pending goal recovered after a supervisor restart is claimed only
+        # in this cycle. Reconcile it once more after claiming so a task that
+        # finished while the controller was down can complete the goal without
+        # an unnecessary extra dispatch cycle.
+        if not self._replan_requested:
+            reconciliation = self._reconcile(current, actions)
+            if reconciliation is not None:
+                return reconciliation
 
         self._status.goal_id = current.id
         if current.status != GoalStatus.RUNNING or current.lease_owner != self.session_id:
@@ -358,6 +395,7 @@ class AutopilotController:
                         status="READY",
                         metadata={
                             "dispatch": "true",
+                            "autopilot_mission": goal.title,
                             "goal_id": goal.id,
                             "step_key": step_key,
                         },
@@ -377,6 +415,47 @@ class AutopilotController:
             if metadata.get("goal_id") == goal_id and metadata.get("step_key") == step_key:
                 return task
         return None
+
+    def _find_existing_mission_task(self, mission: str) -> Any | None:
+        """Find the newest task representing the configured mission.
+
+        Mission deduplication must survive goal replans and controller restarts.
+        The goal id is intentionally not part of this lookup: a new goal for
+        the same continuous mission must not create another Kanban card while
+        its previous card is still unfinished. The metadata marker covers new
+        tasks; the title match keeps older workspaces idempotent after upgrade.
+        Keeping the newest DONE card in the result is important: old FAILED
+        duplicates must not block the next mission after the canonical card
+        completes.
+        """
+        clean_mission = " ".join(str(mission or "").split()).casefold()
+        if not clean_mission:
+            return None
+        accepted_titles = {clean_mission, f"execute: {clean_mission}"}
+        candidates: list[Any] = []
+        for task in self.task_manager.list_tasks():
+            metadata = getattr(task, "metadata", {}) or {}
+            marker = " ".join(str(metadata.get("autopilot_mission", "")).split()).casefold()
+            title = " ".join(str(getattr(task, "title", "")).split()).casefold()
+            is_marked = marker == clean_mission
+            is_legacy_mission = (
+                title in accepted_titles
+                and (
+                    str(metadata.get("dispatch", "")).casefold() == "true"
+                    or bool(metadata.get("goal_id"))
+                    or title.startswith("execute: ")
+                )
+            )
+            if is_marked or is_legacy_mission:
+                candidates.append(task)
+
+        if not candidates:
+            return None
+
+        # Workspace managers return tasks in creation order. Selecting the
+        # newest matching card makes the repair monotonic when legacy duplicate
+        # cards already exist: the latest card is the canonical one.
+        return candidates[-1]
 
     # ------------------------------------------------------------------
     # Goal selection and guards
@@ -415,12 +494,51 @@ class AutopilotController:
         mission = str(getattr(self.config, "mission", "") or "").strip()
         if not mission:
             return None
-        goals = self.tracker.list_all(limit=1000)
-        if goals:
+        # A missão configurada é uma semente inicial. Depois que sua task
+        # canônica termina, o controller segue as tasks existentes do Kanban;
+        # resemeá-la a cada tick criaria um loop infinito de missões idênticas.
+        if self.tracker.list_active():
+            return None
+        existing = self._find_existing_mission_task(mission)
+        if existing is not None:
             return None
         goal_id = self.tracker.create(mission, description="Autopilot mission")
         self._emit("autopilot.goal.created", goal_id=goal_id)
         return self.tracker.get(goal_id)
+
+    def _adopt_existing_kanban_task(
+        self,
+        *,
+        allow_configured_mission: bool = False,
+    ) -> TickResult | None:
+        """Promove uma task TODO quando o operador não declarou missão.
+
+        O dispatcher continua sendo o único executor. Este caminho apenas
+        opta uma task existente para a fila READY, uma por vez, para manter a
+        sequência e não inundar o workspace com workers concorrentes.
+        """
+        if str(getattr(self.config, "mission", "") or "").strip() and not allow_configured_mission:
+            return None
+        tasks = list(self.task_manager.list_tasks())
+        if any(getattr(task, "status", "") in {"READY", "IN_PROGRESS"} for task in tasks):
+            return self._result(AutopilotState.DISPATCHING, reason="kanban_tasks_in_flight")
+        candidates = [task for task in tasks if getattr(task, "status", "") == "TODO"]
+        if not candidates:
+            return None
+
+        def _priority(task: Any) -> tuple[int, str]:
+            order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            return order.get(str(getattr(task, "priority", "medium")).lower(), 2), str(task.id)
+
+        task = sorted(candidates, key=_priority)[0]
+        from .task_dispatcher import TaskDispatcher
+
+        ready = TaskDispatcher(self.workspace).mark_ready(task.id)
+        return self._result(
+            AutopilotState.DISPATCHING,
+            actions=[f"kanban_ready:{ready.id}"],
+            reason="kanban_task_adopted",
+        )
 
     def _claim_goal(self) -> GoalRecord | None:
         running = self.tracker.list_by_status(GoalStatus.RUNNING)

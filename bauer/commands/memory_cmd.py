@@ -1,6 +1,8 @@
 """Comando bauer memory.
 
-Dois backends independentes, sem sincronia entre si (ver AGENTS.md):
+Os subcomandos legados continuam separados para compatibilidade. O grupo
+``unified`` usa a fachada única e sincroniza novas gravações entre runtime e
+Markdown:
 - `bauer memory md ...`      — Markdown (memory/*.md), a memoria automatica
   que o agente le/escreve via MemoryProvider a cada turno.
 - `bauer memory runtime ...` — JSONL com escopo (user/company/project/agent/
@@ -11,6 +13,7 @@ Dois backends independentes, sem sincronia entre si (ver AGENTS.md):
 from __future__ import annotations
 
 from ..core.runtime.memory import RuntimeMemoryManager
+from ..memory_facade import UnifiedMemory
 from ..memory_manager import MemoryManager
 from pathlib import Path
 from rich.table import Table
@@ -20,7 +23,7 @@ import typer
 from ._common import _FILE_ALIASES, _MEMORY_DIR, _RUNTIME_STATE_DEFAULT, console
 
 memory_app = typer.Typer(
-    help="Memoria do Bauer — 'md' (Markdown, automatica) e 'runtime' (JSONL, manual/auditavel)."
+    help="Memoria do Bauer — 'md', 'runtime' e 'unified' (fachada sincronizada)."
 )
 md_app = typer.Typer(
     help="Memoria Markdown (memory/*.md) — a memoria automatica do agente "
@@ -32,10 +35,69 @@ runtime_app = typer.Typer(
          "agent/skill, com validade e revisao) — uso manual, sem consumidor "
          "automatico no loop do agente hoje."
 )
+unified_app = typer.Typer(
+    help="Memoria unificada — grava no runtime e projeta no Markdown."
+)
 memory_app.add_typer(md_app, name="md")
 memory_app.add_typer(runtime_app, name="runtime")
+memory_app.add_typer(unified_app, name="unified")
 
 _RUNTIME_MEMORY_DIR = _MEMORY_DIR / "runtime"
+
+
+@unified_app.command("add")
+def unified_memory_add(
+    scope: str = typer.Argument(..., help="Escopo: user | company | project | agent | skill"),
+    content: str = typer.Argument(..., help="Conteudo da memoria"),
+    source: str = typer.Option(..., "--source", "-s", help="Origem da memoria"),
+    title: str = typer.Option("", "--title", help="Titulo da projecao Markdown"),
+    confidence: float = typer.Option(1.0, "--confidence", "-c"),
+    valid_until: str | None = typer.Option(None, "--valid-until"),
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir"),
+):
+    """Registra memoria nos dois backends pelo contrato unificado."""
+    try:
+        record = UnifiedMemory(memory_dir=memory_dir).remember(
+            scope=scope,
+            content=content,
+            source=source,
+            title=title or None,
+            confidence=confidence,
+            valid_until=valid_until,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]memoria unificada registrada:[/green] {record.id}")
+
+
+@unified_app.command("search")
+def unified_memory_search(
+    query: str = typer.Argument(..., help="Texto a buscar"),
+    top_k: int = typer.Option(10, "--top", "-n"),
+    scope: str | None = typer.Option(None, "--scope"),
+    memory_dir: Path = typer.Option(_MEMORY_DIR, "--dir"),
+):
+    """Busca simultaneamente na memoria runtime e no Markdown."""
+    results = UnifiedMemory(memory_dir=memory_dir).search(
+        query, top_k=top_k, scope=scope
+    )
+    if not results:
+        console.print(f"[yellow]Nenhum resultado para '{query}'.[/yellow]")
+        raise typer.Exit()
+    table = Table(title=f"Memoria unificada: {query}", show_lines=True)
+    table.add_column("Origem", style="cyan")
+    table.add_column("Titulo")
+    table.add_column("Score", justify="right")
+    table.add_column("Trecho")
+    for result in results:
+        table.add_row(
+            str(result.get("source", "")),
+            str(result.get("title", ""))[:60],
+            f"{float(result.get('score', 0.0)):.4f}",
+            str(result.get("snippet", ""))[:160],
+        )
+    console.print(table)
 
 
 @md_app.command("init")
@@ -147,7 +209,6 @@ def memory_summarize(
     import re
     from ..memory_manager import MEMORY_FILES
 
-    mm = MemoryManager(memory_dir)
     _SECTION_RE = re.compile(r"^## \[([^\]]+)\]", re.MULTILINE)
 
     table = Table(title="Resumo da Memoria — memory/")

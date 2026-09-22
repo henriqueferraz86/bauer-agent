@@ -297,3 +297,20 @@ def test_route_kit_enabled_without_profiles_returns_none():
     cfg = BauerConfig(model=ModelSection(provider="openrouter", name="x", router_enabled=True))
     profiles, factory = heuristic_route_kit(cfg)
     assert profiles is None and factory is None
+
+
+def test_route_kit_jev_enabled_is_independent_of_legacy_router_flag():
+    from bauer.commands._runtime import heuristic_route_kit
+    from bauer.config_loader import BauerConfig, ModelProfileSpec, ModelSection
+
+    cfg = BauerConfig(
+        model=ModelSection(
+            provider="openrouter",
+            name="x",
+            profiles={"heavy": ModelProfileSpec(provider="openrouter", model="deepseek-r1")},
+        ),
+        decision={"jev_enabled": True},
+    )
+    profiles, factory = heuristic_route_kit(cfg)
+    assert profiles is not None and "heavy" in profiles
+    assert callable(factory)
