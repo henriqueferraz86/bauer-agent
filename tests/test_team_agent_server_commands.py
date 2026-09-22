@@ -87,6 +87,7 @@ def test_team_api_lists_members_and_budget(team_client):
     team = next(item for item in payload["teams"] if item["id"] == "bauer.software_team")
     assert {member["id"] for member in team["members"]} == {
         "bauer.product", "bauer.dev", "bauer.qa", "bauer.devops",
+        "bauer.architect", "bauer.security", "bauer.research", "bauer.docs", "bauer.data",
     }
     budget = team_client.get("/api/teams/bauer.software_team/budget")
     assert budget.status_code == 200
