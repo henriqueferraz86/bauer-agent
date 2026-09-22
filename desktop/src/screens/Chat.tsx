@@ -7,6 +7,7 @@ import {
   extractWakeCommand,
   isVoiceStop,
   requestMicrophone,
+  speakBrowserFallback,
   shouldStopRecording,
   VOICE_LEVEL_THRESHOLD,
 } from "../voice";
@@ -395,8 +396,13 @@ export default function Chat() {
       };
       await audio.play();
     } catch {
-      // O texto continua disponível se o TTS estiver sem provider ou se o
-      // navegador bloquear autoplay.
+      // O servidor continua sendo a primeira opção. Em instalações sem
+      // provider TTS, a Web Speech API mantém a conversa audível no browser.
+      if (speakBrowserFallback(text)) {
+        setVoiceStatus("Falando pelo navegador…");
+      } else {
+        setVoiceStatus("Resposta disponível em texto; áudio indisponível.");
+      }
     }
   }
 

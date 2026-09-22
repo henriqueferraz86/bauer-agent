@@ -16,6 +16,30 @@ export function requestMicrophone(): Promise<MediaStream> {
   return mediaDevices.getUserMedia({ audio: true });
 }
 
+/**
+ * Usa a fala nativa do navegador quando o servidor não tem provider TTS.
+ * Retorna false sem lançar quando a Web Speech API não está disponível.
+ */
+export function speakBrowserFallback(text: string): boolean {
+  const value = text.trim();
+  const synthesis = globalThis.speechSynthesis;
+  const Utterance = globalThis.SpeechSynthesisUtterance;
+  if (!value || !synthesis || typeof synthesis.speak !== "function" || typeof Utterance !== "function") {
+    return false;
+  }
+  try {
+    synthesis.cancel();
+    const utterance = new Utterance(value);
+    utterance.lang = "pt-BR";
+    const portugueseVoice = synthesis.getVoices().find((voice) => voice.lang.toLowerCase().startsWith("pt"));
+    if (portugueseVoice) utterance.voice = portugueseVoice;
+    synthesis.speak(utterance);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface RecordingStopSample {
   heardSpeech: boolean;
   silentForMs: number;
