@@ -1932,6 +1932,7 @@ def create_app(
             get_workspace=(lambda: _dsk_workspace) if _dsk_workspace else None,
             get_config_path=(lambda: config_path) if config_path else None,
             resolve_project_workspace=_kanban_project_workspace,
+            kernel=_kernel,
             start_loop=(lambda message, project_id, workspace_override: _start_loop_impl(
                 LoopStartRequest(message=message, project_id=project_id), workspace_override,
             )),

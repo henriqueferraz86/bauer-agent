@@ -14,6 +14,7 @@ import Config from "./screens/Config";
 import Runs from "./screens/Runs";
 import Approvals from "./screens/Approvals";
 import Agents from "./screens/Agents";
+import Teams from "./screens/Teams";
 import Skills from "./screens/Skills";
 import Runtime from "./screens/Runtime";
 import Autonomy from "./screens/Autonomy";
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="/models" element={<Models />} />
           <Route path="/gateway" element={<Gateway />} />
           <Route path="/agents" element={<Agents />} />
+          <Route path="/teams" element={<Teams />} />
           <Route path="/skills" element={<Skills />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/approvals" element={<Approvals />} />

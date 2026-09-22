@@ -4,6 +4,7 @@ const NAV = [
   { to: "/", icon: "ti-home", label: "Bauer OS" },
   { to: "/chat", icon: "ti-message-2", label: "Chat" },
   { to: "/agents", icon: "ti-users", label: "Agents" },
+  { to: "/teams", icon: "ti-users-group", label: "Teams" },
   { to: "/skills", icon: "ti-puzzle", label: "Skills" },
   { to: "/runs", icon: "ti-player-play", label: "Runs" },
   { to: "/approvals", icon: "ti-shield-question", label: "Approvals" },

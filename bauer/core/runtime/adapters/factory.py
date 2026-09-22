@@ -33,8 +33,14 @@ def get_runtime_adapter(name: str | None = None, config: Any | None = None) -> R
     adapter_name = _normalize_name(name)
     if not adapter_name and config is not None:
         runtime = getattr(config, "runtime", None)
-        adapter_name = _normalize_name(getattr(runtime, "default_adapter", ""))
-    adapter_name = adapter_name or BauerNativeRuntimeAdapter.name
+        # Small test doubles and third-party callers from before RuntimeSection
+        # existed have no runtime section; keep their native compatibility
+        # path. A real Bauer config has RuntimeSection(default_adapter="agno").
+        if runtime is not None:
+            adapter_name = _normalize_name(getattr(runtime, "default_adapter", ""))
+        else:
+            adapter_name = BauerNativeRuntimeAdapter.name
+    adapter_name = adapter_name or AgnoRuntimeAdapter.name
 
     factory = _ADAPTERS.get(adapter_name)
     if factory is None:

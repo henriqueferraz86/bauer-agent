@@ -16,6 +16,8 @@ from .plugin_process import PROTOCOL_VERSION
 
 def _write(response: dict[str, Any]) -> None:
     output = sys.__stdout__ or sys.stdout
+    if output is None:
+        raise RuntimeError("managed plugin worker has no stdout")
     output.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
     output.flush()
 

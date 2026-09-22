@@ -60,6 +60,7 @@ def run_governed(
     input: "dict[str, Any] | None" = None,
     session_id: str | None = None,
     operation: str = "runtime.execute",
+    runtime_adapter: str | None = None,
     max_retries: int = 0,
     retry_backoff_s: float = 0.0,
     fallback_adapters: "list[str] | None" = None,
@@ -112,7 +113,7 @@ def run_governed(
             # KernelRequest usa "" como ausência (não None) — _open_run gera um
             # session-<uuid> quando vem vazio
             task=task, agent_id=agent_id, input=payload_in, session_id=session_id or "",
-            operation=operation, max_retries=max_retries,
+            operation=operation, runtime_adapter=runtime_adapter or "", max_retries=max_retries,
             retry_backoff_s=retry_backoff_s,
             fallback_adapters=list(fallback_adapters or []),
             metadata=dict(metadata or {}),

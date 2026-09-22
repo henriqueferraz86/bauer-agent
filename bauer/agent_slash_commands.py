@@ -1,5 +1,5 @@
 """Handlers dos slash-commands da sessão do agente (/kanban, /spec, /agent,
-/task, /dispatch, /ops, /memory, /project).
+/team, /task, /dispatch, /ops, /memory, /project).
 
 Extraídos de agent.py (god object): processam comandos digitados na sessão e
 não participam do loop de tokens/tools. O despacho permanece em agent.py.
@@ -8,6 +8,143 @@ não participam do loop de tokens/tools. O despacho permanece em agent.py.
 from __future__ import annotations
 
 from typing import Any
+
+
+def _handle_team_cmd(user_input: str, console, *, kernel: Any | None = None) -> None:
+    """Lista e executa times formais pelo orquestrador Agno governado.
+
+    O handler é apenas uma entrada de UX. Toda execução passa pelo mesmo
+    ``AgnoTeamOrchestrator`` usado pela API e pelo Kernel recebido da sessão.
+    """
+    from pathlib import Path
+
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from .core.runtime import AgnoTeamOrchestrator
+    from .core.runtime.team_registry import TeamRegistry
+
+    try:
+        registry = TeamRegistry()
+        teams = registry.list()
+    except Exception as exc:  # noqa: BLE001 - slash command must keep session alive
+        console.print(f"[red]Não consegui carregar os times:[/red] {exc}")
+        return
+
+    parts = user_input.strip().split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else "list"
+    team_id = parts[2].strip() if len(parts) > 2 else ""
+
+    if sub in {"list", "ls"}:
+        if not teams:
+            console.print("[dim]Nenhum time formal cadastrado.[/dim]")
+            return
+        table = Table(title=f"Teams ({len(teams)})", show_lines=False, box=None)
+        table.add_column("id", style="cyan", no_wrap=True)
+        table.add_column("nome")
+        table.add_column("membros", style="dim")
+        table.add_column("supervisor", style="yellow")
+        for team in teams:
+            supervisor = str((team.coordination or {}).get("supervisor") or team.agents[0])
+            table.add_row(team.id, team.name, ", ".join(team.agents), supervisor)
+        console.print(table)
+        console.print("[dim]Use /team show <id> ou /team run <id> <tarefa>.[/dim]")
+        return
+
+    if sub in {"show", "info"}:
+        if not team_id:
+            console.print("[yellow]Uso:[/yellow] /team show <team_id>")
+            return
+        selected_team = registry.get(team_id)
+        if selected_team is None:
+            console.print(f"[yellow]Time '{team_id}' não encontrado.[/yellow]")
+            return
+        console.print(Panel(
+            "\n".join([
+                f"[bold]id:[/bold] {selected_team.id}",
+                f"[bold]nome:[/bold] {selected_team.name}",
+                f"[bold]membros:[/bold] {', '.join(selected_team.agents)}",
+                f"[bold]coordenação:[/bold] {selected_team.coordination or {}}",
+                f"[bold]limites:[/bold] {selected_team.limits or {}}",
+                f"[bold]políticas:[/bold] {', '.join(selected_team.policies) or 'padrão do Kernel'}",
+            ]),
+            title=f"[bold cyan]{selected_team.id}[/bold cyan]",
+            border_style="cyan",
+        ))
+        return
+
+    if sub in {"budget", "saldo"}:
+        if not team_id:
+            console.print("[yellow]Uso:[/yellow] /team budget <team_id>")
+            return
+        if registry.get(team_id) is None:
+            console.print(f"[yellow]Time '{team_id}' não encontrado.[/yellow]")
+            return
+        root = getattr(getattr(kernel, "runs", None), "store", None)
+        root_path = getattr(root, "root", Path("memory/runtime"))
+        orchestrator = AgnoTeamOrchestrator(
+            kernel=kernel, config=getattr(kernel, "config", None), root=root_path,
+        )
+        console.print(orchestrator.delegations.team_budget_status(team_id))
+        return
+
+    if sub == "run":
+        if len(parts) < 3 or not team_id:
+            console.print("[yellow]Uso:[/yellow] /team run <team_id> <tarefa>")
+            return
+        if kernel is None:
+            console.print("[red]A sessão não recebeu um Bauer Kernel; execução recusada.[/red]")
+            return
+        split = team_id.split(maxsplit=1)
+        if len(split) != 2 or not split[1].strip():
+            console.print("[yellow]Descreva a tarefa:[/yellow] /team run <team_id> <tarefa>")
+            return
+        selected_id, task = split
+        if registry.get(selected_id) is None:
+            console.print(f"[yellow]Time '{selected_id}' não encontrado.[/yellow]")
+            return
+        root = getattr(getattr(kernel, "runs", None), "store", None)
+        root_path = getattr(root, "root", Path("memory/runtime"))
+        orchestrator = AgnoTeamOrchestrator(
+            kernel=kernel, config=getattr(kernel, "config", None), root=root_path,
+        )
+        try:
+            result = orchestrator.run(
+                selected_id, task, session_id=None,
+                user_id="local-user", autonomous=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - report and preserve REPL
+            console.print(f"[red]Falha ao executar o time:[/red] {exc}")
+            return
+        status = "green" if result.ok else "yellow"
+        console.print(f"[{status}]Team {selected_id} · {result.status}[/{status}]")
+        if result.run_id:
+            console.print(f"[dim]run_id: {result.run_id}[/dim]")
+        if result.error:
+            console.print(f"[red]{result.error}[/red]")
+        output = result.output if result.output is not None else result.result.get("output")
+        if output:
+            console.print(output)
+        return
+
+    if sub in {"stop", "cancel"}:
+        if not team_id:
+            console.print("[yellow]Uso:[/yellow] /team stop <run_id>")
+            return
+        if kernel is None:
+            console.print("[red]A sessão não recebeu um Bauer Kernel; cancelamento recusado.[/red]")
+            return
+        try:
+            outcome = kernel.cancel(team_id)
+            console.print(f"[yellow]Run {team_id}:[/yellow] {outcome}")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Não consegui cancelar a run:[/red] {exc}")
+        return
+
+    console.print(
+        "[yellow]Uso:[/yellow] /teams | /team show <id> | /team budget <id> | "
+        "/team run <id> <tarefa> | /team stop <run_id>"
+    )
 
 
 def _handle_kanban_cmd(console, workspace: Any = "workspace") -> None:  # type: ignore[type-arg]
