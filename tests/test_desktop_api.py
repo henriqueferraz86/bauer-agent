@@ -632,6 +632,18 @@ class TestRuntimeDashboardEndpoints:
         assert activity["team_id"] == "bauer.software_team"
         assert activity["run_count"] == 1
 
+    def test_agno_catalog_shows_capabilities_without_secrets(self, env):
+        response = env["client"].get("/api/agno/catalog?agent_id=bauer.research")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agent_id"] == "bauer.research"
+        capabilities = {item["id"]: item for item in data["capabilities"]}
+        assert capabilities["bauer.web_search"]["enabled_for_agent"] is True
+        assert capabilities["bauer.write_file"]["enabled_for_agent"] is False
+        assert capabilities["bauer.write_file"]["risk"] == "write"
+        assert all("api_key" not in item and "secret" not in item for item in data["capabilities"])
+        assert env["client"].get("/api/agno/catalog?agent_id=missing.agent").status_code == 404
+
     def test_skills_dashboard(self, env):
         r = env["client"].get("/api/skills")
         data = r.json()

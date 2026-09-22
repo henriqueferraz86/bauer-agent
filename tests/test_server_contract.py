@@ -67,6 +67,7 @@ OPERACOES_CORE = {
 OPERACOES_API = {
     "DELETE /api/projects/{pid}",
     "GET /api/agents",
+    "GET /api/agno/catalog",
     "GET /api/audit/report",
     "GET /api/audit/runs/{run_id}",
     "GET /api/audit/runs/{run_id}/score",

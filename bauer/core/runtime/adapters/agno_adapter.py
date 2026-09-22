@@ -499,6 +499,8 @@ class AgnoRuntimeAdapter:
     def _map_tools(self, tools: Any) -> list[Any]:
         if not tools:
             return []
+        from ..agno_catalog import AgnoCapabilityCatalog
+
         mapped: list[Any] = []
         for tool in tools:
             if callable(tool):
@@ -508,14 +510,28 @@ class AgnoRuntimeAdapter:
             elif isinstance(tool, dict) and callable(tool.get("function")):
                 mapped.append(tool["function"])
             elif isinstance(tool, str):
+                capability = AgnoCapabilityCatalog.find(tool) or AgnoCapabilityCatalog.resolve_bauer_tool(tool)
+                if capability is None:
+                    raise RuntimeAdapterError(
+                        f"Agno tool '{tool}' is not registered in the Bauer capability catalog."
+                    )
+                if not capability.factory_registered:
+                    raise RuntimeAdapterError(
+                        f"Agno capability '{capability.id}' is cataloged but has no Bauer adapter yet."
+                    )
                 mapped_tool = self._bauer_tool_callable(tool)
-                if mapped_tool is not None:
-                    mapped.append(mapped_tool)
+                if mapped_tool is None:
+                    raise RuntimeAdapterError(
+                        f"Agno capability '{capability.id}' has no registered Bauer adapter."
+                    )
+                mapped.append(mapped_tool)
+            else:
+                raise RuntimeAdapterError("Agno tools must be registered names or trusted callables.")
         return mapped
 
     def _bauer_tool_callable(self, tool_name: str) -> Any | None:
         router = self._build_tool_router()
-        normalized = tool_name.strip()
+        normalized = tool_name.strip().removeprefix("bauer.")
 
         if normalized == "read_file":
             def read_file(path: str, offset: int = 1, limit: int = 0) -> str:
