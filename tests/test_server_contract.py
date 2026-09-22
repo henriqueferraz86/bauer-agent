@@ -90,6 +90,12 @@ OPERACOES_API = {
     "GET /api/obs/summary",
     "GET /api/obs/traces",
     "GET /api/os/home",
+    "GET /api/teams",
+    "GET /api/teams/{team_id}",
+    "GET /api/teams/{team_id}/budget",
+    "GET /api/teams/{team_id}/stream",
+    "GET /api/teams/runs/{run_id}",
+    "GET /api/teams/runs/{run_id}/events",
     "GET /api/projects",
     "GET /api/projects/{pid}/stats",
     "GET /api/runtime/dashboard",
@@ -113,6 +119,8 @@ OPERACOES_API = {
     "POST /api/os/command",
     "POST /api/projects",
     "POST /api/projects/{pid}/activate",
+    "POST /api/teams/{team_id}/runs",
+    "POST /api/teams/runs/{run_id}/cancel",
     "PUT /api/config",
 }
 

@@ -46,6 +46,7 @@ from .agent_slash_commands import (
     _handle_ops_cmd,
     _handle_project_cmd,
     _handle_spec_cmd,
+    _handle_team_cmd,
     _handle_task_cmd,
 )
 from .agent_voice import (
@@ -136,6 +137,7 @@ _OPS_CMDS = {"/ops"}
 _PROJECT_CMDS = {"/project", "/proj", "/projeto"}
 _AUTOPILOT_CMDS = {"/autopilot", "/autonomia"}
 _AGENT_MGR_CMDS = {"/agents", "/agent list", "/agent create", "/agent delete"}  # gestão de agents
+_TEAM_CMDS = {"/teams", "/team", "/team list", "/team ls"}
 _LISTEN_CMDS = {"/listen", "/ouvir"}
 _LISTEN_LOOP_CMDS = {"/listen loop", "/listen auto", "/ouvir loop", "/ouvir auto"}
 _LISTEN_WAKE_CMDS = {"/listen wake", "/ouvir wake", "/wake"}
@@ -189,6 +191,12 @@ _SLASH_BASE = [
     "/agent list",
     "/agent create",
     "/agent delete",
+    "/teams",
+    "/team list",
+    "/team show",
+    "/team budget",
+    "/team run",
+    "/team stop",
 ]
 
 # ─── Autocomplete (prompt_toolkit) ───────────────────────────────────────────
@@ -230,6 +238,12 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/agent list":     "lista agents criados",
     "/agent create":   "cria novo agent (wizard interativo)",
     "/agent delete":   "remove agent: /agent delete <nome>",
+    "/teams":          "lista times Agno e seus membros",
+    "/team list":      "lista times Agno e seus membros",
+    "/team show":      "mostra coordenação e limites do time",
+    "/team budget":    "mostra orçamento consumido do time",
+    "/team run":       "executa tarefa com o time Agno",
+    "/team stop":      "cancela uma run do time",
 }
 
 try:
@@ -3461,6 +3475,9 @@ def run_agent_session(
 
         if user_input.lower() in _KANBAN_CMDS:
             _handle_kanban_cmd(console, active_workspace)
+            continue
+        if user_input.lower() in _TEAM_CMDS or user_input.lower().startswith("/team "):
+            _handle_team_cmd(user_input, console, kernel=kernel)
             continue
         if user_input.lower() == "/agents" or user_input.lower().startswith("/agent "):
             _handle_agent_cmd(user_input, console)
