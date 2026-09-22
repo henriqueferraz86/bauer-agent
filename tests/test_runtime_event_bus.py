@@ -24,6 +24,14 @@ def test_runtime_event_bus_publishes_subscribes_and_persists(tmp_path: Path):
     assert reloaded[0].run_id == "run-1"
 
 
+def test_runtime_event_bus_limit_reads_recent_records_in_order(tmp_path: Path):
+    bus = EventBus(root=tmp_path)
+    for index in range(5):
+        bus.publish("run.created", run_id=f"run-{index}")
+
+    assert [event.run_id for event in bus.list_events(limit=2)] == ["run-3", "run-4"]
+
+
 def test_run_manager_emits_lifecycle_events(tmp_path: Path):
     manager = RunManager(root=tmp_path)
 

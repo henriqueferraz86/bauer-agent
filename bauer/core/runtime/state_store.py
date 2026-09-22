@@ -48,6 +48,9 @@ class JsonlStateStore:
     def list(self, collection: str) -> list[dict[str, Any]]:
         return self._store.list(collection)
 
+    def list_recent(self, collection: str, limit: int) -> list[dict[str, Any]]:
+        return self._store.list_recent(collection, limit)
+
     def list_latest(self, collection: str) -> list[dict[str, Any]]:
         return self._store.list_latest(collection)
 
@@ -211,6 +214,18 @@ class SqliteStateStore:
                 (self._safe_collection(collection),),
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
+
+    def list_recent(self, collection: str, limit: int) -> list[dict[str, Any]]:
+        """Read the newest records without materializing the full collection."""
+        if limit <= 0:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT payload FROM runtime_records
+                   WHERE collection=? ORDER BY sequence DESC LIMIT ?""",
+                (self._safe_collection(collection), limit),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in reversed(rows)]
 
     def list_latest(self, collection: str) -> list[dict[str, Any]]:
         latest_by_id: dict[str, dict[str, Any]] = {}

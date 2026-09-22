@@ -24,7 +24,20 @@ interface RuntimeEvent {
   status?: string | null;
   message?: string | null;
   data?: Record<string, unknown>;
+  agent_id?: string | null;
 }
+
+const eventLabels: Record<string, string> = {
+  "agent.started": "Agente iniciou",
+  "agent.message.sent": "Agente está trabalhando",
+  "agent.completed": "Agente concluiu",
+  "agent.failed": "Agente falhou",
+  "agent.cancelled": "Agente cancelado",
+  "task.delegated": "Tarefa delegada",
+  "tool.call.requested": "Ferramenta iniciada",
+  "tool.call.completed": "Ferramenta concluída",
+  "tool.call.failed": "Ferramenta falhou",
+};
 
 function ms(start: string, end?: string | null): string {
   const a = Date.parse(start);
@@ -56,15 +69,21 @@ export default function Runs() {
     return () => clearInterval(t);
   }, []);
 
+  const selected = useMemo(() => runs.find((run) => run.id === selectedId) || null, [runs, selectedId]);
+
   useEffect(() => {
     if (!selectedId) {
       setEvents([]);
       return;
     }
-    api.get<{ events: RuntimeEvent[] }>(`/api/obs/runs/${selectedId}/events`).then((r) => setEvents(r.events)).catch(() => setEvents([]));
-  }, [selectedId]);
+    const load = () => api.get<{ events: RuntimeEvent[] }>(`/api/obs/runs/${selectedId}/events`)
+      .then((r) => setEvents(r.events)).catch(() => {});
+    load();
+    if (selected?.status !== "running") return;
+    const timer = window.setInterval(load, 2000);
+    return () => window.clearInterval(timer);
+  }, [selectedId, selected?.status]);
 
-  const selected = useMemo(() => runs.find((run) => run.id === selectedId) || null, [runs, selectedId]);
   const toolEvents = events.filter((event) => event.event_type.startsWith("tool.call"));
   const policyEvents = events.filter((event) => event.event_type === "policy.evaluated");
 
@@ -122,7 +141,14 @@ export default function Runs() {
                 </div>
                 <div className="section-label">Eventos</div>
                 {events.map((event) => (
-                  <div className="span-row" key={event.id}><span className="span-name">{event.event_type}</span><span className="span-dur">{event.status || event.tool_name || ""}</span></div>
+                  <div className="span-row" key={event.id}>
+                    <span className="span-name">
+                      {eventLabels[event.event_type] || event.event_type}
+                      {event.agent_id && ` · ${event.agent_id}`}
+                      {event.tool_name && ` · ${event.tool_name}`}
+                    </span>
+                    <span className="span-dur">{new Date(event.timestamp).toLocaleTimeString()} · {event.status || ""}</span>
+                  </div>
                 ))}
               </>
             )}

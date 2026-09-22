@@ -867,6 +867,35 @@ def test_stream_forwards_intermediate_events_passthrough(kit):
     assert runs.get_run(final.run_id).tool_calls_count == 1
 
 
+def test_stream_persists_agent_activity_without_breaking_sse(kit):
+    _, bus, runs = kit
+
+    def _stream(_payload):
+        yield {
+            "event": "agent.started",
+            "status": "running",
+            "agent_id": "bauer.research",
+            "data": {"team_id": "bauer.software_team", "agno_event": "RunStarted"},
+        }
+        yield {"event": "agent.message.sent", "status": "working", "agent_id": "bauer.research"}
+        yield {"event": "message.delta", "content": "feito"}
+        yield {"event": "agent.completed", "status": "completed", "agent_id": "bauer.research"}
+        yield {"event": "run.completed"}
+
+    kernel = BauerKernel(runs=runs, bus=bus)
+    events = list(kernel.stream(KernelRequest(task="pesquise"), executor=_stream))
+    assert [event["event"] for event in events] == [
+        "agent.started", "agent.message.sent", "message.delta", "agent.completed", "final",
+    ]
+    persisted = bus.list_events(run_id=events[-1]["run"].run_id)
+    assert [event.event_type for event in persisted if event.event_type.startswith("agent.")] == [
+        "agent.started", "agent.message.sent", "agent.completed",
+    ]
+    started = next(event for event in persisted if event.event_type == "agent.started")
+    assert started.agent_id == "bauer.research"
+    assert started.data["team_id"] == "bauer.software_team"
+
+
 def test_stream_client_disconnect_cancels_run(kit):
     """Regressão: desconexão do caller no meio do stream (GeneratorExit)
     deixava o run preso em `running` até o recover() — agora cancela na hora."""
