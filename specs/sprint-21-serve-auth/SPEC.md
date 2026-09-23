@@ -43,6 +43,8 @@ SPA deixa de armazená-la depois da migração para sessão.
   o modelo `gpt-5.6-luna`, sem exigir uma segunda ação no menu de modelos;
 - usar `reasoning.effort=high` no backend ChatGPT para o Luna, priorizando a
   qualidade das respostas;
+- permitir selecionar globalmente, no Server, entre o executor `bauer_native`
+  e o adapter `agno`, aplicando a escolha aos próximos turnos;
 
 ## Fora de escopo
 
@@ -107,6 +109,12 @@ SPA deixa de armazená-la depois da migração para sessão.
 17. Chamadas ChatGPT Responses para `gpt-5.6-luna` enviam explicitamente
     `reasoning.effort=high`; chamadas de outros modelos preservam o esforço
     configurado/default existente.
+18. A tela Runtime permite selecionar globalmente `Bauer nativo` ou `Agno`;
+    a escolha é persistida no volume do Server e os runs seguintes registram o
+    adapter selecionado.
+19. A superfície AgentOS expõe o catálogo de modelos do Bauer e permite trocar
+    o modelo global dos agentes/times; OpenAI OAuth usa a sessão do browser
+    salva pelo Bauer, sem exigir `OPENAI_API_KEY`.
 
 ## Requisitos não funcionais
 

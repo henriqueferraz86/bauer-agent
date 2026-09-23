@@ -8,6 +8,7 @@ default); importing it does not start a server.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from pathlib import Path
@@ -50,6 +51,17 @@ def build_agentos_app(
 
         cfg = load_config(config_path)
         root = Path(runtime_root)
+        selected_model: dict[str, str] = {}
+        selected_model_file = root / "serve-model-state.json"
+        try:
+            raw_selected = json.loads(selected_model_file.read_text(encoding="utf-8"))
+            if raw_selected.get("provider") and raw_selected.get("model"):
+                selected_model = {
+                    "provider": str(raw_selected["provider"]),
+                    "model": str(raw_selected["model"]),
+                }
+        except (OSError, ValueError, AttributeError):
+            logger.debug("saved AgentOS model selection is unavailable")
         adapter_cfg = dict(getattr(getattr(cfg, "runtime", None), "adapters", {}).get("agno", {}) or {})
         adapter_cfg.setdefault("workspace", str(Path(workspace)))
         adapter_cfg.setdefault("db_file", str(root / "agno" / "sessions.db"))
@@ -69,6 +81,8 @@ def build_agentos_app(
                 continue
             try:
                 agno_spec = agno_agent_spec_from_bauer(spec)
+                if selected_model:
+                    agno_spec.update(selected_model)
                 agent = adapter._build_agent(agno_spec)
             except Exception as exc:  # noqa: BLE001 - identify the broken spec
                 raise AgentOSBuildError(f"não foi possível materializar o agente {spec.id}: {exc}") from exc
@@ -93,13 +107,19 @@ def build_agentos_app(
                 "id": team_spec.id,
                 "name": team_spec.name,
                 "mode": str(team_spec.coordination.get("mode") or "coordinate"),
-                "members": [agno_agent_spec_from_bauer(item) for item in members],
+                "members": [
+                    {**agno_agent_spec_from_bauer(item), **selected_model}
+                    if selected_model else agno_agent_spec_from_bauer(item)
+                    for item in members
+                ],
                 "supervisor": {
                     **agno_agent_spec_from_bauer(supervisor),
                     "instructions": team_spec.coordination.get("instructions", []),
                 },
                 "max_iterations": int(team_spec.limits.get("max_iterations") or 10),
             }
+            if selected_model:
+                raw_team["supervisor"].update(selected_model)
             try:
                 teams.append(adapter._build_team(raw_team))
             except Exception as exc:  # noqa: BLE001 - identify the broken spec
@@ -116,6 +136,59 @@ def build_agentos_app(
             telemetry=False,
         )
         app = agent_os.get_app()
+        # Expose the same model catalog used by the Bauer cockpit.  The
+        # upstream Agent UI does not query this route yet, but keeping it on
+        # the AgentOS origin lets a patched/custom UI use one canonical source
+        # instead of seeing only Ollama/configured models.
+        from fastapi import Query
+
+        @app.get("/api/models/catalog")
+        def models_catalog(
+            provider: str = Query(default=""),
+            q: str = Query(default=""),
+            free: bool | None = Query(default=None),
+            limit: int = Query(default=200, ge=1, le=1000),
+            offset: int = Query(default=0, ge=0),
+        ) -> dict[str, Any]:
+            from .models_dev import catalog_models
+
+            models = catalog_models(provider=provider or None, chat_only=True)
+            if q:
+                needle = q.casefold()
+                models = [item for item in models if needle in str(item.get("id", "")).casefold()]
+            if free is not None:
+                models = [item for item in models if bool(item.get("is_free")) is free]
+            return {
+                "total": len(models),
+                "free_count": sum(1 for item in models if item.get("is_free")),
+                "models": models[offset : offset + limit],
+            }
+
+        @app.post("/api/models/select")
+        def select_model(body: dict[str, Any]) -> dict[str, str]:
+            """Select one Bauer catalog model for all AgentOS agents/teams."""
+            provider = str(body.get("provider") or "").strip().lower()
+            model_id = str(body.get("model") or body.get("id") or "").strip()
+            if not provider or not model_id:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=400, detail="provider e model são obrigatórios")
+            selected = {"provider": provider, "model": model_id}
+            try:
+                model = adapter._build_model(selected)
+                for item in agents:
+                    item.model = model
+                for item in teams:
+                    item.model = model
+                    for member in getattr(item, "members", []) or []:
+                        member.model = model
+                selected_model_file.parent.mkdir(parents=True, exist_ok=True)
+                selected_model_file.write_text(json.dumps(selected, ensure_ascii=False), encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001 - stable API boundary
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=400, detail=f"modelo indisponível: {exc}") from exc
+            return selected
         # Agent UI is served from a different origin in the Docker stack.
         # Keep the allow-list explicit; operators can add a LAN/reverse-proxy
         # origin through AGENT_OS_CORS_ORIGINS without opening the API broadly.

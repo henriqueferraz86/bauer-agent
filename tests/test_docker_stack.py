@@ -83,6 +83,8 @@ def test_agent_ui_is_built_from_official_repo_and_has_update_controls():
     assert "onlyBuiltDependencies" in dockerfile
     assert "allowBuilds" in dockerfile
     assert (ROOT / "agent-ui" / "patch-endpoint.mjs").exists()
+    assert (ROOT / "agent-ui" / "customize-model-catalog.mjs").exists()
+    assert "customize-model-catalog.mjs" in dockerfile
     assert "pnpm install --frozen-lockfile" in dockerfile
     assert "AGENT_UI_REF: ${AGENT_UI_REF:-main}" in compose_text
     assert "AGENT_UI_ENDPOINT: ${AGENT_UI_ENDPOINT:-http://localhost:7777}" in compose_text

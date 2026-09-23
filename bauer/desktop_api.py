@@ -283,6 +283,8 @@ def build_desktop_router(
     kernel: Any | None = None,
     openai_auth_broker: Any | None = None,
     on_openai_auth_connected: Optional[Callable[[], str | None]] = None,
+    get_runtime_mode: Optional[Callable[[], str]] = None,
+    set_runtime_mode: Optional[Callable[[str], dict[str, str]]] = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
 
@@ -1436,10 +1438,26 @@ def build_desktop_router(
 
         return {
             "default_adapter": default_adapter,
+            "runtime_mode": get_runtime_mode() if get_runtime_mode else "bauer_native",
             "adapters": adapters,
             "workers": WorkerRegistry(root=_runtime_root).list(),
             "kill_switch": RuntimeControl(root=_runtime_root).kill_switch_enabled(),
         }
+
+    @router.get("/runtime/mode")
+    def runtime_mode_get():
+        return {"runtime_mode": get_runtime_mode() if get_runtime_mode else "bauer_native"}
+
+    @router.post("/runtime/mode")
+    def runtime_mode_set(body: dict = Body(...)):
+        if set_runtime_mode is None:
+            raise HTTPException(status_code=503, detail="Seleção de runtime não disponível.")
+        try:
+            return set_runtime_mode(str(body.get("runtime_mode") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @router.get("/agents")
     def agents_dashboard():

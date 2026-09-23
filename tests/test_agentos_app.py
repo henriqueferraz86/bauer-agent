@@ -30,3 +30,25 @@ def test_agentos_app_does_not_start_at_import():
 
     assert callable(module.build_agentos_app)
     assert callable(module.main)
+
+
+def test_agentos_app_exposes_bauer_model_catalog(tmp_path, monkeypatch):
+    from bauer import models_dev
+
+    monkeypatch.setattr(
+        models_dev,
+        "catalog_models",
+        lambda **_: [
+            {"id": "ollama/llama3", "is_free": True},
+            {"id": "openai/gpt-5.6-luna", "is_free": False},
+        ],
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text("model:\n  provider: openai\n  name: gpt-5.6-luna\n", encoding="utf-8")
+    app = build_agentos_app(config_path=config, runtime_root=tmp_path / "runtime")
+
+    from fastapi.testclient import TestClient
+
+    response = TestClient(app).get("/api/models/catalog?free=true")
+    assert response.status_code == 200
+    assert response.json()["models"] == [{"id": "ollama/llama3", "is_free": True}]

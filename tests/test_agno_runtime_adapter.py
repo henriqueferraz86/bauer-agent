@@ -9,15 +9,25 @@ pytest.importorskip("agno")
 pytest.importorskip("sqlalchemy")
 
 from agno.models.base import Model
+from agno.models.message import Message
 from agno.models.response import ModelResponse
 
 from bauer.core.runtime.agent_spec import parse_agents_yaml
 from bauer.core.runtime.adapters import get_runtime_adapter, list_runtime_adapters
 from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+from bauer.core.runtime.adapters.chatgpt_oauth_model import build_chatgpt_oauth_model
 
 
 def add_numbers(a: int, b: int) -> str:
     return str(a + b)
+
+
+class OAuthClientStub:
+    def chat_stream(self, model: str, messages: list[dict[str, Any]]) -> Iterator[str]:
+        assert model == "gpt-5.6-luna"
+        assert messages[-1]["content"] == "hello"
+        yield "Olá"
+        yield " do OAuth"
 
 
 class ToolCallingModel(Model):
@@ -98,6 +108,42 @@ class NamedToolCallingModel(Model):
 def test_agno_adapter_is_registered():
     assert "agno" in list_runtime_adapters()
     assert get_runtime_adapter("agno").name == "agno"
+
+
+def test_chatgpt_oauth_model_delegates_to_bauer_backend():
+    model = build_chatgpt_oauth_model(OAuthClientStub(), "gpt-5.6-luna")
+    result = model.invoke(
+        [Message(role="user", content="hello")],
+        Message(role="assistant"),
+    )
+
+    assert result.content == "Olá do OAuth"
+    assert model.supports_native_tools is False
+    assert [chunk.content for chunk in model.invoke_stream(
+        [Message(role="user", content="hello")], Message(role="assistant")
+    )] == ["Olá", " do OAuth"]
+
+
+def test_agno_adapter_uses_injected_chatgpt_oauth_client(tmp_path):
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "oauth.db")},
+        chatgpt_client=OAuthClientStub(),
+    )
+    result = adapter.run_agent(
+        {
+            "session_id": "oauth-session",
+            "user_id": "user-1",
+            "task": "hello",
+            "agent_spec": {
+                "id": "oauth-agent",
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+            },
+        }
+    )
+
+    assert result["status"] == "completed"
+    assert result["output"] == "Olá do OAuth"
 
 
 def test_agno_adapter_runs_simple_agent(tmp_path):

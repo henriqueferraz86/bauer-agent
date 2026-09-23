@@ -96,3 +96,7 @@ Status: concluído
 - [x] Rebuildar o Docker e medir novamente o tempo de resposta: HTTP 200,
       primeiro byte em ~2,49 s e conclusão em ~2,49 s (antes da troca para
       esforço alto).
+- [x] Adicionar seletor global Bauer nativo/Agno no Runtime, com persistência e
+      execução real em `/chat` e `/stream`.
+- [x] Integrar catálogo de modelos no AgentOS/Agent UI e reutilizar OAuth
+      OpenAI do Bauer no adapter Agno.

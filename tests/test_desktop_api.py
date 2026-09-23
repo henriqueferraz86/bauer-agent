@@ -635,6 +635,22 @@ class TestRuntimeDashboardEndpoints:
         assert "workers" in data
         assert data["kill_switch"] is False
 
+    def test_runtime_mode_global_selector(self, env):
+        selected = {"mode": "bauer_native"}
+        # Este teste cobre o contrato do painel; o Server injeta as mesmas
+        # callbacks apontando para seu estado global em processo.
+        app = FastAPI()
+        app.include_router(da.build_desktop_router(
+            runtime_root=env["runtime_root"],
+            get_runtime_mode=lambda: selected["mode"],
+            set_runtime_mode=lambda mode: selected.update(mode=mode) or {"runtime_mode": mode},
+        ))
+        client = TestClient(app)
+        assert client.get("/api/runtime/mode").json() == {"runtime_mode": "bauer_native"}
+        changed = client.post("/api/runtime/mode", json={"runtime_mode": "agno"})
+        assert changed.json() == {"runtime_mode": "agno"}
+        assert selected["mode"] == "agno"
+
     def test_agents_dashboard(self, env):
         r = env["client"].get("/api/agents")
         assert r.status_code == 200

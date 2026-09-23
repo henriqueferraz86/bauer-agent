@@ -146,6 +146,17 @@ o token continua salvo e o frontend informa a falha sem fazer logout.
 cliente ChatGPT OAuth; providers API-key e modelos diferentes não são
 alterados.
 
+### Executor global do Server
+
+`/api/runtime/mode` mantém uma escolha global persistida em
+`serve-runtime-mode.json`: `bauer_native` preserva o loop histórico do Serve e
+`agno` executa os próximos turnos pelo `AgnoRuntimeAdapter`, sob a mesma
+admissão/política do Kernel. O AgentOS também expõe `/api/models/catalog` e
+`/api/models/select`; o overlay do Agent UI mostra o catálogo e troca o modelo
+de todos os agentes/times. Para OpenAI OAuth, o adapter materializa um modelo
+Agno sobre `ChatGPTBackendClient`, reutilizando a sessão do browser sem API key
+pública. A ponte atual é texto/streaming e não anuncia tools nativas.
+
 ## Decisões técnicas
 
 - sessão opaca em vez de JWT: revogação imediata e menos segredo no cliente;

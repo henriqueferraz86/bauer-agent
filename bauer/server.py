@@ -38,7 +38,7 @@ import hmac
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .server_streaming import StreamGate as _StreamGate
 from .server_streaming import sse_frame as _sse
@@ -683,10 +683,137 @@ def create_app(
         "model": model_name,
         "client": client,
         "provider": _detect_provider(client),
+        # O operador escolhe globalmente qual executor atende o chat deste
+        # processo. Bauer nativo preserva o comportamento histórico; Agno é
+        # opt-in e passa pelo mesmo Kernel/políticas.
+        "runtime_mode": "bauer_native",
         # Contexto MORA no _state, não mais numa closure imutável do boot: ele
         # muda junto com o modelo (ver `resolver_contexto_aplicado`).
         "applied_context": applied_context,
     }
+
+    _runtime_mode_file = runtime_root / "serve-runtime-mode.json"
+    _model_state_file = runtime_root / "serve-model-state.json"
+    try:
+        _saved_runtime_mode = json.loads(_runtime_mode_file.read_text(encoding="utf-8"))
+        if _saved_runtime_mode.get("mode") in {"bauer_native", "agno"}:
+            _state["runtime_mode"] = _saved_runtime_mode["mode"]
+    except (OSError, ValueError, AttributeError):
+        _state["runtime_mode"] = "bauer_native"
+    try:
+        _saved_model_state = json.loads(_model_state_file.read_text(encoding="utf-8"))
+        if _saved_model_state.get("provider") and _saved_model_state.get("model"):
+            saved_provider = str(_saved_model_state["provider"])
+            saved_model = str(_saved_model_state["model"])
+            if config_path is not None:
+                try:
+                    from .auxiliary_client import _build_client_for_provider
+                    from .config_loader import load_config
+
+                    restored_client = _build_client_for_provider(
+                        saved_provider, saved_model, load_config(config_path)
+                    )
+                    if restored_client is not None:
+                        _state["client"] = restored_client
+                except Exception as exc:  # noqa: BLE001 — retain boot fallback
+                    _log.warning("saved model restore failed: %s", exc)
+            _state["provider"] = saved_provider
+            _state["model"] = saved_model
+            if config_path is not None:
+                try:
+                    from .config_loader import load_config
+
+                    requested_context = int(load_config(config_path).model.requested_context)
+                    _state["applied_context"] = resolver_contexto_aplicado(
+                        saved_provider, requested_context
+                    )
+                except (AttributeError, TypeError, ValueError, OSError) as exc:
+                    _log.debug("saved model context restore failed: %s", exc)
+    except (OSError, ValueError, AttributeError):
+        _log.debug("saved model selection is unavailable")
+
+    def _runtime_mode() -> str:
+        return str(_state.get("runtime_mode") or "bauer_native")
+
+    def _set_runtime_mode(mode: str) -> dict[str, str]:
+        normalized = mode.strip().lower().replace("-", "_")
+        if normalized not in {"bauer_native", "agno"}:
+            raise ValueError("runtime_mode deve ser bauer_native ou agno")
+        if normalized == "agno" and config_path is not None:
+            from .config_loader import load_config
+            from .core.runtime.adapters import get_runtime_adapter
+
+            cfg = load_config(config_path)
+            health = get_runtime_adapter("agno", config=cfg).healthcheck()
+            if health.get("status") != "healthy":
+                raise RuntimeError(str(health.get("error") or "Agno indisponível"))
+        _state["runtime_mode"] = normalized
+        try:
+            _runtime_mode_file.parent.mkdir(parents=True, exist_ok=True)
+            _runtime_mode_file.write_text(
+                json.dumps({"mode": normalized}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _log.warning("runtime mode persistence failed: %s", exc)
+        return {"runtime_mode": normalized}
+
+    def _run_agno_turn(
+        message: str,
+        session_id: str,
+        run_id: str,
+        request_agent_id: str,
+        active_router: Any,
+        turn_model: str,
+        resolved: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Executa um turno pelo adapter Agno escolhido no Server.
+
+        O adapter recebe somente capabilities Bauer registradas; a política e
+        o Kernel continuam sendo a fronteira de governança do endpoint.
+        """
+        if config_path is None:
+            raise RuntimeError("Agno requer config_path no Bauer Server")
+        from .config_loader import load_config
+
+        cfg = load_config(config_path)
+        from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+        adapter = AgnoRuntimeAdapter(config=cfg, chatgpt_client=_state["client"])
+        supported_tools = {
+            "read_file", "write_file", "list_dir", "search_text",
+            "run_command", "web_search", "memory",
+        }
+        tools = [name for name in active_router.available_tools() if name in supported_tools]
+        result = adapter.run_agent({
+            "run_id": run_id,
+            "session_id": session_id,
+            "user_id": "serve-user",
+            "task": message,
+            "agent_id": request_agent_id,
+            "agent_spec": {
+                "id": request_agent_id,
+                "name": "Bauer Server Agno Agent",
+                "provider": _state["provider"],
+                "model": turn_model,
+                "instructions": system_prompt,
+                "tools": tools,
+                "session_id": session_id,
+                "user_id": "serve-user",
+            },
+            "resolved": resolved,
+        })
+        if result.get("status") != "completed":
+            raise RuntimeError(str(result.get("error") or "Agno não concluiu o turno"))
+        raw_tools = result.get("metadata", {}).get("tools", [])
+        tool_log = [
+            {
+                "tool": str(item.get("tool_name") or "agno.tool"),
+                "result": str(item.get("result") or item.get("status") or "completed"),
+            }
+            for item in raw_tools
+            if isinstance(item, dict)
+        ]
+        return {"response": str(result.get("output") or ""), "tool_log": tool_log}
 
     # ── Roteamento por-turno (Fase 12 / Sprint 34c) — opt-in ──────────────────
     # Quando model.router_enabled=True e há profiles, cada turno escolhe o modelo
@@ -1144,6 +1271,7 @@ def create_app(
         return {
             "model": _state["model"],
             "provider": _state["provider"],
+            "runtime_mode": _runtime_mode(),
             "context_tokens": _state["applied_context"],
             "tools": router.available_tools(),
             "auth_enabled": bool(api_key),
@@ -1237,6 +1365,17 @@ def create_app(
         _state["applied_context"] = resolver_contexto_aplicado(
             _state["provider"], _ctx_pedido
         )
+        try:
+            _model_state_file.parent.mkdir(parents=True, exist_ok=True)
+            _model_state_file.write_text(
+                json.dumps(
+                    {"provider": _state["provider"], "model": _state["model"]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _log.warning("model selection persistence failed: %s", exc)
 
         # Warmup: sobe o modelo local na GPU já no switch (background), pra a
         # primeira mensagem não travar carregando vários GB. Só para Ollama.
@@ -1290,6 +1429,8 @@ def create_app(
         format_response=_format_server_response,
         public_tool_log=_public_tool_log,
         run_one_turn_with_fallback=run_one_turn_with_fallback,
+        runtime_mode=_runtime_mode,
+        run_agno_turn=_run_agno_turn,
         logger=_log,
     )))
 
@@ -1453,6 +1594,7 @@ def create_app(
             run, _early = _kernel.admit(_KReq(
                 task=message, session_id=sid, agent_id=request_agent_id,
                 input=_run_input(message, "/stream", resolved),
+                runtime_adapter=_runtime_mode(),
             ))
             if _early is not None:
                 # governança barrou — SSE de erro sem tocar LLM/worker
@@ -1476,7 +1618,7 @@ def create_app(
             run = run_manager.create_run(
                 session_id=sid,
                 agent_id=request_agent_id,
-                runtime_adapter="bauer_native",
+                runtime_adapter=_runtime_mode(),
                 input=_run_input(message, "/stream", resolved),
                 status="running",
             )
@@ -1538,9 +1680,19 @@ def create_app(
                 # de duas threads pisando no session/run id uma da outra.
                 ids_token = set_runtime_ids(sid, run.id)
                 try:
-                    resp, tool_log = run_one_turn_with_fallback(
-                        ctx, active_router, _turn_client, _turn_model, _fallback_clients,
-                    )
+                    if _runtime_mode() == "agno":
+                        agno_result = _run_agno_turn(
+                            message, sid, run.id, request_agent_id, active_router,
+                            _turn_model, resolved,
+                        )
+                        resp = agno_result["response"]
+                        tool_log = agno_result["tool_log"]
+                        if resp:
+                            events.put(("delta", resp))
+                    else:
+                        resp, tool_log = run_one_turn_with_fallback(
+                            ctx, active_router, _turn_client, _turn_model, _fallback_clients,
+                        )
                     from .server_chat import _allowlist_authorization_prompt
                     result["response"] = (
                         _allowlist_authorization_prompt(tool_log) or resp
@@ -2179,6 +2331,14 @@ def create_app(
         _state["applied_context"] = resolver_contexto_aplicado(
             "openai", requested_context
         )
+        try:
+            _model_state_file.parent.mkdir(parents=True, exist_ok=True)
+            _model_state_file.write_text(
+                json.dumps({"provider": "openai", "model": "gpt-5.6-luna"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _log.warning("model selection persistence failed after OAuth: %s", exc)
         return None
 
     # --- Desktop API (SPA das 8 telas) ------------------------------------------
@@ -2205,6 +2365,8 @@ def create_app(
             resolve_project_workspace=_kanban_project_workspace,
             kernel=_kernel,
             on_openai_auth_connected=_on_openai_auth_connected,
+            get_runtime_mode=_runtime_mode,
+            set_runtime_mode=_set_runtime_mode,
             start_loop=(lambda message, project_id, workspace_override: _start_loop_impl(
                 LoopStartRequest(message=message, project_id=project_id), workspace_override,
             )),

@@ -36,6 +36,8 @@ ARG AGENT_UI_ENDPOINT=http://localhost:7777
 ENV AGENT_UI_ENDPOINT=${AGENT_UI_ENDPOINT}
 COPY patch-endpoint.mjs /usr/local/bin/patch-endpoint.mjs
 RUN node /usr/local/bin/patch-endpoint.mjs /app "$AGENT_UI_ENDPOINT"
+COPY customize-model-catalog.mjs /usr/local/bin/customize-model-catalog.mjs
+RUN node /usr/local/bin/customize-model-catalog.mjs /app
 RUN mkdir -p public
 RUN pnpm build
 
