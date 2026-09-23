@@ -53,7 +53,9 @@ services:
   bauer:
     build: .
     container_name: bauer-agent
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./models.yaml:/app/models.yaml:ro
@@ -70,6 +72,63 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── AgentOS — superfície Agno sobre o catálogo formal do Bauer ────────────
+  # É um processo separado do servidor governado do Bauer (porta 8000).
+  agentos:
+    build: .
+    container_name: bauer-agentos
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./models.yaml:/app/models.yaml:ro
+      - bauer_workspace:/app/workspace
+      - bauer_memory:/app/memory
+      - bauer_logs:/app/logs
+    ports:
+      - "7777:7777"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_HOST=http://ollama:11434
+      - BAUER_CONFIG=/app/config.yaml
+      - BAUER_WORKSPACE=/app/workspace
+      - BAUER_RUNTIME_ROOT=/app/memory/runtime
+      - AGENT_OS_HOST=0.0.0.0
+      - AGENT_OS_PORT=7777
+      - AGENT_OS_CORS_ORIGINS=${AGENT_OS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    command: ["python", "-m", "bauer.agentos_app"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7777/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── Agent UI oficial do Agno — construído do repositório upstream ─────────
+  agent-ui:
+    build:
+      context: ./agent-ui
+      args:
+        AGENT_UI_REF: ${AGENT_UI_REF:-main}
+        AGENT_UI_ENDPOINT: ${AGENT_UI_ENDPOINT:-http://localhost:7777}
+    container_name: bauer-agent-ui
+    ports:
+      - "3000:3000"
+    depends_on:
+      agentos:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
     restart: unless-stopped
 
 volumes:

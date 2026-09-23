@@ -1333,23 +1333,42 @@ O Bauer tem defaults "agressivos mas seguros". Ajuste em `agent:` / `tools:`:
 ## 🐳 Docker
 
 ```bash
-# Sobe Bauer + Ollama no mesmo container
+# Sobe Bauer, Ollama, AgentOS e a Agent UI oficial do Agno
 docker compose up -d
 
 # Logs
 docker compose logs -f
 
-# API disponível em http://localhost:8000
-# O modelo padrão (qwen2.5-coder:3b) é baixado automaticamente no primeiro boot 🚀
+# Bauer/Kernels: http://localhost:8000
+# AgentOS:      http://localhost:7777
+# Agent UI:     http://localhost:3000
+# Os modelos Ollama são baixados automaticamente no primeiro boot 🚀
 ```
 
-Para mudar o modelo padrão:
+O instalador Linux/macOS usa o mesmo Compose automaticamente quando Docker
+Compose está disponível. Use `--no-docker` para uma instalação nativa ou
+`--docker` para exigir o stack e falhar se o daemon não estiver disponível:
 
-```yaml
-# docker-compose.yml
-environment:
-  - BAUER_MODEL=llama3.2:3b
+```bash
+curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash -s -- --no-docker
+curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash -s -- --docker
 ```
+
+Reiniciar um container **não baixa a última versão**: ele reutiliza a imagem
+existente. A atualização do Agent UI ocorre no build do stack. O instalador usa
+`AGENT_UI_REF=main` por padrão para novas instalações; fixe uma tag, branch ou commit
+em `.env` para reprodutibilidade. Para atualizar explicitamente:
+
+```bash
+docker compose build --pull agent-ui
+docker compose up -d agent-ui
+```
+
+Em acesso remoto, ajuste no `.env` o `AGENT_UI_ENDPOINT` para o endereço do
+AgentOS que o navegador alcança e inclua a origem da UI em
+`AGENT_OS_CORS_ORIGINS`. A imagem do Agent UI é construída do repositório
+oficial do Agno; não há uma imagem oficial pré-publicada necessária para essa
+integração.
 
 ---
 

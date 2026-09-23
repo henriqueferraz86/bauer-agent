@@ -18,8 +18,12 @@ COPY --from=ollama-bin /usr/bin/ollama /usr/local/bin/ollama
 COPY pyproject.toml .
 COPY README.md .
 # Instala só as dependências (sem o pacote ainda) para aproveitar cache do Docker
-RUN pip install --no-cache-dir ".[server]" --no-build-isolation 2>/dev/null || \
-    pip install --no-cache-dir typer rich pydantic pyyaml httpx psutil fastapi "uvicorn[standard]"
+RUN (pip install --no-cache-dir ".[server]" --no-build-isolation 2>/dev/null || \
+    pip install --no-cache-dir \
+      typer rich pydantic pyyaml httpx psutil prompt-toolkit cryptography \
+      ddgs beautifulsoup4 sqlalchemy openai "agno[os]>=1.7" \
+      fastapi "uvicorn[standard]") && \
+    pip install --no-cache-dir "agno[os]>=1.7"
 
 # Código da aplicação (após deps — muda mais frequentemente)
 COPY bauer/ ./bauer/
@@ -41,7 +45,4 @@ VOLUME ["/root/.ollama"]
 EXPOSE 8000
 
 ENV PYTHONUNBUFFERED=1
-# Modelo padrão — sobrescreva com BAUER_MODEL no .env ou docker-compose
-ENV BAUER_MODEL=qwen2.5-coder:3b
-
 CMD ["/start.sh"]

@@ -115,7 +115,26 @@ def build_agentos_app(
             tracing=False,
             telemetry=False,
         )
-        return agent_os.get_app()
+        app = agent_os.get_app()
+        # Agent UI is served from a different origin in the Docker stack.
+        # Keep the allow-list explicit; operators can add a LAN/reverse-proxy
+        # origin through AGENT_OS_CORS_ORIGINS without opening the API broadly.
+        from fastapi.middleware.cors import CORSMiddleware
+
+        raw_origins = os.environ.get(
+            "AGENT_OS_CORS_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000",
+        )
+        origins = [origin.strip().rstrip("/") for origin in raw_origins.split(",") if origin.strip()]
+        if origins:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=origins,
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+        return app
     except AgentOSBuildError:
         raise
     except Exception as exc:  # noqa: BLE001 - stable boundary for service startup

@@ -10,10 +10,15 @@
 #   --extra=<extras>  Extras pip (padrão: gateway,web,voice,voice-kokoro).
 #                     Ex: --extra=agno (Agno + SQLAlchemy) ou --extra=all
 #   --no-extra        Instala só dependências core
+#   --docker          Exige Docker Compose e sobe Bauer + AgentOS + Agent UI
+#   --no-docker       Não provisiona o stack Docker (padrão: automático se disponível)
 
 set -euo pipefail
 
 REPO="https://github.com/henriqueferraz86/bauer-agent.git"
+# Para validar uma branch sem alterar o instalador publicado, use
+# BAUER_INSTALL_REF=codex/minha-branch. O padrão continua sendo master.
+INSTALL_REF="${BAUER_INSTALL_REF:-master}"
 INSTALL_DIR="$HOME/.local/share/bauer-agent"
 BIN_DIR="$HOME/.local/bin"
 BAUER_BIN="$BIN_DIR/bauer"
@@ -25,14 +30,21 @@ warn()  { echo -e "${YELLOW}[bauer]${NC} ! $*"; }
 die()   { echo -e "${RED}[bauer]${NC} ✗ $*" >&2; exit 1; }
 
 DO_UNINSTALL=0; DO_UPDATE=0; EXTRA="gateway,web,voice,voice-kokoro"; NO_EXTRA=0
+DOCKER_MODE="auto"
 for arg in "$@"; do
     case $arg in
         --uninstall)    DO_UNINSTALL=1 ;;
         --update)       DO_UPDATE=1 ;;
         --extra=*)      EXTRA="${arg#--extra=}" ;;
         --no-extra)     NO_EXTRA=1 ;;
+        --docker)
+            [ "$DOCKER_MODE" = "disabled" ] && die "Use apenas uma de --docker ou --no-docker."
+            DOCKER_MODE="required" ;;
+        --no-docker)
+            [ "$DOCKER_MODE" = "required" ] && die "Use apenas uma de --docker ou --no-docker."
+            DOCKER_MODE="disabled" ;;
         --help|-h)
-            echo "Uso: $0 [--update] [--uninstall] [--extra=all] [--no-extra]"
+            echo "Uso: $0 [--update] [--uninstall] [--extra=all] [--no-extra] [--docker|--no-docker]"
             exit 0 ;;
         *) die "Opção desconhecida: $arg" ;;
     esac
@@ -42,6 +54,15 @@ done
 # ─── Uninstall ───────────────────────────────────────────────────────────────
 if [ "$DO_UNINSTALL" = 1 ]; then
     info "Desinstalando Bauer Agent..."
+    # Desce somente os containers do Bauer; volumes nomeados ficam intactos
+    # para que um reinstall não apague workspace/memória sem confirmação.
+    if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+        if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+            (cd "$INSTALL_DIR" && docker compose down) || warn "Não consegui parar o stack Docker; removendo apenas os arquivos."
+        elif command -v docker-compose >/dev/null 2>&1; then
+            (cd "$INSTALL_DIR" && docker-compose down) || warn "Não consegui parar o stack Docker; removendo apenas os arquivos."
+        fi
+    fi
     rm -f "$BAUER_BIN"
     rm -rf "$INSTALL_DIR"
     ok "Removido."
@@ -93,6 +114,93 @@ LAUNCHER
     chmod +x "$BAUER_BIN"
 }
 
+# Docker é uma camada adicional: a instalação nativa continua funcionando em
+# hosts sem daemon. O modo `required` transforma avisos em erro para CI/hosts
+# que precisam do stack; `disabled` nunca toca no Docker.
+run_compose() {
+    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+    else
+        return 127
+    fi
+}
+
+ensure_docker_files() {
+    if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
+        if [ -f "$INSTALL_DIR/config.yaml.example" ]; then
+            cp "$INSTALL_DIR/config.yaml.example" "$INSTALL_DIR/config.yaml"
+        else
+            printf 'model:\n  provider: ollama\n  name: qwen3:0.6b\n' > "$INSTALL_DIR/config.yaml"
+        fi
+        info "config.yaml inicial criado; revise o provider quando necessário."
+    fi
+    if [ ! -f "$INSTALL_DIR/models.yaml" ]; then
+        printf 'models: {}\n' > "$INSTALL_DIR/models.yaml"
+    fi
+    # Se a configuração aponta para um modelo Ollama fora do conjunto padrão
+    # do init, passe-o ao contêiner Bauer para que o startup faça o pull. O
+    # bloco é deliberadamente conservador: providers cloud não devem baixar
+    # nada no Ollama.
+    if ! grep -qE '^BAUER_MODEL=.+$' "$INSTALL_DIR/.env" 2>/dev/null; then
+        local _ollama_model=""
+        _ollama_model="$(awk '
+            /^model:[[:space:]]*$/ { inside=1; next }
+            inside && /^[^[:space:]#]/ { exit }
+            inside && /^  provider:/ { provider=$2 }
+            inside && /^  name:/ { model=$2 }
+            END { if (provider == "ollama") print model }
+        ' "$INSTALL_DIR/config.yaml")"
+        if [ -n "$_ollama_model" ]; then
+            printf 'BAUER_MODEL=%s\n' "$_ollama_model" >> "$INSTALL_DIR/.env"
+            info "BAUER_MODEL configurado para o Compose: $_ollama_model."
+        fi
+    fi
+    # O servidor Bauer faz bind em 0.0.0.0 dentro do Compose. Gere uma chave
+    # local na primeira provisão para que o preflight de segurança não bloqueie
+    # o contêiner. Nunca sobrescreva uma chave que o operador já configurou.
+    if [ ! -f "$INSTALL_DIR/.env" ] || ! grep -qE '^BAUER_SERVE_API_KEY=.+$' "$INSTALL_DIR/.env"; then
+        local _serve_key=""
+        if command -v openssl >/dev/null 2>&1; then
+            _serve_key="$(openssl rand -hex 32)"
+        elif command -v python3 >/dev/null 2>&1; then
+            _serve_key="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+        else
+            die "Não foi possível gerar BAUER_SERVE_API_KEY para o Docker. Instale openssl ou python3."
+        fi
+        printf '\n# Chave gerada automaticamente para o Bauer REST no Compose.\nBAUER_SERVE_API_KEY=%s\n' \
+            "$_serve_key" >> "$INSTALL_DIR/.env"
+        chmod 600 "$INSTALL_DIR/.env"
+        info "BAUER_SERVE_API_KEY gerada em $INSTALL_DIR/.env (não exibida)."
+    fi
+}
+
+provision_docker_stack() {
+    [ "$DOCKER_MODE" = "disabled" ] && return 0
+    if ! run_compose version >/dev/null 2>&1; then
+        if [ "$DOCKER_MODE" = "required" ]; then
+            die "Docker Compose não encontrado. Instale Docker Desktop/Engine e tente novamente."
+        fi
+        warn "Docker Compose não encontrado — instalação nativa concluída sem containers."
+        warn "Para provisionar depois: cd $INSTALL_DIR && ./install.sh --docker"
+        return 0
+    fi
+    ensure_docker_files
+    info "Subindo Docker Compose (Bauer, Ollama, AgentOS e Agent UI)..."
+    # A fonte do Agent UI é externa ao contexto versionado. O no-cache é
+    # intencional somente quando o instalador provisiona/atualiza: um simples
+    # restart deve continuar reutilizando a imagem já construída.
+    if (cd "$INSTALL_DIR" && run_compose build --pull --no-cache agent-ui && run_compose up -d --build); then
+        ok "Stack Docker ativo: Bauer :8000, AgentOS :7777, Agent UI :3000."
+    elif [ "$DOCKER_MODE" = "required" ]; then
+        die "Docker Compose falhou ao subir o stack. Veja: cd $INSTALL_DIR && docker compose logs"
+    else
+        warn "Não foi possível subir o Docker Compose; a instalação nativa continua disponível."
+        warn "Tente novamente com: cd $INSTALL_DIR && ./install.sh --docker"
+    fi
+}
+
 # Instalação via pipx (`pipx install bauer-agent`) não passa por este script e
 # não tem clone: vive em ~/.local/share/pipx/venvs/bauer-agent. Detectar isso é
 # o que evita o pior desfecho do --update — mandar "execute sem --update para
@@ -109,9 +217,9 @@ if [ "$DO_UPDATE" = 1 ]; then
         elif "${PYTHON:-python3}" -m pipx --version >/dev/null 2>&1; then
             _pipx="${PYTHON:-python3} -m pipx"
         else
-            die "pipx não está no PATH. Atualize com: python3 -m pipx install --force 'git+$REPO@master'"
+            die "pipx não está no PATH. Atualize com: python3 -m pipx install --force 'git+$REPO@$INSTALL_REF'"
         fi
-        $_pipx install --force "git+$REPO@master"
+        $_pipx install --force "git+$REPO@$INSTALL_REF"
         ok "Bauer Agent atualizado via pipx!"
         exit 0
     fi
@@ -125,8 +233,8 @@ if [ "$DO_UPDATE" = 1 ]; then
         _cfg_backup="$(mktemp)"
         cp "$INSTALL_DIR/config.yaml" "$_cfg_backup"
     fi
-    git -C "$INSTALL_DIR" fetch --depth=1 origin master
-    git -C "$INSTALL_DIR" reset --hard origin/master
+    git -C "$INSTALL_DIR" fetch --depth=1 origin "$INSTALL_REF"
+    git -C "$INSTALL_DIR" reset --hard "origin/$INSTALL_REF"
     if [ -n "$_cfg_backup" ]; then
         cp "$_cfg_backup" "$INSTALL_DIR/config.yaml"
         rm -f "$_cfg_backup"
@@ -139,6 +247,7 @@ if [ "$DO_UPDATE" = 1 ]; then
         "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade -e "$INSTALL_DIR/"
     fi
     write_launcher
+    provision_docker_stack
     ok "Bauer Agent atualizado!"
     "$BAUER_BIN" --version 2>/dev/null || true
     exit 0
@@ -146,6 +255,11 @@ fi
 
 # ─── Fresh install ───────────────────────────────────────────────────────────
 if [ -d "$INSTALL_DIR" ]; then
+    if [ "$DOCKER_MODE" = "required" ] && [ "$DO_UPDATE" = 0 ]; then
+        info "$INSTALL_DIR já existe — provisionando apenas o stack Docker."
+        provision_docker_stack
+        exit 0
+    fi
     warn "$INSTALL_DIR já existe."
     warn "Use --update para atualizar ou --uninstall para remover antes de reinstalar."
     exit 1
@@ -161,8 +275,8 @@ echo "  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═�
 echo "  Agent — instalador"
 echo ""
 
-info "Clonando bauer-agent em $INSTALL_DIR ..."
-git clone --depth=1 "$REPO" "$INSTALL_DIR" 2>&1 | sed 's/^/  /'
+info "Clonando bauer-agent ($INSTALL_REF) em $INSTALL_DIR ..."
+git clone --depth=1 --branch "$INSTALL_REF" "$REPO" "$INSTALL_DIR" 2>&1 | sed 's/^/  /'
 
 # ─── venv (com auto-instalação do pacote do sistema se faltar ensurepip) ─────
 SUDO=""
@@ -244,6 +358,8 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     add_to_rc "$HOME/.profile"
     PATH_ADDED=1
 fi
+
+provision_docker_stack
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo ""

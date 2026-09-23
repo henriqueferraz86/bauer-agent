@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.coverage
+htmlcov
+workspace
+memory
+logs
+*.pyc
+.env
+specs
+.codex
+.claude

@@ -4,6 +4,14 @@ set -e
 if [ -n "$OLLAMA_HOST" ]; then
     # ── Modo Docker Compose: Ollama já roda como serviço separado ──────────────
     echo "[bauer] Modo Compose — usando Ollama externo: $OLLAMA_HOST"
+    # O init baixa o conjunto padrão; quando o operador fixa outro modelo no
+    # .env, garanta que ele também exista antes do preflight do serve.
+    if [ -n "${BAUER_MODEL:-}" ]; then
+        echo "[bauer] Verificando modelo $BAUER_MODEL..."
+        ollama pull "$BAUER_MODEL"
+    else
+        echo "[bauer] Usando o conjunto padrão baixado pelo ollama-init."
+    fi
     echo "[bauer] Iniciando servidor..."
     exec bauer serve --host 0.0.0.0 --port 8000
 else

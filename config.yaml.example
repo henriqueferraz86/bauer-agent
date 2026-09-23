@@ -1061,7 +1061,7 @@ continuous_autonomy:
   voice_enabled: false
   alert_level: important  # off | important | all
   allowlisted_actions: [retry_health_check, docker_recover, process_restart]
-  targets:
+  targets: []
     # HTTP simples: observa e recomenda, sem executar correção.
     # - id: minha-api
     #   name: Minha API
