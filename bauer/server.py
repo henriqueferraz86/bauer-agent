@@ -2150,6 +2150,37 @@ def create_app(
         logger=_log,
     )))
 
+    # --- Seleção automática após OAuth OpenAI -------------------------------
+    # O CLI constrói ChatGPTBackendClient diretamente. O Serve precisa fazer o
+    # mesmo quando o callback termina; caso contrário o estado continua no
+    # modelo local ou o switch usa um OpenAIClient genérico incompatível com o
+    # access token pessoal do ChatGPT.
+    def _on_openai_auth_connected() -> str | None:
+        if config_path is None:
+            return "OpenAI conectada, mas o Serve não possui config_path para selecionar o modelo."
+        from .auxiliary_client import _build_client_for_provider
+        from .config_loader import load_config
+
+        cfg = load_config(config_path)
+        new_client = _build_client_for_provider("openai", "gpt-5.6-luna", cfg)
+        if new_client is None:
+            return (
+                "OpenAI conectada, mas o cliente ChatGPT não pôde ser construído; "
+                "verifique a assinatura/conta."
+            )
+        _state["client"] = new_client
+        _state["provider"] = "openai"
+        _state["model"] = "gpt-5.6-luna"
+        requested_context = applied_context
+        try:
+            requested_context = int(cfg.model.requested_context)
+        except (AttributeError, TypeError, ValueError):
+            requested_context = applied_context
+        _state["applied_context"] = resolver_contexto_aplicado(
+            "openai", requested_context
+        )
+        return None
+
     # --- Desktop API (SPA das 8 telas) ------------------------------------------
     try:
         from .desktop_api import build_desktop_router
@@ -2173,6 +2204,7 @@ def create_app(
             get_config_path=(lambda: config_path) if config_path else None,
             resolve_project_workspace=_kanban_project_workspace,
             kernel=_kernel,
+            on_openai_auth_connected=_on_openai_auth_connected,
             start_loop=(lambda message, project_id, workspace_override: _start_loop_impl(
                 LoopStartRequest(message=message, project_id=project_id), workspace_override,
             )),

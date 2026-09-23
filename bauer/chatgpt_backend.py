@@ -70,6 +70,13 @@ CHATGPT_DEPRECATED_MODELS: frozenset[str] = frozenset({"gpt-5.4", "gpt-5.4-mini"
 # 2026-08-08 numa conta FREE — plano pago tende a aceitar mais (sol, spark).
 CHATGPT_FALLBACK_MODELS: tuple[str, ...] = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5")
 
+# O catálogo oficial define ``medium`` como default para GPT-5.6. No Serve,
+# Luna é o modelo de baixa latência; deixar o default implícito fazia uma
+# mensagem curta gastar raciocínio desnecessário e parecer travada. Outros
+# modelos preservam o comportamento do backend até que tenham uma política
+# explícita própria.
+CHATGPT_REASONING_EFFORTS: dict[str, str] = {"gpt-5.6-luna": "low"}
+
 _CACHE_TTL_SECONDS = 24 * 3600
 
 
@@ -304,6 +311,9 @@ class ChatGPTBackendClient(OpenAIClient):
             "stream": True,
             "store": False,
         }
+        reasoning_effort = CHATGPT_REASONING_EFFORTS.get(str(body["model"]).lower())
+        if reasoning_effort:
+            body["reasoning"] = {"effort": reasoning_effort}
         if instructions:
             body["instructions"] = instructions
 

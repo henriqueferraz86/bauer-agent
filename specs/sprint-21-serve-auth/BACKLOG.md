@@ -79,3 +79,18 @@ Status: concluído
 - não apresentar o OAuth ChatGPT experimental como autenticação oficial da API;
 - não entregar token, verifier ou ID token OpenAI à SPA;
 - não avançar ao próximo bloco se os testes do bloco atual falharem.
+
+## 8. Diagnóstico de latência e seleção automática OpenAI
+
+Status: concluído
+
+- [x] Confirmar modelo ativo, fonte OAuth, tempos de execução e ausência de
+      fallback/retry nos runs do Windows.
+- [x] Comparar comportamento com a documentação oficial de `gpt-5.6-luna` e
+      `reasoning.effort`.
+- [x] Enviar esforço baixo para Luna no backend ChatGPT.
+- [x] Selecionar `openai/gpt-5.6-luna` automaticamente ao concluir OAuth.
+- [x] Exibir aviso sanitizado quando Luna não estiver disponível na conta.
+- [x] Cobrir payload, seleção e fallback com testes.
+- [x] Rebuildar o Docker e medir novamente o tempo de resposta: HTTP 200,
+      primeiro byte em ~2,49 s e conclusão em ~2,49 s.

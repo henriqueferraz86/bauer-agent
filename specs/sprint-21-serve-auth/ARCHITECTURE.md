@@ -134,6 +134,18 @@ No Docker, `BAUER_HOME=/app/memory/bauer-home` coloca `auth.json` e `.auth_key`
 no volume `bauer_memory`; a porta 1455 é publicada para o callback no browser
 da mesma máquina. Execução remota continua usando API key ou o CLI headless.
 
+### Seleção automática e latência
+
+Depois de `complete_oauth()` gravar o token, o Desktop API solicita a troca de
+modelo no estado vivo do Serve para `provider=openai` e
+`model=gpt-5.6-luna`. A seleção é best-effort: se a conta não aceitar o Luna,
+o token continua salvo e o frontend informa a falha sem fazer logout.
+
+`ChatGPTBackendClient` envia `reasoning: {effort: "low"}` para o Luna. O campo
+é deliberadamente aplicado no backend, nunca pelo JavaScript, e só afeta o
+cliente ChatGPT OAuth; providers API-key e modelos diferentes não são
+alterados.
+
 ## Decisões técnicas
 
 - sessão opaca em vez de JWT: revogação imediata e menos segredo no cliente;

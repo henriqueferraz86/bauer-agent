@@ -7,6 +7,7 @@ export interface OpenAIAuthStatus {
   has_refresh?: boolean;
   expires_at?: number | null;
   error?: string;
+  warning?: string;
 }
 
 export interface OpenAIAuthStart {

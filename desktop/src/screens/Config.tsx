@@ -98,7 +98,9 @@ export default function Config() {
         () => window.open("about:blank", "bauer-openai-auth", "popup,width=560,height=760"),
       );
       if (!state.connected) throw new Error(state.error || "Login OpenAI não concluído.");
-      setOpenAIAuthMsg("OpenAI conectada. Agora escolha um modelo do provider openai.");
+      setOpenAIAuthMsg(
+        state.warning || "OpenAI conectada. Modelo selecionado: openai / gpt-5.6-luna.",
+      );
     } catch (error) {
       setOpenAIAuthMsg(String(error));
       await loadOpenAIAuth().catch(() => undefined);

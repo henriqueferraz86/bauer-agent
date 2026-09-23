@@ -39,6 +39,10 @@ SPA deixa de armazená-la depois da migração para sessão.
   **Settings**, reutilizando o fluxo OAuth já existente no Bauer;
 - callback local com PKCE e `state`, sem entregar tokens à SPA;
 - persistência criptografada da credencial OpenAI no volume do Docker.
+- após login OpenAI concluído, selecionar automaticamente o provider `openai` e
+  o modelo `gpt-5.6-luna`, sem exigir uma segunda ação no menu de modelos;
+- usar `reasoning.effort=low` no backend ChatGPT para o Luna, reduzindo a
+  latência padrão sem retirar a possibilidade de tarefas com raciocínio maior.
 
 ## Fora de escopo
 
@@ -97,6 +101,12 @@ SPA deixa de armazená-la depois da migração para sessão.
     no backend e persiste a credencial criptografada.
 15. `GET /api/auth/openai/status` informa apenas estado, tipo, expiração e
     disponibilidade; `POST /api/auth/openai/logout` remove a credencial.
+16. A conclusão do OAuth OpenAI aplica a seleção runtime `openai/gpt-5.6-luna`;
+    se a conta não aceitar o modelo, a autenticação permanece válida e o
+    endpoint retorna um aviso sanitizado para o frontend.
+17. Chamadas ChatGPT Responses para `gpt-5.6-luna` enviam explicitamente
+    `reasoning.effort=low`; chamadas de outros modelos preservam o esforço
+    configurado/default existente.
 
 ## Requisitos não funcionais
 
@@ -157,6 +167,10 @@ SPA deixa de armazená-la depois da migração para sessão.
 13. A credencial sobrevive a `docker compose up --force-recreate`.
 14. O fluxo é rotulado como experimental e a UI mantém API key como caminho
     oficial para a OpenAI API.
+15. Após autenticar OpenAI, Settings mostra provider/modelo selecionados e uma
+    mensagem de aviso caso o Luna não esteja disponível para a conta.
+16. Um teste de contrato confirma o corpo ChatGPT enviado com Luna e esforço
+    baixo, sem expor tokens.
 
 ## Riscos
 

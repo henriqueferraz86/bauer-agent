@@ -47,6 +47,7 @@ class OpenAIBrowserAuthBroker:
         callback_port: int = 1455,
         ttl_seconds: int = 300,
         clock: Callable[[], float] = time.time,
+        on_connected: Callable[[], str | None] | None = None,
     ) -> None:
         self.manager = manager or AuthManager()
         self.callback_host = callback_host or os.environ.get(
@@ -55,10 +56,12 @@ class OpenAIBrowserAuthBroker:
         self.callback_port = int(callback_port)
         self.ttl_seconds = max(30, int(ttl_seconds))
         self._clock = clock
+        self._on_connected = on_connected
         self._lock = threading.RLock()
         self._pending: OAuthAuthorization | None = None
         self._phase = "disconnected"
         self._error = ""
+        self._warning = ""
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -84,6 +87,7 @@ class OpenAIBrowserAuthBroker:
             self._pending = authorization
             self._phase = "pending"
             self._error = ""
+            self._warning = ""
             return {
                 "authorization_url": authorization.authorization_url,
                 "expires_at": int(authorization.created_at + self.ttl_seconds),
@@ -110,6 +114,7 @@ class OpenAIBrowserAuthBroker:
                 "has_refresh": bool(token and token.refresh_token),
                 "expires_at": token.expires_at if token else None,
                 "error": self._error,
+                "warning": self._warning,
             }
 
     def logout(self) -> bool:
@@ -117,6 +122,7 @@ class OpenAIBrowserAuthBroker:
             self._pending = None
             self._phase = "disconnected"
             self._error = ""
+            self._warning = ""
             return self.manager.logout("openai")
 
     def close(self) -> None:
@@ -171,8 +177,22 @@ class OpenAIBrowserAuthBroker:
                 self._error = "Não foi possível concluir o login. Tente novamente."
             return 502, "Falha no login", self._error
 
+        warning = ""
+        if self._on_connected is not None:
+            try:
+                warning = self._on_connected() or ""
+            except Exception as exc:  # noqa: BLE001 - login permanece válido
+                logger.warning(
+                    "OpenAI connected but runtime model selection failed (%s)",
+                    type(exc).__name__,
+                )
+                warning = (
+                    "OpenAI conectada, mas não foi possível selecionar "
+                    "automaticamente o modelo Luna."
+                )
         with self._lock:
             self._phase = "connected"
+            self._warning = warning
         return 200, "OpenAI conectada", "Você pode fechar esta janela e voltar ao Bauer."
 
     def _expire_pending(self) -> None:

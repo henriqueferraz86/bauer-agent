@@ -72,6 +72,28 @@ def test_callback_validates_state_completes_and_never_exposes_tokens(tmp_path, m
     assert "secret" not in repr(status)
 
 
+def test_callback_runs_runtime_selection_without_leaking_warning(tmp_path, monkeypatch):
+    manager = AuthManager(base_dir=tmp_path / "auth")
+    selected = []
+    broker = OpenAIBrowserAuthBroker(
+        manager=manager,
+        callback_port=1455,
+        on_connected=lambda: selected.append("openai/gpt-5.6-luna") or None,
+    )
+    broker._ensure_server = lambda: None
+    started = broker.start()
+    state = parse_qs(urlparse(started["authorization_url"]).query)["state"][0]
+
+    def complete(authorization, **kwargs):
+        manager.store.save(AuthToken(provider="openai", access_token="secret"))
+        return manager.store.load("openai")
+
+    monkeypatch.setattr(manager, "complete_oauth", complete)
+    assert broker.handle_callback(f"/auth/callback?code=code&state={state}")[0] == 200
+    assert selected == ["openai/gpt-5.6-luna"]
+    assert broker.status()["warning"] == ""
+
+
 def test_callback_rejects_wrong_state_without_exchanging_code(tmp_path, monkeypatch):
     broker, manager = _broker(tmp_path)
     broker.start()

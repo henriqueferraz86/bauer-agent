@@ -185,15 +185,17 @@ def _provider_section(cfg, provider: str):
     return getattr(cfg, name, None)
 
 
-def _try_build_from_auth_store(provider: str, model: str) -> TextLLMClient | None:
+def _try_build_from_auth_store(provider: str, model: str, cfg=None) -> TextLLMClient | None:
     """Best-effort: reusa um token salvo via `bauer auth login -p <provider>`.
 
     Mirrors the auth-first resolution `_build_client` (bauer/commands/_runtime.py)
-    does for the main model, mas sem I/O de console (uso best-effort/silencioso)
-    e sem os fluxos completos de ChatGPT-backend/ Codex JWT — só a forma comum
-    "token vira api_key/Bearer" que cobre copilot e github. Retorna None em
-    qualquer falha (sem token, refresh falhou, etc.) — o chamador cai para a
-    tabela estática ou levanta o erro "provider not supported" de sempre.
+    does for the main model, mas sem I/O de console (uso best-effort/silencioso).
+    O OAuth pessoal da OpenAI é uma exceção importante: sem ``api_key`` ele
+    precisa do ``ChatGPTBackendClient``/Responses API, não de um
+    ``OpenAIClient`` contra ``api.openai.com/v1``. Usar o cliente genérico aqui
+    fazia o Serve falhar e cair em fallback, enquanto o CLI funcionava.
+    Retorna None em qualquer falha (sem token, refresh falhou, etc.) — o
+    chamador cai para a tabela estática ou levanta o erro de provider.
     """
     try:
         from .auth import AuthManager
@@ -215,6 +217,28 @@ def _try_build_from_auth_store(provider: str, model: str) -> TextLLMClient | Non
         api_key = token.api_key or token.access_token
         if not api_key:
             return None
+
+        # Login OpenAI via browser (ChatGPT OAuth): o access token pessoal é
+        # aceito pelo backend Codex/Responses, não pela API pública de
+        # Chat Completions. Mantenha o mesmo caminho usado pelo CLI.
+        if provider == "openai" and not token.api_key:
+            if token.is_expired and token.refresh_token:
+                refreshed = auth.refresh("openai")
+                if refreshed is not None:
+                    token = refreshed
+            from .chatgpt_backend import ChatGPTBackendClient, DEFAULT_CHATGPT_BASE
+
+            section = getattr(cfg, "openai", None) if cfg is not None else None
+            base_url = (
+                getattr(section, "chatgpt_base_url", "") or DEFAULT_CHATGPT_BASE
+            )
+            return ChatGPTBackendClient(
+                access_token=token.access_token,
+                account_id=token.extra.get("chatgpt_account_id") or "",
+                base_url=base_url,
+                timeout_seconds=getattr(section, "timeout_seconds", 60),
+                model=model,
+            )
 
         api_base = (token.api_base or "https://api.openai.com").rstrip("/")
         _NO_V1 = {"copilot", "github", "gemini"}
@@ -269,7 +293,7 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
     # Exclui anthropic/ollama: têm builder nativo dedicado logo abaixo — um
     # token OAuth guardado sob esses nomes não deve virar um OpenAIClient.
     if p not in ("anthropic", "ollama"):
-        _auth_client = _try_build_from_auth_store(p, model)
+        _auth_client = _try_build_from_auth_store(p, model, cfg)
         if _auth_client is not None:
             return _auth_client
 

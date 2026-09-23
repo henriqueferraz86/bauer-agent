@@ -282,6 +282,7 @@ def build_desktop_router(
     start_loop: Optional[Callable[[str, Optional[str], Optional[Path]], Dict[str, Any]]] = None,
     kernel: Any | None = None,
     openai_auth_broker: Any | None = None,
+    on_openai_auth_connected: Optional[Callable[[], str | None]] = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
 
@@ -303,7 +304,9 @@ def build_desktop_router(
     if openai_auth_broker is None:
         from .openai_browser_auth import OpenAIBrowserAuthBroker
 
-        openai_auth_broker = OpenAIBrowserAuthBroker()
+        openai_auth_broker = OpenAIBrowserAuthBroker(
+            on_connected=on_openai_auth_connected,
+        )
     _openai_auth = openai_auth_broker
 
     try:

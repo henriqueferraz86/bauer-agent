@@ -128,6 +128,27 @@ def test_chat_stream_yields_deltas_and_usage():
     assert c.last_usage == {"input_tokens": 3, "output_tokens": 2}
 
 
+def test_luna_sets_low_reasoning_effort():
+    c = ChatGPTBackendClient(access_token="t", model="gpt-5.6-luna")
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp([
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+    ]))) as stream:
+        list(c.chat_stream("gpt-5.6-luna", [{"role": "user", "content": "oi"}]))
+
+    body = stream.call_args.kwargs["json"]
+    assert body["reasoning"] == {"effort": "low"}
+
+
+def test_other_models_do_not_receive_luna_reasoning_override():
+    c = ChatGPTBackendClient(access_token="t", model="gpt-5.6-terra")
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp([
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+    ]))) as stream:
+        list(c.chat_stream("gpt-5.6-terra", [{"role": "user", "content": "oi"}]))
+
+    assert "reasoning" not in stream.call_args.kwargs["json"]
+
+
 def test_chat_stream_ignores_unknown_events():
     lines = [
         'data: {"type":"response.output_item.added"}',
