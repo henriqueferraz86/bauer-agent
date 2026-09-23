@@ -21,6 +21,12 @@ def _compose() -> dict:
     return yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
 
 
+def _volume_target(volume: str | dict) -> str:
+    if isinstance(volume, str):
+        return volume.split(":", 1)[1]
+    return volume["target"]
+
+
 def test_compose_exposes_the_four_bauer_surfaces_without_exposing_ollama():
     services = _compose()["services"]
 
@@ -36,8 +42,24 @@ def test_agentos_shares_runtime_and_waits_for_ollama_init():
 
     assert agentos["command"] == ["python", "-m", "bauer.agentos_app"]
     assert agentos["depends_on"]["ollama-init"]["condition"] == "service_completed_successfully"
-    volume_targets = {item.split(":", 1)[1] for item in agentos["volumes"]}
+    volume_targets = {_volume_target(item) for item in agentos["volumes"]}
     assert {"/app/workspace", "/app/memory", "/app/logs"} <= volume_targets
+
+
+def test_config_binds_do_not_create_missing_host_paths_as_directories():
+    services = _compose()["services"]
+
+    for service_name in ("bauer", "agentos"):
+        bind_mounts = {
+            volume["target"]: volume
+            for volume in services[service_name]["volumes"]
+            if isinstance(volume, dict)
+        }
+        for target in ("/app/config.yaml", "/app/models.yaml"):
+            mount = bind_mounts[target]
+            assert mount["type"] == "bind"
+            assert mount["read_only"] is True
+            assert mount["bind"]["create_host_path"] is False
 
 
 def test_agent_ui_is_built_from_official_repo_and_has_update_controls():
@@ -48,12 +70,24 @@ def test_agent_ui_is_built_from_official_repo_and_has_update_controls():
     assert "ARG AGENT_UI_REF=main" in dockerfile
     assert "ARG AGENT_UI_ENDPOINT=http://localhost:7777" in dockerfile
     assert "pnpm-workspace.yaml" in dockerfile
+    assert "COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml" in dockerfile
     assert "onlyBuiltDependencies" in dockerfile
     assert "allowBuilds" in dockerfile
     assert (ROOT / "agent-ui" / "patch-endpoint.mjs").exists()
     assert "pnpm install --frozen-lockfile" in dockerfile
     assert "AGENT_UI_REF: ${AGENT_UI_REF:-main}" in compose_text
     assert "AGENT_UI_ENDPOINT: ${AGENT_UI_ENDPOINT:-http://localhost:7777}" in compose_text
+
+
+def test_runbook_documents_api_key_commands_for_linux_and_windows():
+    runbook = (ROOT / "docs" / "runbooks" / "docker-agentos.md").read_text(encoding="utf-8")
+
+    assert "#### Linux" in runbook
+    assert "grep '^BAUER_SERVE_API_KEY=' .env" in runbook
+    assert "#### Windows (PowerShell)" in runbook
+    assert "docker inspect bauer-agent" in runbook
+    assert "BAUER_SERVE_API_KEY não encontrada" in runbook
+    assert "X-API-Key" in runbook
 
 
 @pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt", reason="requer bash POSIX")

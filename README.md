@@ -1390,6 +1390,10 @@ Agent UI no Windows, instale o Docker Desktop, clone o repositório e execute
 `docker compose` a partir da pasta do clone. O runbook contém os comandos para
 criar `config.yaml`, `models.yaml`, `.env` e a chave REST necessária.
 
+Para preencher o campo **API KEY** da Agent UI, consulte os comandos para
+localizar, exibir, gerar e validar `BAUER_SERVE_API_KEY` no
+[runbook Docker (Linux e Windows)](docs/runbooks/docker-agentos.md#chave-da-api-exibida-na-agent-ui).
+
 Reiniciar um container **não baixa a última versão**: ele reutiliza a imagem
 existente. A atualização do Agent UI ocorre no build do stack. O instalador usa
 `AGENT_UI_REF=main` por padrão para novas instalações; fixe uma tag, branch ou commit

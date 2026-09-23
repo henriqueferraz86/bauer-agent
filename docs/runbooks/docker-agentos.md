@@ -120,6 +120,98 @@ docker compose up -d agentos agent-ui
 \`BAUER_SERVE_API_KEY\` é obrigatório quando Bauer faz bind em \`0.0.0.0\`.
 Não publique a porta 11434 do Ollama.
 
+### Chave da API exibida na Agent UI
+
+O campo **API KEY** da Agent UI espera o valor de `BAUER_SERVE_API_KEY`. Essa
+é a chave do servidor Bauer, não uma chave da OpenAI ou de outro provider.
+Cole somente o texto depois de `BAUER_SERVE_API_KEY=`. A interface guarda esse
+valor no navegador; trate-o como segredo e não o publique em screenshots,
+issues ou commits.
+
+Para descobrir qual pasta criou os contêineres, execute:
+
+```bash
+docker inspect bauer-agent --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
+```
+
+#### Linux
+
+Na instalação feita por `install.sh`, a pasta padrão é
+`~/.local/share/bauer-agent`. Em um clone manual, troque o caminho abaixo pela
+pasta que contém `docker-compose.yml` e `.env`.
+
+Exibir a chave existente:
+
+```bash
+cd ~/.local/share/bauer-agent
+grep '^BAUER_SERVE_API_KEY=' .env | tail -n 1 | cut -d= -f2-
+```
+
+Se a chave não existir, ou para substituí-la por uma nova:
+
+```bash
+cd ~/.local/share/bauer-agent
+key="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+touch .env
+sed -i '/^BAUER_SERVE_API_KEY=/d' .env
+printf '\nBAUER_SERVE_API_KEY=%s\n' "$key" >> .env
+chmod 600 .env
+docker compose up -d --force-recreate bauer
+printf '%s\n' "$key"
+```
+
+Validar a chave contra o servidor:
+
+```bash
+key="$(grep '^BAUER_SERVE_API_KEY=' .env | tail -n 1 | cut -d= -f2-)"
+curl -fsS -H "X-API-Key: $key" http://localhost:8000/status
+```
+
+#### Windows (PowerShell)
+
+Use o diretório informado pelo `docker inspect`; o exemplo abaixo também
+funciona quando o Compose está em `%LOCALAPPDATA%\BauerAgent`:
+
+```powershell
+$root = docker inspect bauer-agent --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
+if (-not $root) { $root = "$env:LOCALAPPDATA\BauerAgent" }
+Set-Location $root
+```
+
+Exibir a chave existente:
+
+```powershell
+$line = Get-Content .env | Where-Object { $_ -match '^BAUER_SERVE_API_KEY=.+' } | Select-Object -Last 1
+if (-not $line) { throw 'BAUER_SERVE_API_KEY não encontrada no .env' }
+$key = $line -replace '^BAUER_SERVE_API_KEY=', ''
+$key
+```
+
+Se a chave não existir, ou para substituí-la por uma nova:
+
+```powershell
+$bytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+$key = ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+$envFile = Join-Path (Get-Location) '.env'
+$lines = @(Get-Content $envFile -ErrorAction SilentlyContinue |
+    Where-Object { $_ -notmatch '^BAUER_SERVE_API_KEY=' })
+[IO.File]::WriteAllLines($envFile, $lines, [Text.UTF8Encoding]::new($false))
+Add-Content -LiteralPath $envFile -Value "BAUER_SERVE_API_KEY=$key"
+docker compose up -d --force-recreate bauer
+$key
+```
+
+Validar a chave contra o servidor:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/status -Headers @{ 'X-API-Key' = $key }
+```
+
+Depois, cole o valor impresso em **API KEY** na Agent UI. Ao trocar a chave,
+substitua também o valor antigo guardado no navegador.
+
 ## Operação
 
 \`\`\`bash
@@ -183,6 +275,14 @@ docker logs bauer-ollama-init
 
 Se AgentOS ficar unhealthy, valide \`agno[os]\` e \`config.yaml\`; em configurações
 antigas, \`continuous_autonomy.targets\` deve ser \`[]\`, não \`null\`.
+
+No Windows, se os logs mostrarem \`IsADirectoryError\` para
+\`/app/config.yaml\` ou \`/app/models.yaml\`, uma execução anterior criou uma
+pasta no lugar do arquivo ausente. Pare o stack, renomeie ou remova somente
+essas pastas vazias, recrie os arquivos conforme a seção
+[Windows com Docker Desktop](#windows-com-docker-desktop) e execute
+\`docker compose up -d --force-recreate\`. O Compose atual bloqueia novas
+ocorrências com \`create_host_path: false\`.
 
 Se Bauer reiniciar, confirme \`BAUER_SERVE_API_KEY\` e o modelo configurado. Para
 um modelo Ollama fora do conjunto padrão, defina no \`.env\`:

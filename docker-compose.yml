@@ -57,8 +57,20 @@ services:
       - path: .env
         required: false
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./models.yaml:/app/models.yaml:ro
+      # A sintaxe longa impede que Docker Desktop crie um diretório quando o
+      # arquivo de origem estiver ausente (comum em instalações no Windows).
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./models.yaml
+        target: /app/models.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - bauer_workspace:/app/workspace
       - bauer_memory:/app/memory
       - bauer_logs:/app/logs
@@ -83,8 +95,18 @@ services:
       - path: .env
         required: false
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./models.yaml:/app/models.yaml:ro
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./models.yaml
+        target: /app/models.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - bauer_workspace:/app/workspace
       - bauer_memory:/app/memory
       - bauer_logs:/app/logs
