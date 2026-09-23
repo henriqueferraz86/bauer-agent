@@ -161,6 +161,7 @@ def build_agentos_app(
             return {
                 "total": len(models),
                 "free_count": sum(1 for item in models if item.get("is_free")),
+                "selected": dict(selected_model) if selected_model else None,
                 "models": models[offset : offset + limit],
             }
 
@@ -184,6 +185,8 @@ def build_agentos_app(
                         member.model = model
                 selected_model_file.parent.mkdir(parents=True, exist_ok=True)
                 selected_model_file.write_text(json.dumps(selected, ensure_ascii=False), encoding="utf-8")
+                selected_model.clear()
+                selected_model.update(selected)
             except Exception as exc:  # noqa: BLE001 - stable API boundary
                 from fastapi import HTTPException
 

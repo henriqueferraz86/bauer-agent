@@ -26,6 +26,9 @@ import { toast } from 'sonner'
 import { useStore } from '@/store'
 
 type CatalogModel = { id: string; provider: string; is_free?: boolean }
+type CatalogResponse = { models?: CatalogModel[]; selected?: { provider: string; model: string } | null }
+
+const modelKey = (item: CatalogModel) => \`\${item.provider}/\${item.id}\`
 
 export default function ModelCatalogSelector() {
   const endpoint = useStore((state) => state.selectedEndpoint)
@@ -43,20 +46,26 @@ export default function ModelCatalogSelector() {
       { headers: authToken ? { Authorization: \`Bearer \${authToken}\` } : undefined }
     )
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => { if (active) setModels(data.models || []) })
+      .then((data: CatalogResponse) => {
+        if (!active) return
+        setModels(data.models || [])
+        if (data.selected?.provider && data.selected.model) {
+          setValue(modelKey({ id: data.selected.model, provider: data.selected.provider }))
+        }
+      })
       .catch(() => { if (active) setModels([]) })
     return () => { active = false }
   }, [endpoint, authToken])
 
   useEffect(() => {
-    if (selectedModel && models.some((item) => item.id === selectedModel || \`\${item.provider}/\${item.id}\` === selectedModel)) {
+    if (selectedModel && models.some((item) => modelKey(item) === selectedModel)) {
       setValue(selectedModel)
     }
   }, [models, selectedModel])
 
   const selectModel = async (next: string) => {
     setValue(next)
-    const item = models.find((candidate) => candidate.id === next || \`\${candidate.provider}/\${candidate.id}\` === next)
+    const item = models.find((candidate) => modelKey(candidate) === next)
     if (!item) return
     setLoading(true)
     try {
@@ -66,7 +75,7 @@ export default function ModelCatalogSelector() {
         body: JSON.stringify({ provider: item.provider, model: item.id })
       })
       if (!response.ok) throw new Error(await response.text())
-      setSelectedModel(item.id)
+      setSelectedModel(modelKey(item))
       toast.success(\`Modelo Agno: \${item.id}\`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Não foi possível selecionar o modelo')
@@ -77,7 +86,7 @@ export default function ModelCatalogSelector() {
     <div className="text-xs font-medium uppercase text-primary">Catálogo Bauer</div>
     <select className="h-9 w-full rounded-xl border border-primary/15 bg-accent px-3 text-xs text-muted" value={value} disabled={loading || models.length === 0} onChange={(event) => selectModel(event.target.value)}>
       <option value="">{models.length ? 'Selecionar modelo' : 'Catálogo indisponível'}</option>
-      {models.map((item) => <option key={\`\${item.provider}/\${item.id}\`} value={item.id}>{item.provider} · {item.id}{item.is_free ? ' · grátis' : ''}</option>)}
+      {models.map((item) => <option key={modelKey(item)} value={modelKey(item)}>{item.provider} · {item.id}{item.is_free ? ' · grátis' : ''}</option>)}
     </select>
   </div>
 }
