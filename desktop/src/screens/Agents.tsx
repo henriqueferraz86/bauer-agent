@@ -23,6 +23,19 @@ interface AgentActivity {
   last_tool?: string | null;
 }
 
+interface Capability {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  actions: string[];
+  risk: string;
+  source: string;
+  state: string;
+  installed: boolean;
+  package?: string | null;
+}
+
 function lastUsed(value?: string | null): string {
   if (!value) return "Nunca utilizado";
   const date = new Date(value);
@@ -32,10 +45,13 @@ function lastUsed(value?: string | null): string {
 export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activity, setActivity] = useState<Record<string, AgentActivity>>({});
+  const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     api.get<{ agents: Agent[] }>("/api/agents").then((r) => setAgents(r.agents)).catch(() => {});
+    api.get<{ capabilities: Capability[] }>("/api/agno/catalog")
+      .then((r) => setCapabilities(r.capabilities || [])).catch(() => {});
     const loadActivity = () => api.get<{ agents: Record<string, AgentActivity> }>("/api/obs/agent-activity")
       .then((r) => setActivity(r.agents || {})).catch(() => {});
     loadActivity();
@@ -78,6 +94,41 @@ export default function Agents() {
             </div>
           </div>;
         })}
+        <div style={{ marginTop: 24 }}>
+          <div className="section-label">Catálogo de capabilities Agno ({capabilities.length})</div>
+          <div className="muted" style={{ marginBottom: 10 }}>
+            A disponibilidade não concede acesso: cada agente recebe somente as ferramentas declaradas em sua configuração.
+          </div>
+          {capabilities.map((capability) => {
+            const simpleId = capability.id.replace(/^bauer\./, "");
+            const enabledAgents = agents
+              .filter((agent) => (agent.tools || agent.capabilities || []).some((tool) => tool === capability.id || tool === simpleId))
+              .map((agent) => agent.name);
+            const stateLabel = capability.state === "adapter_required"
+              ? "adapter necessário"
+              : capability.state === "dependency_missing"
+                ? "dependência ausente"
+                : capability.state === "needs_configuration"
+                  ? "precisa configurar"
+                  : enabledAgents.length ? "em uso" : "disponível · desativada";
+            return <div className="list-item" key={capability.id} style={{ cursor: "default", alignItems: "flex-start" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="row" style={{ marginBottom: 4 }}>
+                  <span className="mono" style={{ color: "#e6edf3" }}>{capability.name}</span>
+                  <span className="tag">{capability.category}</span>
+                  <span className={"tag" + (enabledAgents.length ? " green" : "")}>{stateLabel}</span>
+                  <span className="tag">risco: {capability.risk}</span>
+                </div>
+                <div className="muted">{capability.description}</div>
+                <div className="muted" style={{ marginTop: 5, fontSize: 11 }}>
+                  {capability.id} · ações: {capability.actions.join(", ") || "a classificar"}
+                  {capability.state === "dependency_missing" && capability.package && ` · dependência: ${capability.package}`}
+                  {enabledAgents.length > 0 && ` · agentes: ${enabledAgents.join(", ")}`}
+                </div>
+              </div>
+            </div>;
+          })}
+        </div>
       </div>
     </div>
   );

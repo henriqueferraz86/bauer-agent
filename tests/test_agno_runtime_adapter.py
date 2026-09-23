@@ -225,6 +225,29 @@ agents:
     assert "finding" in research_result["output"]
 
 
+def test_unknown_agno_tool_fails_instead_of_being_silently_dropped():
+    from bauer.core.runtime.adapters.base import RuntimeAdapterError
+
+    adapter = AgnoRuntimeAdapter()
+
+    with pytest.raises(RuntimeAdapterError, match="not registered in the Bauer capability catalog"):
+        adapter._map_tools(["unknown_toolkit.operation"])
+
+
+def test_cataloged_but_unimplemented_agno_family_fails_clearly():
+    from bauer.core.runtime.adapters.base import RuntimeAdapterError
+    from bauer.core.runtime.agno_catalog import AgnoCapabilityCatalog
+
+    adapter = AgnoRuntimeAdapter()
+    families = AgnoCapabilityCatalog().list()
+    family = next((item for item in families if item["id"].startswith("agno.family.")), None)
+    if family is None:
+        pytest.skip("Agno SDK extra is not installed")
+
+    with pytest.raises(RuntimeAdapterError, match="cataloged but has no Bauer adapter yet"):
+        adapter._map_tools([family["id"]])
+
+
 def test_agno_bauer_tool_fallback_respects_tool_policy(tmp_path):
     workspace = tmp_path / "workspace"
     policy_file = workspace / ".bauer" / "tool_policy.yaml"

@@ -1454,6 +1454,24 @@ def build_desktop_router(
             seen.setdefault(key, public_agent)
         return {"agents": sorted(seen.values(), key=lambda item: str(item.get("name", "")))}
 
+    @router.get("/agno/catalog")
+    def agno_capability_catalog(agent_id: Optional[str] = Query(None)):
+        """Lista capabilities registradas e famílias do SDK sem importar toolkits."""
+        from .core.runtime.agno_catalog import AgnoCapabilityCatalog
+
+        agent_tools: list[str] = []
+        if agent_id:
+            from .core.runtime.agent_registry import RuntimeAgentRegistry
+
+            spec = RuntimeAgentRegistry().get(agent_id)
+            if spec is None:
+                raise HTTPException(status_code=404, detail=f"Agente '{agent_id}' não encontrado.")
+            agent_tools = list(spec.tools)
+        return {
+            "agent_id": agent_id,
+            "capabilities": AgnoCapabilityCatalog().list(agent_tools=agent_tools),
+        }
+
     @router.get("/skills")
     def skills_dashboard():
         from .core.skills import SkillRegistry
