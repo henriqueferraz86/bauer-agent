@@ -126,6 +126,22 @@ memória, modelos, agentes e estado são restaurados e verificados depois da
 atualização. Se alguma etapa falhar, o código e o estado anterior são
 repostos automaticamente.
 
+> **Windows — `Acesso negado` em `pydantic_core` durante `bauer update`:**
+> feche `bauer serve`, `bauer agent`, terminais de debug e processos Python que
+> estejam usando a instalação. Para encerrar somente processos cujo comando
+> aponta para o Bauer, execute no PowerShell:
+>
+> ```powershell
+> Get-CimInstance Win32_Process |
+>   Where-Object { $_.CommandLine -and $_.CommandLine -match 'BauerAgent|bauer' } |
+>   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+> bauer update
+> ```
+>
+> O arquivo `.pyd` é uma extensão nativa e não pode ser substituído enquanto
+> estiver carregado. Se ainda houver bloqueio, encerre manualmente o processo
+> que o mantém aberto e repita o comando; não é necessário apagar `.venv`.
+
 No chat web, o botão do microfone envia a fala para o mesmo STT do `bauer
 agent` e reproduz a resposta por TTS quando o provider de voz está disponível.
 O idioma padrão da transcrição é português; use `STT_LANGUAGE` vazio para
@@ -1393,6 +1409,8 @@ uv run pytest tests/ -q --tb=short              # roda a suite
 
 > **Windows — conflito com `bauer.exe` em uso:** se `uv sync` falhar por permissão no executável,
 > pare o processo antes: `taskkill /f /im bauer.exe` (cmd) ou `Stop-Process -Name bauer -Force` (PowerShell).
+> Para uma extensão `.pyd` bloqueada, siga o procedimento de encerramento
+> seletivo documentado acima.
 > Alternativa: use `uv run bauer` em vez de instalar o executável globalmente.
 
 ### Comandos úteis

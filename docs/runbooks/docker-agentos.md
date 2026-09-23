@@ -65,6 +65,24 @@ docker compose up -d --build
 docker compose ps
 \`\`\`
 
+Se a instalação nativa também estiver presente, `bauer update` é independente
+do Compose. No Windows, feche `bauer serve`, `bauer agent`, terminais de debug
+e processos que tenham carregado o Bauer antes de atualizar. Um `Acesso negado`
+em `pydantic_core\\_pydantic_core.*.pyd` significa que o Windows bloqueou a
+extensão nativa enquanto ela estava em uso. Encerre somente processos ligados
+à instalação e tente novamente:
+
+\`\`\`powershell
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -and $_.CommandLine -match 'BauerAgent|bauer' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+bauer update
+\`\`\`
+
+O comando `bauer update` restaura o snapshot se uma etapa falhar; não apague a
+`.venv` como primeira tentativa. O procedimento acima é para a instalação
+nativa; para este stack Docker, use a seção [Atualização](#atualização).
+
 ## Configuração de acesso
 
 Na própria máquina:
