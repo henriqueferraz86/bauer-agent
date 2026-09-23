@@ -42,6 +42,24 @@ uv run ruff check bauer/ --select E9,F63,F7,F82
 uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303 || true
 ```
 
+### 1.1 Stack Docker (quando a release inclui AgentOS)
+
+Em um host com Docker Compose v2 disponível, valide também as três superfícies
+publicadas:
+
+```sh
+docker compose config
+docker compose up -d --build
+docker compose ps
+curl -fsS http://localhost:7777/health
+curl -fsS http://localhost:8000/health
+curl -I http://localhost:3000
+```
+
+O smoke test não deve publicar a porta do Ollama. Não use `docker compose
+down -v` durante a validação, pois ele apaga os volumes de modelos, memória,
+workspace e logs.
+
 ### 2. Dependências
 
 ```sh

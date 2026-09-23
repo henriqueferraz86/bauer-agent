@@ -7,6 +7,9 @@
     Instalação rápida (PowerShell como usuário normal):
         irm https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.ps1 | iex
 
+    Este script instala o Bauer nativo. O stack Docker com AgentOS e Agent UI
+    é executado pelo docker-compose; consulte docs/runbooks/docker-agentos.md.
+
     Ou executar localmente:
         Set-ExecutionPolicy -Scope Process Bypass
         .\install.ps1 [-Update] [-Uninstall] [-Extra gateway] [-NoExtra]

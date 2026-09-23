@@ -1748,7 +1748,10 @@ bauer logs follow                     # Tail em tempo real do arquivo de log
 
 ## 30. Docker Compose
 
-O Bauer Agent inclui um stack Docker Compose completo para execução sem configuração manual do Ollama.
+O Bauer Agent inclui um stack Docker Compose completo para execução sem
+configuração manual do Ollama. O procedimento operacional atualizado está em
+[`docs/runbooks/docker-agentos.md`](docs/runbooks/docker-agentos.md); esta seção
+mantém a visão arquitetural resumida.
 
 ### 30.1 Arquitetura dos containers
 
@@ -1764,14 +1767,17 @@ O Bauer Agent inclui um stack Docker Compose completo para execução sem config
 │  ┌──────┴────────┐                                  │
 │  │ ollama-init   │  (baixa modelos, depois sai)     │
 │  └───────────────┘                                  │
+│                                                     │
+│  agentos :7777  ───────►  agent-ui :3000            │
 └─────────────────────────────────────────────────────┘
 ```
 
 Princípios:
 - `bauer-ollama` não tem porta exposta — só acessível via rede Docker interna
-- `bauer-agent` é o único ponto externo (porta 8000)
+- `bauer-agent`, `agentos` e `agent-ui` são as superfícies externas (`8000`, `7777`, `3000`)
 - `ollama-init` baixa os modelos na primeira vez e sai com código 0
-- `bauer-agent` só inicia após `ollama-init` concluir com sucesso
+- Bauer e AgentOS só iniciam após `ollama-init` concluir com sucesso
+- Agent UI é construída do repositório oficial `agno-agi/agent-ui`
 
 ### 30.2 docker-compose.yml resumido
 
@@ -1830,6 +1836,8 @@ O `start.sh` detecta automaticamente o ambiente:
 if [ -n "$OLLAMA_HOST" ]; then
     # Modo Docker Compose: Ollama já roda como serviço separado
     echo "[bauer] Usando Ollama externo: $OLLAMA_HOST"
+    # Se BAUER_MODEL estiver definido, baixa o modelo adicional antes do preflight.
+    if [ -n "${BAUER_MODEL:-}" ]; then ollama pull "$BAUER_MODEL"; fi
     exec bauer serve --host 0.0.0.0 --port 8000
 else
     # Modo standalone: sobe Ollama localmente
