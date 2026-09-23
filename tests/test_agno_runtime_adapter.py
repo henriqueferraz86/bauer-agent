@@ -165,6 +165,15 @@ def test_agno_adapter_is_registered():
     assert get_runtime_adapter("agno").name == "agno"
 
 
+def test_agno_tool_router_can_use_chat_context(tmp_path):
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "chat-context.db"), "tool_context": "chat"},
+    )
+    router = adapter._build_tool_router()
+    assert router.tool_context == "chat"
+    assert "web_search" in router.available_tools()
+
+
 def test_chatgpt_oauth_model_delegates_to_bauer_backend():
     model = build_chatgpt_oauth_model(OAuthClientStub(), "gpt-5.6-luna")
     result = model.invoke(

@@ -160,7 +160,9 @@ definições `function` seguem no request; itens `function_call` retornados pelo
 backend viram `ModelResponse.tool_calls`; o Agno executa a função Bauer e os
 resultados são enviados como `function_call_output` no próximo request. A
 ponte continua sem suporte a structured output, mas anuncia tools somente
-quando o cliente OAuth suporta esse ciclo.
+quando o cliente OAuth suporta esse ciclo. O Server e o AgentOS constroem o
+router Agno no contexto de política `chat`; o contexto `worker` continua
+restrito para tarefas duráveis e não deve ser usado pelo chat interativo.
 
 ## Decisões técnicas
 

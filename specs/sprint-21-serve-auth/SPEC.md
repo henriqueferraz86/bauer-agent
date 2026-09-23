@@ -122,6 +122,9 @@ SPA deixa de armazená-la depois da migração para sessão.
     modelo recebe as tools Bauer permitidas, chamadas de função são executadas
     pelo `ToolRouter` com as mesmas políticas do Server e o resultado é
     reenviado ao modelo até uma resposta final.
+21. O Server e o AgentOS usam o contexto de política `chat` ao materializar
+    tools para o frontend; não devem herdar o contexto restrito `worker`, que
+    bloquearia tools de consulta como `web_search`.
 
 ## Requisitos não funcionais
 

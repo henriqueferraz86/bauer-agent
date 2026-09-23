@@ -778,7 +778,16 @@ def create_app(
 
         cfg = load_config(config_path)
         from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
-        adapter = AgnoRuntimeAdapter(config=cfg, chatgpt_client=_state["client"])
+        # This adapter is invoked by the interactive Server chat.  Keep its
+        # tool policy context aligned with the native chat router; the worker
+        # context intentionally denies network tools such as web_search.
+        adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
+        adapter_cfg.setdefault("tool_context", "chat")
+        adapter = AgnoRuntimeAdapter(
+            config=cfg,
+            adapter_config=adapter_cfg,
+            chatgpt_client=_state["client"],
+        )
         supported_tools = {
             "read_file", "write_file", "list_dir", "search_text",
             "run_command", "web_search", "memory",

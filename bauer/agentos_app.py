@@ -65,6 +65,10 @@ def build_agentos_app(
         adapter_cfg = dict(getattr(getattr(cfg, "runtime", None), "adapters", {}).get("agno", {}) or {})
         adapter_cfg.setdefault("workspace", str(Path(workspace)))
         adapter_cfg.setdefault("db_file", str(root / "agno" / "sessions.db"))
+        # AgentOS is the browser chat surface, not a durable worker.  Reuse
+        # the chat policy context so read-only network tools such as
+        # ``web_search`` are available when the catalog agent exposes them.
+        adapter_cfg.setdefault("tool_context", "chat")
         adapter = AgnoRuntimeAdapter(config=cfg, adapter_config=adapter_cfg)
         agentos_db = SqliteDb(db_file=str(root / "agno" / "agentos.db"))
 
