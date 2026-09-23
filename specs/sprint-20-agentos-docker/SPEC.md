@@ -14,6 +14,7 @@ Também deve ser possível executar o mesmo stack manualmente com `docker compos
 - fazer o instalador detectar Docker Compose e subir o stack automaticamente;
 - permitir `--no-docker` e `--docker` para controlar o comportamento automático;
 - documentar portas, configuração do endpoint e limitações de segurança;
+- documentar instalação manual no Windows + Docker Desktop;
 - adicionar testes estáticos para o contrato do Compose e do instalador.
 
 ## Fora de escopo
@@ -35,6 +36,8 @@ Também deve ser possível executar o mesmo stack manualmente com `docker compos
 7. `--docker` falha claramente quando Docker Compose não está disponível.
 8. Atualizações preservam `config.yaml` e não removem volumes Docker.
 9. Os testes novos não acessam Docker nem a rede.
+10. O runbook documenta instalação, atualização, volumes, acesso remoto e
+    diagnóstico para Linux/macOS e Windows.
 
 ## Validação
 

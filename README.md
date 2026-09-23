@@ -1332,6 +1332,10 @@ O Bauer tem defaults "agressivos mas seguros". Ajuste em `agent:` / `tools:`:
 
 ## 🐳 Docker
 
+O procedimento completo para Linux/macOS, Windows + Docker Desktop, acesso
+remoto, atualização, volumes e diagnóstico está em
+[`docs/runbooks/docker-agentos.md`](docs/runbooks/docker-agentos.md).
+
 ```bash
 # Sobe Bauer, Ollama, AgentOS e a Agent UI oficial do Agno
 docker compose up -d
@@ -1353,6 +1357,11 @@ Compose está disponível. Use `--no-docker` para uma instalação nativa ou
 curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash -s -- --no-docker
 curl -fsSL https://raw.githubusercontent.com/henriqueferraz86/bauer-agent/master/install.sh | bash -s -- --docker
 ```
+
+O `install.ps1` do Windows instala o Bauer nativo. Para executar AgentOS e a
+Agent UI no Windows, instale o Docker Desktop, clone o repositório e execute
+`docker compose` a partir da pasta do clone. O runbook contém os comandos para
+criar `config.yaml`, `models.yaml`, `.env` e a chave REST necessária.
 
 Reiniciar um container **não baixa a última versão**: ele reutiliza a imagem
 existente. A atualização do Agent UI ocorre no build do stack. O instalador usa
