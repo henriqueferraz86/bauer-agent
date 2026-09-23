@@ -164,4 +164,3 @@ BAUER_MODEL=qwen3:0.6b
 
 Se a UI abrir sem conversar, confira \`AGENT_UI_ENDPOINT\`,
 \`AGENT_OS_CORS_ORIGINS\`, reconstrua \`agent-ui\` e teste \`/health\` do AgentOS.
-
