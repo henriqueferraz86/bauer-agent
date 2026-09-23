@@ -79,6 +79,16 @@ def test_agent_ui_is_built_from_official_repo_and_has_update_controls():
     assert "AGENT_UI_ENDPOINT: ${AGENT_UI_ENDPOINT:-http://localhost:7777}" in compose_text
 
 
+def test_bauer_image_installs_all_server_extra_dependencies_before_source_copy():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    metadata_copy = dockerfile.index("COPY bauer/__init__.py")
+    server_install = dockerfile.index('pip install --no-cache-dir ".[server]"')
+    source_copy = dockerfile.index("COPY bauer/ ./bauer/")
+    assert metadata_copy < server_install < source_copy
+    assert "argon2-cffi google-auth" in dockerfile
+
+
 def test_runbook_documents_api_key_commands_for_linux_and_windows():
     runbook = (ROOT / "docs" / "runbooks" / "docker-agentos.md").read_text(encoding="utf-8")
 
@@ -88,6 +98,11 @@ def test_runbook_documents_api_key_commands_for_linux_and_windows():
     assert "docker inspect bauer-agent" in runbook
     assert "BAUER_SERVE_API_KEY não encontrada" in runbook
     assert "X-API-Key" in runbook
+
+    auth_runbook = (ROOT / "docs" / "runbooks" / "serve-auth.md").read_text(encoding="utf-8")
+    assert "Chave de bootstrap" in auth_runbook
+    assert "BAUER_AUTH_GOOGLE_CLIENT_ID" in auth_runbook
+    assert "cookie `HttpOnly`" in auth_runbook
 
 
 @pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt", reason="requer bash POSIX")

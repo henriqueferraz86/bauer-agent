@@ -832,6 +832,15 @@ serve:
   # Clientes devem enviar: Authorization: Bearer <api_key>
   api_key: ""
 
+  # Login da interface web. Quando há api_key, o primeiro cadastro exige essa
+  # chave uma única vez e as sessões seguintes usam cookie HttpOnly.
+  web_auth_enabled: true
+  auth_session_hours: 168
+
+  # Client ID público do Google Identity Services. Prefira definir pela env
+  # BAUER_AUTH_GOOGLE_CLIENT_ID. Vazio desabilita o botão "Entrar com Google".
+  auth_google_client_id: ""
+
   # Rate limiting global.
   # 0 = desativado | >0 = máximo de requests por janela de tempo
   rate_limit_requests: 60

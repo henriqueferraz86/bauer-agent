@@ -24,12 +24,13 @@ import pytest
 pytest.importorskip("fastapi", reason="requer bauer-agent[server]")
 
 
-# Superfície HTTP do serve em si (29 operações). `/metrics` NAO entra: usa
+# Superfície HTTP do serve em si (37 operações). `/metrics` NAO entra: usa
 # include_in_schema=False, entao nao aparece no OpenAPI — e coberto pelo
 # teste de auth mais abaixo, via TestClient.
 OPERACOES_CORE = {
     "DELETE /sessions/{session_id}",
     "GET /approvals",
+    "GET /auth/state",
     "GET /audit",
     "GET /audit/report",
     "GET /audit/runs/{run_id}",
@@ -52,6 +53,11 @@ OPERACOES_CORE = {
     "GET /v1/models",
     "POST /approvals/{approval_id}/approve",
     "POST /approvals/{approval_id}/deny",
+    "POST /auth/google",
+    "POST /auth/login",
+    "POST /auth/logout",
+    "POST /auth/recover",
+    "POST /auth/setup",
     "POST /chat",
     "POST /loop",
     "POST /loop/{run_id}/stop",

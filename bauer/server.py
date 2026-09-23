@@ -109,6 +109,10 @@ def create_app(
     system_prompt: str,
     sessions_dir: Path,
     api_key: str = "",
+    web_auth_enabled: bool = True,
+    auth_session_hours: int = 168,
+    auth_google_client_id: str = "",
+    auth_cookie_secure: bool = False,
     rate_limit_requests: int = 60,
     rate_limit_window_s: float = 60.0,
     rate_limit_per_key: bool = False,
@@ -141,7 +145,7 @@ def create_app(
     import logging
 
     from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-    from fastapi.responses import FileResponse, StreamingResponse
+    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel, Field
 
@@ -185,6 +189,25 @@ def create_app(
     class SpeechRequest(PydanticModel):
         text: str = Field(..., min_length=1, max_length=100_000)
 
+    class AuthSetupRequest(PydanticModel):
+        email: str = Field(..., min_length=3, max_length=320)
+        password: str = Field(..., min_length=12, max_length=1024)
+        bootstrap_key: str = Field(..., min_length=1, max_length=4096)
+
+    class AuthLoginRequest(PydanticModel):
+        email: str = Field(..., min_length=3, max_length=320)
+        password: str = Field(..., min_length=1, max_length=1024)
+
+    class AuthRecoveryRequest(PydanticModel):
+        email: str = Field(..., min_length=3, max_length=320)
+        new_password: str = Field(..., min_length=12, max_length=1024)
+        bootstrap_key: str = Field(..., min_length=1, max_length=4096)
+
+    class AuthGoogleRequest(PydanticModel):
+        credential: str = Field(..., min_length=1, max_length=16_384)
+        bootstrap_key: str = Field(default="", max_length=4096)
+        link: bool = False
+
     app = FastAPI(
         title="Bauer Agent Server",
         version="0.1.0",
@@ -213,6 +236,16 @@ def create_app(
 
     store = SessionStore(sessions_dir)
     runtime_root = sessions_dir.parent / "runtime"
+    _web_auth = None
+    if api_key and web_auth_enabled:
+        from .web_auth import WebAuthService, WebAuthStore
+
+        _web_auth = WebAuthService(
+            WebAuthStore(runtime_root),
+            bootstrap_key=api_key,
+            session_hours=auth_session_hours,
+            google_client_id=auth_google_client_id,
+        )
     event_bus = EventBus(root=runtime_root)
     run_manager = RunManager(root=runtime_root, event_bus=event_bus)
     session_manager = SessionManager(root=runtime_root)
@@ -743,6 +776,9 @@ def create_app(
         max_requests=rate_limit_requests,
         window_s=rate_limit_window_s,
     )
+    # Setup/login/recovery merecem um bucket próprio e mais restritivo; não
+    # compartilham cota com /health nem podem ser liberados por rate_limit=0.
+    _auth_limiter = _RateLimiter(max_requests=10, window_s=300.0)
     _trusted_redes, _trusted_coringa = _parse_trusted_proxies(trusted_proxies)
     # Aviso único (não a cada request) para quem está atrás de proxy sem
     # configurar: o rate limit passa a agrupar TODO mundo no IP do proxy —
@@ -800,6 +836,98 @@ def create_app(
             return f"key:{k}" if k else _get_client_ip(request)
         return _get_client_ip(request)
 
+    _SESSION_COOKIE = "bauer_session"
+    _CSRF_COOKIE = "bauer_csrf"
+
+    def _session_from_request(request: Request):
+        if _web_auth is None:
+            return None
+        return _web_auth.authenticate(request.cookies.get(_SESSION_COOKIE, ""))
+
+    def _csrf_required(request: Request) -> bool:
+        return request.method.upper() not in {"GET", "HEAD", "OPTIONS"} or request.url.path == "/stream"
+
+    def _verify_session_csrf(request: Request, session) -> None:
+        if _web_auth is None:
+            raise HTTPException(status_code=401, detail="Sessão inválida.")
+        header = request.headers.get("X-CSRF-Token", "")
+        cookie = request.cookies.get(_CSRF_COOKIE, "")
+        if not header or not cookie or not hmac.compare_digest(header, cookie):
+            raise HTTPException(status_code=403, detail="Token CSRF inválido ou ausente.")
+        try:
+            _web_auth.require_csrf(session, header)
+        except Exception as exc:
+            from .web_auth import WebAuthError
+
+            if isinstance(exc, WebAuthError):
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise
+
+    def _auth_rate_limit(request: Request) -> None:
+        key = f"auth:{_get_client_ip(request)}"
+        if not _auth_limiter.is_allowed(key):
+            retry = _auth_limiter.retry_after(key)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Muitas tentativas de autenticação. Tente novamente em {retry:.0f}s.",
+                headers={"Retry-After": str(int(retry) + 1)},
+            )
+
+    def _raise_auth_error(exc: Exception) -> None:
+        from .web_auth import (
+            AuthValidationError,
+            GoogleNotConfiguredError,
+            InvalidBootstrapError,
+            InvalidCredentialsError,
+            SetupAlreadyCompleteError,
+            SetupRequiredError,
+            WebAuthError,
+        )
+
+        if isinstance(exc, AuthValidationError):
+            status_code = 400
+        elif isinstance(exc, (SetupAlreadyCompleteError, SetupRequiredError)):
+            status_code = 409
+        elif isinstance(exc, GoogleNotConfiguredError):
+            status_code = 503
+        elif isinstance(exc, (InvalidBootstrapError, InvalidCredentialsError)):
+            status_code = 401
+        elif isinstance(exc, WebAuthError):
+            status_code = 401
+        else:
+            raise exc
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    def _session_response(credentials, *, status_code: int = 200):
+        max_age = max(60, int(credentials.expires_at - time.time()))
+        response = JSONResponse(
+            status_code=status_code,
+            content={
+                "authenticated": True,
+                "user": credentials.admin.public_dict(),
+                "expires_at": credentials.expires_at,
+            },
+        )
+        response.set_cookie(
+            _SESSION_COOKIE,
+            credentials.token,
+            max_age=max_age,
+            path="/",
+            secure=auth_cookie_secure,
+            httponly=True,
+            samesite="lax",
+        )
+        response.set_cookie(
+            _CSRF_COOKIE,
+            credentials.csrf_token,
+            max_age=max_age,
+            path="/",
+            secure=auth_cookie_secure,
+            httponly=False,
+            samesite="lax",
+        )
+        return response
+
     # NOTA: aqui existia um `_check_rate_limit()` que nunca era chamado —
     # duplicava a lógica já aplicada no `_metrics_middleware`. Duas cópias da
     # mesma regra é convite para divergirem (uma sendo corrigida e a outra não).
@@ -809,8 +937,120 @@ def create_app(
         if not api_key:
             return
         incoming = _extract_incoming_key(request)
-        if not hmac.compare_digest(incoming or "", api_key):
-            raise HTTPException(status_code=401, detail="API key invalida ou ausente.")
+        if hmac.compare_digest(incoming or "", api_key):
+            request.state.auth_method = "api_key"
+            return
+        session = _session_from_request(request)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Autenticação inválida ou ausente.")
+        if _csrf_required(request):
+            _verify_session_csrf(request, session)
+        request.state.auth_method = "session"
+        request.state.web_admin = session.admin
+
+    @app.get("/auth/state")
+    def auth_state(request: Request):
+        if _web_auth is None:
+            return {
+                "enabled": False,
+                "api_key_required": bool(api_key),
+                "setup_required": False,
+                "authenticated": False,
+                "google_enabled": False,
+                "google_client_id": "",
+                "user": None,
+            }
+        session = _session_from_request(request)
+        return {
+            "enabled": True,
+            "api_key_required": True,
+            "setup_required": _web_auth.setup_required,
+            "authenticated": session is not None,
+            "google_enabled": bool(_web_auth.google_client_id),
+            "google_client_id": _web_auth.google_client_id,
+            "user": session.admin.public_dict() if session else None,
+        }
+
+    @app.post("/auth/setup")
+    def auth_setup(body: AuthSetupRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            credentials = _web_auth.setup_local(
+                email=body.email,
+                password=body.password,
+                bootstrap_key=body.bootstrap_key,
+            )
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials, status_code=201)
+
+    @app.post("/auth/login")
+    def auth_login(body: AuthLoginRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            credentials = _web_auth.login(email=body.email, password=body.password)
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials)
+
+    @app.post("/auth/recover")
+    def auth_recover(body: AuthRecoveryRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            credentials = _web_auth.recover(
+                email=body.email,
+                new_password=body.new_password,
+                bootstrap_key=body.bootstrap_key,
+            )
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials)
+
+    @app.post("/auth/google")
+    def auth_google(body: AuthGoogleRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            if body.link:
+                session = _session_from_request(request)
+                if session is None:
+                    raise HTTPException(status_code=401, detail="Sessão inválida.")
+                _verify_session_csrf(request, session)
+                credentials = _web_auth.link_google(
+                    session_token=request.cookies.get(_SESSION_COOKIE, ""),
+                    credential=body.credential,
+                )
+            else:
+                credentials = _web_auth.login_google(
+                    credential=body.credential,
+                    bootstrap_key=body.bootstrap_key,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials)
+
+    @app.post("/auth/logout")
+    def auth_logout(request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        session = _session_from_request(request)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Sessão inválida.")
+        _verify_session_csrf(request, session)
+        _web_auth.logout(request.cookies.get(_SESSION_COOKIE, ""))
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(_SESSION_COOKIE, path="/", secure=auth_cookie_secure, httponly=True, samesite="lax")
+        response.delete_cookie(_CSRF_COOKIE, path="/", secure=auth_cookie_secure, httponly=False, samesite="lax")
+        return response
 
     # --- endpoints --------------------------------------------------------------
 

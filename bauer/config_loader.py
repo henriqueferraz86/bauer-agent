@@ -622,6 +622,11 @@ class ServeSection(_StrictSection):
     host: str = "127.0.0.1"  # default seguro — bind apenas local; use 0.0.0.0 só com api_key
     port: int = Field(ge=1, le=65535, default=8000)
     api_key: str = ""  # Bearer token para proteger o bauer serve (ou BAUER_SERVE_API_KEY no .env)
+    # Auth da SPA usa sessão HttpOnly e mantém api_key para CLI/integrações.
+    # Só entra em ação quando api_key também está configurada.
+    web_auth_enabled: bool = True
+    auth_session_hours: int = Field(ge=1, le=8760, default=168)
+    auth_google_client_id: str = ""  # ou BAUER_AUTH_GOOGLE_CLIENT_ID
     deployment_mode: Literal["local", "reverse_proxy"] = "local"
     public_url: str = ""  # URL HTTPS pública quando deployment_mode=reverse_proxy
     workers: int = Field(ge=1, le=8, default=1)

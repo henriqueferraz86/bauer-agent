@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, getApiKey, setApiKey } from "../api/client";
+import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import GoogleButton from "../auth/GoogleButton";
 
 type Json = Record<string, unknown>;
 
@@ -33,15 +35,26 @@ const ENV_KEY_SUGGESTIONS = [
 ];
 
 export default function Config() {
+  const auth = useAuth();
   const [config, setConfig] = useState<Json>({});
   const [profiles, setProfiles] = useState<string[]>([]);
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
-  const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [msg, setMsg] = useState("");
   const [secretKey, setSecretKey] = useState("OPENROUTER_API_KEY");
   const [secretValue, setSecretValue] = useState("");
   const [secretMsg, setSecretMsg] = useState("");
+  const [accountMsg, setAccountMsg] = useState("");
+
+  async function linkGoogle(credential: string) {
+    setAccountMsg("");
+    try {
+      await auth.linkGoogle(credential);
+      setAccountMsg("Conta Google vinculada.");
+    } catch (error) {
+      setAccountMsg(String(error));
+    }
+  }
 
   async function saveSecret() {
     const key = secretKey.trim().toUpperCase();
@@ -94,15 +107,28 @@ export default function Config() {
         {msg && <span className="sub">{msg}</span>}
       </div>
       <div className="content">
-        {/* API key local */}
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>API KEY (deste cliente — guardada no navegador)</div>
-          <div className="row">
-            <input className="in" type="password" placeholder="X-API-Key do serve (se houver auth)"
-              value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} />
-            <button className="btn primary" onClick={() => { setApiKey(apiKeyInput); setMsg("API key salva."); }}>Salvar</button>
+        {/* Conta da interface web — a API key não fica mais no navegador. */}
+        {auth.state.enabled && <div className="card" style={{ marginBottom: 16 }}>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>CONTA DA INTERFACE</div>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div>{auth.state.user?.display_name || auth.state.user?.email || "Sessão local"}</div>
+              {auth.state.user?.display_name && <div className="muted" style={{ fontSize: 11 }}>{auth.state.user.email}</div>}
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                Sessão protegida por cookie HttpOnly; nenhuma API key é guardada no navegador.
+              </div>
+            </div>
+            <button className="btn danger" onClick={() => auth.logout()}><i className="ti ti-logout" /> Sair</button>
           </div>
-        </div>
+          {auth.state.google_enabled && !auth.state.user?.google_linked && (
+            <div style={{ marginTop: 12 }}>
+              <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>VINCULAR GOOGLE</div>
+              <GoogleButton clientId={auth.state.google_client_id} onCredential={linkGoogle} onError={setAccountMsg} />
+            </div>
+          )}
+          {auth.state.user?.google_linked && <div className="tag green" style={{ marginTop: 10, display: "inline-block" }}>Google vinculado</div>}
+          {accountMsg && <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{accountMsg}</div>}
+        </div>}
 
         {/* Segredos de provider (.env) */}
         <div className="card" style={{ marginBottom: 16 }}>

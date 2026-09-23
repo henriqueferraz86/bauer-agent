@@ -35,6 +35,31 @@ body {
 
 #root { height: 100vh; }
 
+/* ── Autenticação do serve ── */
+.auth-page {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  background:
+    radial-gradient(circle at 50% 15%, color-mix(in srgb, var(--bauer-accent) 14%, transparent), transparent 34%),
+    var(--bg);
+}
+.auth-card {
+  width: min(420px, 100%); background: var(--bg-2); border: 1px solid var(--border-2);
+  border-radius: 12px; padding: 28px; box-shadow: 0 22px 70px rgba(0, 0, 0, .38);
+}
+.auth-brand { display: flex; align-items: center; gap: 8px; color: var(--accent); font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.auth-brand i { font-size: 20px; }
+.auth-card h1 { margin-top: 22px; color: var(--bauer-text); font-size: 24px; font-weight: 600; }
+.auth-card > p { margin-top: 8px; color: var(--text-3); line-height: 1.55; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; margin-top: 22px; }
+.auth-form label { display: flex; flex-direction: column; gap: 6px; color: var(--text-2); font-size: 11px; }
+.auth-submit { justify-content: center; min-height: 38px; margin-top: 4px; }
+.auth-divider { display: flex; align-items: center; gap: 10px; margin: 20px 0 14px; color: var(--text-4); font-size: 11px; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.google-signin { min-height: 40px; display: flex; justify-content: center; }
+.auth-link { width: 100%; margin-top: 16px; border: 0; background: transparent; color: var(--accent); cursor: pointer; font: 11px var(--mono); }
+.auth-error { margin-top: 14px; padding: 9px 11px; border: 1px solid var(--bad-border); background: var(--bad-bg); border-radius: 6px; color: var(--red); overflow-wrap: anywhere; }
+.auth-loading { color: var(--text-3); display: flex; align-items: center; gap: 8px; }
+
 .app { display: flex; flex-direction: column; height: 100vh; }
 
 /* ── Titlebar ── */

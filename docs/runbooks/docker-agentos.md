@@ -120,13 +120,16 @@ docker compose up -d agentos agent-ui
 \`BAUER_SERVE_API_KEY\` é obrigatório quando Bauer faz bind em \`0.0.0.0\`.
 Não publique a porta 11434 do Ollama.
 
-### Chave da API exibida na Agent UI
+### Chave de bootstrap e clientes da API
 
-O campo **API KEY** da Agent UI espera o valor de `BAUER_SERVE_API_KEY`. Essa
-é a chave do servidor Bauer, não uma chave da OpenAI ou de outro provider.
-Cole somente o texto depois de `BAUER_SERVE_API_KEY=`. A interface guarda esse
-valor no navegador; trate-o como segredo e não o publique em screenshots,
-issues ou commits.
+`BAUER_SERVE_API_KEY` é a chave do servidor Bauer, não uma chave da OpenAI ou
+de outro provider. No primeiro acesso ao cockpit em `http://localhost:8000`,
+ela é solicitada uma única vez para autorizar o cadastro do administrador.
+Depois disso o navegador usa uma sessão `HttpOnly` e não armazena a chave.
+
+Os comandos abaixo também servem para recuperação da conta e para clientes
+externos que continuam autenticando com `X-API-Key`. Trate o valor como segredo
+e não o publique em screenshots, issues ou commits.
 
 Para descobrir qual pasta criou os contêineres, execute:
 
@@ -209,8 +212,9 @@ Validar a chave contra o servidor:
 Invoke-RestMethod http://localhost:8000/status -Headers @{ 'X-API-Key' = $key }
 ```
 
-Depois, cole o valor impresso em **API KEY** na Agent UI. Ao trocar a chave,
-substitua também o valor antigo guardado no navegador.
+No primeiro cadastro, cole somente o valor depois de
+`BAUER_SERVE_API_KEY=` no campo **Chave de bootstrap**. O fluxo completo de
+cadastro, login e Google está em [Autenticação do frontend do serve](serve-auth.md).
 
 ## Operação
 
