@@ -83,6 +83,17 @@ O comando `bauer update` restaura o snapshot se uma etapa falhar; não apague a
 `.venv` como primeira tentativa. O procedimento acima é para a instalação
 nativa; para este stack Docker, use a seção [Atualização](#atualização).
 
+Se uma tentativa interrompida deixar o comando `bauer` com
+`ModuleNotFoundError: No module named 'bauer'`, repare o link local sem tocar
+nas dependências:
+
+\`\`\`powershell
+$root = "$env:LOCALAPPDATA\BauerAgent"
+$py = "$root\.venv\Scripts\python.exe"
+& $py -m pip install --no-deps --editable $root
+bauer update
+\`\`\`
+
 ## Configuração de acesso
 
 Na própria máquina:
