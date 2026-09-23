@@ -244,7 +244,13 @@ def test_desktop_controles_e_delegacao_persistem(tmp_path, monkeypatch):
         start_loop=lambda message, project_id, isolated: {"run_id": "run-test"},
     ))
     client = TestClient(app)
-    assert client.get("/api/autonomy/status").json()["state"]["state"] == "off"
+    initial = client.get("/api/autonomy/status").json()
+    assert initial["state"]["state"] == "off"
+    assert initial["config_enabled"] is False
+    enabled = client.post("/api/autonomy/enabled", json={"enabled": True})
+    assert enabled.status_code == 200
+    assert enabled.json()["config_enabled"] is True
+    assert "warning" in enabled.json()  # nenhum alvo ainda
     assert client.post("/api/autonomy/start").status_code == 409
     added = client.post("/api/autonomy/targets", json={
         "name": "MT5 dashboard", "url": "http://127.0.0.1:8010/",
@@ -278,6 +284,10 @@ def test_desktop_controles_e_delegacao_persistem(tmp_path, monkeypatch):
     assert client.get("/api/autonomy/status").json()["configured_targets"] == 1
     assert client.delete(f"/api/autonomy/targets/{docker_id}").status_code == 404
     assert client.post("/api/autonomy/stop").status_code == 200
+    disabled = client.post("/api/autonomy/enabled", json={"enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json()["config_enabled"] is False
+    assert client.get("/api/autonomy/status").json()["config_enabled"] is False
     delegated = client.post("/api/autonomy/delegate", json={"kind": "application", "message": "x"})
     assert delegated.status_code == 200
     assert delegated.json()["delegation"]["isolation"] == "worktree"

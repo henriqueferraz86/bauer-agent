@@ -62,7 +62,8 @@ services:
       - type: bind
         source: ./config.yaml
         target: /app/config.yaml
-        read_only: true
+        # O painel web persiste toggles e alvos em continuous_autonomy.
+        read_only: false
         bind:
           create_host_path: false
       - type: bind
@@ -101,7 +102,8 @@ services:
       - type: bind
         source: ./config.yaml
         target: /app/config.yaml
-        read_only: true
+        # O AgentOS também compartilha o estado editável de autonomia.
+        read_only: false
         bind:
           create_host_path: false
       - type: bind

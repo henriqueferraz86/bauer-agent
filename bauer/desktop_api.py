@@ -865,7 +865,55 @@ def build_desktop_router(
 
     @router.get("/autonomy/status")
     def autonomy_status():
-        return _continuous.status()
+        status = _continuous.status()
+        status["config_enabled"] = bool(getattr(_continuous.config, "enabled", False))
+        return status
+
+    @router.post("/autonomy/enabled")
+    def autonomy_set_enabled(body: dict = Body(...)):
+        """Persiste e aplica o interruptor global da autonomia contínua."""
+        import yaml
+
+        from .config_admin import _read_raw_yaml
+        from .config_loader import ConfigError, load_config
+
+        enabled = body.get("enabled") if isinstance(body, dict) else None
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=422, detail="enabled deve ser booleano")
+
+        config_path = Path(get_config_path())
+        raw = _read_raw_yaml(config_path)
+        section = raw.setdefault("continuous_autonomy", {})
+        if not isinstance(section, dict):
+            section = {}
+            raw["continuous_autonomy"] = section
+        section["enabled"] = enabled
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            config_path.write_text(
+                yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+            refreshed = load_config(config_path).continuous_autonomy
+            _continuous.reload_config(refreshed)
+        except (ConfigError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if not enabled:
+            result = _continuous.stop()
+            result["config_enabled"] = False
+            return result
+
+        try:
+            result = _continuous.start()
+        except ValueError as exc:
+            # Habilitar a configuração é útil mesmo antes de cadastrar o
+            # primeiro alvo; o painel mostra o aviso e permite tentar iniciar
+            # novamente assim que um alvo for habilitado.
+            result = _continuous.status()
+            result["warning"] = str(exc)
+        result["config_enabled"] = True
+        return result
 
     @router.post("/autonomy/targets/{target_id}/enabled")
     def autonomy_set_target_enabled(target_id: str, body: dict = Body(...)):

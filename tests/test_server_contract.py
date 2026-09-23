@@ -119,6 +119,7 @@ OPERACOES_API = {
     "POST /api/auth/openai/start",
     "POST /api/autonomy/alerts",
     "POST /api/autonomy/delegate",
+    "POST /api/autonomy/enabled",
     "POST /api/autonomy/start",
     "POST /api/autonomy/stop",
     "POST /api/autonomy/targets",
