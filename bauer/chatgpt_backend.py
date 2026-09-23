@@ -271,14 +271,18 @@ class ChatGPTBackendClient(OpenAIClient):
 
     @property
     def supports_native_tools(self) -> bool:
-        # Usa o bridge de tools por texto (o agent já tem fallback). Evita
-        # traduzir o formato de tool calling da Responses API nesta versão.
-        return False
+        """The Responses bridge can round-trip Agno function calls."""
+        return True
 
     # ── Tradução chat/completions → Responses API ───────────────────────────
     @staticmethod
     def _to_responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
-        """Separa o system prompt (instructions) e converte o resto p/ `input`."""
+        """Separa instruções e converte mensagens Agno para ``Responses input``.
+
+        O endpoint ChatGPT não aceita ``role=tool`` como uma mensagem comum:
+        resultados de funções usam o item ``function_call_output`` e a
+        solicitação do assistant usa ``function_call``.
+        """
         instructions = ""
         items: list[dict] = []
         for msg in messages:
@@ -290,7 +294,30 @@ class ChatGPTBackendClient(OpenAIClient):
             if role == "system":
                 instructions = (instructions + "\n\n" + content).strip() if instructions else content
                 continue
-            # assistant usa output_text; user/tool usam input_text
+            if role == "tool":
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": str(msg.get("tool_call_id") or ""),
+                    "output": content,
+                })
+                continue
+            if role == "assistant" and msg.get("tool_calls"):
+                if content:
+                    items.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": content}],
+                    })
+                for call in msg.get("tool_calls") or []:
+                    function = call.get("function") or {}
+                    items.append({
+                        "type": "function_call",
+                        "call_id": str(call.get("id") or ""),
+                        "name": str(function.get("name") or call.get("name") or ""),
+                        "arguments": str(function.get("arguments") or call.get("arguments") or "{}"),
+                    })
+                continue
+            # assistant usa output_text; user usa input_text
             part_type = "output_text" if role == "assistant" else "input_text"
             items.append({
                 "type": "message",
@@ -299,8 +326,56 @@ class ChatGPTBackendClient(OpenAIClient):
             })
         return instructions, items
 
-    def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
-        """Streaming via Responses API. Yields deltas de texto."""
+    @staticmethod
+    def _responses_tools(tools: list[dict] | None) -> list[dict]:
+        """Converte o formato OpenAI/Agno para o formato Responses API."""
+        converted: list[dict] = []
+        for tool in tools or []:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict):
+                function = tool if isinstance(tool, dict) else {}
+            name = str(function.get("name") or "").strip()
+            if not name:
+                continue
+            item = {
+                "type": "function",
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "parameters": function.get("parameters") or {
+                    "type": "object", "properties": {},
+                },
+            }
+            if "strict" in function:
+                item["strict"] = bool(function["strict"])
+            converted.append(item)
+        return converted
+
+    @staticmethod
+    def _tool_call_from_item(item: dict) -> tuple[str, dict] | None:
+        if str(item.get("type") or "") != "function_call":
+            return None
+        call_id = str(item.get("call_id") or item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not call_id or not name:
+            return None
+        return call_id, {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": str(item.get("arguments") or "{}"),
+            },
+        }
+
+    def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        tool_choice: Any | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream text and normalized function-call events from Responses."""
         self.last_usage = {}
         instructions, input_items = self._to_responses_input(messages)
         body: dict[str, Any] = {
@@ -309,6 +384,11 @@ class ChatGPTBackendClient(OpenAIClient):
             "stream": True,
             "store": False,
         }
+        response_tools = self._responses_tools(tools)
+        if response_tools:
+            body["tools"] = response_tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
         reasoning_effort = CHATGPT_REASONING_EFFORTS.get(str(body["model"]).lower())
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort}
@@ -318,6 +398,10 @@ class ChatGPTBackendClient(OpenAIClient):
         url = f"{self.host}/responses"
         _err_status = 0
         _err_body = ""
+        calls: dict[str, dict[str, Any]] = {}
+        call_order: list[str] = []
+        item_to_call: dict[str, str] = {}
+
         try:
             with httpx.stream(
                 "POST",
@@ -349,17 +433,43 @@ class ChatGPTBackendClient(OpenAIClient):
                             evt = json.loads(payload)
                         except json.JSONDecodeError:
                             continue
-                        etype = evt.get("type", "")
-                        # Texto incremental
+                        etype = str(evt.get("type") or "")
                         if etype == "response.output_text.delta":
                             delta = evt.get("delta", "")
                             if delta:
-                                yield delta
-                        # Usage no evento final
+                                yield {"type": "text_delta", "delta": delta}
+                        elif etype in {"response.output_item.added", "response.output_item.done"}:
+                            item = evt.get("item") or {}
+                            parsed = self._tool_call_from_item(item)
+                            if parsed:
+                                call_id, call = parsed
+                                calls[call_id] = call
+                                if call_id not in call_order:
+                                    call_order.append(call_id)
+                                if item.get("id"):
+                                    item_to_call[str(item["id"])] = call_id
+                        elif etype == "response.function_call_arguments.delta":
+                            key = str(evt.get("item_id") or evt.get("call_id") or "")
+                            call_id = item_to_call.get(key, key)
+                            if call_id in calls:
+                                calls[call_id]["function"]["arguments"] += str(evt.get("delta") or "")
+                        elif etype == "response.function_call_arguments.done":
+                            key = str(evt.get("item_id") or evt.get("call_id") or "")
+                            call_id = item_to_call.get(key, key)
+                            if call_id in calls and evt.get("arguments") is not None:
+                                calls[call_id]["function"]["arguments"] = str(evt["arguments"])
                         elif etype == "response.completed":
-                            usage = (evt.get("response") or {}).get("usage")
+                            response_data = evt.get("response") or {}
+                            usage = response_data.get("usage")
                             if isinstance(usage, dict):
                                 self.last_usage = dict(usage)
+                            for item in response_data.get("output") or []:
+                                parsed = self._tool_call_from_item(item)
+                                if parsed:
+                                    call_id, call = parsed
+                                    calls[call_id] = call
+                                    if call_id not in call_order:
+                                        call_order.append(call_id)
                         elif etype == "error":
                             err = evt.get("error") or evt
                             raise OpenAIClientError(
@@ -385,3 +495,11 @@ class ChatGPTBackendClient(OpenAIClient):
             raise OpenAIClientError(
                 f"[ChatGPT] HTTP {_err_status} no backend.\n  Detalhe: {_err_body}"
             )
+        for call_id in call_order:
+            yield {"type": "tool_call", "tool_call": calls[call_id]}
+
+    def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
+        """Streaming via Responses API. Yields deltas de texto."""
+        for event in self.chat_stream_events(model, messages):
+            if event.get("type") == "text_delta":
+                yield str(event.get("delta") or "")

@@ -45,6 +45,9 @@ SPA deixa de armazená-la depois da migração para sessão.
   qualidade das respostas;
 - permitir selecionar globalmente, no Server, entre o executor `bauer_native`
   e o adapter `agno`, aplicando a escolha aos próximos turnos;
+- executar as tools Bauer também quando o adapter Agno usar a sessão ChatGPT
+  OAuth do browser, traduzindo chamadas de função para a Responses API e
+  devolvendo os resultados ao ciclo de execução do Agno;
 
 ## Fora de escopo
 
@@ -115,6 +118,10 @@ SPA deixa de armazená-la depois da migração para sessão.
 19. A superfície AgentOS expõe o catálogo de modelos do Bauer e permite trocar
     o modelo global dos agentes/times; OpenAI OAuth usa a sessão do browser
     salva pelo Bauer, sem exigir `OPENAI_API_KEY`.
+20. Com `runtime_mode=agno` e provider `openai` autenticado por OAuth, o
+    modelo recebe as tools Bauer permitidas, chamadas de função são executadas
+    pelo `ToolRouter` com as mesmas políticas do Server e o resultado é
+    reenviado ao modelo até uma resposta final.
 
 ## Requisitos não funcionais
 
@@ -179,6 +186,8 @@ SPA deixa de armazená-la depois da migração para sessão.
     mensagem de aviso caso o Luna não esteja disponível para a conta.
 16. Um teste de contrato confirma o corpo ChatGPT enviado com Luna e esforço
     baixo, sem expor tokens.
+17. Um teste de contrato confirma a ida e volta de uma chamada de função OAuth,
+    incluindo `function_call`, `function_call_output` e execução sob política.
 
 ## Riscos
 

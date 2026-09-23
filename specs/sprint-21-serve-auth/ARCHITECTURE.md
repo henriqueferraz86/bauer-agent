@@ -155,7 +155,12 @@ admissão/política do Kernel. O AgentOS também expõe `/api/models/catalog` e
 `/api/models/select`; o overlay do Agent UI mostra o catálogo e troca o modelo
 de todos os agentes/times. Para OpenAI OAuth, o adapter materializa um modelo
 Agno sobre `ChatGPTBackendClient`, reutilizando a sessão do browser sem API key
-pública. A ponte atual é texto/streaming e não anuncia tools nativas.
+pública. A ponte traduz o contrato de tools do Agno para a Responses API:
+definições `function` seguem no request; itens `function_call` retornados pelo
+backend viram `ModelResponse.tool_calls`; o Agno executa a função Bauer e os
+resultados são enviados como `function_call_output` no próximo request. A
+ponte continua sem suporte a structured output, mas anuncia tools somente
+quando o cliente OAuth suporta esse ciclo.
 
 ## Decisões técnicas
 

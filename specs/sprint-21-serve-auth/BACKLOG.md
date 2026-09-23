@@ -100,3 +100,14 @@ Status: concluído
       execução real em `/chat` e `/stream`.
 - [x] Integrar catálogo de modelos no AgentOS/Agent UI e reutilizar OAuth
       OpenAI do Bauer no adapter Agno.
+
+## 9. Tools Bauer no Agno com OAuth do browser
+
+Status: em implementação
+
+- [ ] Definir contrato Responses para tools e itens de retorno.
+- [ ] Traduzir definições Agno `function` para o backend ChatGPT.
+- [ ] Traduzir `function_call`/argumentos e `function_call_output` no histórico.
+- [ ] Anunciar tools OAuth no adapter e manter a política do `ToolRouter`.
+- [ ] Cobrir texto, streaming, múltiplas chamadas e erros com testes sem rede.
+- [ ] Validar smoke test no Docker usando Luna autenticado pelo browser.

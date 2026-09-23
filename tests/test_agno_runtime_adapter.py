@@ -30,6 +30,61 @@ class OAuthClientStub:
         yield " do OAuth"
 
 
+class OAuthToolClientStub:
+    def __init__(self):
+        self.calls: list[dict[str, Any]] = []
+
+    def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append({"model": model, "messages": messages, "tools": tools, "tool_choice": tool_choice})
+        if any(message.get("role") == "tool" for message in messages):
+            yield {"type": "text_delta", "delta": "Tool executada"}
+            return
+        assert tools and tools[0]["function"]["name"] == "add_numbers"
+        yield {
+            "type": "tool_call",
+            "tool_call": {
+                "id": "call_add_numbers_1",
+                "type": "function",
+                "function": {"name": "add_numbers", "arguments": '{"a": 2, "b": 3}'},
+            },
+        }
+
+
+class OAuthReadFileClientStub:
+    def __init__(self):
+        self.calls: list[list[dict[str, Any]]] = []
+
+    def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append(messages)
+        if any(message.get("role") == "tool" for message in messages):
+            tool_result = next(message["content"] for message in messages if message.get("role") == "tool")
+            yield {"type": "text_delta", "delta": f"Li: {tool_result}"}
+            return
+        assert tools and tools[0]["function"]["name"] == "read_file"
+        yield {
+            "type": "tool_call",
+            "tool_call": {
+                "id": "call_read_file_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path": "note.txt"}'},
+            },
+        }
+
+
 class ToolCallingModel(Model):
     def invoke(self, *args: Any, **kwargs: Any) -> ModelResponse:
         messages = kwargs.get("messages") or []
@@ -118,10 +173,54 @@ def test_chatgpt_oauth_model_delegates_to_bauer_backend():
     )
 
     assert result.content == "Olá do OAuth"
-    assert model.supports_native_tools is False
+    assert model.supports_native_tools is True
     assert [chunk.content for chunk in model.invoke_stream(
         [Message(role="user", content="hello")], Message(role="assistant")
     )] == ["Olá", " do OAuth"]
+
+
+def test_chatgpt_oauth_model_round_trips_tool_calls():
+    client = OAuthToolClientStub()
+    model = build_chatgpt_oauth_model(client, "gpt-5.6-luna")
+    response = model.invoke(
+        [Message(role="user", content="some")],
+        Message(role="assistant"),
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "add_numbers",
+                "description": "adds numbers",
+                "parameters": {"type": "object"},
+            },
+        }],
+    )
+    assert response.tool_calls[0]["function"]["name"] == "add_numbers"
+    assert client.calls[0]["tools"][0]["function"]["name"] == "add_numbers"
+
+
+def test_agno_oauth_executes_bauer_tool_and_returns_result(tmp_path):
+    note = tmp_path / "note.txt"
+    note.write_text("conteudo seguro", encoding="utf-8")
+    client = OAuthReadFileClientStub()
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "agno.db"), "workspace": str(tmp_path)},
+        chatgpt_client=client,
+    )
+    result = adapter.run_agent({
+        "session_id": "oauth-tools-session",
+        "user_id": "user-1",
+        "task": "leia note.txt",
+        "agent_spec": {
+            "id": "oauth-tools-agent",
+            "provider": "openai",
+            "model": "gpt-5.6-luna",
+            "tools": ["read_file"],
+        },
+    })
+    assert result["status"] == "completed"
+    assert "conteudo seguro" in result["output"]
+    assert len(client.calls) == 2
+    assert any(message.get("role") == "tool" for message in client.calls[1])
 
 
 def test_agno_adapter_uses_injected_chatgpt_oauth_client(tmp_path):
