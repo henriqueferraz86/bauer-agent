@@ -39,7 +39,7 @@ export default function ModelCatalogSelector() {
   useEffect(() => {
     let active = true
     fetch(\
-      \`\${endpoint.replace(/\\/$/, '')}/api/models/catalog?limit=1000\`,
+      \`\${endpoint.replace(/\\/$/, '')}/api/models/catalog?limit=10000\`,
       { headers: authToken ? { Authorization: \`Bearer \${authToken}\` } : undefined }
     )
       .then((response) => response.ok ? response.json() : Promise.reject())

@@ -147,7 +147,7 @@ def build_agentos_app(
             provider: str = Query(default=""),
             q: str = Query(default=""),
             free: bool | None = Query(default=None),
-            limit: int = Query(default=200, ge=1, le=1000),
+            limit: int = Query(default=200, ge=1, le=10000),
             offset: int = Query(default=0, ge=0),
         ) -> dict[str, Any]:
             from .models_dev import catalog_models
