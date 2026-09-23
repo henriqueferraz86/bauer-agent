@@ -32,7 +32,9 @@ directory: 'docker'`.
 2. O Server consegue descobrir os containers e cadastrá-los como alvos.
 3. Um alvo Docker ativo pode ser sondado com `docker inspect` sem gerar o erro
    de executável ausente.
-4. O socket não é montado no `agentos` nem no frontend.
+4. Uma falha persistida após reinício do Server volta a tentar a receita de
+   autocorreção, respeitando cooldown e limite de tentativas.
+5. O socket não é montado no `agentos` nem no frontend.
 
 ## Validação
 

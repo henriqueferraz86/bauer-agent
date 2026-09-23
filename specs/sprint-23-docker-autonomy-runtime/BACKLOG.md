@@ -4,3 +4,4 @@
 - [x] Montar socket apenas no serviço Bauer.
 - [x] Rebuild e smoke test no Docker Desktop.
 - [x] Rodar testes Python e Ruff.
+- [x] Repetir autocorreção para falhas persistidas após restart.

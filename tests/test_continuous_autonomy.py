@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import subprocess
 import threading
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import yaml
@@ -302,6 +303,27 @@ def test_alert_level_validation(tmp_path):
         manager.set_alerts(alert_level="yolo")
 
 
+def test_politica_de_autocorrecao_obedece_config_atual(tmp_path):
+    from bauer.config_loader import ContinuousAutonomySection, ContinuousAutonomyTarget
+    from bauer.continuous_autonomy import ContinuousAutonomy
+
+    target_on = ContinuousAutonomyTarget(
+        id="api", name="API", type="docker_container", container_name="api",
+        auto_recover=True, recovery_action="docker_recover",
+    )
+    manager = ContinuousAutonomy(
+        root=tmp_path,
+        config=ContinuousAutonomySection(enabled=True, targets=[target_on]),
+    )
+    stale = manager._target_status["api"]
+    manager.store.upsert("continuous_target_status", asdict(stale))
+
+    target_off = target_on.model_copy(update={"auto_recover": False})
+    manager.reload_config(ContinuousAutonomySection(enabled=True, targets=[target_off]))
+
+    assert manager.status()["targets"][0]["auto_recover"] is False
+
+
 def test_docker_target_diagnostica_recupera_e_verifica(tmp_path, monkeypatch):
     from bauer.config_loader import ContinuousAutonomySection, ContinuousAutonomyTarget
     from bauer.continuous_autonomy import ContinuousAutonomy
@@ -335,3 +357,35 @@ def test_docker_target_diagnostica_recupera_e_verifica(tmp_path, monkeypatch):
     assert status["state"] == "healthy"
     assert manager.status()["incidents"][0]["recovery"]["success"] is True
     assert any(kind == "action_completed" for kind, _message in alerts)
+
+
+def test_docker_target_failed_persistido_tenta_autocorrecao(tmp_path, monkeypatch):
+    from bauer.config_loader import ContinuousAutonomySection, ContinuousAutonomyTarget
+    from bauer.continuous_autonomy import ContinuousAutonomy
+
+    target = ContinuousAutonomyTarget(
+        id="mt5", name="MT5", type="docker_container", container_name="mt5",
+        auto_recover=True, recovery_action="docker_recover", recovery_cooldown_s=1,
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0:2] == ["docker", "inspect"]:
+            output = "false" if "{{.State.Running}}" in command else '{"Status":"exited"}'
+        elif command[1] == "logs":
+            output = "container stopped"
+        else:
+            output = "started"
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr("bauer.continuous_autonomy.subprocess.run", fake_run)
+    manager = ContinuousAutonomy(
+        root=tmp_path,
+        config=ContinuousAutonomySection(enabled=True, targets=[target]),
+        probe=lambda _target: (False, None, 1.0, "parado"),
+    )
+    manager._target_status["mt5"].state = "failed"  # snapshot restaurado após restart
+    manager._check(manager._targets[0])
+
+    assert ["docker", "start", "mt5"] in calls

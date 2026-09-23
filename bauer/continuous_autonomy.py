@@ -380,6 +380,17 @@ class ContinuousAutonomy:
                 persisted_target = self.store.latest("continuous_target_status", target.id)
                 if persisted_target:
                     restored = TargetStatus(**persisted_target)
+                    # A política de recuperação vem sempre do config atual.
+                    # O snapshot persistido é telemetria, não autoridade para
+                    # manter um selo "autocorreção ativa" depois que o alvo
+                    # foi desligado no YAML.
+                    restored.name = target.name
+                    restored.url = target.url
+                    restored.type = target.type
+                    restored.enabled = target.enabled
+                    restored.auto_recover = target.auto_recover
+                    restored.recovery_action = target.recovery_action
+                    restored.auto_discovered = target.auto_discovered
                     if not target.enabled:
                         restored.enabled = False
                         restored.state = "paused"
@@ -422,7 +433,15 @@ class ContinuousAutonomy:
                 self._target_status[target.id] = current
                 persisted_target = self.store.latest("continuous_target_status", target.id)
                 if persisted_target and target.enabled:
-                    self._target_status[target.id] = TargetStatus(**persisted_target)
+                    restored = TargetStatus(**persisted_target)
+                    restored.name = target.name
+                    restored.url = target.url
+                    restored.type = target.type
+                    restored.enabled = target.enabled
+                    restored.auto_recover = target.auto_recover
+                    restored.recovery_action = target.recovery_action
+                    restored.auto_discovered = target.auto_discovered
+                    self._target_status[target.id] = restored
             self._state.alert_level = self.alert_level
             self._state.voice_enabled = self.voice_enabled
             self._persist()
@@ -601,7 +620,12 @@ class ContinuousAutonomy:
         if not ok and not was_failed:
             self._record_incident(target, previous)
         elif not ok:
-            self._record_recommendation(target, previous)
+            # O estado failed é persistido entre restarts. Não deixe isso
+            # transformar uma falha contínua em mera recomendação: quando a
+            # receita está ativa, tente a recuperação novamente. Os próprios
+            # cooldown e max_recovery_attempts impedem um loop agressivo.
+            recovery = self._attempt_recovery(target, previous) if target.auto_recover else None
+            self._record_recommendation(target, previous, recovery)
 
     @staticmethod
     def _http_probe(target: HealthTarget) -> tuple[bool, int | None, float | None, str | None]:
