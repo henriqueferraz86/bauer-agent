@@ -9,6 +9,8 @@ WORKDIR /app
 # gcc para compilar pacotes Python nativos
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    docker.io \
+    docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia o binário Ollama do estágio anterior

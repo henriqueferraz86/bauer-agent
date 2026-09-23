@@ -72,6 +72,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # A autonomia usa apenas a CLI para sondar/iniciar/reiniciar alvos.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
       - bauer_workspace:/app/workspace
       - bauer_memory:/app/memory
       - bauer_logs:/app/logs
