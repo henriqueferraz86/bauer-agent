@@ -1,0 +1,16 @@
+[Unit]
+Description=Bauer AgentOS (Agno) API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/bauer-agent
+ExecStart=%h/.local/share/bauer-agent/.venv/bin/python -m bauer.agentos_app --config %h/.bauer/config.yaml --workspace %h/.bauer/workspace --runtime-root %h/.bauer/memory/runtime
+Environment=AGENT_OS_HOST=0.0.0.0
+Environment=AGENT_OS_PORT=7777
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
