@@ -18,6 +18,12 @@ browser <── cookie HttpOnly + cookie CSRF ─ sessão
    └── fetch same-origin + X-CSRF-Token ──> _verify_key_or_session
 
 CLI / integração ── X-API-Key ───────────> _verify_key_or_session
+
+Settings ── POST start ──> OpenAIBrowserAuthBroker ── URL auth.openai.com
+   ^                                  │
+   │ polling status                   ├── PKCE/state somente em memória
+   │                                  └── callback localhost:1455
+   └──────── estado sem tokens <────────── TokenStore criptografado
 ```
 
 ## Componentes
@@ -67,6 +73,25 @@ operações mutáveis. `/health`, assets e `/auth/*` seguem regras próprias.
 - Config deixa de exibir o campo manual de API key e passa a mostrar conta,
   logout e recuperação.
 
+### `bauer/openai_browser_auth.py`
+
+- controla no máximo uma transação OAuth pendente por processo;
+- inicia um callback HTTP mínimo em `127.0.0.1:1455` por padrão e
+  `0.0.0.0:1455` no Compose;
+- usa as primitivas PKCE/troca/persistência de `AuthManager`;
+- valida `state` e expiração antes de trocar o código;
+- entrega ao browser apenas uma página de sucesso/erro que fecha o popup;
+- expõe ao Desktop API somente status sanitizado.
+
+### Endpoints de provider no Desktop API
+
+- `GET /api/auth/openai/status` — estado sanitizado;
+- `POST /api/auth/openai/start` — inicia/reinicia a transação e devolve a URL;
+- `POST /api/auth/openai/logout` — remove a credencial persistida.
+
+Todos herdam a autenticação e o CSRF do router `/api`. O callback OAuth não
+passa pela SPA; a proteção dele é o `state` aleatório ligado ao PKCE e com TTL.
+
 ## Persistência
 
 ```text
@@ -97,6 +122,18 @@ são gravados.
 
 Não são solicitados access token, refresh token ou permissões de APIs Google.
 
+## OpenAI/ChatGPT experimental
+
+A API pública OpenAI documenta API key ou workload identity. O fluxo existente
+de login ChatGPT/Codex no Bauer é experimental e permanece identificado assim
+na interface. A SPA abre a URL, mas tokens e verifier ficam exclusivamente no
+backend. Após o callback, `AuthManager` continua sendo a fonte usada por
+`_build_client` quando o operador seleciona provider `openai`.
+
+No Docker, `BAUER_HOME=/app/memory/bauer-home` coloca `auth.json` e `.auth_key`
+no volume `bauer_memory`; a porta 1455 é publicada para o callback no browser
+da mesma máquina. Execução remota continua usando API key ou o CLI headless.
+
 ## Decisões técnicas
 
 - sessão opaca em vez de JWT: revogação imediata e menos segredo no cliente;
@@ -105,6 +142,11 @@ Não são solicitados access token, refresh token ou permissões de APIs Google.
 - Google ID token via GIS: autenticação simples sem client secret;
 - API key preservada: compatibilidade de automações e bootstrap seguro;
 - um administrador fixo: corresponde ao produto single-operator atual.
+- broker separado da SPA: nenhum token OpenAI transita pelo JavaScript;
+- callback 1455 preservado: é o redirect URI esperado pelo client público já
+  usado pelo fluxo CLI atual;
+- `TokenStore` usa `get_bauer_home()`: respeita `BAUER_HOME` e mantém o mesmo
+  default `~/.bauer` fora do Docker.
 
 ## Alternativas consideradas
 
@@ -114,6 +156,11 @@ Não são solicitados access token, refresh token ou permissões de APIs Google.
 - authorization code OAuth com refresh token: desnecessário, pois não haverá
   acesso a APIs Google;
 - cadastro aberto do primeiro visitante: rejeitado por risco de takeover.
+- redirect no `/api` da porta 8000: rejeitado porque o client OAuth existente
+  espera `localhost:1455/auth/callback`;
+- executar `login_oauth()` bloqueante dentro de request: rejeitado porque prende
+  worker e tenta abrir browser no contêiner;
+- devolver token à SPA: rejeitado por exposição desnecessária.
 
 ## Observabilidade
 

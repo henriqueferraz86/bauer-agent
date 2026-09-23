@@ -2,6 +2,11 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import GoogleButton from "../auth/GoogleButton";
+import {
+  startOpenAIBrowserAuth,
+  type OpenAIAuthStart,
+  type OpenAIAuthStatus,
+} from "../openaiAuth";
 
 type Json = Record<string, unknown>;
 
@@ -45,6 +50,9 @@ export default function Config() {
   const [secretValue, setSecretValue] = useState("");
   const [secretMsg, setSecretMsg] = useState("");
   const [accountMsg, setAccountMsg] = useState("");
+  const [openAIAuth, setOpenAIAuth] = useState<OpenAIAuthStatus | null>(null);
+  const [openAIAuthBusy, setOpenAIAuthBusy] = useState(false);
+  const [openAIAuthMsg, setOpenAIAuthMsg] = useState("");
 
   async function linkGoogle(credential: string) {
     setAccountMsg("");
@@ -74,12 +82,52 @@ export default function Config() {
     }
   }
 
+  async function loadOpenAIAuth(): Promise<OpenAIAuthStatus> {
+    const state = await api.get<OpenAIAuthStatus>("/api/auth/openai/status");
+    setOpenAIAuth(state);
+    return state;
+  }
+
+  async function connectOpenAI() {
+    setOpenAIAuthBusy(true);
+    setOpenAIAuthMsg("");
+    try {
+      const state = await startOpenAIBrowserAuth(
+        () => api.post<OpenAIAuthStart>("/api/auth/openai/start"),
+        loadOpenAIAuth,
+        () => window.open("about:blank", "bauer-openai-auth", "popup,width=560,height=760"),
+      );
+      if (!state.connected) throw new Error(state.error || "Login OpenAI não concluído.");
+      setOpenAIAuthMsg("OpenAI conectada. Agora escolha um modelo do provider openai.");
+    } catch (error) {
+      setOpenAIAuthMsg(String(error));
+      await loadOpenAIAuth().catch(() => undefined);
+    } finally {
+      setOpenAIAuthBusy(false);
+    }
+  }
+
+  async function disconnectOpenAI() {
+    setOpenAIAuthBusy(true);
+    setOpenAIAuthMsg("");
+    try {
+      await api.post("/api/auth/openai/logout");
+      await loadOpenAIAuth();
+      setOpenAIAuthMsg("Credencial OpenAI removida.");
+    } catch (error) {
+      setOpenAIAuthMsg(String(error));
+    } finally {
+      setOpenAIAuthBusy(false);
+    }
+  }
+
   async function load() {
     api.get<{ config: Json }>("/api/config").then((r) => setConfig(r.config)).catch(() => {});
     api.get<{ profiles: string[]; active: string | null }>("/api/config/profiles")
       .then((r) => { setProfiles(r.profiles); setActiveProfile(r.active); }).catch(() => {});
   }
   useEffect(() => { load(); }, []);
+  useEffect(() => { loadOpenAIAuth().catch(() => undefined); }, []);
 
   async function save() {
     if (!editing) return;
@@ -129,6 +177,44 @@ export default function Config() {
           {auth.state.user?.google_linked && <div className="tag green" style={{ marginTop: 10, display: "inline-block" }}>Google vinculado</div>}
           {accountMsg && <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{accountMsg}</div>}
         </div>}
+
+        {/* Provider OpenAI — reutiliza o OAuth experimental do Bauer CLI. */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                OPENAI / CHATGPT VIA BROWSER <span className="tag" style={{ marginLeft: 6 }}>experimental</span>
+              </div>
+              <div>
+                {openAIAuth?.connected ? "OpenAI conectada" : "Autentique o provider OpenAI no navegador"}
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4, maxWidth: 720 }}>
+                Usa o mesmo fluxo de <code>bauer auth login -p openai</code>. Tokens ficam criptografados no servidor e nunca passam pelo frontend. Para a API oficial, <code>OPENAI_API_KEY</code> continua sendo o caminho recomendado.
+              </div>
+              {openAIAuth?.connected && (
+                <div className="tag green" style={{ marginTop: 8, display: "inline-block" }}>
+                  {openAIAuth.auth_type === "api_key" ? "API key de sessão" : "ChatGPT OAuth"}
+                  {openAIAuth.expired ? " · expirada" : " · ativa"}
+                </div>
+              )}
+            </div>
+            {openAIAuth?.connected ? (
+              <button className="btn danger" onClick={disconnectOpenAI} disabled={openAIAuthBusy}>
+                <i className="ti ti-unlink" /> Desconectar
+              </button>
+            ) : (
+              <button className="btn primary" onClick={connectOpenAI} disabled={openAIAuthBusy}>
+                <i className={openAIAuthBusy ? "ti ti-loader-2 spin" : "ti ti-brand-openai"} />
+                {openAIAuthBusy ? "Aguardando…" : "Autenticar no browser"}
+              </button>
+            )}
+          </div>
+          {(openAIAuthMsg || openAIAuth?.error) && (
+            <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+              {openAIAuthMsg || openAIAuth?.error}
+            </div>
+          )}
+        </div>
 
         {/* Segredos de provider (.env) */}
         <div className="card" style={{ marginBottom: 16 }}>

@@ -56,10 +56,26 @@ Status: concluído
 - [x] Revisar segurança contra a SPEC.
 - [x] Smoke test Docker no Windows.
 
+## 7. OpenAI via browser em Settings
+
+Status: concluído
+
+- [x] Validar limites do fluxo na documentação oficial OpenAI.
+- [x] Atualizar SPEC e arquitetura antes do código.
+- [x] Extrair primitivas PKCE/complete reutilizáveis do `AuthManager`.
+- [x] Implementar broker local com callback 1455, state e TTL.
+- [x] Adicionar endpoints protegidos de status/start/logout.
+- [x] Adicionar card e popup/polling em Settings.
+- [x] Persistir `BAUER_HOME` no volume Docker e publicar callback.
+- [x] Criar testes backend/frontend/Docker e documentação.
+- [x] Rodar gates e smoke test Windows.
+
 ## Condições de STOP
 
 - não implementar cadastro aberto sem bootstrap;
 - não enviar a API key para o frontend;
 - não persistir senha, sessão ou ID token em texto puro;
 - não habilitar Google sem validação de `aud`, assinatura e `email_verified`;
+- não apresentar o OAuth ChatGPT experimental como autenticação oficial da API;
+- não entregar token, verifier ou ID token OpenAI à SPA;
 - não avançar ao próximo bloco se os testes do bloco atual falharem.

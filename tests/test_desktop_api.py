@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -561,6 +561,39 @@ class TestConfigEndpoints:
     def test_profile_use(self, env):
         r = env["client"].post("/api/config/profiles/prod/use")
         assert r.json()["active"] == "prod"
+
+
+class TestOpenAIBrowserAuthEndpoints:
+    def test_status_start_and_logout_use_injected_broker(self, tmp_path):
+        broker = MagicMock()
+        broker.status.return_value = {
+            "experimental": True,
+            "connected": False,
+            "status": "disconnected",
+        }
+        broker.start.return_value = {
+            "authorization_url": "https://auth.openai.com/oauth/authorize?state=safe",
+            "expires_at": 1234,
+        }
+        broker.logout.return_value = True
+        app = FastAPI()
+        app.include_router(
+            da.build_desktop_router(
+                runtime_root=tmp_path / "runtime",
+                openai_auth_broker=broker,
+            )
+        )
+        client = TestClient(app)
+
+        status = client.get("/api/auth/openai/status")
+        started = client.post("/api/auth/openai/start")
+        logged_out = client.post("/api/auth/openai/logout")
+
+        assert status.json()["experimental"] is True
+        assert started.json()["authorization_url"].startswith("https://auth.openai.com/")
+        assert logged_out.json() == {"disconnected": True}
+        broker.start.assert_called_once_with()
+        broker.logout.assert_called_once_with()
 
 
 class TestLogsEndpoint:

@@ -47,6 +47,7 @@ VOLUME ["/root/.ollama"]
 
 # Porta padrão do bauer serve
 EXPOSE 8000
+EXPOSE 1455
 
 ENV PYTHONUNBUFFERED=1
 CMD ["/start.sh"]

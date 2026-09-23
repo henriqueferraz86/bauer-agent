@@ -109,6 +109,36 @@ senha e a chave de bootstrap. A recuperação revoga todas as sessões anteriore
 Uma conta criada somente com Google também pode definir sua primeira senha por
 esse fluxo.
 
+## Autenticar o provider OpenAI pelo browser
+
+Este fluxo é diferente do login do administrador do cockpit. Ele conecta o
+provider usado pelos modelos:
+
+1. entre no cockpit e abra **Settings** (ou **Config**);
+2. no card **OpenAI / ChatGPT via browser**, clique em **Autenticar no browser**;
+3. conclua o login na janela da OpenAI;
+4. aguarde o card mostrar **OpenAI conectada**;
+5. abra **Modelos**, filtre por `openai` e escolha o modelo.
+
+O botão reutiliza o mesmo fluxo de `bauer auth login -p openai`: Authorization
+Code + PKCE, callback em `http://localhost:1455/auth/callback` e `TokenStore`
+criptografado. Access token, refresh token, ID token e verifier nunca são
+devolvidos ao frontend.
+
+> **Experimental:** a documentação oficial da OpenAI define API key ou workload
+> identity para a API pública. Este login usa o fluxo ChatGPT/Codex já existente
+> no Bauer e pode depender da assinatura ChatGPT. Para a API oficial e billing
+> de projeto, continue usando `OPENAI_API_KEY`.
+
+No Compose, a porta 1455 é publicada somente no loopback do host e as
+credenciais ficam em `/app/memory/bauer-home`, dentro do volume
+`bauer_memory`. O popup precisa estar no mesmo computador do Docker. Para um
+servidor remoto/headless, use o CLI com `--no-browser` ou uma API key.
+
+Se o browser bloquear a janela, permita popups para `http://localhost:8000`.
+Se a porta estiver ocupada, encerre outro login `bauer auth`/Codex e tente de
+novo.
+
 ## API e automações externas
 
 O login web não remove a autenticação tradicional:

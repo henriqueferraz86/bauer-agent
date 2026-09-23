@@ -31,7 +31,7 @@ def test_compose_exposes_the_four_bauer_surfaces_without_exposing_ollama():
     services = _compose()["services"]
 
     assert {"ollama", "ollama-init", "bauer", "agentos", "agent-ui"} <= services.keys()
-    assert services["bauer"]["ports"] == ["8000:8000"]
+    assert services["bauer"]["ports"] == ["8000:8000", "127.0.0.1:1455:1455"]
     assert services["agentos"]["ports"] == ["7777:7777"]
     assert services["agent-ui"]["ports"] == ["3000:3000"]
     assert "ports" not in services["ollama"]
@@ -44,6 +44,15 @@ def test_agentos_shares_runtime_and_waits_for_ollama_init():
     assert agentos["depends_on"]["ollama-init"]["condition"] == "service_completed_successfully"
     volume_targets = {_volume_target(item) for item in agentos["volumes"]}
     assert {"/app/workspace", "/app/memory", "/app/logs"} <= volume_targets
+    assert "BAUER_HOME=/app/memory/bauer-home" in agentos["environment"]
+
+
+def test_bauer_persists_openai_oauth_and_limits_callback_to_loopback():
+    bauer = _compose()["services"]["bauer"]
+
+    assert "127.0.0.1:1455:1455" in bauer["ports"]
+    assert "BAUER_HOME=/app/memory/bauer-home" in bauer["environment"]
+    assert "BAUER_OAUTH_CALLBACK_HOST=0.0.0.0" in bauer["environment"]
 
 
 def test_config_binds_do_not_create_missing_host_paths_as_directories():

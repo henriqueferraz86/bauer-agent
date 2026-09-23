@@ -281,6 +281,7 @@ def build_desktop_router(
     logs_dir: Optional[Path] = None,
     start_loop: Optional[Callable[[str, Optional[str], Optional[Path]], Dict[str, Any]]] = None,
     kernel: Any | None = None,
+    openai_auth_broker: Any | None = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
 
@@ -299,6 +300,11 @@ def build_desktop_router(
     _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
     _logs_dir = logs_dir or (Path.cwd() / "logs")
     _team_kernel = kernel
+    if openai_auth_broker is None:
+        from .openai_browser_auth import OpenAIBrowserAuthBroker
+
+        openai_auth_broker = OpenAIBrowserAuthBroker()
+    _openai_auth = openai_auth_broker
 
     try:
         from .config_loader import ContinuousAutonomySection, load_config
@@ -355,6 +361,7 @@ def build_desktop_router(
     @router.on_event("shutdown")
     def _shutdown_continuous_autonomy() -> None:
         _continuous.close()
+        _openai_auth.close()
 
     # ── Projetos ──────────────────────────────────────────────────────────
     from . import projects_registry as pr
@@ -1547,6 +1554,30 @@ def build_desktop_router(
     def use_profile(name: str):
         cp.set_active_profile(name)
         return {"active": name}
+
+    # ── Provider auth: OpenAI/ChatGPT browser (experimental) ─────────────
+    @router.get("/auth/openai/status")
+    def openai_auth_status():
+        return _openai_auth.status()
+
+    @router.post("/auth/openai/start")
+    def openai_auth_start():
+        from .openai_browser_auth import OpenAIBrowserAuthBusy
+
+        try:
+            return _openai_auth.start()
+        except OpenAIBrowserAuthBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - resposta nunca expõe URL/token
+            logger.warning("openai browser auth start failed (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Não foi possível iniciar o login OpenAI.",
+            ) from exc
+
+    @router.post("/auth/openai/logout")
+    def openai_auth_logout():
+        return {"disconnected": bool(_openai_auth.logout())}
 
     # ── Logs ──────────────────────────────────────────────────────────────
     @router.get("/logs/{name}/tail")

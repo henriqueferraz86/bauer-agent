@@ -35,6 +35,10 @@ SPA deixa de armazená-la depois da migração para sessão.
 - migração automática: remover `bauer.apiKey` do `localStorage` após login;
 - recuperação/troca de senha com a API key de bootstrap;
 - documentação de configuração local, Docker e Google.
+- autenticação experimental do provider OpenAI/ChatGPT pelo browser em
+  **Settings**, reutilizando o fluxo OAuth já existente no Bauer;
+- callback local com PKCE e `state`, sem entregar tokens à SPA;
+- persistência criptografada da credencial OpenAI no volume do Docker.
 
 ## Fora de escopo
 
@@ -45,6 +49,9 @@ SPA deixa de armazená-la depois da migração para sessão.
 - transformar a API key existente em token de usuário;
 - armazenar senha, ID token Google ou sessão em `localStorage`;
 - remover a autenticação por `X-API-Key` das integrações existentes.
+- declarar o OAuth de ChatGPT como mecanismo oficial da API pública OpenAI;
+- suportar callback OAuth em um servidor remoto diferente da máquina onde o
+  navegador está aberto.
 
 ## Skills obrigatórias
 
@@ -53,6 +60,7 @@ SPA deixa de armazená-la depois da migração para sessão.
 - fastapi-endpoint
 - security-review
 - test-strategy
+- openai-docs
 
 ## Sub-agents recomendados
 
@@ -81,6 +89,14 @@ SPA deixa de armazená-la depois da migração para sessão.
 9. A API key válida continua autorizando essas rotas sem cookie.
 10. A SPA bloqueia as telas internas até concluir setup ou login.
 11. Após autenticar, a SPA remove a chave legada de `localStorage`.
+12. Settings mostra o estado da autenticação OpenAI e permite iniciar ou
+    remover a credencial pelo browser.
+13. `POST /api/auth/openai/start` inicia uma única transação PKCE e devolve
+    somente a URL de autorização; nunca devolve token ou verifier.
+14. O callback em `localhost:1455/auth/callback` valida `state`, troca o código
+    no backend e persiste a credencial criptografada.
+15. `GET /api/auth/openai/status` informa apenas estado, tipo, expiração e
+    disponibilidade; `POST /api/auth/openai/logout` remove a credencial.
 
 ## Requisitos não funcionais
 
@@ -96,6 +112,12 @@ SPA deixa de armazená-la depois da migração para sessão.
 - nenhum segredo aparece em URL, logs, eventos, respostas ou bundle frontend;
 - falha auxiliar do Google não derruba login local nem o processo do serve;
 - banco e cookies mantêm compatibilidade entre Linux e Windows.
+- estado/verifier OAuth expiram em até cinco minutos e existem somente em
+  memória;
+- access token, refresh token, ID token e API key nunca aparecem em resposta,
+  URL da aplicação, log ou `localStorage`;
+- o callback aceita somente `localhost:1455`, usa `state` constante-time e a
+  porta fica publicada no Docker somente para esse callback.
 
 ## Configuração
 
@@ -129,6 +151,12 @@ SPA deixa de armazená-la depois da migração para sessão.
 9. Testes de backend e frontend cobrem os fluxos críticos.
 10. A documentação ensina setup, Google Client ID, login, recuperação e
     desativação controlada.
+11. O botão OpenAI abre o browser, o frontend acompanha o status e exibe sucesso
+    sem receber segredo.
+12. Callback com state incorreto/expirado é rejeitado e não grava credencial.
+13. A credencial sobrevive a `docker compose up --force-recreate`.
+14. O fluxo é rotulado como experimental e a UI mantém API key como caminho
+    oficial para a OpenAI API.
 
 ## Riscos
 
@@ -139,6 +167,9 @@ SPA deixa de armazená-la depois da migração para sessão.
 - configuração incorreta do Client ID Google;
 - banco de sessão fora de volume persistente no Docker;
 - regressão em clientes atuais que usam `X-API-Key`.
+- porta 1455 ocupada ou não publicada no Docker;
+- confusão entre assinatura ChatGPT e billing da API OpenAI;
+- dependência de fluxo OAuth não documentado publicamente pela OpenAI.
 
 ## Plano de validação
 
@@ -149,6 +180,8 @@ SPA deixa de armazená-la depois da migração para sessão.
 - build da SPA e verificação do bundle;
 - suíte completa, Ruff crítico e informativo;
 - smoke test Docker em Windows nas portas 8000/7777/3000.
+- testes do broker OAuth sem rede, endpoints protegidos e popup/polling;
+- smoke da imagem com porta 1455 e diretório de tokens persistente.
 
 ## Referências de segurança
 
@@ -160,3 +193,6 @@ SPA deixa de armazená-la depois da migração para sessão.
   https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
 - OWASP Session Management:
   https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html
+- OpenAI API authentication (o caminho oficial usa API key ou workload
+  identity; o OAuth de ChatGPT desta feature é experimental):
+  https://developers.openai.com/api/reference/overview#authentication

@@ -76,9 +76,12 @@ services:
       - bauer_logs:/app/logs
     ports:
       - "8000:8000"                        # único serviço exposto
+      - "127.0.0.1:1455:1455"              # callback local do login OpenAI/ChatGPT
     environment:
       - PYTHONUNBUFFERED=1
       - OLLAMA_HOST=http://ollama:11434    # Ollama interno
+      - BAUER_HOME=/app/memory/bauer-home # tokens OAuth persistem no volume
+      - BAUER_OAUTH_CALLBACK_HOST=0.0.0.0 # publicado só no loopback do host
     depends_on:
       ollama:
         condition: service_healthy
@@ -118,6 +121,7 @@ services:
       - BAUER_CONFIG=/app/config.yaml
       - BAUER_WORKSPACE=/app/workspace
       - BAUER_RUNTIME_ROOT=/app/memory/runtime
+      - BAUER_HOME=/app/memory/bauer-home
       - AGENT_OS_HOST=0.0.0.0
       - AGENT_OS_PORT=7777
       - AGENT_OS_CORS_ORIGINS=${AGENT_OS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}

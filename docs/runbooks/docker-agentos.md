@@ -7,6 +7,7 @@ Runbook oficial para instalar, operar, atualizar e diagnosticar o stack Docker.
 | Serviço | Porta | Função |
 |---|---:|---|
 | \`bauer-agent\` | \`8000\` | API REST e runtime governado |
+| \`bauer-agent\` | \`1455\` (somente localhost) | Callback do login OpenAI pelo browser |
 | \`bauer-agentos\` | \`7777\` | AgentOS/Agno |
 | \`bauer-agent-ui\` | \`3000\` | Agent UI oficial do Agno |
 | \`bauer-ollama\` | interna | Modelos LLM |
