@@ -121,6 +121,19 @@ def _rollback(root: Path, previous_head: str, snapshot: dict[Path, bytes | None]
     _restore(snapshot)
 
 
+def _repair_editable_install(root: Path) -> None:
+    """Restabelece o pacote local se o sincronizador removeu o link editable."""
+    repaired = _run(
+        [sys.executable, "-m", "pip", "install", "--no-deps", "--editable", str(root)],
+        cwd=root,
+    )
+    if repaired.returncode != 0:
+        console.print(
+            "[yellow]Não foi possível restaurar o pacote local no ambiente virtual; "
+            "execute `python -m pip install --no-deps -e <instalação>` manualmente.[/yellow]"
+        )
+
+
 def _abort_update(
     *,
     root: Path,
@@ -130,6 +143,10 @@ def _abort_update(
     result: subprocess.CompletedProcess[str],
 ) -> None:
     _rollback(root, previous_head, snapshot)
+    # `uv sync` pode remover o editable antes de falhar (por exemplo, quando
+    # um `.pyd` está bloqueado no Windows). Repare-o para que `bauer update`
+    # continue executável no próximo comando.
+    _repair_editable_install(root)
     console.print(
         f"[red]{_failure_message(step, result)}[/red]\n"
         "[yellow]A atualização foi revertida; configurações e memória foram preservadas.[/yellow]"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,10 @@ def test_update_faz_rollback_se_a_sincronizacao_falhar(tmp_path: Path, monkeypat
     assert exc.value.exit_code == 1
     assert config.read_text(encoding="utf-8") == "model: funcionando\n"
     assert ["git", "reset", "--hard", "old-head"] in calls
+    assert any(
+        call[:5] == [sys.executable, "-m", "pip", "install", "--no-deps"]
+        for call in calls
+    )
 
 
 def test_update_recusa_diretorio_sem_git(tmp_path: Path, monkeypatch):

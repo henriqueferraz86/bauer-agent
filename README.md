@@ -142,6 +142,17 @@ repostos automaticamente.
 > estiver carregado. Se ainda houver bloqueio, encerre manualmente o processo
 > que o mantém aberto e repita o comando; não é necessário apagar `.venv`.
 
+> **Se aparecer `ModuleNotFoundError: No module named 'bauer'` depois de uma
+> atualização interrompida:** restaure apenas o link editable do pacote (sem
+> reinstalar dependências) e tente novamente:
+>
+> ```powershell
+> $root = "$env:LOCALAPPDATA\BauerAgent"
+> $py = "$root\.venv\Scripts\python.exe"
+> & $py -m pip install --no-deps --editable $root
+> bauer update
+> ```
+
 No chat web, o botão do microfone envia a fala para o mesmo STT do `bauer
 agent` e reproduz a resposta por TTS quando o provider de voz está disponível.
 O idioma padrão da transcrição é português; use `STT_LANGUAGE` vazio para
