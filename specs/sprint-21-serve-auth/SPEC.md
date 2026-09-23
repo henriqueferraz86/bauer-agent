@@ -41,8 +41,8 @@ SPA deixa de armazená-la depois da migração para sessão.
 - persistência criptografada da credencial OpenAI no volume do Docker.
 - após login OpenAI concluído, selecionar automaticamente o provider `openai` e
   o modelo `gpt-5.6-luna`, sem exigir uma segunda ação no menu de modelos;
-- usar `reasoning.effort=low` no backend ChatGPT para o Luna, reduzindo a
-  latência padrão sem retirar a possibilidade de tarefas com raciocínio maior.
+- usar `reasoning.effort=high` no backend ChatGPT para o Luna, priorizando a
+  qualidade das respostas;
 
 ## Fora de escopo
 
@@ -105,7 +105,7 @@ SPA deixa de armazená-la depois da migração para sessão.
     se a conta não aceitar o modelo, a autenticação permanece válida e o
     endpoint retorna um aviso sanitizado para o frontend.
 17. Chamadas ChatGPT Responses para `gpt-5.6-luna` enviam explicitamente
-    `reasoning.effort=low`; chamadas de outros modelos preservam o esforço
+    `reasoning.effort=high`; chamadas de outros modelos preservam o esforço
     configurado/default existente.
 
 ## Requisitos não funcionais

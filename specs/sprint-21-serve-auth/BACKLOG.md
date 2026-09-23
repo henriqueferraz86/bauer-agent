@@ -88,9 +88,11 @@ Status: concluído
       fallback/retry nos runs do Windows.
 - [x] Comparar comportamento com a documentação oficial de `gpt-5.6-luna` e
       `reasoning.effort`.
-- [x] Enviar esforço baixo para Luna no backend ChatGPT.
+- [x] Enviar esforço alto (`reasoning.effort=high`) para Luna no backend
+      ChatGPT.
 - [x] Selecionar `openai/gpt-5.6-luna` automaticamente ao concluir OAuth.
 - [x] Exibir aviso sanitizado quando Luna não estiver disponível na conta.
 - [x] Cobrir payload, seleção e fallback com testes.
 - [x] Rebuildar o Docker e medir novamente o tempo de resposta: HTTP 200,
-      primeiro byte em ~2,49 s e conclusão em ~2,49 s.
+      primeiro byte em ~2,49 s e conclusão em ~2,49 s (antes da troca para
+      esforço alto).
