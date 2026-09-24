@@ -64,11 +64,18 @@ def test_config_binds_do_not_create_missing_host_paths_as_directories():
             for volume in services[service_name]["volumes"]
             if isinstance(volume, dict)
         }
-        for target in ("/app/config.yaml", "/app/models.yaml"):
-            mount = bind_mounts[target]
-            assert mount["type"] == "bind"
-            assert mount["read_only"] is True
-            assert mount["bind"]["create_host_path"] is False
+        # config.yaml precisa ser gravável: o Server persiste pelo navegador
+        # a autonomia contínua e os alvos monitorados. models.yaml continua
+        # somente leitura, pois é catálogo de entrada da imagem.
+        config_mount = bind_mounts["/app/config.yaml"]
+        assert config_mount["type"] == "bind"
+        assert config_mount["read_only"] is False
+        assert config_mount["bind"]["create_host_path"] is False
+
+        models_mount = bind_mounts["/app/models.yaml"]
+        assert models_mount["type"] == "bind"
+        assert models_mount["read_only"] is True
+        assert models_mount["bind"]["create_host_path"] is False
 
 
 def test_agent_ui_is_built_from_official_repo_and_has_update_controls():
