@@ -45,6 +45,7 @@ def build_agentos_app(
     try:
         from .config_loader import load_config
         from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+        from .core.runtime.agent_spec import AgentSpec
         from .core.runtime.agent_spec import agno_agent_spec_from_bauer
         from .core.runtime.agent_registry import RuntimeAgentRegistry
         from .core.runtime.team_registry import TeamRegistry
@@ -100,14 +101,17 @@ def build_agentos_app(
         ) if team_roots else TeamRegistry(agent_registry=registry)
         teams: list[Any] = []
         for team_spec in teams_registry.list():
-            members = [registry.get(agent_id) for agent_id in team_spec.agents]
-            members = [item for item in members if item is not None and item.runtime_adapter == "agno"]
+            members: list[AgentSpec] = []
+            for agent_id in team_spec.agents:
+                item = registry.get(agent_id)
+                if item is not None and item.runtime_adapter == "agno":
+                    members.append(item)
             if not members:
                 logger.warning("ignorando time %s sem membros Agno", team_spec.id)
                 continue
             supervisor_id = team_spec.coordinator or team_spec.agents[0]
-            supervisor = registry.get(supervisor_id) or members[0]
-            raw_team = {
+            supervisor: AgentSpec = registry.get(supervisor_id) or members[0]
+            raw_team: dict[str, Any] = {
                 "id": team_spec.id,
                 "name": team_spec.name,
                 "mode": str(team_spec.coordination.get("mode") or "coordinate"),
