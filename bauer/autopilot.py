@@ -96,6 +96,9 @@ def _valid_goal_gate_receipt(
     require_known_time: bool = True,
 ) -> bool:
     """A DONE materialized task only proves goal completion with gate evidence."""
+    cost_usd = receipt.get("cost_usd") if isinstance(receipt, dict) else None
+    tool_calls = receipt.get("tool_calls") if isinstance(receipt, dict) else None
+    elapsed_seconds = receipt.get("elapsed_seconds") if isinstance(receipt, dict) else None
     return bool(
         isinstance(receipt, dict)
         and receipt.get("schema") == "bauer.dispatch-gate-receipt.v1"
@@ -110,18 +113,18 @@ def _valid_goal_gate_receipt(
             not require_known_cost
             or (
                 receipt.get("cost_known") is True
-                and isinstance(receipt.get("cost_usd"), (float, int))
-                and receipt.get("cost_usd") >= 0
+                and isinstance(cost_usd, (float, int))
+                and cost_usd >= 0
             )
         )
         and (
             not require_known_tools
-            or isinstance(receipt.get("tool_calls"), int) and receipt.get("tool_calls") >= 0
+            or isinstance(tool_calls, int) and tool_calls >= 0
         )
         and (
             not require_known_time
-            or isinstance(receipt.get("elapsed_seconds"), (int, float))
-            and receipt.get("elapsed_seconds") >= 0
+            or isinstance(elapsed_seconds, (int, float))
+            and elapsed_seconds >= 0
         )
         and isinstance(receipt.get("gate_names"), list)
         and receipt["gate_names"]

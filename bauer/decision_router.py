@@ -78,11 +78,12 @@ class JevDecisionClient:
     ) -> RouteDecision:
         if not self.config.api_key:
             raise RuntimeError("TYPESAFE_API_KEY não configurada")
+        catalog = candidates or {}
         state: str | dict[str, Any] = message
         if candidates or memory:
             state = {
                 "message": message,
-                "candidates": candidates or {},
+                "candidates": catalog,
                 "similar_decisions": memory or [],
             }
         questions: dict[str, dict[str, Any]] = {
@@ -135,19 +136,19 @@ class JevDecisionClient:
                 },
             },
         }
-        if (candidates or {}).get("teams"):
+        if catalog.get("teams"):
             questions["team"] = {
                 "type": "choice",
                 "instructions": "Escolha um time do catálogo quando a tarefa exigir colaboração.",
-                "criteria": {item: item for item in candidates["teams"]},
+                "criteria": {item: item for item in catalog["teams"]},
             }
-        if (candidates or {}).get("agents"):
+        if catalog.get("agents"):
             questions["agent"] = {
                 "type": "choice",
                 "instructions": "Escolha o agente mais adequado do catálogo.",
-                "criteria": {item: item for item in candidates["agents"]},
+                "criteria": {item: item for item in catalog["agents"]},
             }
-        for index, tool in enumerate((candidates or {}).get("tools", [])):
+        for index, tool in enumerate(catalog.get("tools", [])):
             questions[f"{_TOOL_QUESTION_PREFIX}{index}"] = {
                 "type": "noul",
                 "instructions": f"A ferramenta '{tool}' é necessária para atender esta tarefa?",
@@ -172,7 +173,7 @@ class JevDecisionClient:
         )
         response.raise_for_status()
         payload = response.json()
-        return self._parse(payload, candidates=candidates or {})
+        return self._parse(payload, candidates=catalog)
 
     @staticmethod
     def _parse(payload: Any, *, candidates: dict[str, list[str]] | None = None) -> RouteDecision:
