@@ -64,11 +64,10 @@ from .server_observability import (
 # BAUER_GATEWAY_TURN_TIMEOUT do gateway (channel_base.py), aplicada aqui pro
 # /stream do bauer serve.
 #
-# 300s (5min), nao 120s: trabalho de dev real (scaffolding, varios arquivos,
-# builds) passa de 2min com modelos mais lentos (ex. deepseek via OpenRouter
-# fazendo varias rodadas de tool call) — o timeout curto cortava turnos que
-# estavam progredindo normalmente, so mais devagar.
-_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "300"))
+# 3600s (60min): tarefas longas de desenvolvimento podem exigir muitas
+# rodadas de tool call. O prazo continua configurável por ambiente para
+# instalações que precisem de um limite menor ou maior.
+_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "3600"))
 
 # Teto de chars do PROJECT.md auto-injetado por turno (B da "memória por
 # projeto"). Cabeçalho, não o arquivo inteiro: é pago a cada turno e prompt

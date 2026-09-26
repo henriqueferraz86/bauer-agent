@@ -88,6 +88,7 @@ services:
       - PYTHONUNBUFFERED=1
       - OLLAMA_HOST=http://ollama:11434    # Ollama interno
       - BAUER_HOME=/app/memory/bauer-home # tokens OAuth persistem no volume
+      - BAUER_SERVE_TURN_TIMEOUT=3600 # limite do stream: 60 minutos
       - BAUER_OAUTH_CALLBACK_HOST=0.0.0.0 # publicado só no loopback do host
     depends_on:
       ollama:

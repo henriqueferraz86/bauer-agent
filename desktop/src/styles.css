@@ -171,6 +171,11 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 }
 .toolcall .tlabel { color: var(--text); font-weight: 500; }
 .toolcall .tname { font-family: var(--mono); color: var(--text-3); font-size: 10px; }
+.tool-activity-list { margin: 8px 0; max-width: 100%; }
+.tool-activity-heading { color: var(--text-3); font-size: 10px; display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+.tool-activity-older { color: var(--text-4); font-size: 10px; margin: 2px 0 4px 4px; }
+.toolcall.active { border-color: var(--accent-border); background: var(--accent-bg); }
+.toolcall-state { margin-left: auto; color: var(--accent); font-size: 10px; }
 .skillcall {
   background: var(--accent-bg); border: 1px solid var(--accent-border); border-radius: 6px;
   padding: 6px 10px; margin: 6px 0; display: flex; align-items: center; gap: 8px; font-size: 11px;
