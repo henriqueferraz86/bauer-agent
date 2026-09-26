@@ -53,6 +53,15 @@ def report_llm_cost(provider: str, model: str, usage: dict[str, Any] | None) -> 
     desconhecido). NUNCA levanta exceção — medição não pode quebrar o loop.
     """
     if not usage:
+        # The turn caller invokes report_llm_cost once per completed provider
+        # call. Notify an active accounting sink about missing usage instead
+        # of silently making the call indistinguishable from a free call.
+        sink = cost_sink.get()
+        if sink is not None:
+            try:
+                sink(provider, model, {}, 0.0)
+            except Exception as exc:  # noqa: BLE001 — accounting is auxiliary
+                logger.debug("cost sink falhou (ignorando usage ausente): %s", exc)
         return 0.0
     try:
         from .usage_pricing import estimate_cost_usd

@@ -19,6 +19,7 @@ execução permanecem intocados até a migração (Sprint 6 do plano).
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -322,6 +323,7 @@ class BauerKernel:
 
         self.runs.start_run(run.id)
         trajectory.append("running")
+        started_monotonic = time.monotonic()
 
         chunks: list[str] = []
         #: metadados do run (tool_calls_count, cost) — SÓ de run.completed/started.
@@ -349,6 +351,7 @@ class BauerKernel:
                         yield {"event": "message.delta", "content": content}
                     elif kind == "run.failed":
                         error = str(evt.get("error") or "executor failed")
+                        meta.update(evt)
                         break
                     elif kind in ("run.completed", "run.started"):
                         meta.update(evt)  # o "final" do kernel já sinaliza
@@ -391,6 +394,10 @@ class BauerKernel:
                 # turno. Se a thread conclui PRIMEIRO, um fail_run cru apagava o
                 # `completed` de um trabalho que deu certo. É a corrida medida no
                 # CI em 2026-07-30 e já resolvida em `_run_to_completion`.
+                failed_result = {k: v for k, v in meta.items()
+                                 if k not in {"event", "status", "run_id", "runtime_adapter"}}
+                self._persist_execution_metrics(run.id, failed_result)
+                self._record_elapsed_since(run.id, started_monotonic)
                 self._fail_se_nao_terminal(run.id, error, trajectory)
                 yield {"event": "final",
                       "run": self._result(run.id, session_id, trajectory, decision=decision,
@@ -399,6 +406,7 @@ class BauerKernel:
 
             result = {"output": "".join(chunks), **{k: v for k, v in meta.items()
                                                      if k not in {"event", "status", "run_id", "runtime_adapter"}}}
+            self._persist_execution_metrics(run.id, result)
 
             # Dentro do pulso de propósito: os gates são a outra metade do
             # problema. AcceptanceGate e TestsGate valem 600s cada por default —
@@ -407,6 +415,7 @@ class BauerKernel:
             if self.evaluator is not None:
                 verdict = self._avaliar(run, request, result, trajectory)
                 if not getattr(verdict, "passed", True):
+                    self._record_elapsed_since(run.id, started_monotonic)
                     self._fail_se_nao_terminal(
                         run.id, f"quality gate: {getattr(verdict, 'reason', '')}", trajectory)
                     yield {"event": "final",
@@ -414,10 +423,14 @@ class BauerKernel:
                                               output=result.get("output"))}
                     return
 
+            self._record_elapsed_since(run.id, started_monotonic)
             cost = self._extract_cost(result)
             self.runs.complete_run(run.id, output={"output": result.get("output")},
                                    cost_estimate=cost,
-                                   tool_calls_count=int(result.get("tool_calls_count") or 0))
+                                   tool_calls_count=int(result.get("tool_calls_count") or 0),
+                                   usage_known=result.get("usage_known"),
+                                   llm_calls_count=result.get("llm_calls_count"),
+                                   elapsed_seconds=result.get("elapsed_seconds"))
             trajectory.append("completed")
             self._record_cost(run, cost)
 
@@ -552,6 +565,7 @@ class BauerKernel:
     def _run_to_completion(self, run: Any, payload: dict[str, Any], session_id: str,
                            trajectory: list[str], *, executor: Any | None,
                            adapter: Any | None, decision: Any, request: Any) -> KernelRun:
+        started_monotonic = time.monotonic()
         max_retries = max(0, int(getattr(request, "max_retries", 0) or 0))
         backoff_s = max(0.0, float(getattr(request, "retry_backoff_s", 0.0) or 0.0))
         fallbacks = list(getattr(request, "fallback_adapters", None) or [])
@@ -593,6 +607,10 @@ class BauerKernel:
                     try:
                         result = (executor(payload) if executor is not None
                                   else adapter.run_agent(payload)) or {}
+                        # Preserve metering before retries, cancellation or
+                        # evaluator gates can terminate the run. The final
+                        # terminal transition measures wall time including gates.
+                        self._persist_execution_metrics(run.id, result)
                         if result.get("status") == "cancelled":
                             # Interrupção deliberada no MEIO da execução
                             # (kill-switch entre rodadas, Ctrl+C). NÃO é falha:
@@ -621,7 +639,6 @@ class BauerKernel:
                     attempt += 1
                     self._transition(run, "retrying", trajectory)
                     if backoff_s > 0:
-                        import time
                         time.sleep(backoff_s * attempt)  # backoff linear
                     self._transition(run, "queued", trajectory)
                     self.runs.start_run(run.id)
@@ -658,6 +675,7 @@ class BauerKernel:
                 if switched:
                     continue
 
+                self._record_elapsed_since(run.id, started_monotonic)
                 self._fail_se_nao_terminal(run.id, last_error, trajectory)
                 return self._result(run.id, session_id, trajectory, decision=decision,
                                     output=result.get("output"))
@@ -690,6 +708,7 @@ class BauerKernel:
             if esteril or replans_used >= max_replans:
                 extra = (f" (replan {replans_used} devolveu a mesma saída — o "
                          f"feedback não foi incorporado)" if esteril else "")
+                self._record_elapsed_since(run.id, started_monotonic)
                 self.runs.fail_run(run.id, f"quality gate: {reason}{extra}")
                 self._release_budget(run.id)
                 trajectory.append("failed")
@@ -717,10 +736,14 @@ class BauerKernel:
             payload = {**payload, "replan_feedback": reason,
                        "replan_attempt": replans_used}
 
+        self._record_elapsed_since(run.id, started_monotonic)
         cost = self._extract_cost(result)
         self.runs.complete_run(run.id, output={"output": result.get("output")},
                                cost_estimate=cost,
-                               tool_calls_count=int(result.get("tool_calls_count") or 0))
+                               tool_calls_count=int(result.get("tool_calls_count") or 0),
+                               usage_known=result.get("usage_known"),
+                               llm_calls_count=result.get("llm_calls_count"),
+                               elapsed_seconds=result.get("elapsed_seconds"))
         trajectory.append("completed")
         self._record_cost(run, cost)
         return self._result(run.id, session_id, trajectory, decision=decision,
@@ -759,6 +782,19 @@ class BauerKernel:
         self._publish("run.validation.started", run, status="evaluating",
                       data={"gates": nomes})
         verdict = self.evaluator.evaluate(run_id=run.id, request=request, result=result)
+        gate_results = [
+            {
+                "gate": str(getattr(item, "gate", "gate")),
+                "passed": bool(getattr(item, "passed", False)),
+                "reason": str(getattr(item, "reason", "") or ""),
+            }
+            for item in getattr(verdict, "gates", [])
+        ]
+        self.runs.update_run(
+            run.id,
+            validation_passed=bool(getattr(verdict, "passed", False)),
+            validation_results=gate_results,
+        )
         if not getattr(verdict, "passed", True):
             self._publish(
                 "run.validation.failed", run, status="evaluating",
@@ -767,6 +803,46 @@ class BauerKernel:
                                      if not g.passed]},
             )
         return verdict
+
+    def _persist_execution_metrics(self, run_id: str, result: dict[str, Any]) -> None:
+        """Persist executor usage as soon as it is available, even on failure.
+
+        These are audit fields, not a completion decision: only the Kernel
+        decides the run's terminal status after retries and quality gates.
+        """
+        from ...logging_config import log_suppressed
+
+        changes: dict[str, Any] = {}
+        cost = self._extract_cost(result)
+        if cost is not None:
+            changes["cost_estimate"] = cost
+        if result.get("tool_calls_count") is not None:
+            try:
+                changes["tool_calls_count"] = max(0, int(result["tool_calls_count"]))
+            except (TypeError, ValueError) as exc:
+                log_suppressed("kernel.metrics.tool_calls", exc)
+        if result.get("usage_known") is not None:
+            changes["usage_known"] = bool(result["usage_known"])
+        if result.get("llm_calls_count") is not None:
+            try:
+                changes["llm_calls_count"] = max(0, int(result["llm_calls_count"]))
+            except (TypeError, ValueError) as exc:
+                log_suppressed("kernel.metrics.llm_calls", exc)
+        if result.get("elapsed_seconds") is not None:
+            try:
+                changes["elapsed_seconds"] = max(0.0, float(result["elapsed_seconds"]))
+            except (TypeError, ValueError) as exc:
+                log_suppressed("kernel.metrics.elapsed", exc)
+        if changes:
+            self.runs.update_run(run_id, **changes)
+
+    def _record_elapsed_since(self, run_id: str, started_monotonic: float) -> None:
+        elapsed = max(0.0, time.monotonic() - started_monotonic)
+        run = self.runs.get_run(run_id)
+        if run is not None:
+            self.runs.update_run(
+                run_id, elapsed_seconds=max(float(run.elapsed_seconds or 0.0), elapsed)
+            )
 
     def _fail_se_nao_terminal(self, run_id: str, error: str,
                               trajectory: list[str]) -> None:

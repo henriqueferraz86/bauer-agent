@@ -367,6 +367,18 @@ class WorkspaceManagerSqlite:
         finally:
             conn.close()
 
+    def get_task_parent_ids(self, task_id: str) -> list[str]:
+        """Return every direct predecessor, preserving the SQLite DAG contract."""
+        task_id = _normalize_task_id(task_id)
+        conn = self._connect()
+        try:
+            self._ensure_schema(conn)
+            if kb.get_task_or_none(conn, task_id) is None:
+                raise WorkspaceError(f"Tarefa '{task_id}' nao encontrada.")
+            return kb.parents_of(conn, task_id)
+        finally:
+            conn.close()
+
     # --- update_task_status -------------------------------------------------
 
     def update_task_status(self, task_id: str, new_status: str) -> Task:

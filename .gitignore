@@ -39,7 +39,11 @@ logs/
 # A regra sempre quis dizer o sandbox da RAIZ do repo.
 /workspace/
 memory/
-specs/
+specs/*
+!specs/sprint-25-p3-tool-error-paths/
+!specs/sprint-25-p3-tool-error-paths/**
+!specs/sprint-26-p4-guarded-autonomy/
+!specs/sprint-26-p4-guarded-autonomy/**
 companies/
 
 # Coverage reports

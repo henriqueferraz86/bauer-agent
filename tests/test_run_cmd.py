@@ -8,7 +8,9 @@ stdin. Nenhum toca rede/LLM real (run_one_turn_with_fallback é mockado).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -313,6 +315,183 @@ def test_run_sem_router_mantem_comportamento_antigo(tmp_path):
         result, _ = _run(["faca algo"], cfg, [("pronto", [])], tmp_path)
     assert "deepseek/deepseek-v4-flash" in result.output
     assert "Tier" not in result.output
+
+
+def test_gate_receipt_contains_governed_run_and_dispatcher_correlation(tmp_path, monkeypatch):
+    from bauer.commands.run_cmd import _write_gate_receipt
+
+    destination = tmp_path / "receipt.json"
+    monkeypatch.setenv("BAUER_GATE_RECEIPT_PATH", str(destination))
+    monkeypatch.setenv("BAUER_KANBAN_TASK", "task-17")
+    monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", "claim-4")
+    monkeypatch.setenv("BAUER_KANBAN_RUN_ID", "dispatch-run-9")
+    gov = SimpleNamespace(
+        governed=True, ok=True, run_id="kernel-run-22",
+        blocked_before_start=False, status="completed", error=None,
+    )
+    kernel = SimpleNamespace(evaluator=SimpleNamespace(gates=[
+        SimpleNamespace(name="tests"), SimpleNamespace(name="acceptance"),
+    ]))
+
+    _write_gate_receipt(gov, kernel, "completed")
+
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "schema": "bauer.gate-receipt.v1",
+        "version": 1,
+        "kernel_run_id": "kernel-run-22",
+        "kanban_task_id": "task-17",
+        "kanban_claim_id": "claim-4",
+        "dispatcher_run_id": "dispatch-run-9",
+        "gate_names": ["tests", "acceptance"],
+        "status": "passed",
+    }
+
+
+def test_gate_receipt_records_usage_and_marks_unknown_cost(tmp_path, monkeypatch):
+    from bauer.commands.run_cmd import _write_gate_receipt
+
+    destination = tmp_path / "receipt.json"
+    monkeypatch.setenv("BAUER_GATE_RECEIPT_PATH", str(destination))
+    monkeypatch.setenv("BAUER_KANBAN_TASK", "task-17")
+    monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", "claim-4")
+    monkeypatch.setenv("BAUER_KANBAN_RUN_ID", "dispatch-run-9")
+    gov = SimpleNamespace(governed=True, ok=True, run_id="kernel-run-22")
+    kernel = SimpleNamespace(evaluator=SimpleNamespace(gates=[SimpleNamespace(name="tests")]))
+    budget = SimpleNamespace(snapshot=lambda: SimpleNamespace(
+        cost_usd=0.04, tool_calls=7, elapsed_seconds=18.23,
+    ))
+    recorder = SimpleNamespace(calls=2, unknown_usage_calls=1)
+
+    _write_gate_receipt(gov, kernel, "completed", budget=budget, cost_recorder=recorder)
+
+    receipt = json.loads(destination.read_text(encoding="utf-8"))
+    assert receipt["cost_usd"] == 0.04
+    assert receipt["tool_calls"] == 7
+    assert receipt["elapsed_seconds"] == 18.23
+    assert receipt["llm_calls"] == 2
+    assert receipt["cost_known"] is False
+
+
+def test_cost_recorder_treats_missing_cloud_usage_as_unknown_but_local_as_known():
+    from bauer.commands.run_cmd import _CostRecorder
+
+    recorder = _CostRecorder()
+    recorder("openai", "gpt-4o", {}, 0.0)
+    assert recorder.unknown_usage_calls == 1
+
+    recorder("ollama", "qwen2.5", {}, 0.0)
+    assert recorder.unknown_usage_calls == 1
+    assert recorder.calls == 2
+
+
+def test_private_kernel_root_is_consumed_before_worker_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("BAUER_KERNEL_RUNTIME_ROOT", str(tmp_path / "private-kernel-root"))
+    cfg = _cfg()
+    patches, _seen = _patches(cfg, [("terminei", []), ("confirmo", [])])
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        stack.enter_context(patch("bauer.core.kernel.require_kernel", return_value=None))
+        with patch("bauer.commands.run_cmd.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["run", "faca algo"])
+
+    assert result.exit_code == 0
+    assert "BAUER_KERNEL_RUNTIME_ROOT" not in __import__("os").environ
+
+
+@pytest.mark.parametrize("case", [
+    "kernel_disabled", "evaluator_missing", "gates_empty", "ungoverned",
+    "governed_failure", "incomplete", "missing_task", "missing_claim",
+    "missing_dispatcher_run", "missing_kernel_run", "missing_receipt_path",
+])
+def test_gate_receipt_is_not_written_without_all_prerequisites(tmp_path, monkeypatch, case):
+    from bauer.commands.run_cmd import _write_gate_receipt
+
+    destination = tmp_path / "receipt.json"
+    destination.write_text("stale receipt", encoding="utf-8")
+    monkeypatch.setenv("BAUER_GATE_RECEIPT_PATH", str(destination))
+    monkeypatch.setenv("BAUER_KANBAN_TASK", "task-17")
+    monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", "claim-4")
+    monkeypatch.setenv("BAUER_KANBAN_RUN_ID", "dispatch-run-9")
+    gov = SimpleNamespace(governed=True, ok=True, run_id="kernel-run-22")
+    kernel = SimpleNamespace(evaluator=SimpleNamespace(gates=[SimpleNamespace(name="tests")]))
+    stop_reason = "completed"
+
+    if case == "kernel_disabled":
+        kernel = None
+    elif case == "evaluator_missing":
+        kernel.evaluator = None
+    elif case == "gates_empty":
+        kernel.evaluator.gates = []
+    elif case == "ungoverned":
+        gov.governed = False
+    elif case == "governed_failure":
+        gov.ok = False
+    elif case == "incomplete":
+        stop_reason = "budget_exhausted"
+    elif case == "missing_task":
+        monkeypatch.delenv("BAUER_KANBAN_TASK")
+    elif case == "missing_claim":
+        monkeypatch.delenv("BAUER_KANBAN_CLAIM_ID")
+    elif case == "missing_dispatcher_run":
+        monkeypatch.delenv("BAUER_KANBAN_RUN_ID")
+    elif case == "missing_kernel_run":
+        gov.run_id = ""
+    elif case == "missing_receipt_path":
+        monkeypatch.delenv("BAUER_GATE_RECEIPT_PATH")
+
+    _write_gate_receipt(gov, kernel, stop_reason)
+
+    # Receipt lifecycle belongs to the dispatcher; an ineligible producer must
+    # neither create nor remove/overwrite a preexisting file.
+    assert destination.read_text(encoding="utf-8") == "stale receipt"
+
+
+def test_gate_receipt_write_error_makes_run_exit_incomplete(tmp_path, monkeypatch):
+    import contextlib
+
+    proj = tmp_path / "project"
+    proj.mkdir()
+    destination = proj / "receipt.json"
+    monkeypatch.setenv("BAUER_GATE_RECEIPT_PATH", str(destination))
+    monkeypatch.setenv("BAUER_KANBAN_TASK", "task-17")
+    monkeypatch.setenv("BAUER_KANBAN_CLAIM_ID", "claim-4")
+    monkeypatch.setenv("BAUER_KANBAN_RUN_ID", "dispatch-run-9")
+    kernel = SimpleNamespace(
+        evaluator=SimpleNamespace(gates=[SimpleNamespace(name="tests")]),
+        runs=SimpleNamespace(store=MagicMock()),
+    )
+    gov = SimpleNamespace(
+        governed=True, ok=True, run_id="kernel-run-22",
+        blocked_before_start=False, status="completed", error=None,
+    )
+
+    def _governed(_kernel, executor, **_kwargs):
+        executor({})
+        return gov
+
+    patches, _ = _patches(_cfg(), [("trabalhando", []), ("confirmo", [])])
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        stack.enter_context(patch("bauer.core.kernel.require_kernel", return_value=kernel))
+        stack.enter_context(patch("bauer.core.kernel.entry.run_governed", side_effect=_governed))
+        stack.enter_context(patch(
+            "bauer.core.runtime.resilience.RuntimeControl",
+            return_value=SimpleNamespace(kill_switch_enabled=lambda: False),
+        ))
+        stack.enter_context(patch(
+            "bauer.commands.run_cmd.os.replace", side_effect=OSError("atomic replace failed")
+        ))
+        with patch("bauer.commands.run_cmd.Path.cwd", return_value=proj):
+            result = runner.invoke(app, ["run", "execute deterministic task"])
+
+    assert result.exit_code == 2
+    assert "prova do quality gate" in result.output
+    assert "Orçamento esgotado" not in result.output
+    assert not destination.exists()
 
 
 def test_run_cai_no_default_se_provider_do_tier_nao_sobe(tmp_path):

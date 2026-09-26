@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -72,6 +73,21 @@ def test_goal_tasks_reconcile_completion_after_restart(tmp_path: Path):
     assert resumed.state == AutopilotState.DISPATCHING
     assert len(manager.list_tasks()) == 1
 
+    manager.update_task_metadata(task.id, metadata={"gate_receipt": json.dumps({
+        "schema": "bauer.dispatch-gate-receipt.v1",
+        "status": "passed",
+        "verifier": "task_dispatcher",
+        "verification_id": "dispatch-1:verify-1",
+        "kernel_run_id": "kernel-1",
+        "kanban_task_id": task.id,
+        "kanban_claim_id": "claim-1",
+        "dispatcher_run_id": "dispatch-1",
+        "gate_names": ["non_empty_output", "no_traceback"],
+        "cost_known": True,
+        "cost_usd": 0.0,
+        "tool_calls": 1,
+        "elapsed_seconds": 1.0,
+    })})
     manager.update_task_status(task.id, "DONE")
     completed = restarted.tick()
     assert completed.state == AutopilotState.IDLE

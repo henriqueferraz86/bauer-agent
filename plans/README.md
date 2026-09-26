@@ -68,6 +68,8 @@ de STOP, e atualize sua linha de status ao concluir.
 | [055](055-production-operations-hardening.md) | Tornar a operação do Bauer segura, observável e recuperável | Segurança, confiabilidade, observabilidade, arquitetura | P1 | L | — | DONE |
 | [056](056-autopilot-mission-controller.md) | Integrar um autopilot persistente ao runtime always-on | Direção, arquitetura, confiabilidade | P1 | L | 055; 014 (contexto histórico) | DONE |
 | [057](057-agno-capability-expansion.md) | Abrir o catálogo completo compatível do Agno no Bauer com governança por agente | Agentes, tools, dados, workflows e governança | P1 | XXL (fatiado em sprints) | Sprint 17 (#151) | TODO |
+| [058](058-p3-tool-error-paths.md) | Cobrir e normalizar falhas de permissão/I/O nas filesystem tools | P3 | P3 | M | — | DONE |
+| [059](059-p4-guarded-autonomy.md) | Fechar gates, orçamento e dependências no caminho de autonomia persistente | P4 | P4 | L | 056 | DONE |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 

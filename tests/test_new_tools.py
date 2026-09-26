@@ -82,6 +82,122 @@ class TestPatch:
         assert "---" in result or "@@" in result or "NOVA" in result
 
 
+class TestFilesystemPermissionErrors:
+    @staticmethod
+    def _deny_path_method(monkeypatch, method_name, target):
+        original = getattr(Path, method_name)
+
+        def denied(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("simulated sensitive OS detail")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, method_name, denied)
+
+    def test_read_file_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "private.txt"
+        target.write_text("secret", encoding="utf-8")
+        self._deny_path_method(monkeypatch, "read_bytes", target)
+
+        with pytest.raises(ToolError, match="read_file.*private.txt") as exc_info:
+            router._read_file({"path": "private.txt"})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        assert "sensitive OS detail" not in str(exc_info.value)
+
+    def test_write_file_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "blocked.txt"
+        self._deny_path_method(monkeypatch, "write_text", target)
+
+        with pytest.raises(ToolError, match="write_file.*blocked.txt") as exc_info:
+            router._write_file({"path": "blocked.txt", "content": "data"})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        assert not target.exists()
+
+    def test_create_dir_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "blocked"
+        self._deny_path_method(monkeypatch, "mkdir", target)
+
+        with pytest.raises(ToolError, match="create_dir.*blocked") as exc_info:
+            router._create_dir({"path": "blocked"})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        assert not target.exists()
+
+    def test_append_file_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "append.txt"
+        target.write_text("initial", encoding="utf-8")
+        original_open = Path.open
+
+        def denied_open(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("simulated")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", denied_open)
+        with pytest.raises(ToolError, match="append_file.*append.txt") as exc_info:
+            router._append_file({"path": "append.txt", "content": "more"})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        with original_open(target, encoding="utf-8") as stream:
+            assert stream.read() == "initial"
+
+    def test_patch_read_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "patch.txt"
+        target.write_text("before", encoding="utf-8")
+        self._deny_path_method(monkeypatch, "read_text", target)
+
+        with pytest.raises(ToolError, match="patch.*patch.txt") as exc_info:
+            router._patch_file({"path": "patch.txt", "old_string": "before"})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+
+    def test_patch_write_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "patch.txt"
+        target.write_text("before", encoding="utf-8")
+        original_write_text = Path.write_text
+
+        def denied_write(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("simulated")
+            return original_write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", denied_write)
+        with pytest.raises(ToolError, match="patch.*patch.txt") as exc_info:
+            router._patch_file({
+                "path": "patch.txt", "old_string": "before", "new_string": "after"
+            })
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        assert target.read_text(encoding="utf-8") == "before"
+
+    def test_delete_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        target = ws / "delete.txt"
+        target.write_text("data", encoding="utf-8")
+        self._deny_path_method(monkeypatch, "unlink", target)
+
+        with pytest.raises(ToolError, match="delete_file.*delete.txt") as exc_info:
+            router._delete_file({"path": "delete.txt", "confirm": True})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        assert target.read_text(encoding="utf-8") == "data"
+
+    def test_list_dir_permission_error_is_tool_error(self, router, ws, monkeypatch):
+        original_iterdir = Path.iterdir
+
+        def denied_iterdir(path, *args, **kwargs):
+            if path == ws:
+                raise PermissionError("simulated")
+            return original_iterdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "iterdir", denied_iterdir)
+        with pytest.raises(ToolError, match=r"list_dir.*\.") as exc_info:
+            router._list_dir({"path": "."})
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+
+
 # ===========================================================================
 # TODO
 # ===========================================================================
