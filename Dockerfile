@@ -9,6 +9,8 @@ WORKDIR /app
 # gcc para compilar pacotes Python nativos
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    docker.io \
+    docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia o binário Ollama do estágio anterior
@@ -17,12 +19,16 @@ COPY --from=ollama-bin /usr/bin/ollama /usr/local/bin/ollama
 # Dependências Python — instala deps primeiro (cache layer), depois copia código
 COPY pyproject.toml .
 COPY README.md .
+# O metadata do pacote precisa existir aqui; sem isso o pip cai no fallback e
+# os extras novos de `server` podem ficar fora da imagem silenciosamente.
+RUN mkdir -p bauer
+COPY bauer/__init__.py ./bauer/__init__.py
 # Instala só as dependências (sem o pacote ainda) para aproveitar cache do Docker
 RUN (pip install --no-cache-dir ".[server]" --no-build-isolation 2>/dev/null || \
     pip install --no-cache-dir \
       typer rich pydantic pyyaml httpx psutil prompt-toolkit cryptography \
       ddgs beautifulsoup4 sqlalchemy openai "agno[os]>=1.7" \
-      fastapi "uvicorn[standard]") && \
+      fastapi "uvicorn[standard]" python-multipart argon2-cffi google-auth) && \
     pip install --no-cache-dir "agno[os]>=1.7"
 
 # Código da aplicação (após deps — muda mais frequentemente)
@@ -43,6 +49,7 @@ VOLUME ["/root/.ollama"]
 
 # Porta padrão do bauer serve
 EXPOSE 8000
+EXPOSE 1455
 
 ENV PYTHONUNBUFFERED=1
 CMD ["/start.sh"]

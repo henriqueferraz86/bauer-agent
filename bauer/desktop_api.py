@@ -281,6 +281,10 @@ def build_desktop_router(
     logs_dir: Optional[Path] = None,
     start_loop: Optional[Callable[[str, Optional[str], Optional[Path]], Dict[str, Any]]] = None,
     kernel: Any | None = None,
+    openai_auth_broker: Any | None = None,
+    on_openai_auth_connected: Optional[Callable[[], str | None]] = None,
+    get_runtime_mode: Optional[Callable[[], str]] = None,
+    set_runtime_mode: Optional[Callable[[str], dict[str, str]]] = None,
 ):
     """Monta o APIRouter ``/api`` do desktop. Tudo opcional/injetável p/ testes.
 
@@ -299,6 +303,13 @@ def build_desktop_router(
     _runtime_root = runtime_root or (Path.cwd() / "memory" / "runtime")
     _logs_dir = logs_dir or (Path.cwd() / "logs")
     _team_kernel = kernel
+    if openai_auth_broker is None:
+        from .openai_browser_auth import OpenAIBrowserAuthBroker
+
+        openai_auth_broker = OpenAIBrowserAuthBroker(
+            on_connected=on_openai_auth_connected,
+        )
+    _openai_auth = openai_auth_broker
 
     try:
         from .config_loader import ContinuousAutonomySection, load_config
@@ -355,6 +366,7 @@ def build_desktop_router(
     @router.on_event("shutdown")
     def _shutdown_continuous_autonomy() -> None:
         _continuous.close()
+        _openai_auth.close()
 
     # ── Projetos ──────────────────────────────────────────────────────────
     from . import projects_registry as pr
@@ -853,7 +865,55 @@ def build_desktop_router(
 
     @router.get("/autonomy/status")
     def autonomy_status():
-        return _continuous.status()
+        status = _continuous.status()
+        status["config_enabled"] = bool(getattr(_continuous.config, "enabled", False))
+        return status
+
+    @router.post("/autonomy/enabled")
+    def autonomy_set_enabled(body: dict = Body(...)):
+        """Persiste e aplica o interruptor global da autonomia contínua."""
+        import yaml
+
+        from .config_admin import _read_raw_yaml
+        from .config_loader import ConfigError, load_config
+
+        enabled = body.get("enabled") if isinstance(body, dict) else None
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=422, detail="enabled deve ser booleano")
+
+        config_path = Path(get_config_path())
+        raw = _read_raw_yaml(config_path)
+        section = raw.setdefault("continuous_autonomy", {})
+        if not isinstance(section, dict):
+            section = {}
+            raw["continuous_autonomy"] = section
+        section["enabled"] = enabled
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            config_path.write_text(
+                yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+            refreshed = load_config(config_path).continuous_autonomy
+            _continuous.reload_config(refreshed)
+        except (ConfigError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if not enabled:
+            result = _continuous.stop()
+            result["config_enabled"] = False
+            return result
+
+        try:
+            result = _continuous.start()
+        except ValueError as exc:
+            # Habilitar a configuração é útil mesmo antes de cadastrar o
+            # primeiro alvo; o painel mostra o aviso e permite tentar iniciar
+            # novamente assim que um alvo for habilitado.
+            result = _continuous.status()
+            result["warning"] = str(exc)
+        result["config_enabled"] = True
+        return result
 
     @router.post("/autonomy/targets/{target_id}/enabled")
     def autonomy_set_target_enabled(target_id: str, body: dict = Body(...)):
@@ -1426,10 +1486,26 @@ def build_desktop_router(
 
         return {
             "default_adapter": default_adapter,
+            "runtime_mode": get_runtime_mode() if get_runtime_mode else "bauer_native",
             "adapters": adapters,
             "workers": WorkerRegistry(root=_runtime_root).list(),
             "kill_switch": RuntimeControl(root=_runtime_root).kill_switch_enabled(),
         }
+
+    @router.get("/runtime/mode")
+    def runtime_mode_get():
+        return {"runtime_mode": get_runtime_mode() if get_runtime_mode else "bauer_native"}
+
+    @router.post("/runtime/mode")
+    def runtime_mode_set(body: dict = Body(...)):
+        if set_runtime_mode is None:
+            raise HTTPException(status_code=503, detail="Seleção de runtime não disponível.")
+        try:
+            return set_runtime_mode(str(body.get("runtime_mode") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @router.get("/agents")
     def agents_dashboard():
@@ -1547,6 +1623,30 @@ def build_desktop_router(
     def use_profile(name: str):
         cp.set_active_profile(name)
         return {"active": name}
+
+    # ── Provider auth: OpenAI/ChatGPT browser (experimental) ─────────────
+    @router.get("/auth/openai/status")
+    def openai_auth_status():
+        return _openai_auth.status()
+
+    @router.post("/auth/openai/start")
+    def openai_auth_start():
+        from .openai_browser_auth import OpenAIBrowserAuthBusy
+
+        try:
+            return _openai_auth.start()
+        except OpenAIBrowserAuthBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - resposta nunca expõe URL/token
+            logger.warning("openai browser auth start failed (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Não foi possível iniciar o login OpenAI.",
+            ) from exc
+
+    @router.post("/auth/openai/logout")
+    def openai_auth_logout():
+        return {"disconnected": bool(_openai_auth.logout())}
 
     # ── Logs ──────────────────────────────────────────────────────────────
     @router.get("/logs/{name}/tail")

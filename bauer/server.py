@@ -38,7 +38,7 @@ import hmac
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .server_streaming import StreamGate as _StreamGate
 from .server_streaming import sse_frame as _sse
@@ -64,11 +64,10 @@ from .server_observability import (
 # BAUER_GATEWAY_TURN_TIMEOUT do gateway (channel_base.py), aplicada aqui pro
 # /stream do bauer serve.
 #
-# 300s (5min), nao 120s: trabalho de dev real (scaffolding, varios arquivos,
-# builds) passa de 2min com modelos mais lentos (ex. deepseek via OpenRouter
-# fazendo varias rodadas de tool call) — o timeout curto cortava turnos que
-# estavam progredindo normalmente, so mais devagar.
-_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "300"))
+# 3600s (60min): tarefas longas de desenvolvimento podem exigir muitas
+# rodadas de tool call. O prazo continua configurável por ambiente para
+# instalações que precisem de um limite menor ou maior.
+_STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "3600"))
 
 # Teto de chars do PROJECT.md auto-injetado por turno (B da "memória por
 # projeto"). Cabeçalho, não o arquivo inteiro: é pago a cada turno e prompt
@@ -109,6 +108,10 @@ def create_app(
     system_prompt: str,
     sessions_dir: Path,
     api_key: str = "",
+    web_auth_enabled: bool = True,
+    auth_session_hours: int = 168,
+    auth_google_client_id: str = "",
+    auth_cookie_secure: bool = False,
     rate_limit_requests: int = 60,
     rate_limit_window_s: float = 60.0,
     rate_limit_per_key: bool = False,
@@ -141,7 +144,7 @@ def create_app(
     import logging
 
     from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-    from fastapi.responses import FileResponse, StreamingResponse
+    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel, Field
 
@@ -185,6 +188,25 @@ def create_app(
     class SpeechRequest(PydanticModel):
         text: str = Field(..., min_length=1, max_length=100_000)
 
+    class AuthSetupRequest(PydanticModel):
+        email: str = Field(..., min_length=3, max_length=320)
+        password: str = Field(..., min_length=12, max_length=1024)
+        bootstrap_key: str = Field(..., min_length=1, max_length=4096)
+
+    class AuthLoginRequest(PydanticModel):
+        email: str = Field(..., min_length=3, max_length=320)
+        password: str = Field(..., min_length=1, max_length=1024)
+
+    class AuthRecoveryRequest(PydanticModel):
+        email: str = Field(..., min_length=3, max_length=320)
+        new_password: str = Field(..., min_length=12, max_length=1024)
+        bootstrap_key: str = Field(..., min_length=1, max_length=4096)
+
+    class AuthGoogleRequest(PydanticModel):
+        credential: str = Field(..., min_length=1, max_length=16_384)
+        bootstrap_key: str = Field(default="", max_length=4096)
+        link: bool = False
+
     app = FastAPI(
         title="Bauer Agent Server",
         version="0.1.0",
@@ -213,6 +235,16 @@ def create_app(
 
     store = SessionStore(sessions_dir)
     runtime_root = sessions_dir.parent / "runtime"
+    _web_auth = None
+    if api_key and web_auth_enabled:
+        from .web_auth import WebAuthService, WebAuthStore
+
+        _web_auth = WebAuthService(
+            WebAuthStore(runtime_root),
+            bootstrap_key=api_key,
+            session_hours=auth_session_hours,
+            google_client_id=auth_google_client_id,
+        )
     event_bus = EventBus(root=runtime_root)
     run_manager = RunManager(root=runtime_root, event_bus=event_bus)
     session_manager = SessionManager(root=runtime_root)
@@ -650,10 +682,146 @@ def create_app(
         "model": model_name,
         "client": client,
         "provider": _detect_provider(client),
+        # O operador escolhe globalmente qual executor atende o chat deste
+        # processo. Bauer nativo preserva o comportamento histórico; Agno é
+        # opt-in e passa pelo mesmo Kernel/políticas.
+        "runtime_mode": "bauer_native",
         # Contexto MORA no _state, não mais numa closure imutável do boot: ele
         # muda junto com o modelo (ver `resolver_contexto_aplicado`).
         "applied_context": applied_context,
     }
+
+    _runtime_mode_file = runtime_root / "serve-runtime-mode.json"
+    _model_state_file = runtime_root / "serve-model-state.json"
+    try:
+        _saved_runtime_mode = json.loads(_runtime_mode_file.read_text(encoding="utf-8"))
+        if _saved_runtime_mode.get("mode") in {"bauer_native", "agno"}:
+            _state["runtime_mode"] = _saved_runtime_mode["mode"]
+    except (OSError, ValueError, AttributeError):
+        _state["runtime_mode"] = "bauer_native"
+    try:
+        _saved_model_state = json.loads(_model_state_file.read_text(encoding="utf-8"))
+        if _saved_model_state.get("provider") and _saved_model_state.get("model"):
+            saved_provider = str(_saved_model_state["provider"])
+            saved_model = str(_saved_model_state["model"])
+            if config_path is not None:
+                try:
+                    from .auxiliary_client import _build_client_for_provider
+                    from .config_loader import load_config
+
+                    restored_client = _build_client_for_provider(
+                        saved_provider, saved_model, load_config(config_path)
+                    )
+                    if restored_client is not None:
+                        _state["client"] = restored_client
+                except Exception as exc:  # noqa: BLE001 — retain boot fallback
+                    _log.warning("saved model restore failed: %s", exc)
+            _state["provider"] = saved_provider
+            _state["model"] = saved_model
+            if config_path is not None:
+                try:
+                    from .config_loader import load_config
+
+                    requested_context = int(load_config(config_path).model.requested_context)
+                    _state["applied_context"] = resolver_contexto_aplicado(
+                        saved_provider, requested_context
+                    )
+                except (AttributeError, TypeError, ValueError, OSError) as exc:
+                    _log.debug("saved model context restore failed: %s", exc)
+    except (OSError, ValueError, AttributeError):
+        _log.debug("saved model selection is unavailable")
+
+    def _runtime_mode() -> str:
+        return str(_state.get("runtime_mode") or "bauer_native")
+
+    def _set_runtime_mode(mode: str) -> dict[str, str]:
+        normalized = mode.strip().lower().replace("-", "_")
+        if normalized not in {"bauer_native", "agno"}:
+            raise ValueError("runtime_mode deve ser bauer_native ou agno")
+        if normalized == "agno" and config_path is not None:
+            from .config_loader import load_config
+            from .core.runtime.adapters import get_runtime_adapter
+
+            cfg = load_config(config_path)
+            health = get_runtime_adapter("agno", config=cfg).healthcheck()
+            if health.get("status") != "healthy":
+                raise RuntimeError(str(health.get("error") or "Agno indisponível"))
+        _state["runtime_mode"] = normalized
+        try:
+            _runtime_mode_file.parent.mkdir(parents=True, exist_ok=True)
+            _runtime_mode_file.write_text(
+                json.dumps({"mode": normalized}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _log.warning("runtime mode persistence failed: %s", exc)
+        return {"runtime_mode": normalized}
+
+    def _run_agno_turn(
+        message: str,
+        session_id: str,
+        run_id: str,
+        request_agent_id: str,
+        active_router: Any,
+        turn_model: str,
+        resolved: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Executa um turno pelo adapter Agno escolhido no Server.
+
+        O adapter recebe somente capabilities Bauer registradas; a política e
+        o Kernel continuam sendo a fronteira de governança do endpoint.
+        """
+        if config_path is None:
+            raise RuntimeError("Agno requer config_path no Bauer Server")
+        from .config_loader import load_config
+
+        cfg = load_config(config_path)
+        from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+        # This adapter is invoked by the interactive Server chat.  Keep its
+        # tool policy context aligned with the native chat router; the worker
+        # context intentionally denies network tools such as web_search.
+        adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
+        adapter_cfg.setdefault("tool_context", "chat")
+        adapter = AgnoRuntimeAdapter(
+            config=cfg,
+            adapter_config=adapter_cfg,
+            chatgpt_client=_state["client"],
+        )
+        supported_tools = {
+            "read_file", "write_file", "list_dir", "search_text",
+            "run_command", "web_search", "memory",
+        }
+        tools = [name for name in active_router.available_tools() if name in supported_tools]
+        result = adapter.run_agent({
+            "run_id": run_id,
+            "session_id": session_id,
+            "user_id": "serve-user",
+            "task": message,
+            "agent_id": request_agent_id,
+            "agent_spec": {
+                "id": request_agent_id,
+                "name": "Bauer Server Agno Agent",
+                "provider": _state["provider"],
+                "model": turn_model,
+                "instructions": system_prompt,
+                "tools": tools,
+                "session_id": session_id,
+                "user_id": "serve-user",
+            },
+            "resolved": resolved,
+        })
+        if result.get("status") != "completed":
+            raise RuntimeError(str(result.get("error") or "Agno não concluiu o turno"))
+        raw_tools = result.get("metadata", {}).get("tools", [])
+        tool_log = [
+            {
+                "tool": str(item.get("tool_name") or "agno.tool"),
+                "result": str(item.get("result") or item.get("status") or "completed"),
+            }
+            for item in raw_tools
+            if isinstance(item, dict)
+        ]
+        return {"response": str(result.get("output") or ""), "tool_log": tool_log}
 
     # ── Roteamento por-turno (Fase 12 / Sprint 34c) — opt-in ──────────────────
     # Quando model.router_enabled=True e há profiles, cada turno escolhe o modelo
@@ -743,6 +911,9 @@ def create_app(
         max_requests=rate_limit_requests,
         window_s=rate_limit_window_s,
     )
+    # Setup/login/recovery merecem um bucket próprio e mais restritivo; não
+    # compartilham cota com /health nem podem ser liberados por rate_limit=0.
+    _auth_limiter = _RateLimiter(max_requests=10, window_s=300.0)
     _trusted_redes, _trusted_coringa = _parse_trusted_proxies(trusted_proxies)
     # Aviso único (não a cada request) para quem está atrás de proxy sem
     # configurar: o rate limit passa a agrupar TODO mundo no IP do proxy —
@@ -800,6 +971,98 @@ def create_app(
             return f"key:{k}" if k else _get_client_ip(request)
         return _get_client_ip(request)
 
+    _SESSION_COOKIE = "bauer_session"
+    _CSRF_COOKIE = "bauer_csrf"
+
+    def _session_from_request(request: Request):
+        if _web_auth is None:
+            return None
+        return _web_auth.authenticate(request.cookies.get(_SESSION_COOKIE, ""))
+
+    def _csrf_required(request: Request) -> bool:
+        return request.method.upper() not in {"GET", "HEAD", "OPTIONS"} or request.url.path == "/stream"
+
+    def _verify_session_csrf(request: Request, session) -> None:
+        if _web_auth is None:
+            raise HTTPException(status_code=401, detail="Sessão inválida.")
+        header = request.headers.get("X-CSRF-Token", "")
+        cookie = request.cookies.get(_CSRF_COOKIE, "")
+        if not header or not cookie or not hmac.compare_digest(header, cookie):
+            raise HTTPException(status_code=403, detail="Token CSRF inválido ou ausente.")
+        try:
+            _web_auth.require_csrf(session, header)
+        except Exception as exc:
+            from .web_auth import WebAuthError
+
+            if isinstance(exc, WebAuthError):
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise
+
+    def _auth_rate_limit(request: Request) -> None:
+        key = f"auth:{_get_client_ip(request)}"
+        if not _auth_limiter.is_allowed(key):
+            retry = _auth_limiter.retry_after(key)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Muitas tentativas de autenticação. Tente novamente em {retry:.0f}s.",
+                headers={"Retry-After": str(int(retry) + 1)},
+            )
+
+    def _raise_auth_error(exc: Exception) -> None:
+        from .web_auth import (
+            AuthValidationError,
+            GoogleNotConfiguredError,
+            InvalidBootstrapError,
+            InvalidCredentialsError,
+            SetupAlreadyCompleteError,
+            SetupRequiredError,
+            WebAuthError,
+        )
+
+        if isinstance(exc, AuthValidationError):
+            status_code = 400
+        elif isinstance(exc, (SetupAlreadyCompleteError, SetupRequiredError)):
+            status_code = 409
+        elif isinstance(exc, GoogleNotConfiguredError):
+            status_code = 503
+        elif isinstance(exc, (InvalidBootstrapError, InvalidCredentialsError)):
+            status_code = 401
+        elif isinstance(exc, WebAuthError):
+            status_code = 401
+        else:
+            raise exc
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    def _session_response(credentials, *, status_code: int = 200):
+        max_age = max(60, int(credentials.expires_at - time.time()))
+        response = JSONResponse(
+            status_code=status_code,
+            content={
+                "authenticated": True,
+                "user": credentials.admin.public_dict(),
+                "expires_at": credentials.expires_at,
+            },
+        )
+        response.set_cookie(
+            _SESSION_COOKIE,
+            credentials.token,
+            max_age=max_age,
+            path="/",
+            secure=auth_cookie_secure,
+            httponly=True,
+            samesite="lax",
+        )
+        response.set_cookie(
+            _CSRF_COOKIE,
+            credentials.csrf_token,
+            max_age=max_age,
+            path="/",
+            secure=auth_cookie_secure,
+            httponly=False,
+            samesite="lax",
+        )
+        return response
+
     # NOTA: aqui existia um `_check_rate_limit()` que nunca era chamado —
     # duplicava a lógica já aplicada no `_metrics_middleware`. Duas cópias da
     # mesma regra é convite para divergirem (uma sendo corrigida e a outra não).
@@ -809,8 +1072,120 @@ def create_app(
         if not api_key:
             return
         incoming = _extract_incoming_key(request)
-        if not hmac.compare_digest(incoming or "", api_key):
-            raise HTTPException(status_code=401, detail="API key invalida ou ausente.")
+        if hmac.compare_digest(incoming or "", api_key):
+            request.state.auth_method = "api_key"
+            return
+        session = _session_from_request(request)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Autenticação inválida ou ausente.")
+        if _csrf_required(request):
+            _verify_session_csrf(request, session)
+        request.state.auth_method = "session"
+        request.state.web_admin = session.admin
+
+    @app.get("/auth/state")
+    def auth_state(request: Request):
+        if _web_auth is None:
+            return {
+                "enabled": False,
+                "api_key_required": bool(api_key),
+                "setup_required": False,
+                "authenticated": False,
+                "google_enabled": False,
+                "google_client_id": "",
+                "user": None,
+            }
+        session = _session_from_request(request)
+        return {
+            "enabled": True,
+            "api_key_required": True,
+            "setup_required": _web_auth.setup_required,
+            "authenticated": session is not None,
+            "google_enabled": bool(_web_auth.google_client_id),
+            "google_client_id": _web_auth.google_client_id,
+            "user": session.admin.public_dict() if session else None,
+        }
+
+    @app.post("/auth/setup")
+    def auth_setup(body: AuthSetupRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            credentials = _web_auth.setup_local(
+                email=body.email,
+                password=body.password,
+                bootstrap_key=body.bootstrap_key,
+            )
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials, status_code=201)
+
+    @app.post("/auth/login")
+    def auth_login(body: AuthLoginRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            credentials = _web_auth.login(email=body.email, password=body.password)
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials)
+
+    @app.post("/auth/recover")
+    def auth_recover(body: AuthRecoveryRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            credentials = _web_auth.recover(
+                email=body.email,
+                new_password=body.new_password,
+                bootstrap_key=body.bootstrap_key,
+            )
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials)
+
+    @app.post("/auth/google")
+    def auth_google(body: AuthGoogleRequest, request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        _auth_rate_limit(request)
+        try:
+            if body.link:
+                session = _session_from_request(request)
+                if session is None:
+                    raise HTTPException(status_code=401, detail="Sessão inválida.")
+                _verify_session_csrf(request, session)
+                credentials = _web_auth.link_google(
+                    session_token=request.cookies.get(_SESSION_COOKIE, ""),
+                    credential=body.credential,
+                )
+            else:
+                credentials = _web_auth.login_google(
+                    credential=body.credential,
+                    bootstrap_key=body.bootstrap_key,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _raise_auth_error(exc)
+        return _session_response(credentials)
+
+    @app.post("/auth/logout")
+    def auth_logout(request: Request):
+        if _web_auth is None:
+            raise HTTPException(status_code=404, detail="Autenticação web desabilitada.")
+        session = _session_from_request(request)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Sessão inválida.")
+        _verify_session_csrf(request, session)
+        _web_auth.logout(request.cookies.get(_SESSION_COOKIE, ""))
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(_SESSION_COOKIE, path="/", secure=auth_cookie_secure, httponly=True, samesite="lax")
+        response.delete_cookie(_CSRF_COOKIE, path="/", secure=auth_cookie_secure, httponly=False, samesite="lax")
+        return response
 
     # --- endpoints --------------------------------------------------------------
 
@@ -904,6 +1279,7 @@ def create_app(
         return {
             "model": _state["model"],
             "provider": _state["provider"],
+            "runtime_mode": _runtime_mode(),
             "context_tokens": _state["applied_context"],
             "tools": router.available_tools(),
             "auth_enabled": bool(api_key),
@@ -997,6 +1373,17 @@ def create_app(
         _state["applied_context"] = resolver_contexto_aplicado(
             _state["provider"], _ctx_pedido
         )
+        try:
+            _model_state_file.parent.mkdir(parents=True, exist_ok=True)
+            _model_state_file.write_text(
+                json.dumps(
+                    {"provider": _state["provider"], "model": _state["model"]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _log.warning("model selection persistence failed: %s", exc)
 
         # Warmup: sobe o modelo local na GPU já no switch (background), pra a
         # primeira mensagem não travar carregando vários GB. Só para Ollama.
@@ -1050,6 +1437,8 @@ def create_app(
         format_response=_format_server_response,
         public_tool_log=_public_tool_log,
         run_one_turn_with_fallback=run_one_turn_with_fallback,
+        runtime_mode=_runtime_mode,
+        run_agno_turn=_run_agno_turn,
         logger=_log,
     )))
 
@@ -1213,6 +1602,7 @@ def create_app(
             run, _early = _kernel.admit(_KReq(
                 task=message, session_id=sid, agent_id=request_agent_id,
                 input=_run_input(message, "/stream", resolved),
+                runtime_adapter=_runtime_mode(),
             ))
             if _early is not None:
                 # governança barrou — SSE de erro sem tocar LLM/worker
@@ -1236,7 +1626,7 @@ def create_app(
             run = run_manager.create_run(
                 session_id=sid,
                 agent_id=request_agent_id,
-                runtime_adapter="bauer_native",
+                runtime_adapter=_runtime_mode(),
                 input=_run_input(message, "/stream", resolved),
                 status="running",
             )
@@ -1298,9 +1688,19 @@ def create_app(
                 # de duas threads pisando no session/run id uma da outra.
                 ids_token = set_runtime_ids(sid, run.id)
                 try:
-                    resp, tool_log = run_one_turn_with_fallback(
-                        ctx, active_router, _turn_client, _turn_model, _fallback_clients,
-                    )
+                    if _runtime_mode() == "agno":
+                        agno_result = _run_agno_turn(
+                            message, sid, run.id, request_agent_id, active_router,
+                            _turn_model, resolved,
+                        )
+                        resp = agno_result["response"]
+                        tool_log = agno_result["tool_log"]
+                        if resp:
+                            events.put(("delta", resp))
+                    else:
+                        resp, tool_log = run_one_turn_with_fallback(
+                            ctx, active_router, _turn_client, _turn_model, _fallback_clients,
+                        )
                     from .server_chat import _allowlist_authorization_prompt
                     result["response"] = (
                         _allowlist_authorization_prompt(tool_log) or resp
@@ -1910,6 +2310,45 @@ def create_app(
         logger=_log,
     )))
 
+    # --- Seleção automática após OAuth OpenAI -------------------------------
+    # O CLI constrói ChatGPTBackendClient diretamente. O Serve precisa fazer o
+    # mesmo quando o callback termina; caso contrário o estado continua no
+    # modelo local ou o switch usa um OpenAIClient genérico incompatível com o
+    # access token pessoal do ChatGPT.
+    def _on_openai_auth_connected() -> str | None:
+        if config_path is None:
+            return "OpenAI conectada, mas o Serve não possui config_path para selecionar o modelo."
+        from .auxiliary_client import _build_client_for_provider
+        from .config_loader import load_config
+
+        cfg = load_config(config_path)
+        new_client = _build_client_for_provider("openai", "gpt-5.6-luna", cfg)
+        if new_client is None:
+            return (
+                "OpenAI conectada, mas o cliente ChatGPT não pôde ser construído; "
+                "verifique a assinatura/conta."
+            )
+        _state["client"] = new_client
+        _state["provider"] = "openai"
+        _state["model"] = "gpt-5.6-luna"
+        requested_context = applied_context
+        try:
+            requested_context = int(cfg.model.requested_context)
+        except (AttributeError, TypeError, ValueError):
+            requested_context = applied_context
+        _state["applied_context"] = resolver_contexto_aplicado(
+            "openai", requested_context
+        )
+        try:
+            _model_state_file.parent.mkdir(parents=True, exist_ok=True)
+            _model_state_file.write_text(
+                json.dumps({"provider": "openai", "model": "gpt-5.6-luna"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _log.warning("model selection persistence failed after OAuth: %s", exc)
+        return None
+
     # --- Desktop API (SPA das 8 telas) ------------------------------------------
     try:
         from .desktop_api import build_desktop_router
@@ -1933,6 +2372,9 @@ def create_app(
             get_config_path=(lambda: config_path) if config_path else None,
             resolve_project_workspace=_kanban_project_workspace,
             kernel=_kernel,
+            on_openai_auth_connected=_on_openai_auth_connected,
+            get_runtime_mode=_runtime_mode,
+            set_runtime_mode=_set_runtime_mode,
             start_loop=(lambda message, project_id, workspace_override: _start_loop_impl(
                 LoopStartRequest(message=message, project_id=project_id), workspace_override,
             )),

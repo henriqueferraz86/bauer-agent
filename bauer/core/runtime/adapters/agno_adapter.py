@@ -17,7 +17,12 @@ class AgnoRuntimeAdapter:
 
     name = "agno"
 
-    def __init__(self, config: Any | None = None, adapter_config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        config: Any | None = None,
+        adapter_config: dict[str, Any] | None = None,
+        chatgpt_client: Any | None = None,
+    ):
         self.config = config
         self.adapter_config = adapter_config or self._adapter_config_from(config)
         self.mode = str(self.adapter_config.get("mode") or "sdk").strip().lower()
@@ -27,6 +32,7 @@ class AgnoRuntimeAdapter:
         self.workspace = Path(str(self.adapter_config.get("workspace") or "workspace"))
         self.tool_context = str(self.adapter_config.get("tool_context") or "worker")
         self.tool_policy_path = self.adapter_config.get("tool_policy_path")
+        self.chatgpt_client = chatgpt_client
         self._agents: dict[str, Any] = {}
         self._teams: dict[str, Any] = {}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -575,12 +581,16 @@ class AgnoRuntimeAdapter:
     def _build_agent(self, spec: dict[str, Any]) -> Any:
         Agent, _, _ = self._require_agno()
         instructions = self._instructions_from_spec(spec)
+        model = self._build_model(spec)
         return Agent(
             id=str(spec.get("id") or spec.get("name") or f"agno-agent-{uuid4()}"),
             name=str(spec.get("name") or "Agno Bauer Agent"),
-            model=self._build_model(spec),
+            model=model,
             db=self._build_db(),
-            tools=self._map_tools(spec.get("tools")),
+            # The browser OAuth Responses adapter currently emits text only;
+            # do not advertise Bauer tools to Agno until function-call parsing
+            # is available for that backend.
+            tools=[] if getattr(model, "supports_native_tools", True) is False else self._map_tools(spec.get("tools")),
             user_id=str(spec.get("user_id") or "local-user"),
             session_id=str(spec.get("session_id") or f"session-{uuid4()}"),
             instructions=instructions or None,
@@ -601,13 +611,14 @@ class AgnoRuntimeAdapter:
         mode = str(spec.get("mode") or "coordinate").strip().lower()
         team_mode = getattr(TeamMode, mode, TeamMode.coordinate)
         instructions = self._instructions_from_spec(supervisor)
+        team_model = self._build_model(supervisor)
         return Team(
             id=str(spec.get("id") or f"agno-team-{uuid4()}"),
             name=str(spec.get("name") or "Bauer Agno Team"),
             role=str(spec.get("role") or "Coordenador do time Bauer"),
             mode=team_mode,
             members=members,
-            model=self._build_model(supervisor),
+            model=team_model,
             db=self._build_db(),
             user_id=str(spec.get("user_id") or "local-user"),
             session_id=str(spec.get("session_id") or f"session-{uuid4()}"),
@@ -663,6 +674,12 @@ class AgnoRuntimeAdapter:
         provider, model_name = self._effective_model_spec(spec)
         if not model_name or provider in {"", "local", "offline"} or model_name.startswith("offline"):
             return OfflineAgnoModel(id=model_name or "offline-echo")
+        if provider == "openai":
+            oauth_client = self.chatgpt_client or self._chatgpt_oauth_client()
+            if oauth_client is not None:
+                from .chatgpt_oauth_model import build_chatgpt_oauth_model
+
+                return build_chatgpt_oauth_model(oauth_client, model_name)
         try:
             from agno.models.openai import OpenAIChat
         except (ImportError, ModuleNotFoundError) as exc:
@@ -674,6 +691,32 @@ class AgnoRuntimeAdapter:
         if base_url:
             kwargs["base_url"] = base_url
         return OpenAIChat(**kwargs)
+
+    def _chatgpt_oauth_client(self) -> Any | None:
+        """Resolve the same browser OAuth token used by Bauer CLI/Serve."""
+        try:
+            from ....auth import AuthManager
+            from ....chatgpt_backend import ChatGPTBackendClient, DEFAULT_CHATGPT_BASE
+
+            token = AuthManager().store.load("openai")
+            if token is None or token.api_key or not token.access_token:
+                return None
+            if token.is_expired and token.refresh_token:
+                token = AuthManager().refresh("openai") or token
+            if token.is_expired or not token.access_token:
+                return None
+            cfg_openai = getattr(self.config, "openai", None)
+            base_url = getattr(cfg_openai, "chatgpt_base_url", "") or DEFAULT_CHATGPT_BASE
+            timeout = int(getattr(cfg_openai, "timeout_seconds", 60) or 60)
+            return ChatGPTBackendClient(
+                access_token=token.access_token,
+                account_id=token.extra.get("chatgpt_account_id") or "",
+                base_url=base_url,
+                timeout_seconds=timeout,
+                model=str(getattr(getattr(self.config, "model", None), "name", "") or ""),
+            )
+        except Exception:
+            return None
 
     def _effective_model_spec(self, spec: dict[str, Any]) -> tuple[str, str]:
         model_value = str(spec.get("model") or "").strip()

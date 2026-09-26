@@ -9,15 +9,80 @@ pytest.importorskip("agno")
 pytest.importorskip("sqlalchemy")
 
 from agno.models.base import Model
+from agno.models.message import Message
 from agno.models.response import ModelResponse
 
 from bauer.core.runtime.agent_spec import parse_agents_yaml
 from bauer.core.runtime.adapters import get_runtime_adapter, list_runtime_adapters
 from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+from bauer.core.runtime.adapters.chatgpt_oauth_model import build_chatgpt_oauth_model
 
 
 def add_numbers(a: int, b: int) -> str:
     return str(a + b)
+
+
+class OAuthClientStub:
+    def chat_stream(self, model: str, messages: list[dict[str, Any]]) -> Iterator[str]:
+        assert model == "gpt-5.6-luna"
+        assert messages[-1]["content"] == "hello"
+        yield "Olá"
+        yield " do OAuth"
+
+
+class OAuthToolClientStub:
+    def __init__(self):
+        self.calls: list[dict[str, Any]] = []
+
+    def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append({"model": model, "messages": messages, "tools": tools, "tool_choice": tool_choice})
+        if any(message.get("role") == "tool" for message in messages):
+            yield {"type": "text_delta", "delta": "Tool executada"}
+            return
+        assert tools and tools[0]["function"]["name"] == "add_numbers"
+        yield {
+            "type": "tool_call",
+            "tool_call": {
+                "id": "call_add_numbers_1",
+                "type": "function",
+                "function": {"name": "add_numbers", "arguments": '{"a": 2, "b": 3}'},
+            },
+        }
+
+
+class OAuthReadFileClientStub:
+    def __init__(self):
+        self.calls: list[list[dict[str, Any]]] = []
+
+    def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append(messages)
+        if any(message.get("role") == "tool" for message in messages):
+            tool_result = next(message["content"] for message in messages if message.get("role") == "tool")
+            yield {"type": "text_delta", "delta": f"Li: {tool_result}"}
+            return
+        assert tools and tools[0]["function"]["name"] == "read_file"
+        yield {
+            "type": "tool_call",
+            "tool_call": {
+                "id": "call_read_file_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path": "note.txt"}'},
+            },
+        }
 
 
 class ToolCallingModel(Model):
@@ -98,6 +163,95 @@ class NamedToolCallingModel(Model):
 def test_agno_adapter_is_registered():
     assert "agno" in list_runtime_adapters()
     assert get_runtime_adapter("agno").name == "agno"
+
+
+def test_agno_tool_router_can_use_chat_context(tmp_path):
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "chat-context.db"), "tool_context": "chat"},
+    )
+    router = adapter._build_tool_router()
+    assert router.tool_context == "chat"
+    assert "web_search" in router.available_tools()
+
+
+def test_chatgpt_oauth_model_delegates_to_bauer_backend():
+    model = build_chatgpt_oauth_model(OAuthClientStub(), "gpt-5.6-luna")
+    result = model.invoke(
+        [Message(role="user", content="hello")],
+        Message(role="assistant"),
+    )
+
+    assert result.content == "Olá do OAuth"
+    assert model.supports_native_tools is True
+    assert [chunk.content for chunk in model.invoke_stream(
+        [Message(role="user", content="hello")], Message(role="assistant")
+    )] == ["Olá", " do OAuth"]
+
+
+def test_chatgpt_oauth_model_round_trips_tool_calls():
+    client = OAuthToolClientStub()
+    model = build_chatgpt_oauth_model(client, "gpt-5.6-luna")
+    response = model.invoke(
+        [Message(role="user", content="some")],
+        Message(role="assistant"),
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "add_numbers",
+                "description": "adds numbers",
+                "parameters": {"type": "object"},
+            },
+        }],
+    )
+    assert response.tool_calls[0]["function"]["name"] == "add_numbers"
+    assert client.calls[0]["tools"][0]["function"]["name"] == "add_numbers"
+
+
+def test_agno_oauth_executes_bauer_tool_and_returns_result(tmp_path):
+    note = tmp_path / "note.txt"
+    note.write_text("conteudo seguro", encoding="utf-8")
+    client = OAuthReadFileClientStub()
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "agno.db"), "workspace": str(tmp_path)},
+        chatgpt_client=client,
+    )
+    result = adapter.run_agent({
+        "session_id": "oauth-tools-session",
+        "user_id": "user-1",
+        "task": "leia note.txt",
+        "agent_spec": {
+            "id": "oauth-tools-agent",
+            "provider": "openai",
+            "model": "gpt-5.6-luna",
+            "tools": ["read_file"],
+        },
+    })
+    assert result["status"] == "completed"
+    assert "conteudo seguro" in result["output"]
+    assert len(client.calls) == 2
+    assert any(message.get("role") == "tool" for message in client.calls[1])
+
+
+def test_agno_adapter_uses_injected_chatgpt_oauth_client(tmp_path):
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "oauth.db")},
+        chatgpt_client=OAuthClientStub(),
+    )
+    result = adapter.run_agent(
+        {
+            "session_id": "oauth-session",
+            "user_id": "user-1",
+            "task": "hello",
+            "agent_spec": {
+                "id": "oauth-agent",
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+            },
+        }
+    )
+
+    assert result["status"] == "completed"
+    assert result["output"] == "Olá do OAuth"
 
 
 def test_agno_adapter_runs_simple_agent(tmp_path):

@@ -24,12 +24,13 @@ import pytest
 pytest.importorskip("fastapi", reason="requer bauer-agent[server]")
 
 
-# Superfície HTTP do serve em si (29 operações). `/metrics` NAO entra: usa
+# Superfície HTTP do serve em si (37 operações). `/metrics` NAO entra: usa
 # include_in_schema=False, entao nao aparece no OpenAPI — e coberto pelo
 # teste de auth mais abaixo, via TestClient.
 OPERACOES_CORE = {
     "DELETE /sessions/{session_id}",
     "GET /approvals",
+    "GET /auth/state",
     "GET /audit",
     "GET /audit/report",
     "GET /audit/runs/{run_id}",
@@ -52,6 +53,11 @@ OPERACOES_CORE = {
     "GET /v1/models",
     "POST /approvals/{approval_id}/approve",
     "POST /approvals/{approval_id}/deny",
+    "POST /auth/google",
+    "POST /auth/login",
+    "POST /auth/logout",
+    "POST /auth/recover",
+    "POST /auth/setup",
     "POST /chat",
     "POST /loop",
     "POST /loop/{run_id}/stop",
@@ -73,6 +79,7 @@ OPERACOES_API = {
     "GET /api/audit/runs/{run_id}/score",
     "GET /api/audit/skills",
     "GET /api/audit/skills/insights",
+    "GET /api/auth/openai/status",
     "GET /api/config",
     "GET /api/config/profiles",
     "GET /api/events",
@@ -100,6 +107,7 @@ OPERACOES_API = {
     "GET /api/projects",
     "GET /api/projects/{pid}/stats",
     "GET /api/runtime/dashboard",
+    "GET /api/runtime/mode",
     "GET /api/autonomy/delegations",
     "GET /api/autonomy/incidents",
     "GET /api/autonomy/recommendations",
@@ -107,8 +115,11 @@ OPERACOES_API = {
     "GET /api/skills",
     "POST /api/approvals/{approval_id}/approve",
     "POST /api/approvals/{approval_id}/deny",
+    "POST /api/auth/openai/logout",
+    "POST /api/auth/openai/start",
     "POST /api/autonomy/alerts",
     "POST /api/autonomy/delegate",
+    "POST /api/autonomy/enabled",
     "POST /api/autonomy/start",
     "POST /api/autonomy/stop",
     "POST /api/autonomy/targets",
@@ -118,6 +129,7 @@ OPERACOES_API = {
     "POST /api/config/profiles/{name}/use",
     "POST /api/gateway/{action}",
     "POST /api/os/command",
+    "POST /api/runtime/mode",
     "POST /api/projects",
     "POST /api/projects/{pid}/activate",
     "POST /api/teams/{team_id}/runs",

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, isNoSpeechError, streamSSE } from "../api/client";
 import Hud, { HudData } from "../components/Hud";
 import Markdown from "../components/Markdown";
+import { parseToolActivityEvent, sanitizeToolActivity, ToolActivity } from "../toolActivity";
 import {
   extractWakeCommand,
   isVoiceStop,
@@ -26,6 +27,8 @@ interface Message {
   text: string;
   loop?: LoopTag;
   streaming?: boolean;
+  toolActivities?: ToolActivity[];
+  toolActivityCount?: number;
 }
 
 interface LoopStatusResponse {
@@ -77,7 +80,20 @@ function loadChatState(): { messages: Message[]; sessionId: string } {
       messages: Array.isArray(parsed.messages)
         ? parsed.messages
           .filter((m) => m && isPublicMessage(m))
-          .map((m) => ({ ...m, streaming: false }))
+          .map((m) => {
+            const candidate = m as Message & { toolActivities?: unknown[]; toolActivityCount?: unknown };
+            const toolActivities = Array.isArray(candidate.toolActivities)
+              ? candidate.toolActivities.map(sanitizeToolActivity).filter((activity): activity is ToolActivity => activity !== null).slice(-20)
+              : undefined;
+            return {
+              ...m,
+              streaming: false,
+              toolActivities,
+              toolActivityCount: typeof candidate.toolActivityCount === "number"
+                ? Math.max(candidate.toolActivityCount, toolActivities?.length ?? 0)
+                : toolActivities?.length,
+            };
+          })
         : [],
       sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : "",
     };
@@ -449,9 +465,16 @@ export default function Chat() {
         setMessages((m) => {
           const copy = [...m];
           const last = copy[copy.length - 1];
-          if (e.event === "skill" || e.event === "route" || e.event === "tool" || e.event === "tool_result" || e.event === "debug" || e.event === "internal") {
+          if (e.event === "tool") {
+            const activity = parseToolActivityEvent(e.data);
+            if (!activity) return copy;
+            const activities = [...(last.toolActivities ?? []), activity];
+            last.toolActivities = activities.slice(-20);
+            last.toolActivityCount = (last.toolActivityCount ?? 0) + 1;
+          } else if (e.event === "skill" || e.event === "route" || e.event === "tool_result" || e.event === "debug" || e.event === "internal") {
             // Internal execution and routing events never become chat
-            // messages, even if an older/backend diagnostic mode sends them.
+            // messages. Tool events are shown separately using only their
+            // sanitized label, name and icon; arguments/results stay hidden.
             return copy;
           } else if (e.event === "done") {
             setSessionId(e.data);
@@ -738,6 +761,30 @@ export default function Chat() {
                         <i className="ti ti-player-stop" /> parar
                       </button>
                     )}
+                  </div>
+                )}
+                {Boolean(m.toolActivities?.length) && (
+                  <div className="tool-activity-list" aria-label="Ferramentas chamadas" aria-live={m.streaming ? "polite" : "off"}>
+                    <div className="tool-activity-heading">
+                      <i className="ti ti-tool" aria-hidden="true" />
+                      Ferramentas chamadas · {m.toolActivityCount ?? m.toolActivities!.length}
+                    </div>
+                    {(m.toolActivityCount ?? 0) > (m.toolActivities?.length ?? 0) && (
+                      <div className="tool-activity-older">+ {(m.toolActivityCount ?? 0) - (m.toolActivities?.length ?? 0)} anteriores</div>
+                    )}
+                    {m.toolActivities!.map((activity, index) => {
+                      const active = Boolean(m.streaming) && index === m.toolActivities!.length - 1;
+                      const timedOut = !m.streaming && index === m.toolActivities!.length - 1 && m.text.includes("⏱ Essa tarefa passou de");
+                      return (
+                        <div className={"toolcall" + (active ? " active" : "")} key={`${activity.name}-${index}`}>
+                          <i className={"ti ti-" + activity.icon + (active ? " spin" : "")} aria-hidden="true" />
+                          <span className="tlabel">{activity.label}</span>
+                          <span className="tname">{activity.name}</span>
+                          {active && <span className="toolcall-state">em execução</span>}
+                          {timedOut && <span className="toolcall-state">estado não confirmado</span>}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 {m.role === "user" ? (

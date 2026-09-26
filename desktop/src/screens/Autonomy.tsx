@@ -14,6 +14,7 @@ type AutonomyStatus = {
     incidents: number; recommendations: number; alert_level: string;
     voice_enabled: boolean; error?: string | null;
   };
+  config_enabled: boolean;
   configured_targets: number;
   targets: Target[];
   incidents: { id: string; target: string; message: string; created_at: string }[];
@@ -54,6 +55,13 @@ export default function Autonomy() {
   async function stop() {
     try { await api.post("/api/autonomy/stop"); await load(); }
     catch (err) { setError(String(err)); }
+  }
+  async function setGlobalEnabled(enabled: boolean) {
+    try {
+      const result = await api.post<AutonomyStatus & { warning?: string }>("/api/autonomy/enabled", { enabled });
+      setData(result);
+      setError(result.warning || "");
+    } catch (err) { setError(String(err)); }
   }
   async function configureAlerts(voice_enabled: boolean, alert_level: string) {
     try { await api.post("/api/autonomy/alerts", { voice_enabled, alert_level }); await load(); }
@@ -124,6 +132,13 @@ export default function Autonomy() {
         <span className="title">Autonomia contínua</span>
         <span className="tag">{autonomyStateLabel(state)}</span>
         <div className="spacer" />
+        <button
+          className={"btn" + (data?.config_enabled ? " primary" : "")}
+          onClick={() => setGlobalEnabled(!(data?.config_enabled || false))}
+        >
+          <i className={data?.config_enabled ? "ti ti-toggle-right" : "ti ti-toggle-left"} />
+          Autonomia {data?.config_enabled ? "ativada" : "desativada"}
+        </button>
         {canStopAutonomy(state) ?
           <button className="btn" onClick={stop}><i className="ti ti-player-stop" /> Parar imediatamente</button> :
           <button className="btn primary" onClick={start}><i className="ti ti-player-play" /> Iniciar observação</button>}

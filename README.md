@@ -1390,6 +1390,16 @@ Agent UI no Windows, instale o Docker Desktop, clone o repositório e execute
 `docker compose` a partir da pasta do clone. O runbook contém os comandos para
 criar `config.yaml`, `models.yaml`, `.env` e a chave REST necessária.
 
+No primeiro acesso ao cockpit, cadastre o administrador com e-mail/senha ou
+Google. A chave `BAUER_SERVE_API_KEY` é usada uma única vez como bootstrap e
+não fica armazenada no navegador. Veja [autenticação do frontend](docs/runbooks/serve-auth.md)
+e os comandos de chave para [Linux e Windows](docs/runbooks/docker-agentos.md#chave-de-bootstrap-e-clientes-da-api).
+
+Em **Settings**, o card **OpenAI / ChatGPT via browser** reutiliza o fluxo
+experimental de `bauer auth login -p openai`; o callback local usa a porta
+1455 e os tokens permanecem criptografados no servidor. Para a API pública
+OpenAI, `OPENAI_API_KEY` continua sendo o caminho oficial.
+
 Reiniciar um container **não baixa a última versão**: ele reutiliza a imagem
 existente. A atualização do Agent UI ocorre no build do stack. O instalador usa
 `AGENT_UI_REF=main` por padrão para novas instalações; fixe uma tag, branch ou commit

@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
+
+const PROJECT_REFRESH_MS = 10_000;
 
 interface Project {
   id: string;
@@ -21,17 +23,26 @@ export default function Projects() {
   const [newPath, setNewPath] = useState("");
   const [err, setErr] = useState("");
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const r = await api.get<{ projects: Project[] }>("/api/projects");
       setProjects(r.projects);
-      const sel = selected ? r.projects.find((p) => p.id === selected.id) : r.projects.find((p) => p.active);
-      setSelected(sel || r.projects[0] || null);
+      // O polling não pode trocar uma seleção manual pelo projeto ativo global.
+      // Usa o estado funcional para sempre comparar com o id mais recente.
+      setSelected((current) => {
+        const selected = current && r.projects.find((p) => p.id === current.id);
+        return selected || r.projects.find((p) => p.active) || r.projects[0] || null;
+      });
     } catch (e) {
       setErr(String(e));
     }
-  }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), PROJECT_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   useEffect(() => {
     if (!selected) { setStats(null); return; }

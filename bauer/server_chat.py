@@ -61,6 +61,8 @@ class ChatRouteDependencies:
     format_response: Callable[[str], str]
     public_tool_log: Callable[[list[dict] | None], list[dict]]
     run_one_turn_with_fallback: Callable[[Any, Any, Any, str, list[Any]], tuple[str, list[Any]]]
+    runtime_mode: Callable[[], str]
+    run_agno_turn: Callable[[str, str, str, str, Any, str, dict[str, Any]], dict[str, Any]]
     logger: logging.Logger
 
 
@@ -129,9 +131,17 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             cost_token = cost_sink.set(cost)
             ids_token = set_runtime_ids(session_id, run_id)
             try:
-                response, tool_log = deps.run_one_turn_with_fallback(
-                    ctx, active_router, turn_client, turn_model, deps.fallback_clients,
-                )
+                if deps.runtime_mode() == "agno":
+                    agno_result = deps.run_agno_turn(
+                        req.message, session_id, run_id, request_agent_id,
+                        active_router, turn_model, resolved,
+                    )
+                    response = agno_result["response"]
+                    tool_log = agno_result["tool_log"]
+                else:
+                    response, tool_log = deps.run_one_turn_with_fallback(
+                        ctx, active_router, turn_client, turn_model, deps.fallback_clients,
+                    )
             except Exception as exc:  # noqa: BLE001 - Kernel registra o resultado
                 return {"status": "failed", "error": str(exc)}
             finally:
@@ -158,6 +168,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 session_id=session_id,
                 agent_id=request_agent_id,
                 input=deps.run_input(req.message, "/chat", resolved),
+                runtime_adapter=deps.runtime_mode(),
             ),
             executor=executor,
         )
@@ -225,7 +236,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
         run = deps.run_manager.create_run(
             session_id=session_id,
             agent_id=request_agent_id,
-            runtime_adapter="bauer_native",
+            runtime_adapter=deps.runtime_mode(),
             input=deps.run_input(req.message, "/chat", resolved),
             status="running",
         )
@@ -239,9 +250,17 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
         cost_token = cost_sink.set(cost)
         ids_token = set_runtime_ids(session_id, run.id)
         try:
-            response, tool_log = deps.run_one_turn_with_fallback(
-                ctx, active_router, turn_client, turn_model, deps.fallback_clients,
-            )
+            if deps.runtime_mode() == "agno":
+                agno_result = deps.run_agno_turn(
+                    req.message, session_id, run.id, request_agent_id,
+                    active_router, turn_model, resolved,
+                )
+                response = agno_result["response"]
+                tool_log = agno_result["tool_log"]
+            else:
+                response, tool_log = deps.run_one_turn_with_fallback(
+                    ctx, active_router, turn_client, turn_model, deps.fallback_clients,
+                )
         except Exception as exc:  # noqa: BLE001 - HTTP boundary
             deps.logger.exception("Erro interno em /chat: %s", exc)
             deps.run_manager.fail_run(run.id, str(exc))

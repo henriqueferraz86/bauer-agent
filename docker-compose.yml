@@ -57,16 +57,39 @@ services:
       - path: .env
         required: false
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./models.yaml:/app/models.yaml:ro
+      # A sintaxe longa impede que Docker Desktop crie um diretório quando o
+      # arquivo de origem estiver ausente (comum em instalações no Windows).
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        # O painel web persiste toggles e alvos em continuous_autonomy.
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./models.yaml
+        target: /app/models.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      # A autonomia usa apenas a CLI para sondar/iniciar/reiniciar alvos.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
       - bauer_workspace:/app/workspace
       - bauer_memory:/app/memory
       - bauer_logs:/app/logs
     ports:
       - "8000:8000"                        # único serviço exposto
+      - "127.0.0.1:1455:1455"              # callback local do login OpenAI/ChatGPT
     environment:
       - PYTHONUNBUFFERED=1
       - OLLAMA_HOST=http://ollama:11434    # Ollama interno
+      - BAUER_HOME=/app/memory/bauer-home # tokens OAuth persistem no volume
+      - BAUER_SERVE_TURN_TIMEOUT=3600 # limite do stream: 60 minutos
+      - BAUER_OAUTH_CALLBACK_HOST=0.0.0.0 # publicado só no loopback do host
     depends_on:
       ollama:
         condition: service_healthy
@@ -83,8 +106,19 @@ services:
       - path: .env
         required: false
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./models.yaml:/app/models.yaml:ro
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        # O AgentOS também compartilha o estado editável de autonomia.
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./models.yaml
+        target: /app/models.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - bauer_workspace:/app/workspace
       - bauer_memory:/app/memory
       - bauer_logs:/app/logs
@@ -96,6 +130,7 @@ services:
       - BAUER_CONFIG=/app/config.yaml
       - BAUER_WORKSPACE=/app/workspace
       - BAUER_RUNTIME_ROOT=/app/memory/runtime
+      - BAUER_HOME=/app/memory/bauer-home
       - AGENT_OS_HOST=0.0.0.0
       - AGENT_OS_PORT=7777
       - AGENT_OS_CORS_ORIGINS=${AGENT_OS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}

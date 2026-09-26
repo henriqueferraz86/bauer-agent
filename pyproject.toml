@@ -48,11 +48,15 @@ dev = [
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
     "python-multipart>=0.0.9",
+    "argon2-cffi>=25.1",
+    "google-auth>=2.40",
 ]
 server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
+    "argon2-cffi>=25.1",
+    "google-auth>=2.40",
 ]
 gateway = [
     "fastapi>=0.110",
@@ -112,6 +116,8 @@ all = [
     "uvicorn[standard]>=0.27",
     "websockets>=12.0",
     "python-multipart>=0.0.9",
+    "argon2-cffi>=25.1",
+    "google-auth>=2.40",
     "ddgs>=6.0",
     "beautifulsoup4>=4.12",
     "sounddevice>=0.4.6",

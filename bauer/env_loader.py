@@ -151,6 +151,8 @@ def apply_env_to_config(cfg) -> None:
     # --- Bauer serve auth key ---
     if key := os.environ.get("BAUER_SERVE_API_KEY"):
         cfg.serve.api_key = key
+    if client_id := os.environ.get("BAUER_AUTH_GOOGLE_CLIENT_ID"):
+        cfg.serve.auth_google_client_id = client_id
 
     # --- Cohere ---
     if key := os.environ.get("COHERE_API_KEY"):

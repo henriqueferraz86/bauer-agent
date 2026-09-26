@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -65,6 +65,25 @@ def test_empty_slot_falls_back_to_main_model():
     client, model = get_text_auxiliary_client("kanban_decomposer", cfg)
     assert isinstance(client, OpenAIClient)
     assert model == "gpt-4o-mini"
+
+
+def test_openai_oauth_token_uses_chatgpt_backend_not_public_api(tmp_path):
+    from bauer.auth import AuthToken
+    from bauer.auxiliary_client import _try_build_from_auth_store
+    from bauer.chatgpt_backend import ChatGPTBackendClient
+
+    token = AuthToken(
+        provider="openai",
+        access_token="oauth-access",
+        extra={"chatgpt_account_id": "acct-test"},
+    )
+    auth = MagicMock()
+    auth.store.load.return_value = token
+    with patch("bauer.auth.AuthManager", return_value=auth):
+        client = _try_build_from_auth_store("openai", "gpt-5.6-luna", _cfg())
+
+    assert isinstance(client, ChatGPTBackendClient)
+    assert client._account_id == "acct-test"
 
 
 def test_all_slots_share_same_fallback():

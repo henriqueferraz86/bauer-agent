@@ -62,8 +62,7 @@ def test_client_headers_and_defaults():
     assert c._headers["chatgpt-account-id"] == "acct-1"
     assert c._headers["originator"] == "codex_cli_rs"
     assert "session_id" in c._headers
-    # Usa bridge de tools por texto, não native
-    assert c.supports_native_tools is False
+    assert c.supports_native_tools is True
     assert c.is_alive() == (True, "")
     assert c.has_model("qualquer") is True
 
@@ -112,6 +111,50 @@ def test_to_responses_input_merges_multiple_system():
     assert len(items) == 1
 
 
+def test_to_responses_input_round_trips_function_call_and_output():
+    _, items = ChatGPTBackendClient._to_responses_input([
+        {"role": "user", "content": "Que horas?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_clock",
+                "type": "function",
+                "function": {"name": "get_time", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_clock", "content": "07:15"},
+    ])
+    assert items[1] == {
+        "type": "function_call",
+        "call_id": "call_clock",
+        "name": "get_time",
+        "arguments": "{}",
+    }
+    assert items[2] == {
+        "type": "function_call_output",
+        "call_id": "call_clock",
+        "output": "07:15",
+    }
+
+
+def test_responses_tools_are_flat_function_items():
+    tools = ChatGPTBackendClient._responses_tools([{
+        "type": "function",
+        "function": {
+            "name": "get_time",
+            "description": "current time",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }])
+    assert tools == [{
+        "type": "function",
+        "name": "get_time",
+        "description": "current time",
+        "parameters": {"type": "object", "properties": {}},
+    }]
+
+
 # ── Streaming (Responses SSE) ────────────────────────────────────────────────
 
 def test_chat_stream_yields_deltas_and_usage():
@@ -126,6 +169,48 @@ def test_chat_stream_yields_deltas_and_usage():
         out = "".join(c.chat_stream("gpt-5", [{"role": "user", "content": "oi"}]))
     assert out == "Ola mundo"
     assert c.last_usage == {"input_tokens": 3, "output_tokens": 2}
+
+
+def test_chat_stream_events_normalizes_function_call():
+    lines = [
+        'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_time","arguments":""}}',
+        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{}"}',
+        'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{}"}',
+        'data: {"type":"response.completed","response":{"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_time","arguments":"{}"}]}}',
+    ]
+    c = ChatGPTBackendClient(access_token="t", account_id="a")
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp(lines))) as stream:
+        events = list(c.chat_stream_events(
+            "gpt-5.6-luna",
+            [{"role": "user", "content": "hora"}],
+            tools=[{"type": "function", "function": {"name": "get_time"}}],
+        ))
+    assert events[-1]["tool_call"]["function"]["name"] == "get_time"
+    assert events[-1]["tool_call"]["function"]["arguments"] == "{}"
+    body = stream.call_args.kwargs["json"]
+    assert body["tools"][0]["name"] == "get_time"
+    assert body["reasoning"] == {"effort": "high"}
+
+
+def test_luna_sets_high_reasoning_effort():
+    c = ChatGPTBackendClient(access_token="t", model="gpt-5.6-luna")
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp([
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+    ]))) as stream:
+        list(c.chat_stream("gpt-5.6-luna", [{"role": "user", "content": "oi"}]))
+
+    body = stream.call_args.kwargs["json"]
+    assert body["reasoning"] == {"effort": "high"}
+
+
+def test_other_models_do_not_receive_luna_reasoning_override():
+    c = ChatGPTBackendClient(access_token="t", model="gpt-5.6-terra")
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp([
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+    ]))) as stream:
+        list(c.chat_stream("gpt-5.6-terra", [{"role": "user", "content": "oi"}]))
+
+    assert "reasoning" not in stream.call_args.kwargs["json"]
 
 
 def test_chat_stream_ignores_unknown_events():

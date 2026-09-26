@@ -15,6 +15,7 @@ Fluxo OAuth:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -322,6 +323,18 @@ class AuthToken:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
+@dataclass(frozen=True)
+class OAuthAuthorization:
+    """Transação PKCE que pode ser concluída pelo CLI ou pelo frontend web."""
+
+    provider: str
+    authorization_url: str
+    state: str
+    code_verifier: str
+    redirect_uri: str
+    created_at: float = field(default_factory=time.time)
+
+
 def _restringir(caminho: Path, modo: int) -> None:
     """chmod best-effort — nunca derruba o fluxo de auth.
 
@@ -342,7 +355,11 @@ class TokenStore:
     """Armazenamento seguro de tokens."""
 
     def __init__(self, base_dir: Path | None = None):
-        self.base_dir = base_dir or Path.home() / ".bauer"
+        if base_dir is None:
+            from .paths import get_bauer_home
+
+            base_dir = get_bauer_home()
+        self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
         _restringir(self.base_dir, 0o700)
         self.tokens_file = self.base_dir / "auth.json"
@@ -801,6 +818,94 @@ class AuthManager:
             )
         return self._http_client
 
+    def begin_oauth(
+        self, provider: str, *, redirect_uri: str | None = None
+    ) -> OAuthAuthorization:
+        """Cria uma autorização PKCE sem abrir browser nem bloquear o processo."""
+        if provider not in PROVIDERS:
+            raise ValueError(f"Provider '{provider}' nao suporta OAuth")
+        config = PROVIDERS[provider]
+        if config["auth_type"] != "oauth":
+            raise ValueError(f"Provider '{provider}' nao usa OAuth")
+
+        code_verifier, code_challenge = _generate_pkce()
+        state = secrets.token_urlsafe(32)
+        callback = redirect_uri or (
+            f"http://localhost:{config.get('port', 1455)}/auth/callback"
+        )
+        auth_params = {
+            "response_type": "code",
+            "client_id": config["client_id"],
+            "redirect_uri": callback,
+            "scope": config["scopes"],
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+            **config.get("extra_params", {}),
+        }
+        query_string = "&".join(
+            f"{key}={quote(str(value), safe='')}"
+            for key, value in auth_params.items()
+        )
+        return OAuthAuthorization(
+            provider=provider,
+            authorization_url=f"{config['authorize_url']}?{query_string}",
+            state=state,
+            code_verifier=code_verifier,
+            redirect_uri=callback,
+        )
+
+    def complete_oauth(
+        self,
+        authorization: OAuthAuthorization,
+        *,
+        code: str,
+        returned_state: str | None,
+        require_state: bool = False,
+    ) -> AuthToken:
+        """Valida a transação, troca o code e persiste tokens criptografados."""
+        if not code:
+            raise ValueError("Código OAuth ausente.")
+        if require_state and not returned_state:
+            raise ValueError("State OAuth ausente.")
+        if returned_state is not None and not hmac.compare_digest(
+            returned_state, authorization.state
+        ):
+            raise ValueError("State mismatch - possivel ataque CSRF")
+
+        config = PROVIDERS[authorization.provider]
+        token_data = self._exchange_code(
+            issuer=config["issuer"],
+            client_id=config["client_id"],
+            redirect_uri=authorization.redirect_uri,
+            code_verifier=authorization.code_verifier,
+            code=code,
+        )
+        account_id = _extract_chatgpt_account_id(token_data.get("id_token"))
+        token = AuthToken(
+            provider=authorization.provider,
+            access_token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            expires_at=time.time() + token_data.get("expires_in", 3600),
+            token_type=token_data.get("token_type", "Bearer"),
+            api_base=config.get("api_base"),
+            extra={
+                "id_token": token_data.get("id_token"),
+                "chatgpt_account_id": account_id,
+            },
+        )
+        self.store.save(token)
+
+        id_token = token_data.get("id_token")
+        if id_token:
+            api_key = self._obtain_api_key(
+                config["issuer"], config["client_id"], id_token
+            )
+            if api_key:
+                token.api_key = api_key
+                self.store.save(token)
+        return token
+
     def login_oauth(
         self, provider: str, port: int | None = None, no_browser: bool | None = None
     ) -> AuthToken:
@@ -823,46 +928,13 @@ class AuthManager:
             no_browser: ``None`` autodetecta (ver :func:`browser_available`),
                 ``True`` força o fluxo por colagem, ``False`` força o browser.
         """
-        if provider not in PROVIDERS:
-            raise ValueError(f"Provider '{provider}' nao suporta OAuth")
-
-        config = PROVIDERS[provider]
-        if config["auth_type"] != "oauth":
-            raise ValueError(f"Provider '{provider}' nao usa OAuth")
-
-        issuer = config["issuer"]
-        client_id = config["client_id"]
-        scopes = config["scopes"]
-        extra_params = config.get("extra_params", {})
+        config = PROVIDERS.get(provider, {})
         actual_port = port or config.get("port", 1455)
-
-        # PKCE
-        pkce = _generate_pkce()
-        code_verifier, code_challenge = pkce
-        state = secrets.token_urlsafe(32)
-
-        # Redirect URI
-        redirect_uri = f"http://localhost:{actual_port}/auth/callback"
-
-        # Construir URL de autorização (igual ao Codex CLI)
-        auth_params = {
-            "response_type": "code",
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "scope": scopes,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "state": state,
-        }
-        # Adicionar parâmetros extras
-        auth_params.update(extra_params)
-
-        # URL encode
-        query_string = "&".join(
-            f"{k}={quote(str(v), safe='')}"
-            for k, v in auth_params.items()
+        authorization = self.begin_oauth(
+            provider,
+            redirect_uri=f"http://localhost:{actual_port}/auth/callback",
         )
-        auth_url = f"{issuer}/oauth/authorize?{query_string}"
+        auth_url = authorization.authorization_url
 
         if no_browser is None:
             no_browser = not browser_available()
@@ -915,57 +987,17 @@ class AuthManager:
         if not code:
             raise TimeoutError("Tempo esgotado aguardando autenticacao")
 
-        # Colagem de código solto não traz state; quando vem, tem que bater.
-        if returned_state is not None and returned_state != state:
-            raise ValueError("State mismatch - possivel ataque CSRF")
-
-        # Trocar code por token
-        token_data = self._exchange_code(
-            issuer=issuer,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            code_verifier=code_verifier,
-            code=code,
+        token = self.complete_oauth(
+            authorization, code=code, returned_state=returned_state
         )
-
-        # Extrai o chatgpt_account_id do id_token (JWT) — necessário para o
-        # backend ChatGPT (Responses API) billar na assinatura, igual ao Codex.
-        _account_id = _extract_chatgpt_account_id(token_data.get("id_token"))
-
-        token = AuthToken(
-            provider=provider,
-            access_token=token_data["access_token"],
-            refresh_token=token_data.get("refresh_token"),
-            expires_at=time.time() + token_data.get("expires_in", 3600),
-            token_type=token_data.get("token_type", "Bearer"),
-            api_base=config.get("api_base"),
-            extra={
-                "id_token": token_data.get("id_token"),
-                "chatgpt_account_id": _account_id,
-            },
-        )
-
-        self.store.save(token)
-
-        # Tentar obter API key via token exchange (igual Codex CLI)
-        # Nota: requer organization_id na conta OpenAI.
-        # Contas pessoais (sem org) recebem 401/403 aqui — fallback para access_token.
-        id_token = token_data.get("id_token")
-        if id_token:
-            api_key = self._obtain_api_key(issuer, client_id, id_token)
-            if api_key:
-                token.api_key = api_key
-                self.store.save(token)
-                _safe_print("[✓] API key de sessão obtida via token exchange.")
-            else:
-                # Sem API key — usará access_token como Bearer.
-                # Isso funciona para autenticação mas requer billing na conta API da OpenAI.
-                _safe_print(
-                    "[!] Token exchange nao retornou API key (normal para contas pessoais sem org).\n"
-                    "    Usando access_token OAuth — requer billing em platform.openai.com/settings/billing\n"
-                    "    para usar a API developer. ChatGPT Plus (assinatura web) e separado."
-                )
-
+        if token.api_key:
+            _safe_print("[✓] API key de sessão obtida via token exchange.")
+        elif token.extra.get("id_token"):
+            _safe_print(
+                "[!] Token exchange nao retornou API key (normal para contas pessoais sem org).\n"
+                "    Usando access_token OAuth — requer billing em platform.openai.com/settings/billing\n"
+                "    para usar a API developer. ChatGPT Plus (assinatura web) e separado."
+            )
         return token
 
     def _exchange_code(
