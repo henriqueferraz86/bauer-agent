@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bauer.decision_router import JevDecisionClient, decide_with_fallback
+from bauer.decision_router import decide_with_fallback
 
 
 def _cfg(*, enabled: bool = True, fallback: bool = True, key: str = "test-key"):
@@ -76,6 +76,46 @@ def test_jev_parses_typed_decision_and_applies_profile(monkeypatch):
     assert decision.confidence == pytest.approx(0.91)
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["json"]["model"] == "jev-latest"
+
+
+def test_jev_request_matches_typesafe_question_types_and_selects_tools(monkeypatch):
+    captured = {}
+    payload = _payload()
+    payload["answers"].update(
+        {
+            "profile": {
+                "choice": "coding",
+                "confidence": 0.91,
+                "probabilities": {"fast": 0.02, "balanced": 0.03, "coding": 0.9, "heavy": 0.05},
+            },
+            "strategy": {"choice": "plan_then_execute"},
+            "tool_candidate_0": {"noul": 1.0},
+            "tool_candidate_1": {"noul": 0.8},
+            "tool_candidate_2": {"noul": 0.2},
+        }
+    )
+
+    def fake_post(url, **kwargs):
+        captured.update(url=url, kwargs=kwargs)
+        return _Response(payload)
+
+    monkeypatch.setattr("bauer.decision_router.httpx.post", fake_post)
+    decision = decide_with_fallback(
+        "implemente e valide",
+        config=_cfg(),
+        available_tools=["read_file", "write_file", "run_command"],
+    )
+
+    request = captured["kwargs"]["json"]
+    questions = request["questions"]
+    assert {question["type"] for question in questions.values()} <= {"choice", "noul", "score"}
+    assert questions["tool_candidate_0"]["type"] == "noul"
+    assert questions["tool_candidate_1"]["type"] == "noul"
+    assert questions["tool_candidate_2"]["type"] == "noul"
+    assert not {"tools", "plan", "alternatives"} & questions.keys()
+    assert decision.tools == ["read_file", "run_command"]
+    assert decision.strategy == "plan_then_execute"
+    assert decision.plan
 
 
 def test_jev_error_falls_back_without_exposing_secret(monkeypatch):

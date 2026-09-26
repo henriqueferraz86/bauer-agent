@@ -19,6 +19,7 @@ _TASK_TYPES = {"conversation", "tool_call", "coding", "architecture", "reasoning
 _COMPLEXITIES = {"low", "medium", "high"}
 _PROFILES = {"fast", "balanced", "coding", "heavy"}
 _RUNTIMES = {"bauer_native", "agno"}
+_TOOL_QUESTION_PREFIX = "tool_candidate_"
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,78 @@ class JevDecisionClient:
                 "candidates": candidates or {},
                 "similar_decisions": memory or [],
             }
+        questions: dict[str, dict[str, Any]] = {
+            "task_type": {
+                "type": "choice",
+                "instructions": "Qual é o tipo principal desta tarefa?",
+                "criteria": {
+                    "conversation": "saudação ou conversa simples",
+                    "tool_call": "ler, escrever, listar, executar ou pesquisar",
+                    "coding": "programação, código, debugging ou testes",
+                    "architecture": "arquitetura, redesign ou migração ampla",
+                    "reasoning": "análise, explicação ou raciocínio geral",
+                },
+            },
+            "complexity": {
+                "type": "choice",
+                "instructions": "Qual é a complexidade da tarefa?",
+                "criteria": {
+                    "low": "curta e direta",
+                    "medium": "exige algum raciocínio ou contexto",
+                    "high": "ampla, técnica ou com múltiplas etapas",
+                },
+            },
+            "profile": {
+                "type": "choice",
+                "instructions": "Qual tier de modelo deve atender a tarefa?",
+                "criteria": {
+                    "fast": "resposta simples e rápida",
+                    "balanced": "tarefa geral com equilíbrio",
+                    "coding": "código, debugging ou implementação",
+                    "heavy": "arquitetura, análise profunda ou alta complexidade",
+                },
+            },
+            "orchestrate": {
+                "type": "noul",
+                "instructions": "A tarefa exige múltiplos objetivos distintos e coordenação de agentes?",
+            },
+            "runtime": {
+                "type": "choice",
+                "instructions": "Qual runtime deve executar a decisão?",
+                "criteria": {runtime: runtime for runtime in sorted(_RUNTIMES)},
+            },
+            "strategy": {
+                "type": "choice",
+                "instructions": "Escolha a estratégia de execução.",
+                "criteria": {
+                    "direct": "resolver em uma etapa",
+                    "plan_then_execute": "planejar e executar em etapas",
+                    "team": "coordenar múltiplos agentes",
+                },
+            },
+        }
+        if (candidates or {}).get("teams"):
+            questions["team"] = {
+                "type": "choice",
+                "instructions": "Escolha um time do catálogo quando a tarefa exigir colaboração.",
+                "criteria": {item: item for item in candidates["teams"]},
+            }
+        if (candidates or {}).get("agents"):
+            questions["agent"] = {
+                "type": "choice",
+                "instructions": "Escolha o agente mais adequado do catálogo.",
+                "criteria": {item: item for item in candidates["agents"]},
+            }
+        for index, tool in enumerate((candidates or {}).get("tools", [])):
+            questions[f"{_TOOL_QUESTION_PREFIX}{index}"] = {
+                "type": "noul",
+                "instructions": f"A ferramenta '{tool}' é necessária para atender esta tarefa?",
+                "criteria": {
+                    "true": f"Use '{tool}' se ela for necessária.",
+                    "false": f"Não use '{tool}' se ela não for necessária.",
+                },
+            }
+
         response = httpx.post(
             self.config.endpoint,
             headers={
@@ -93,88 +166,16 @@ class JevDecisionClient:
             json={
                 "state": state,
                 "model": self.config.model,
-                "questions": {
-                    "task_type": {
-                        "type": "choice",
-                        "instructions": "Qual é o tipo principal desta tarefa?",
-                        "criteria": {
-                            "conversation": "saudação ou conversa simples",
-                            "tool_call": "ler, escrever, listar, executar ou pesquisar",
-                            "coding": "programação, código, debugging ou testes",
-                            "architecture": "arquitetura, redesign ou migração ampla",
-                            "reasoning": "análise, explicação ou raciocínio geral",
-                        },
-                    },
-                    "complexity": {
-                        "type": "choice",
-                        "instructions": "Qual é a complexidade da tarefa?",
-                        "criteria": {
-                            "low": "curta e direta",
-                            "medium": "exige algum raciocínio ou contexto",
-                            "high": "ampla, técnica ou com múltiplas etapas",
-                        },
-                    },
-                    "profile": {
-                        "type": "choice",
-                        "instructions": "Qual tier de modelo deve atender a tarefa?",
-                        "criteria": {
-                            "fast": "resposta simples e rápida",
-                            "balanced": "tarefa geral com equilíbrio",
-                            "coding": "código, debugging ou implementação",
-                            "heavy": "arquitetura, análise profunda ou alta complexidade",
-                        },
-                    },
-                    "orchestrate": {
-                        "type": "noul",
-                        "instructions": "A tarefa exige múltiplos objetivos distintos e coordenação de agentes?",
-                    },
-                    "runtime": {
-                        "type": "choice",
-                        "instructions": "Qual runtime deve executar a decisão?",
-                        "criteria": {runtime: runtime for runtime in sorted(_RUNTIMES)},
-                    },
-                    "team": {
-                        "type": "choice",
-                        "instructions": "Escolha um time do catálogo quando a tarefa exigir colaboração.",
-                        "criteria": {item: item for item in (candidates or {}).get("teams", [])},
-                    },
-                    "agent": {
-                        "type": "choice",
-                        "instructions": "Escolha o agente mais adequado do catálogo.",
-                        "criteria": {item: item for item in (candidates or {}).get("agents", [])},
-                    },
-                    "tools": {
-                        "type": "list",
-                        "instructions": "Liste somente tools do catálogo que serão necessárias.",
-                        "criteria": {item: item for item in (candidates or {}).get("tools", [])},
-                    },
-                    "strategy": {
-                        "type": "choice",
-                        "instructions": "Escolha a estratégia de execução.",
-                        "criteria": {
-                            "direct": "resolver em uma etapa",
-                            "plan_then_execute": "planejar e executar em etapas",
-                            "team": "coordenar múltiplos agentes",
-                        },
-                    },
-                    "plan": {
-                        "type": "list",
-                        "instructions": "Retorne passos curtos, ordenados e verificáveis.",
-                    },
-                    "alternatives": {
-                        "type": "list",
-                        "instructions": "Compare alternativas e informe probability entre 0 e 1 para cada uma.",
-                    },
-                },
+                "questions": questions,
             },
             timeout=self.config.timeout_seconds,
         )
         response.raise_for_status()
         payload = response.json()
-        return self._parse(payload)
+        return self._parse(payload, candidates=candidates or {})
 
     @staticmethod
-    def _parse(payload: Any) -> RouteDecision:
+    def _parse(payload: Any, *, candidates: dict[str, list[str]] | None = None) -> RouteDecision:
         if not isinstance(payload, dict) or not isinstance(payload.get("answers"), dict):
             raise ValueError("resposta Jev sem answers")
         answers = payload["answers"]
@@ -184,6 +185,26 @@ class JevDecisionClient:
         confidence = _confidence(answers, "profile")
         orchestrate = _noul(answers, "orchestrate") >= 0.5
         probabilities, alternatives = _probabilities(answers, profile, confidence)
+        candidates = candidates or {}
+        selected_tools = [
+            tool
+            for index, tool in enumerate(candidates.get("tools", []))
+            if _noul(answers, f"{_TOOL_QUESTION_PREFIX}{index}") >= 0.5
+        ]
+        strategy = _choice(
+            answers,
+            "strategy",
+            {"direct", "plan_then_execute", "team"},
+            default="team" if orchestrate else "direct",
+        )
+        plan_decision = RouteDecision(
+            task_type=task_type,
+            complexity=complexity,
+            profile=profile,
+            reason="",
+            orchestrate=orchestrate,
+            strategy=strategy,
+        )
         if confidence <= 0:
             raise ValueError("resposta Jev sem confiança válida")
         reason = f"Jev classificou tarefa '{task_type}' de complexidade '{complexity}'"
@@ -201,14 +222,9 @@ class JevDecisionClient:
             runtime=_choice(answers, "runtime", _RUNTIMES, default="bauer_native"),
             team_id=_value(answers, "team"),
             agent_id=_value(answers, "agent"),
-            tools=_list_value(answers, "tools"),
-            strategy=_choice(
-                answers,
-                "strategy",
-                {"direct", "plan_then_execute", "team"},
-                default="team" if orchestrate else "direct",
-            ),
-            plan=_list_value(answers, "plan"),
+            tools=selected_tools,
+            strategy=strategy,
+            plan=_fallback_plan(plan_decision),
         )
 
 
@@ -437,19 +453,6 @@ def _value(answers: dict[str, Any], name: str) -> str:
     else:
         value = answer
     return str(value or "").strip()
-
-
-def _list_value(answers: dict[str, Any], name: str) -> list[str]:
-    answer = answers.get(name)
-    if isinstance(answer, dict):
-        value = answer.get("choices", answer.get("list", answer.get("value", [])))
-    else:
-        value = answer
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return []
 
 
 def _match_candidate(message: str, candidates: list[str]) -> str:

@@ -13,6 +13,12 @@ houver `team_id`, o adapter resolve o time pelo `TeamRegistry` e materializa
 um `agno.team.Team` com os agentes registrados. Sem time, usa o agente
 individual selecionado.
 
+As perguntas enviadas usam apenas tipos aceitos pela API System One
+(`choice` e `noul`). Cada ferramenta disponível é avaliada com uma pergunta
+sim/não (`noul`); as probabilidades vêm da resposta `choice` do tier. O plano
+curto é montado localmente a partir da estratégia escolhida, sem pedir à API
+uma resposta em lista, formato que o contrato da TypeSafe não oferece.
+
 Jev fica desligado por padrão. Para habilitar no perfil atual:
 
 ```bash
