@@ -45,6 +45,15 @@ Start it explicitly or let `runtime start` read `autopilot.enabled`:
 .\.venv\Scripts\python.exe -m bauer.cli runtime autopilot-control pause --workspace workspace
 .\.venv\Scripts\python.exe -m bauer.cli runtime autopilot-control resume --workspace workspace
 .\.venv\Scripts\python.exe -m bauer.cli runtime autopilot-control replan --workspace workspace
+
+Autopilot mission budgets are cumulative across completed tasks and controller
+restarts. Tasks from one goal run serially so the dispatcher can reserve the
+remaining cost/tool/time allowance for the next worker. The Kernel's durable
+run must record a completed validation and usage. Execution duration includes
+Kernel validation gates but excludes queue/approval wait; reported usage is
+retained for failed runs when available. If cloud usage is missing while a cost
+cap is active, the task/goal is blocked for manual reconciliation; the missing
+amount is never counted as `$0` and is not retried automatically.
 ```
 
 Use `bauer runtime kill-switch on` to prevent new autonomous work. A paused,

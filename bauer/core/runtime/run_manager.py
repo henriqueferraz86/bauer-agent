@@ -60,6 +60,11 @@ class Run:
     finished_at: str | None = None
     cost_estimate: float | None = None
     tool_calls_count: int = 0
+    usage_known: bool | None = None
+    llm_calls_count: int = 0
+    elapsed_seconds: float | None = None
+    validation_passed: bool | None = None
+    validation_results: list[dict[str, Any]] = field(default_factory=list)
     updated_at: str = field(default_factory=lambda: _now_iso())
 
 
@@ -171,12 +176,21 @@ class RunManager:
         output: dict[str, Any] | None = None,
         tool_calls_count: int | None = None,
         cost_estimate: float | None = None,
+        usage_known: bool | None = None,
+        llm_calls_count: int | None = None,
+        elapsed_seconds: float | None = None,
     ) -> Run:
         changes: dict[str, Any] = {"status": "completed", "output": output or {}}
         if tool_calls_count is not None:
             changes["tool_calls_count"] = tool_calls_count
         if cost_estimate is not None:
             changes["cost_estimate"] = cost_estimate
+        if usage_known is not None:
+            changes["usage_known"] = bool(usage_known)
+        if llm_calls_count is not None:
+            changes["llm_calls_count"] = max(0, int(llm_calls_count))
+        if elapsed_seconds is not None:
+            changes["elapsed_seconds"] = max(0.0, float(elapsed_seconds))
         return self.update_run(run_id, **changes)
 
     def fail_run(self, run_id: str, error: str) -> Run:

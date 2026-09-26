@@ -82,10 +82,12 @@ Ataca #5.
 - **P3.3** Self-tuner escolhe modelo/params a partir de dados de outcome reais.
 
 ### Fase P4 — Metas & horizonte não supervisionado (L4→L5, **com freios**)
-Ataca #8 — só depois de #3 sólido.
-- **P4.1** Marcos + dependências entre tarefas (tasks #44/#50 pendentes) — autonomia por milestone.
-- **P4.2** Runs não supervisionadas limitadas por **orçamento** (USD/tempo já existem; cablear à autonomia).
-- **P4.3** Regra de ouro: cada nova capacidade autônoma ganha um **gate determinístico** antes (como o containment).
+Ataca #8 — só depois de #3 sólido. Sprint 26 conecta as partes abaixo ao
+dispatcher persistente; status final depende dos gates e validação registrados
+no plano 059.
+- **P4.1** Marcos + dependências entre tarefas: DAG validado e materializado; SQLite honra múltiplos pais e Markdown falha fechado acima de um.
+- **P4.2** Runs não supervisionadas limitadas por **orçamento**: custo, tempo e tools acumulam nos receipts duráveis do goal; duração vem do Kernel até o fim das gates; custo sem usage conhecido bloqueia novas execuções.
+- **P4.3** Regra de ouro: cada capacidade autônoma ganha um **gate determinístico**; a task só fecha após o Kernel registrar a validação e o dispatcher conferir o run persistido.
 
 ### Fase P5 — Score como artefato vivo
 - **P5.1** `bauer autonomy score`: encodar o rubric L0–L5 + dimensões como comando objetivo (igual ao Delivery Score).

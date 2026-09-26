@@ -50,6 +50,12 @@ _META_KEYS = {
     "goal_id",
     "step_key",
     "autopilot_mission",
+    "gate_receipt",
+    "budget_max_cost_usd",
+    "budget_max_minutes",
+    "budget_max_tool_calls",
+    "max_cost_usd",
+    "max_tool_calls",
 }
 
 

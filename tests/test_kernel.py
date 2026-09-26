@@ -7,6 +7,7 @@ caminho legado (queued→running→completed) permanece intocado.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -105,7 +106,10 @@ def test_executor_exception_fails_run(kit):
 
     out = kernel.execute(KernelRequest(task="x"), executor=_boom)
     assert out.status == "failed" and "provider caiu" in (out.error or "")
-    assert runs.get_run(out.run_id).status == "failed"
+    run = runs.get_run(out.run_id)
+    assert run.status == "failed"
+    assert run.elapsed_seconds is not None and run.elapsed_seconds > 0
+    assert run.usage_known is None
 
 
 def test_executor_failed_result_fails_run(kit):
@@ -171,20 +175,71 @@ def test_policy_allow_executes(kit):
 class _StubEvaluator:
     def __init__(self, passed: bool):
         self._passed = passed
+        self.gates = [type("_Gate", (), {"name": "stub_gate"})()]
 
     def evaluate(self, *, run_id, request, result):
         class _V:
             passed = self._passed
             reason = "gate reprovado"
-        return _V()
+        verdict = _V()
+        verdict.gates = [type("_Result", (), {
+            "gate": "stub_gate", "passed": self._passed, "reason": "",
+        })()]
+        return verdict
 
 
 def test_evaluator_gate_blocks_completion(kit):
     _, bus, runs = kit
     kernel = BauerKernel(runs=runs, bus=bus, evaluator=_StubEvaluator(False))
-    out = kernel.execute(KernelRequest(task="x"), executor=_ok_executor)
+    def metered_executor(payload):
+        return {"status": "completed", "output": "ok", "cost_estimate": 0.25,
+                "tool_calls_count": 3, "usage_known": True, "llm_calls_count": 2,
+                "elapsed_seconds": 0.1}
+
+    out = kernel.execute(KernelRequest(task="x"), executor=metered_executor)
     assert out.status == "failed" and "quality gate" in (out.error or "")
     assert "evaluating" in out.trajectory
+    run = runs.get_run(out.run_id)
+    assert run.validation_passed is False
+    assert run.validation_results == [{"gate": "stub_gate", "passed": False, "reason": ""}]
+    assert run.cost_estimate == 0.25
+    assert run.tool_calls_count == 3
+    assert run.usage_known is True
+    assert run.llm_calls_count == 2
+    assert run.elapsed_seconds >= 0.1
+
+
+def test_terminal_elapsed_includes_quality_gate_time(kit):
+    _, bus, runs = kit
+
+    class SlowEvaluator(_StubEvaluator):
+        def evaluate(self, *, run_id, request, result):
+            time.sleep(0.03)
+            return super().evaluate(run_id=run_id, request=request, result=result)
+
+    kernel = BauerKernel(runs=runs, bus=bus, evaluator=SlowEvaluator(True))
+    out = kernel.execute(KernelRequest(task="x"), executor=_ok_executor)
+    assert out.ok
+    assert runs.get_run(out.run_id).elapsed_seconds >= 0.03
+
+
+def test_failed_executor_retains_reported_usage(kit):
+    _, bus, runs = kit
+    kernel = BauerKernel(runs=runs, bus=bus)
+
+    def failed_executor(payload):
+        return {"status": "failed", "error": "provider failed", "cost_estimate": 0.4,
+                "tool_calls_count": 1, "usage_known": True, "llm_calls_count": 1,
+                "elapsed_seconds": 0.2}
+
+    out = kernel.execute(KernelRequest(task="x"), executor=failed_executor)
+    assert out.status == "failed"
+    run = runs.get_run(out.run_id)
+    assert run.cost_estimate == 0.4
+    assert run.tool_calls_count == 1
+    assert run.usage_known is True
+    assert run.llm_calls_count == 1
+    assert run.elapsed_seconds >= 0.2
 
 
 def test_evaluator_pass_completes(kit):
@@ -192,6 +247,9 @@ def test_evaluator_pass_completes(kit):
     kernel = BauerKernel(runs=runs, bus=bus, evaluator=_StubEvaluator(True))
     out = kernel.execute(KernelRequest(task="x"), executor=_ok_executor)
     assert out.ok and "evaluating" in out.trajectory
+    run = runs.get_run(out.run_id)
+    assert run.validation_passed is True
+    assert run.validation_results == [{"gate": "stub_gate", "passed": True, "reason": ""}]
 
 
 # ─── Sprint 2: execução via adapter + operações de ciclo de vida ────────────

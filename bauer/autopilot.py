@@ -87,6 +87,48 @@ def _default_plan(goal: GoalRecord) -> list[dict[str, str]]:
     return [{"title": goal.title, "description": goal.description}]
 
 
+def _valid_goal_gate_receipt(
+    receipt: Any,
+    task_id: str,
+    *,
+    require_known_cost: bool = True,
+    require_known_tools: bool = True,
+    require_known_time: bool = True,
+) -> bool:
+    """A DONE materialized task only proves goal completion with gate evidence."""
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("schema") == "bauer.dispatch-gate-receipt.v1"
+        and receipt.get("status") == "passed"
+        and receipt.get("verifier") == "task_dispatcher"
+        and receipt.get("verification_id")
+        and receipt.get("kernel_run_id")
+        and receipt.get("kanban_task_id") == task_id
+        and receipt.get("kanban_claim_id")
+        and receipt.get("dispatcher_run_id")
+        and (
+            not require_known_cost
+            or (
+                receipt.get("cost_known") is True
+                and isinstance(receipt.get("cost_usd"), (float, int))
+                and receipt.get("cost_usd") >= 0
+            )
+        )
+        and (
+            not require_known_tools
+            or isinstance(receipt.get("tool_calls"), int) and receipt.get("tool_calls") >= 0
+        )
+        and (
+            not require_known_time
+            or isinstance(receipt.get("elapsed_seconds"), (int, float))
+            and receipt.get("elapsed_seconds") >= 0
+        )
+        and isinstance(receipt.get("gate_names"), list)
+        and receipt["gate_names"]
+        and all(isinstance(gate, str) and gate for gate in receipt["gate_names"])
+    )
+
+
 class AutopilotController:
     """Persistent, bounded controller that feeds the existing dispatcher."""
 
@@ -327,6 +369,58 @@ class AutopilotController:
         if any(status == "FAILED" for status in statuses):
             return self._handle_failed_goal(goal)
         if statuses and all(status == "DONE" for status in statuses):
+            for task in tasks:
+                receipt = getattr(task, "metadata", {}).get("gate_receipt")
+                if isinstance(receipt, str):
+                    try:
+                        receipt = json.loads(receipt)
+                    except (TypeError, json.JSONDecodeError):
+                        receipt = None
+                cap = getattr(task, "metadata", {}).get("budget_max_cost_usd", "1")
+                try:
+                    require_known_cost = float(cap) > 0
+                except (TypeError, ValueError):
+                    require_known_cost = True
+                try:
+                    require_known_tools = float(
+                        getattr(task, "metadata", {}).get("budget_max_tool_calls", 1)
+                    ) > 0
+                except (TypeError, ValueError):
+                    require_known_tools = True
+                try:
+                    require_known_time = float(
+                        getattr(task, "metadata", {}).get("budget_max_minutes", 1)
+                    ) > 0
+                except (TypeError, ValueError):
+                    require_known_time = True
+                if not _valid_goal_gate_receipt(
+                    receipt,
+                    str(getattr(task, "id", "")),
+                    require_known_cost=require_known_cost,
+                    require_known_tools=require_known_tools,
+                    require_known_time=require_known_time,
+                ):
+                    reason = (
+                        "task_cost_unknown"
+                        if require_known_cost
+                        and isinstance(receipt, dict)
+                        and receipt.get("cost_known") is not True
+                        else "task_gate_receipt_missing"
+                    )
+                    self.tracker.update_status(
+                        goal.id, GoalStatus.BLOCKED, error=reason
+                    )
+                    self._emit(
+                        "autopilot.goal.blocked",
+                        goal_id=goal.id,
+                        reason=reason,
+                    )
+                    self._status.goal_id = None
+                    return self._result(
+                        AutopilotState.BLOCKED,
+                        goal_id=goal.id,
+                        reason=reason,
+                    )
             self.tracker.mark_complete(goal.id)
             self._emit("autopilot.goal.completed", goal_id=goal.id)
             self._status.goal_id = None
@@ -357,19 +451,31 @@ class AutopilotController:
         for index, raw in enumerate(raw_steps):
             if hasattr(raw, "to_dict"):
                 item = dict(raw.to_dict())
+            elif hasattr(raw, "model_dump"):
+                item = dict(raw.model_dump())
             elif isinstance(raw, dict):
                 item = dict(raw)
             else:
                 item = {"title": str(raw)}
             title = str(item.get("title") or "").strip()
             if not title:
+                # PlannerOutput/PlanStep currently calls this field ``goal``.
+                title = str(item.get("goal") or "").strip()
+            if not title:
                 raise ValueError(f"planner step {index} has no title")
             item["title"] = title[:500]
             item.setdefault("description", "")
             item["status"] = "pending"
             item["metadata"] = dict(item.get("metadata") or {})
+            # Planner contracts use integer IDs. Legacy plans without IDs use
+            # their one-based position, preserving the historical shape.
+            item["id"] = self._normalize_step_id(item.get("id", index + 1), index)
+            item["depends_on"] = self._normalize_dependencies(
+                item.get("depends_on", []), item["id"], index
+            )
             item["metadata"]["step_key"] = self._step_key(goal, index, title)
             steps.append(item)
+        self._validate_plan_graph(steps)
         self.tracker.update_steps(goal.id, steps)
         self._replan_requested = False
         refreshed = self.tracker.get(goal.id)
@@ -378,7 +484,33 @@ class AutopilotController:
         return refreshed
 
     def _materialize(self, goal: GoalRecord, actions: list[str]) -> None:
-        for index, step in enumerate(goal.steps):
+        steps = [dict(step) for step in goal.steps]
+        # Validate persisted/recovered plans too: they may predate validation
+        # or have been written by an older controller version.
+        for index, step in enumerate(steps):
+            step["id"] = self._normalize_step_id(step.get("id", index + 1), index)
+            step["depends_on"] = self._normalize_dependencies(
+                step.get("depends_on", []), step["id"], index
+            )
+        self._validate_plan_graph(steps)
+        parents_by_step = {
+            step["id"]: [str(parent) for parent in step["depends_on"]]
+            for step in steps
+        }
+        if self._is_markdown_backend() and any(
+            len(parents) > 1 for parents in parents_by_step.values()
+        ):
+            raise ValueError("Markdown Kanban supports only one parent per task")
+
+        # Topological order guarantees that every parent task exists before
+        # the child is created, even when the planner lists steps out of order.
+        ordered_steps = self._topological_steps(steps)
+        task_ids_by_step: dict[str, str] = {}
+        from .task_dispatcher import TaskDispatcher
+
+        dispatcher = TaskDispatcher(self.workspace)
+        for step in ordered_steps:
+            index = steps.index(step)
             metadata = dict(step.get("metadata") or {})
             step_key = str(metadata.get("step_key") or self._step_key(goal, index, str(step.get("title", ""))))
             task_id = self.tracker.get_materialized_task(goal.id, step_key)
@@ -392,22 +524,175 @@ class AutopilotController:
                     task = self.task_manager.add_task(
                         str(step["title"]),
                         description=str(step.get("description") or ""),
-                        status="READY",
+                        # SQLite edges are separate rows. Keep a new card
+                        # undispatchable until all predecessors are committed.
+                        status="TODO" if self._is_sqlite_backend() else "READY",
+                        parent_id=(
+                            task_ids_by_step[parents_by_step[str(step["id"])][0]]
+                            if self._is_markdown_backend() and parents_by_step[str(step["id"])]
+                            else ""
+                        ),
                         metadata={
                             "dispatch": "true",
                             "autopilot_mission": goal.title,
                             "goal_id": goal.id,
                             "step_key": step_key,
+                            "budget_max_cost_usd": self._effective_max_cost_usd(),
+                            "budget_max_minutes": self._effective_max_minutes(),
+                            "budget_max_tool_calls": self._effective_max_tool_calls(),
                         },
                     )
                     task_id = task.id
                     self.tracker.record_materialized_task(goal.id, task_id, step_key)
                     actions.append(f"materialized:{task_id}")
                     self._emit("autopilot.task.materialized", goal_id=goal.id, task_id=task_id)
+            self._set_task_budget_metadata(task_id)
+            task_ids_by_step[str(step["id"])] = str(task_id)
+            desired_parents = [
+                task_ids_by_step[parent] for parent in parents_by_step[str(step["id"])]
+            ]
+            with dispatcher._lock():
+                current_task = self.task_manager.get_task(str(task_id))
+                if current_task.status == "IN_PROGRESS":
+                    parent_reader = getattr(self.task_manager, "get_task_parent_ids", None)
+                    current_parents = (
+                        parent_reader(str(task_id)) if callable(parent_reader)
+                        else ([current_task.parent_id] if current_task.parent_id else [])
+                    )
+                    if set(current_parents) != set(desired_parents):
+                        raise ValueError("cannot revise dependencies of an in-progress task")
+                elif self._is_sqlite_backend() and current_task.status in {"READY", "TODO"}:
+                    self.task_manager.update_task_status(str(task_id), "TODO")
+                self._sync_task_dependencies(str(task_id), desired_parents)
+                if self._is_sqlite_backend() and current_task.status in {"READY", "TODO"}:
+                    self.task_manager.update_task_status(str(task_id), "READY")
             metadata["task_id"] = task_id
             step["metadata"] = metadata
             step["status"] = "dispatching"
-        self.tracker.update_steps(goal.id, goal.steps)
+        self.tracker.update_steps(goal.id, steps)
+
+    @staticmethod
+    def _normalize_step_id(value: Any, index: int) -> str:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError(f"planner step {index} has invalid id")
+        try:
+            step_id = int(str(value).strip())
+        except ValueError as exc:
+            raise ValueError(f"planner step {index} has invalid id") from exc
+        if step_id < 1:
+            raise ValueError(f"planner step {index} id must be positive")
+        return str(step_id)
+
+    @staticmethod
+    def _normalize_dependencies(raw: Any, step_id: str, index: int) -> list[str]:
+        if raw is None:
+            raw = []
+        if not isinstance(raw, (list, tuple, set)):
+            raise ValueError(f"planner step {index} depends_on must be a list")
+        dependencies: list[str] = []
+        for dependency in raw:
+            try:
+                normalized_int = AutopilotController._normalize_step_id(dependency, index)
+            except ValueError as exc:
+                raise ValueError(f"planner step {index} has invalid dependency id") from exc
+            normalized = normalized_int
+            if normalized == step_id:
+                raise ValueError(f"planner step {step_id} cannot depend on itself")
+            if normalized not in dependencies:
+                dependencies.append(normalized)
+        return dependencies
+
+    @staticmethod
+    def _validate_plan_graph(steps: list[dict[str, Any]]) -> None:
+        ids = [str(step["id"]) for step in steps]
+        if len(ids) != len(set(ids)):
+            raise ValueError("planner step IDs must be unique")
+        known = set(ids)
+        for step in steps:
+            missing = [parent for parent in step["depends_on"] if parent not in known]
+            if missing:
+                raise ValueError(
+                    f"planner step {step['id']} depends on missing step(s): {', '.join(missing)}"
+                )
+        AutopilotController._topological_steps(steps)
+
+    @staticmethod
+    def _topological_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_id = {str(step["id"]): step for step in steps}
+        pending = {step_id: set(step["depends_on"]) for step_id, step in by_id.items()}
+        ordered: list[dict[str, Any]] = []
+        while pending:
+            ready = [step_id for step_id in by_id if step_id in pending and not pending[step_id]]
+            if not ready:
+                raise ValueError("planner dependencies contain a cycle")
+            for step_id in ready:
+                ordered.append(by_id[step_id])
+                del pending[step_id]
+                for dependencies in pending.values():
+                    dependencies.discard(step_id)
+        return ordered
+
+    def _is_markdown_backend(self) -> bool:
+        from .workspace_manager import WorkspaceManager
+
+        return isinstance(self.task_manager, WorkspaceManager)
+
+    def _is_sqlite_backend(self) -> bool:
+        from .workspace_manager_sqlite import WorkspaceManagerSqlite
+
+        return isinstance(self.task_manager, WorkspaceManagerSqlite)
+
+    def _sync_task_dependencies(self, task_id: str, parent_ids: list[str]) -> None:
+        """Make the task's parent set match the validated planner DAG."""
+        if self._is_markdown_backend():
+            task = self.task_manager.get_task(task_id)
+            current_parent = str(getattr(task, "parent_id", "") or "")
+            desired_parent = parent_ids[0] if parent_ids else ""
+            if current_parent != desired_parent:
+                self.task_manager.update_task_metadata(task_id, parent_id=desired_parent)
+            return
+
+        # The SQLite WorkspaceManager exposes the full predecessor query but
+        # has no public multi-parent mutator yet. Use its Kanban connection and
+        # canonical DAG primitives, retaining their cycle check/idempotency.
+        from . import kanban_db as kb
+        from .workspace_manager_sqlite import WorkspaceManagerSqlite
+
+        if not isinstance(self.task_manager, WorkspaceManagerSqlite):
+            if parent_ids:
+                raise ValueError("task backend cannot represent planner dependencies")
+            return
+        conn = self.task_manager._connect()
+        try:
+            existing = set(kb.parents_of(conn, task_id))
+            desired = set(parent_ids)
+            for parent_id in sorted(existing - desired):
+                kb.unlink_tasks(conn, parent_id, task_id)
+            for parent_id in parent_ids:
+                kb.link_tasks(conn, parent_id, task_id)
+        finally:
+            conn.close()
+
+    def _set_task_budget_metadata(self, task_id: str) -> None:
+        """Persist the effective cost cap also when repairing/relinking a task."""
+        limits = {
+            "budget_max_cost_usd": self._effective_max_cost_usd(),
+            "budget_max_minutes": self._effective_max_minutes(),
+            "budget_max_tool_calls": self._effective_max_tool_calls(),
+        }
+        update_metadata = getattr(self.task_manager, "update_task_metadata", None)
+        if callable(update_metadata):
+            update_metadata(task_id, metadata=limits)
+            return
+        # Lightweight task managers may expose mutable task records without
+        # the workspace metadata update API.
+        try:
+            task = self.task_manager.get_task(task_id)
+        except (AttributeError, KeyError):
+            return
+        metadata = getattr(task, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata.update({key: str(value) for key, value in limits.items()})
 
     def _find_task(self, goal_id: str, step_key: str) -> Any | None:
         for task in self.task_manager.list_tasks():
@@ -466,16 +751,32 @@ class AutopilotController:
         loop = getattr(self.root_config, "loop", None)
         max_minutes = int(self.config.max_minutes)
         max_tool_calls = int(self.config.max_tool_calls)
-        max_cost_usd = float(self.config.max_cost_usd)
         if loop is not None:
             max_minutes = min(max_minutes, int(getattr(loop, "max_minutes", max_minutes)))
             max_tool_calls = min(max_tool_calls, int(getattr(loop, "max_tool_calls", max_tool_calls)))
-            max_cost_usd = min(max_cost_usd, float(getattr(loop, "max_cost_usd", max_cost_usd)))
         return AutonomousBudget(
             max_wall_seconds=max_minutes * 60,
             max_tool_calls=max_tool_calls,
-            max_cost_usd=max_cost_usd,
+            max_cost_usd=self._effective_max_cost_usd(),
         )
+
+    def _effective_max_cost_usd(self) -> float:
+        """Return the stricter configured cost cap for this mission's workers."""
+        autopilot_cap = float(getattr(self.config, "max_cost_usd", 1_000_000.0))
+        loop = getattr(self.root_config, "loop", None)
+        if loop is None:
+            return autopilot_cap
+        return min(autopilot_cap, float(getattr(loop, "max_cost_usd", autopilot_cap)))
+
+    def _effective_max_minutes(self) -> int:
+        limit = int(getattr(self.config, "max_minutes", 525_600))
+        loop = getattr(self.root_config, "loop", None)
+        return min(limit, int(getattr(loop, "max_minutes", limit))) if loop is not None else limit
+
+    def _effective_max_tool_calls(self) -> int:
+        limit = int(getattr(self.config, "max_tool_calls", 100_000_000))
+        loop = getattr(self.root_config, "loop", None)
+        return min(limit, int(getattr(loop, "max_tool_calls", limit))) if loop is not None else limit
 
     def _current_goal(self) -> GoalRecord | None:
         goal_id = self._status.goal_id

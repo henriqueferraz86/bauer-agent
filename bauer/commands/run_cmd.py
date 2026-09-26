@@ -19,7 +19,10 @@ Decisões de segurança:
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import tempfile
 
 import typer
 
@@ -31,6 +34,86 @@ EXIT_INCOMPLETE = 2   # parou sem concluir (budget/kill-switch/erro)
 EXIT_INTERRUPTED = 130  # Ctrl+C
 
 
+def _write_gate_receipt(
+    gov, kernel, stop_reason: str | None, *, budget=None, cost_recorder=None
+) -> None:
+    """Persist a machine-readable proof after a successful governed run.
+
+    The dispatcher owns the receipt lifecycle (including removing stale files
+    before starting a worker). This producer only creates a new receipt when
+    every execution, gate, and correlation prerequisite is present.
+    """
+    receipt_path = os.environ.get("BAUER_GATE_RECEIPT_PATH", "").strip()
+    if not receipt_path:
+        return
+    if (
+        gov is None
+        or not bool(getattr(gov, "governed", False))
+        or not bool(getattr(gov, "ok", False))
+        or stop_reason != "completed"
+        or kernel is None
+    ):
+        return
+
+    evaluator = getattr(kernel, "evaluator", None)
+    gates = getattr(evaluator, "gates", None) if evaluator is not None else None
+    if not gates:
+        return
+
+    task_id = os.environ.get("BAUER_KANBAN_TASK", "").strip()
+    claim_id = os.environ.get("BAUER_KANBAN_CLAIM_ID", "").strip()
+    dispatcher_run_id = os.environ.get("BAUER_KANBAN_RUN_ID", "").strip()
+    kernel_run_id = str(getattr(gov, "run_id", "") or "").strip()
+    if not all((task_id, claim_id, dispatcher_run_id, kernel_run_id)):
+        return
+
+    gate_names = [str(getattr(gate, "name", "gate") or "gate").strip() for gate in gates]
+    if not gate_names or any(not name for name in gate_names):
+        return
+
+    receipt = {
+        "schema": "bauer.gate-receipt.v1",
+        "version": 1,
+        "kernel_run_id": kernel_run_id,
+        "kanban_task_id": task_id,
+        "kanban_claim_id": claim_id,
+        "dispatcher_run_id": dispatcher_run_id,
+        "gate_names": gate_names,
+        "status": "passed",
+    }
+    if budget is not None and cost_recorder is not None:
+        snapshot = budget.snapshot()
+        receipt.update({
+            "cost_usd": round(float(snapshot.cost_usd), 6),
+            "tool_calls": int(snapshot.tool_calls),
+            "elapsed_seconds": round(float(snapshot.elapsed_seconds), 3),
+            "llm_calls": int(cost_recorder.calls),
+            "cost_known": cost_recorder.unknown_usage_calls == 0,
+        })
+
+    destination = Path(receipt_path)
+    temp_path: str | None = None
+    try:
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=str(destination.parent)
+        )
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(receipt, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, destination)
+    except BaseException:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except OSError as cleanup_exc:
+                from ..logging_config import log_suppressed
+
+                log_suppressed("run_cmd.gate_receipt.cleanup", cleanup_exc)
+        raise
+
+
 class _CostRecorder:
     """Sink do cost_meter para o `bauer run`: acumula o custo REAL de cada LLM
     call para alimentar o guardrail --max-cost e o display de custo. Mesmo
@@ -38,8 +121,22 @@ class _CostRecorder:
 
     def __init__(self) -> None:
         self.total_usd = 0.0
+        self.calls = 0
+        self.unknown_usage_calls = 0
 
     def __call__(self, provider: str, model: str, usage: dict, cost_usd: float) -> None:
+        self.calls += 1
+        known_usage_keys = {
+            "cost", "prompt_tokens", "completion_tokens", "total_tokens",
+            "input_tokens", "output_tokens", "promptTokens", "completionTokens",
+        }
+        if not (isinstance(usage, dict) and known_usage_keys.intersection(usage)):
+            from ..usage_pricing import provider_e_local
+
+            if provider_e_local(provider):
+                self.total_usd += float(cost_usd or 0.0)
+                return
+            self.unknown_usage_calls += 1
         self.total_usd += float(cost_usd or 0.0)
 
 
@@ -138,7 +235,12 @@ def run(
     # destruído junto com o worktree descartável e, pior, (b) o kill-switch que
     # o usuário liga no repo INVISÍVEL para o run isolado, que é exatamente o
     # run que mais precisa poder ser parado.
-    _root_gov = str(ws / "memory" / "runtime")
+    # Dispatcher shares a per-run Kernel store outside the worker workspace so
+    # it can independently verify custody. Consume and remove the private path
+    # before constructing tools; worker code must not inherit it.
+    _root_gov = os.environ.pop("BAUER_KERNEL_RUNTIME_ROOT", "") or str(
+        ws / "memory" / "runtime"
+    )
     from ..core.events.bus import EventBus
     from ..core.runtime.state_store import JsonlStateStore
     _bus = EventBus(store=JsonlStateStore(_root_gov))
@@ -328,7 +430,10 @@ def run(
         )
         snap = budget.snapshot()
         out: dict = {"output": last_text, "tool_calls_count": snap.tool_calls,
-                     "cost_estimate": round(snap.cost_usd, 6)}
+                     "cost_estimate": round(snap.cost_usd, 6),
+                     "usage_known": _cost.unknown_usage_calls == 0,
+                     "llm_calls": _cost.calls,
+                     "elapsed_seconds": round(snap.elapsed_seconds, 3)}
         if stop_reason == "kill_switch":
             # cancelamento, não falha — o Kernel trata terminal sem retry/replan
             return {**out, "status": CANCELLED, "error": "runtime kill switch ativo"}
@@ -336,9 +441,23 @@ def run(
             return {**out, "status": "failed", "error": f"bauer run parou: {stop_reason}"}
         return out
 
+    gov = None
     try:
+        run_input = {"endpoint": "bauer run", "workspace": str(ws)}
+        if all(os.environ.get(key, "").strip() for key in (
+            "BAUER_KANBAN_TASK", "BAUER_KANBAN_CLAIM_ID", "BAUER_KANBAN_RUN_ID"
+        )):
+            run_input["autopilot_dispatch"] = {
+                "task_id": os.environ["BAUER_KANBAN_TASK"],
+                "claim_id": os.environ["BAUER_KANBAN_CLAIM_ID"],
+                "dispatcher_run_id": os.environ["BAUER_KANBAN_RUN_ID"],
+                "gate_names": [
+                    str(getattr(gate, "name", "gate") or "gate")
+                    for gate in getattr(getattr(kernel, "evaluator", None), "gates", [])
+                ],
+            }
         gov = run_governed(kernel, _rodar_loop, agent_id="cli.run", task=task,
-                           input={"endpoint": "bauer run", "workspace": str(ws)},
+                           input=run_input,
                            # Laço sem supervisão: ninguém entre os turnos.
                            # Ver KernelRequest.autonomous.
                            autonomous=True)
@@ -365,6 +484,12 @@ def run(
                 bus=_bus, run_id=_run_slug)
             if _artefato:
                 console.print(f"[dim]artefato:[/dim] {_artefato}")
+
+    try:
+        _write_gate_receipt(gov, kernel, stop_reason, budget=budget, cost_recorder=_cost)
+    except Exception as exc:
+        console.print(f"[red]Não foi possível gravar a prova do quality gate:[/red] {exc}")
+        stop_reason = "gate_receipt_write_failed"
 
     _summary(stop_reason or "completed", rounds, budget)
 

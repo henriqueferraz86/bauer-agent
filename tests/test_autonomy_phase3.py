@@ -26,7 +26,7 @@ class TestCostMeter:
         assert provider == "openai" and model == "gpt-4o"
         assert cost > 0  # gpt-4o tem preço na tabela
 
-    def test_usage_vazio_nao_chama_sink(self):
+    def test_usage_vazio_notifies_sink_that_accounting_is_unknown(self):
         from bauer.cost_meter import cost_sink, report_llm_cost
         received: list = []
         token = cost_sink.set(lambda *a: received.append(a))
@@ -35,7 +35,8 @@ class TestCostMeter:
             report_llm_cost("openai", "gpt-4o", {})
         finally:
             cost_sink.reset(token)
-        assert received == []
+        assert len(received) == 2
+        assert all(item[2:] == ({}, 0.0) for item in received)
 
     def test_sink_que_explode_nao_propaga(self):
         from bauer.cost_meter import cost_sink, report_llm_cost

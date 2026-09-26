@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
+import pytest
+
 import bauer.task_dispatcher as task_dispatcher_module
+from bauer import kanban_db
 from bauer.kanban_store import KanbanStore
-from bauer.task_dispatcher import TaskDispatcher, WorkerResult
+from bauer.task_dispatcher import TaskDispatcher, TaskDispatcherError, WorkerResult
 from bauer.workspace_manager_factory import get_workspace_manager
+from bauer.workspace_manager_sqlite import WorkspaceManagerSqlite
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -57,6 +62,217 @@ def test_dispatch_success_completes_task(tmp_path: Path):
     assert run.summary == "ok 001"
     assert "dispatcher.claimed" in {event.event_type for event in events}
     assert "dispatcher.completed" in {event.event_type for event in events}
+
+
+def test_autopilot_task_requires_correlated_gate_receipt_to_complete(tmp_path: Path):
+    workspace = _workspace(tmp_path)
+    wm = get_workspace_manager(workspace)
+    task = wm.add_task("Governed task", metadata={"goal_id": "goal-1"})
+    dispatcher = TaskDispatcher(workspace)
+    dispatcher.mark_ready(task.id)
+    with dispatcher._lock():
+        claimed = dispatcher._claim_locked(wm.get_task(task.id))
+    with pytest.raises(TaskDispatcherError, match="comprovante válido"):
+        dispatcher._complete_task(task.id, "missing receipt")
+    receipt = {
+        "schema": "bauer.dispatch-gate-receipt.v1",
+        "status": "passed",
+        "verifier": "task_dispatcher",
+        "verification_id": "dispatch-run:verify-1",
+        "kernel_run_id": "kernel-run-1",
+        "kanban_task_id": task.id,
+        "kanban_claim_id": claimed.metadata["claim_id"],
+        "dispatcher_run_id": claimed.metadata["run_id"],
+        "gate_names": ["NonEmptyOutput"],
+        "cost_usd": 0.03,
+        "cost_known": True,
+        "tool_calls": 2,
+        "elapsed_seconds": 10.0,
+    }
+    completed = dispatcher._complete_task(task.id, "ok", gate_receipt=receipt)
+
+    assert completed.status == "DONE"
+    assert json.loads(completed.metadata["gate_receipt"]) == receipt
+
+
+def test_unknown_cost_blocks_autopilot_task_without_automatic_retry(tmp_path: Path):
+    workspace = _workspace(tmp_path)
+    wm = get_workspace_manager(workspace)
+    task = wm.add_task("Unknown-cost task", metadata={"goal_id": "goal-1"})
+    dispatcher = TaskDispatcher(workspace)
+    dispatcher.mark_ready(task.id)
+    with dispatcher._lock():
+        dispatcher._claim_locked(wm.get_task(task.id))
+
+    blocked = dispatcher._fail_task(
+        task.id, "unknown cost", force_blocked=True
+    )
+
+    assert blocked.status == "BLOCKED"
+    assert "unknown cost" in blocked.metadata["last_error"]
+
+
+def test_kernel_attestation_must_be_persisted_and_correlated(tmp_path: Path):
+    from bauer.core.runtime.state_store import SqliteStateStore
+
+    from bauer.task_dispatcher import _find_kernel_gate_attestation
+
+    root = tmp_path / "kernel-runtime"
+    store = SqliteStateStore(root)
+    correlation = {
+        "task_id": "001",
+        "claim_id": "claim-1",
+        "dispatcher_run_id": "dispatch-1",
+        "gate_names": ["non_empty_output", "no_traceback"],
+    }
+    store.upsert("runs", {
+        "id": "kernel-1",
+        "session_id": "session-1",
+        "agent_id": "cli.run",
+        "runtime_adapter": "bauer_native",
+        "status": "completed",
+        "input": {"autopilot_dispatch": correlation},
+        "cost_estimate": 0.12,
+        "tool_calls_count": 4,
+        "usage_known": True,
+        "llm_calls_count": 2,
+        "elapsed_seconds": 35.5,
+        "validation_passed": True,
+        "validation_results": [
+            {"gate": "non_empty_output", "passed": True, "reason": ""},
+            {"gate": "no_traceback", "passed": True, "reason": ""},
+        ],
+    })
+
+    proof = _find_kernel_gate_attestation(
+        root, task_id="001", claim_id="claim-1", dispatcher_run_id="dispatch-1"
+    )
+    assert proof == {
+        "kernel_run_id": "kernel-1",
+        "gate_names": ["non_empty_output", "no_traceback"],
+        "cost_usd": 0.12,
+        "cost_known": True,
+        "tool_calls": 4,
+        "llm_calls": 2,
+        "elapsed_seconds": 35.5,
+    }
+
+    assert _find_kernel_gate_attestation(
+        root, task_id="001", claim_id="wrong", dispatcher_run_id="dispatch-1"
+    ) is None
+    run = store.latest("runs", "kernel-1")
+    run["validation_results"][1]["passed"] = False
+    store.upsert("runs", run)
+    assert _find_kernel_gate_attestation(
+        root, task_id="001", claim_id="claim-1", dispatcher_run_id="dispatch-1"
+    ) is None
+
+
+def test_goal_budget_accumulates_persisted_receipts_after_dispatcher_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace = tmp_path / "mission-budget"
+    wm = WorkspaceManagerSqlite(workspace, board="mission-budget")
+    wm.init_project("mission budget")
+    prior = wm.add_task(
+        "First step",
+        status="DONE",
+        metadata={
+            "goal_id": "goal-1",
+            "budget_max_cost_usd": 1,
+            "budget_max_tool_calls": 10,
+            "budget_max_minutes": 5,
+            "gate_receipt": json.dumps({
+                "schema": "bauer.dispatch-gate-receipt.v1",
+                "status": "passed",
+                "verifier": "task_dispatcher",
+                "verification_id": "verify-1",
+                "kernel_run_id": "kernel-1",
+                "kanban_task_id": "001",
+                "kanban_claim_id": "claim-1",
+                "dispatcher_run_id": "dispatch-1",
+                "gate_names": ["tests"],
+                "cost_known": True,
+                "cost_usd": 0.4,
+                "tool_calls": 3,
+                "elapsed_seconds": 60.0,
+            }),
+        },
+    )
+    next_task = wm.add_task(
+        "Second step",
+        status="READY",
+        metadata={
+            "goal_id": "goal-1",
+            "budget_max_cost_usd": 1,
+            "budget_max_tool_calls": 10,
+            "budget_max_minutes": 5,
+        },
+    )
+
+    # A fresh dispatcher reconstructs mission usage from durable task receipts.
+    monkeypatch.setattr(task_dispatcher_module, "get_workspace_manager", lambda _workspace: wm)
+    dispatcher = TaskDispatcher(workspace)
+    result = dispatcher.dispatch_once(
+        dry_run=True,
+        max_spawn=1,
+        only_task_ids=[next_task.id],
+    )
+
+    assert wm.get_task(prior.id).status == "DONE"
+    assert result.dry_run == ["T0002"]
+    state = dispatcher._autopilot_budget_state(wm.get_task(next_task.id))
+    assert state["max_cost_usd"] == pytest.approx(0.6)
+    assert state["max_tool_calls"] == 7
+    assert state["max_runtime_seconds"] == 240
+
+
+def test_goal_budget_blocks_when_prior_cost_is_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "unknown-mission-budget"
+    wm = WorkspaceManagerSqlite(workspace, board="unknown-mission-budget")
+    wm.init_project("unknown mission budget")
+    wm.add_task(
+        "First step",
+        status="DONE",
+        metadata={
+            "goal_id": "goal-unknown",
+            "budget_max_cost_usd": 1,
+            "budget_max_tool_calls": 10,
+            "budget_max_minutes": 5,
+            "gate_receipt": json.dumps({
+                "schema": "bauer.dispatch-gate-receipt.v1",
+                "status": "passed",
+                "verifier": "task_dispatcher",
+                "verification_id": "verify-unknown",
+                "kernel_run_id": "kernel-unknown",
+                "kanban_task_id": "001",
+                "kanban_claim_id": "claim-1",
+                "dispatcher_run_id": "dispatch-1",
+                "gate_names": ["tests"],
+                "cost_known": False,
+                "tool_calls": 2,
+                "elapsed_seconds": 20.0,
+            }),
+        },
+    )
+    next_task = wm.add_task(
+        "Second step",
+        status="READY",
+        metadata={
+            "goal_id": "goal-unknown",
+            "budget_max_cost_usd": 1,
+            "budget_max_tool_calls": 10,
+            "budget_max_minutes": 5,
+        },
+    )
+    monkeypatch.setattr(task_dispatcher_module, "get_workspace_manager", lambda _workspace: wm)
+    dispatcher = TaskDispatcher(workspace)
+
+    result = dispatcher.dispatch_once(only_task_ids=[next_task.id], spawn_background=False)
+
+    assert result.claimed == []
+    assert wm.get_task(next_task.id).status == "BLOCKED"
+    assert "cost is unknown" in wm.get_task(next_task.id).metadata["last_error"]
 
 
 def test_dispatch_failure_retries_until_failed(tmp_path: Path):
@@ -205,6 +421,76 @@ def test_dry_run_respects_max_spawn_without_claiming(tmp_path: Path):
     assert result.dry_run == ["T0001"]
     assert wm.get_task(first.id).status == "READY"
     assert wm.get_task(second.id).status == "READY"
+
+
+@pytest.mark.parametrize("pending_status", ["TODO", "READY", "IN_PROGRESS", "BLOCKED", "FAILED"])
+def test_dispatcher_requires_every_sqlite_predecessor_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pending_status: str
+):
+    workspace = tmp_path / "sqlite-workspace"
+    wm = WorkspaceManagerSqlite(workspace, board=f"dispatcher-{pending_status.lower()}")
+    wm.init_project("SQLite dispatcher dependencies")
+    monkeypatch.setattr(task_dispatcher_module, "get_workspace_manager", lambda _workspace: wm)
+
+    completed_parent = wm.add_task("Completed predecessor", status="DONE")
+    pending_parent = wm.add_task("Pending predecessor", status=pending_status)
+    task = wm.add_task("Dependent task", status="TODO")
+    conn = wm._connect()
+    try:
+        kanban_db.link_tasks(conn, completed_parent.id, task.id)
+        kanban_db.link_tasks(conn, pending_parent.id, task.id)
+    finally:
+        conn.close()
+
+    assert set(wm.get_task_parent_ids(task.id)) == {completed_parent.id, pending_parent.id}
+    dispatcher = TaskDispatcher(workspace)
+    dispatcher.mark_ready(task.id)
+
+    preview = dispatcher.dispatch_once(dry_run=True, only_task_ids=[task.id])
+    assert preview.dry_run == []
+    assert preview.skipped == ["T0003: predecessors T0002 not done"]
+    assert wm.get_task(task.id).status == "READY"
+
+    actual = dispatcher.dispatch_once(
+        worker_fn=lambda _claimed: WorkerResult(True, summary="all predecessors complete"),
+        spawn_background=False,
+        only_task_ids=[task.id],
+    )
+    assert actual.claimed == []
+    assert actual.completed == []
+    assert wm.get_task(task.id).status == "READY"
+    with dispatcher._lock(), pytest.raises(TaskDispatcherError, match="predecessores nao concluidos"):
+        dispatcher._claim_locked(wm.get_task(task.id))
+
+    wm.update_task_status(pending_parent.id, "DONE")
+    completed = dispatcher.dispatch_once(
+        worker_fn=lambda _claimed: WorkerResult(True, summary="unblocked"),
+        spawn_background=False,
+        only_task_ids=[task.id],
+    )
+    assert completed.claimed == ["T0003"]
+    assert completed.completed == ["T0003"]
+    assert wm.get_task(task.id).status == "DONE"
+
+
+def test_markdown_dispatcher_keeps_single_parent_dependency_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace = _workspace(tmp_path)
+    wm = get_workspace_manager(workspace, backend="markdown")
+    monkeypatch.setattr(task_dispatcher_module, "get_workspace_manager", lambda _workspace: wm)
+    parent = wm.add_task("Markdown predecessor", status="TODO")
+    task = wm.add_task("Markdown dependent", status="TODO", parent_id=parent.id)
+    dispatcher = TaskDispatcher(workspace)
+    dispatcher.mark_ready(task.id)
+
+    blocked = dispatcher.dispatch_once(dry_run=True)
+    assert blocked.dry_run == []
+    assert wm.get_task(task.id).status == "READY"
+
+    wm.update_task_status(parent.id, "DONE")
+    ready = dispatcher.dispatch_once(dry_run=True)
+    assert ready.dry_run == ["T0002"]
 
 
 def test_dispatch_once_can_scope_claims_to_explicit_task_ids(tmp_path: Path):

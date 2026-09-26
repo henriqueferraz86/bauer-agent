@@ -25,6 +25,13 @@ from .base import (
 class FsToolsMixin:
     """Ferramentas de arquivo/diretorio dentro do workspace sandboxado."""
 
+    @staticmethod
+    def _filesystem_error(operation: str, path: str) -> ToolError:
+        """Converte falhas do SO em erro legível sem expor detalhe nativo."""
+        return ToolError(
+            f"{operation}: sem permissao ou falha de I/O ao acessar '{path}'."
+        )
+
     def _list_dir(self, args: dict) -> str:
         path = args.get("path", ".")
         p = self._sandbox(str(path))
@@ -34,16 +41,19 @@ class FsToolsMixin:
         if not p.is_dir():
             raise ToolError(f"'{path}' nao e um diretorio — use read_file para arquivos.")
 
-        entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
-        if not entries:
-            return f"{path}/ (vazio)"
+        try:
+            entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+            if not entries:
+                return f"{path}/ (vazio)"
 
-        lines = [f"Conteudo de {path}/"]
-        for e in entries:
-            suffix = "/" if e.is_dir() else ""
-            size = f"  ({e.stat().st_size} bytes)" if e.is_file() else ""
-            lines.append(f"  {e.name}{suffix}{size}")
-        return "\n".join(lines)
+            lines = [f"Conteudo de {path}/"]
+            for e in entries:
+                suffix = "/" if e.is_dir() else ""
+                size = f"  ({e.stat().st_size} bytes)" if e.is_file() else ""
+                lines.append(f"  {e.name}{suffix}{size}")
+            return "\n".join(lines)
+        except OSError as exc:
+            raise self._filesystem_error("list_dir", str(path)) from exc
 
     @staticmethod
     def _coerce_int(value, default: int, minimum: int) -> int:
@@ -76,7 +86,10 @@ class FsToolsMixin:
         if p.is_dir():
             raise ToolError(f"'{path}' e um diretorio — use list_dir.")
 
-        size = p.stat().st_size
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            raise self._filesystem_error("read_file", str(path)) from exc
         if size > _MAX_FILE_BYTES:
             raise ToolError(
                 f"Arquivo muito grande: {size} bytes (limite: {_MAX_FILE_BYTES}).\n"
@@ -108,7 +121,10 @@ class FsToolsMixin:
                 f"(offset={offset}, limit={limit}). Reaproveite o resultado anterior."
             )
 
-        raw = p.read_bytes()
+        try:
+            raw = p.read_bytes()
+        except OSError as exc:
+            raise self._filesystem_error("read_file", str(path)) from exc
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -197,9 +213,12 @@ class FsToolsMixin:
         if p.exists() and overwrite:
             self._require_prior_read(p, str(path), "write_file (overwrite)")
 
-        p.parent.mkdir(parents=True, exist_ok=True)
         text = str(content)
-        p.write_text(text, encoding="utf-8")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            raise self._filesystem_error("write_file", str(path)) from exc
         self._mark_written(p)
         result = f"Gravado: '{path}' ({len(text)} chars)"
         # Verificação pós-write: o modelo recebe o erro de sintaxe IMEDIATAMENTE
@@ -232,7 +251,10 @@ class FsToolsMixin:
         if not path:
             raise ToolError("create_dir requer 'path'.")
         p = self._sandbox(str(path))
-        p.mkdir(parents=True, exist_ok=True)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise self._filesystem_error("create_dir", str(path)) from exc
         return f"Diretorio criado: '{path}'"
 
     def _delete_file(self, args: dict) -> str:
@@ -251,7 +273,10 @@ class FsToolsMixin:
             raise ToolError(f"Arquivo nao encontrado: '{path}'")
         if p.is_dir():
             raise ToolError(f"'{path}' e um diretorio. Use run_command com 'rm -rf' para remover diretorios.")
-        p.unlink()
+        try:
+            p.unlink()
+        except OSError as exc:
+            raise self._filesystem_error("delete_file", str(path)) from exc
         return f"Arquivo removido: '{path}'"
 
     def _append_file(self, args: dict) -> str:
@@ -262,10 +287,13 @@ class FsToolsMixin:
         if content is None:
             raise ToolError("append_file requer 'content'.")
         p = self._sandbox(str(path))
-        p.parent.mkdir(parents=True, exist_ok=True)
         text = str(content)
-        with p.open("a", encoding="utf-8") as f:
-            f.write(text)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as f:
+                f.write(text)
+        except OSError as exc:
+            raise self._filesystem_error("append_file", str(path)) from exc
         return f"Acrescentado em '{path}': {len(text)} chars"
 
     def _move_file(self, args: dict) -> str:
@@ -420,6 +448,8 @@ class FsToolsMixin:
             original = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             raise ToolError(f"'{path}' parece ser arquivo binario — patch so funciona em texto.")
+        except OSError as exc:
+            raise self._filesystem_error("patch", str(path)) from exc
 
         count = original.count(old_string)
         if count == 0:
@@ -434,7 +464,10 @@ class FsToolsMixin:
             )
 
         updated = original.replace(old_string, new_string, 1)
-        p.write_text(updated, encoding="utf-8")
+        try:
+            p.write_text(updated, encoding="utf-8")
+        except OSError as exc:
+            raise self._filesystem_error("patch", str(path)) from exc
         self._mark_written(p)  # G17.2: conteudo mudou, modelo viu o diff
 
         # Diff compacto para rastreabilidade
