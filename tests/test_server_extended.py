@@ -988,8 +988,14 @@ def test_stream_records_cost_tokens_and_budget(tmp_path: Path):
     from bauer.tool_router import ToolRouter
 
     mock_client = MagicMock()
-    mock_client.chat_stream.return_value = iter(["Olá! Tudo certo."])
-    mock_client.last_usage = {"prompt_tokens": 100, "completion_tokens": 50}
+    # Providers publish usage during the current call. Pre-existing usage is
+    # stale and the accounting boundary intentionally clears it before dispatch.
+    def controlled_stream(*_args, **_kwargs):
+        mock_client.last_usage = {"prompt_tokens": 100, "completion_tokens": 50}
+        yield "Olá! Tudo certo."
+
+    mock_client.chat_stream.side_effect = controlled_stream
+    mock_client.last_usage = {"prompt_tokens": 9999, "completion_tokens": 9999}
     router = ToolRouter(workspace=tmp_path)
     cost_file = tmp_path / "cost_history.jsonl"
 

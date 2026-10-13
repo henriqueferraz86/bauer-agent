@@ -148,7 +148,7 @@ def create_app(
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel as PydanticModel, Field
 
-    from .agent import run_one_turn, run_one_turn_with_fallback
+    from .agent import run_one_turn_with_fallback
 
     _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
@@ -284,12 +284,9 @@ def create_app(
                 policy=PolicyEngine(workspace=router.workspace, runtime_root=runtime_root),
                 control=RuntimeControl(store=event_bus.store),
                 approvals=approval_manager,
-                # budget=None DE PROPÓSITO: o executor do /chat já grava o
-                # custo via _record_turn_budget; se o Kernel também gravasse
-                # (_record_cost), cada turno contaria DOBRADO no orçamento
-                # (_used_since soma todas as linhas de run_costs, sem dedup).
-                # O gate pré-run continua funcionando: a PolicyEngine tem seu
-                # próprio BudgetManager lendo o mesmo runtime_root.
+                # Ledger settlement is idempotent per run. Kernel records the
+                # cumulative consumption of attempts; transport snapshots may
+                # arrive later without reducing or duplicating that amount.
                 budget=budget_manager,
                 evaluator=evaluator_from_config(_kcfg, workspace=str(router.workspace)),
             )
@@ -623,9 +620,23 @@ def create_app(
         def __init__(self, session_id: str):
             self.session_id = session_id
             self.total_usd = 0.0
+            self.prompt_tokens = 0
+            self.completion_tokens = 0
+            self.calls = 0
+            self.usage_known = True
 
         def __call__(self, provider: str, model: str, usage: dict, cost_usd: float) -> None:
             self.total_usd += float(cost_usd or 0.0)
+            self.calls += 1
+            from .usage_pricing import _PROVIDERS_SEM_CUSTO
+            self.usage_known = self.usage_known and (
+                bool(usage) or float(cost_usd or 0.0) > 0 or provider in _PROVIDERS_SEM_CUSTO
+            )
+            if isinstance(usage, dict):
+                for field, alias in (("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens")):
+                    value = usage.get(field, usage.get(alias, 0))
+                    if isinstance(value, (int, float)):
+                        setattr(self, field, getattr(self, field) + int(value))
             try:
                 from .cost_tracker import record_llm_usage
                 record_llm_usage(self.session_id, provider, model, usage, cost_usd)
@@ -633,8 +644,6 @@ def create_app(
                 pass
 
     def _record_turn_budget(recorder: "_TurnCostRecorder", run_id: str, agent_id: str) -> None:
-        if recorder.total_usd <= 0:
-            return
         try:
             budget_manager.record_run_cost(
                 run_id=run_id, agent_id=agent_id, cost_usd=recorder.total_usd,
@@ -1632,10 +1641,7 @@ def create_app(
             )
 
         ctx = _new_context()
-        ctx.messages = store.load(sid)
-        _apply_request_context(ctx, resolved)
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
-        ctx.add_user(message)
 
         # Roteamento por-turno resolvido AQUI (fora da thread): o par
         # (client, model) é capturado pelo worker; a decisão vira evento SSE
@@ -1676,10 +1682,20 @@ def create_app(
 
             _cost = _TurnCostRecorder(sid)
 
+            @store.serialized(sid)
             def _worker() -> None:
                 from .cost_meter import cost_sink
                 from .delta_stream import reset_sink, set_sink
                 from .tool_router import reset_runtime_ids, set_runtime_ids
+                current = run_manager.get_run(run.id)
+                from .core.runtime.run_manager import TERMINAL_RUN_STATUSES
+                if current is not None and current.status in TERMINAL_RUN_STATUSES:
+                    budget_manager.release_run_reservation(run.id)
+                    events.put(("end", ""))
+                    return
+                ctx.messages = store.load(sid)
+                _apply_request_context(ctx, resolved)
+                ctx.add_user(message)
                 token = set_sink(_QueueSink())
                 cost_token = cost_sink.set(_cost)
                 # ContextVar (não atributo de instância): active_router pode ser
@@ -1708,6 +1724,7 @@ def create_app(
                     result["tool_log"] = tool_log
                 except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
                     result["error"] = exc
+                    result["tool_log"] = getattr(exc, "partial_tool_log", [])
                 finally:
                     cost_sink.reset(cost_token)
                     reset_sink(token)
@@ -1727,18 +1744,27 @@ def create_app(
                     try:
                         current = run_manager.get_run(run.id)
                         already_cancelled = current is not None and current.status == "cancelled"
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
+                        _tlog = result.get("tool_log") or []
+                        _metrics.tool_calls_total += len(_tlog)
+                        _record_turn_budget(_cost, run.id, request_agent_id)
+                        run_manager.update_run(
+                            run.id, cost_estimate=round(_cost.total_usd, 6),
+                            tool_calls_count=len(_tlog), llm_calls_count=_cost.calls, usage_known=bool(_cost.calls) and _cost.usage_known,
+                        )
+                        try:
+                            store.save(sid, ctx.messages)
+                            session_manager.touch_session(sid, state={"last_run_id": run.id})
+                            formatted = _format_server_response(str(result.get("response", "")))
+                        except Exception as exc:  # noqa: BLE001 - settle completed work on save failure
+                            result.setdefault("error", exc)
+                            _log.exception("Falha ao salvar sessão /stream (run %s)", run.id)
                         if not already_cancelled:
                             if "error" in result:
                                 run_manager.fail_run(run.id, str(result["error"]))
                             else:
-                                _record_turn_budget(_cost, run.id, request_agent_id)
-                                _tlog = result.get("tool_log") or []
-                                _metrics.tool_calls_total += len(_tlog)
                                 run_manager.complete_run(
                                     run.id,
-                                    output={"response": _format_server_response(str(result.get("response", "")))},
+                                    output={"response": formatted},
                                     tool_calls_count=len(_tlog),
                                     cost_estimate=round(_cost.total_usd, 6),
                                 )
@@ -1810,8 +1836,6 @@ def create_app(
                     # (mesma limitação do gateway) — só paramos de streamar.
                     current_run = run_manager.get_run(run.id)
                     if current_run is not None and current_run.status == "cancelled":
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
                         yield _sse(sid, event="done")
                         return
                     if time.monotonic() > deadline:
@@ -1824,13 +1848,8 @@ def create_app(
                             "resultado antes de repetir o pedido, ou dê uma olhada "
                             "no workspace/Kanban."
                         )
-                        store.save(sid, ctx.messages)
-                        session_manager.touch_session(sid, state={"last_run_id": run.id})
-                        # NÃO sobrescreve terminal: a thread órfã do turno
-                        # pode ter completado o run antes deste timeout
-                        # chegar aqui. Ver fail_run_se_nao_terminal.
-                        run_manager.fail_run_se_nao_terminal(
-                            run.id, "stream turn timeout")
+                        # Only the worker owns persistence and the run's
+                        # result. A connection timeout does not stop its work.
                         yield _sse(sid, event="done")
                         return
                     continue
@@ -1881,11 +1900,8 @@ def create_app(
                         "resultado antes de repetir o pedido, ou dê uma olhada "
                         "no workspace/Kanban."
                     )
-                    store.save(sid, ctx.messages)
-                    session_manager.touch_session(sid, state={"last_run_id": run.id})
-                    # idem: quem chegou primeiro ao terminal decide
-                    run_manager.fail_run_se_nao_terminal(
-                        run.id, "stream turn timeout")
+                    # The worker persists the complete turn under its session
+                    # lock, even after this connection stops observing it.
                     yield _sse(sid, event="done")
                     return
 
@@ -2053,8 +2069,6 @@ def create_app(
             )
 
         ctx = _new_context()
-        ctx.messages = store.load(sid)
-        _apply_request_context(ctx, resolved)
         _turn_client, _turn_model, _route = _resolve_turn_model(req.message, sid)
         _publish_route(run.id, sid, request_agent_id, _route)
 
@@ -2067,11 +2081,14 @@ def create_app(
                               goal=req.message[:400], limits=limits)
         loop_registry().put(state_obj)
 
+        @store.serialized(sid)
         def _loop_worker() -> None:
             from datetime import UTC as _UTC, datetime as _dt
 
             from .cost_meter import cost_sink
             from .tool_router import reset_runtime_ids, set_runtime_ids
+            ctx.messages = store.load(sid)
+            _apply_request_context(ctx, resolved)
             cost = _TurnCostRecorder(sid)
             cost_token = cost_sink.set(cost)
             ids_token = set_runtime_ids(sid, run.id)
@@ -2147,20 +2164,34 @@ def create_app(
                     log_suppressed("serve.loop_round_event", exc)
 
             stop_reason, last_text, all_tools = "error", "", []
+            total_tool_calls = 0
 
             def _rodar_rodadas(payload: dict) -> dict:
                 """O laço como executor do Kernel — quem conclui é o Kernel."""
-                nonlocal stop_reason, last_text, all_tools
+                nonlocal stop_reason, last_text, all_tools, total_tool_calls
+                before_cost, before_calls = cost.total_usd, cost.calls
                 feedback = (payload or {}).get("replan_feedback")
                 if feedback:
                     ctx.add_user(f"A validação reprovou o resultado anterior: {feedback}\n"
                                  f"Corrija isso e conclua.")
-                stop_reason, _r, last_text, all_tools = run_loop_rounds(
-                    goal=req.message, ctx=ctx, turn_fn=_turn, budget=budget,
-                    should_stop=_should_stop, on_round=_on_round,
-                )
+                try:
+                    stop_reason, _r, last_text, all_tools = run_loop_rounds(
+                        goal=req.message, ctx=ctx, turn_fn=_turn, budget=budget,
+                        should_stop=_should_stop, on_round=_on_round,
+                    )
+                except Exception as exc:
+                    stop_reason, last_text, all_tools = "error", redact_text(str(exc)), getattr(exc, "partial_tool_log", [])
+                total_tool_calls += len(all_tools)
+                state_obj.tool_calls = total_tool_calls
+                try:
+                    store.save(sid, ctx.messages)
+                    session_manager.touch_session(sid, state={"last_run_id": run.id})
+                except Exception as exc:  # noqa: BLE001 - persistence belongs to executor
+                    stop_reason, last_text = "error", redact_text(str(exc))
                 out = {"output": last_text, "tool_calls_count": len(all_tools),
-                       "cost_estimate": round(cost.total_usd, 6)}
+                       "cost_estimate": round(cost.total_usd - before_cost, 6),
+                       "llm_calls_count": cost.calls - before_calls,
+                       "usage_known": cost.calls > before_calls and cost.usage_known}
                 if stop_reason in ("kill_switch", "cancelled"):
                     # `cancelled` vem do _should_stop quando /loop/{id}/stop foi
                     # chamado: é decisão do usuário, não falha. Mapear para failed
@@ -2192,11 +2223,15 @@ def create_app(
                 reset_runtime_ids(ids_token)
                 state_obj.activity = ""
 
+            _record_turn_budget(cost, run.id, request_agent_id)
+            if _kernel is None:
+                run_manager.update_run(
+                    run.id, cost_estimate=round(cost.total_usd, 6),
+                    llm_calls_count=cost.calls, usage_known=bool(cost.calls) and cost.usage_known,
+                    tool_calls_count=total_tool_calls,
+                )
             try:
-                store.save(sid, ctx.messages)
-                session_manager.touch_session(sid, state={"last_run_id": run.id})
-                _record_turn_budget(cost, run.id, request_agent_id)
-                _metrics.tool_calls_total += len(all_tools)
+                _metrics.tool_calls_total += total_tool_calls
                 state_obj.stop_reason = stop_reason
                 state_obj.cost_usd = round(cost.total_usd, 6)
                 state_obj.last_text = (last_text or state_obj.last_text)[-2000:]
@@ -2295,18 +2330,20 @@ def create_app(
         run_manager=run_manager,
         kernel=_kernel,
         router=router,
+        fallback_clients=_fallback_clients,
         metrics=_metrics,
         state=_state,
         new_context=_new_context,
         resolve_request_context=_resolve_request_context,
         effective_workspace=_effective_ws,
+        apply_request_context=_apply_request_context,
         resolve_turn_model=_resolve_turn_model,
         publish_selected_skill=_publish_selected_skill,
         publish_route=_publish_route,
         format_response=_format_server_response,
         turn_cost_recorder=_TurnCostRecorder,
         record_turn_budget=_record_turn_budget,
-        run_one_turn=run_one_turn,
+        run_one_turn_with_fallback=run_one_turn_with_fallback,
         logger=_log,
     )))
 

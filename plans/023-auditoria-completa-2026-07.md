@@ -38,22 +38,37 @@ re-planejar no master. Rastreado como item M0.
 | 07 | fix/07-run-cost-guardrail | `bauer run --max-cost` inerte (guardrail morto) | Bug | S | commands/run_cmd.py | **DONE** (pushado) |
 | 12 | fix/12-loop-limits-4xx | `/loop` retorna 500 (não 4xx) com limites inválidos | Bug | S | server.py | **DONE** (pushado) |
 | 13 | chore/13-commit-uv-lock | `uv.lock` gitignorado + pins só `>=` | DX | S | .gitignore, ci.yml, pyproject.toml | **DONE** (pushado; +resolve DEPS-02 agno) |
-| 19 | docs/19-agents-md | `AGENTS.md` stub; sem contrato p/ agentes | DX | S | AGENTS.md, CLAUDE.md | TODO |
-| DOCS | docs/docs-nova-pasta | `docs/Nova pasta/` + deleções + links quebrados | Docs | S | docs/, README.md, CHANGELOG.md | TODO |
+| 19 | docs/19-agents-md | `AGENTS.md` stub; sem contrato p/ agentes | DX | S | AGENTS.md, CLAUDE.md | **DONE** (revalidado localmente em 2026-10-13: AGENTS.md/CLAUDE.md atuais) |
+| DOCS | docs/docs-nova-pasta | `docs/Nova pasta/` + deleções + links quebrados | Docs | S | docs/, README.md, CHANGELOG.md | **DONE** (revalidado localmente em 2026-10-13: links locais README/CHANGELOG válidos; diretório removido) |
 | 04 | fix/04-path-coercion-guard | `Path(MagicMock())` polui a raiz (bug de coerção) | Test/Bug | M | memory_context.py, logging_config.py, conftest.py | **MERGED** (+ resíduo Windows: credential_pool → PR #70, poluição via server call sites → PR #71) |
 | 05 | fix/05-transcribe-body-limit | `/transcribe` lê upload inteiro sem limite (DoS) | Sec | S | server.py | TODO |
-| 09 | perf/09-decision-embed-cache | DecisionMemory re-embeda a base a cada turno | Perf | M | decision_memory.py | TODO |
-| 17 | perf/17-prefetch-instance-cache | prefetch reconstrói stores por turno | Perf | S | memory_context.py | TODO |
-| 20 | perf/20-async-blocking-io | I/O bloqueante em rotas async do FastAPI | Perf | S | server.py | TODO |
+| 09 | perf/09-decision-embed-cache | DecisionMemory re-embeda a base a cada turno | Perf | M | decision_memory.py | **DONE** (revalidado localmente em 2026-10-13: embedding persistido; três regressões aprovadas) |
+| 17 | perf/17-prefetch-instance-cache | prefetch reconstrói stores por turno | Perf | S | memory_context.py | **DONE** (revalidado localmente em 2026-10-13: cache de stores; duas regressões aprovadas) |
+| 20 | perf/20-async-blocking-io | I/O bloqueante em rotas async do FastAPI | Perf | S | server.py | **DONE** (revalidado localmente em 2026-10-13: STT em threadpool; /v1 síncrono) |
 | 15 | fix/15-ssrf-redirect-revalidate | SSRF: redirects não revalidados | Sec | M | tools/web.py | TODO |
 | 14 | test/14-ci-windows-matrix | CI só Ubuntu; produto mira Windows | Test | S | ci.yml | **DONE** (PR #73; windows-latest 3.11+3.12 verdes no 1º run → gate bloqueante) |
-| 16 | fix/16-max-runtime-enforce | `max_runtime_s` não interrompe run travado | Bug | M | core/runtime/scheduler.py | TODO |
-| 08 | fix/08-state-store-lock | State store JSONL sem lock (lost-update) | Bug | L | core/runtime/state_store.py | TODO |
-| 11 | fix/11-budget-toctou | Budget TOCTOU + `max_parallel_runs` morto | Bug | M | core/runtime/autonomy.py | TODO |
-| 18 | refactor/18-runtime-registry-rename | Dois `AgentRegistry` com mesmo nome | Debt | M | core/runtime/agent_registry.py | TODO |
+| 16 | fix/16-max-runtime-enforce | `max_runtime_s` não interrompe run travado | Bug | M | core/runtime/scheduler.py | **DONE** (revalidado localmente em 2026-10-13: deadline de adapter; regressões aprovadas) |
+| 08 | fix/08-state-store-lock | State store JSONL sem lock (lost-update) | Bug | L | core/runtime/state_store.py | **DONE** (revalidado localmente em 2026-10-13: store SQLite transacional; concorrência validada) |
+| 11 | fix/11-budget-toctou | Budget TOCTOU + `max_parallel_runs` morto | Bug | M | core/runtime/autonomy.py | **DONE** (revalidado localmente em 2026-10-13: reserva de budget e vagas atômicas validadas) |
+| 18 | refactor/18-runtime-registry-rename | Dois `AgentRegistry` com mesmo nome | Debt | M | core/runtime/agent_registry.py | **DONE** (revalidado localmente em 2026-10-13: RuntimeAgentRegistry separado de AgentRegistry) |
 | 10 | spike/10-task-store-migration | Migração de task-store parada (2 gerações) | Debt | L | (characterization tests primeiro) | **PRÉ-REQUISITOS FECHADOS** — rumo: unificar no kanban_db. Spike (plans/024) + tests/test_task_store_parity.py. #10-A ✅ (comentários preservados) · #10-B ✅ (perda de status aceita, sem código) · #10-C ✅ (default alinhado em READY). Resta só o **cutover faseado** por call site |
 
 Status: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `MERGED`
+
+### Revalidação local dos status — 2026-10-13
+
+Os detalhes abaixo descrevem o estado auditado no commit base de julho, não
+o estado atual. Nove linhas TODO estavam desatualizadas: 19, DOCS, 09, 17, 20,
+16, 08, 11 e 18. Foram encerradas após conferir implementação e executar
+29 regressões existentes, sem mudanças de produção. Fontes, comandos e limites
+em [STATUS_RECONCILIATION.md](../specs/sprint-27-functional-audit-corrections/STATUS_RECONCILIATION.md).
+
+Os itens Sec 05/15 permanecem fora da execução autorizada e sem alteração.
+Instruções históricas de commit/push não se aplicam à manutenção local atual.
+A linha 14 registra uma entrega histórica; o CI atual valida Ubuntu e Windows
+(Python 3.11/3.12), conforme ci.yml e AGENTS.md. A validação local desta manutenção
+foi executada somente em Linux. O cutover do item 10 e direções futuras exigem seus próprios planos,
+não uma nova implementação motivada por status histórico.
 
 ## Dependências e agrupamentos
 

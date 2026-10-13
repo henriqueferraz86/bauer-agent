@@ -154,16 +154,17 @@ def test_record_turn_usage_no_cost_without_provider():
     assert s.usage_total["prompt_tokens"] == 1000
 
 
-def test_record_turn_usage_anthropic_cache_pricing():
-    """Cache read tokens at 10% of input price reduce session cost."""
+@pytest.mark.parametrize("uncached", [0, 100_000])
+def test_record_turn_usage_anthropic_cache_pricing(uncached):
+    """Anthropic input_tokens excludes cached tokens; charge each once."""
     s = SessionStats(model="claude-3-5-sonnet-latest", context_tokens=200_000,
                      provider="anthropic")
-    # 100k prompt, all from cache → very cheap
+    # 100k cached tokens plus any uncached input reported by Anthropic.
     s.record_turn_usage({
-        "input_tokens": 100_000,
+        "input_tokens": uncached,
         "output_tokens": 0,
         "cache_read_input_tokens": 100_000,
     })
     # 100k × $3 × 0.10 / 1M = $0.030
-    expected = 100_000 * 3.0 * 0.10 / 1_000_000
+    expected = (uncached * 3.0 + 100_000 * 3.0 * 0.10) / 1_000_000
     assert abs(s.cost_usd_total - expected) < 1e-6

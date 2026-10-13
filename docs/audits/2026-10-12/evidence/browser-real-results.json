@@ -1,0 +1,146 @@
+{
+  "results": [
+    {
+      "name": "Chromium/setup_screen",
+      "status": "PASS",
+      "browser": "156.0.8078.4"
+    },
+    {
+      "name": "account_setup_cookie_auth",
+      "status": "PASS"
+    },
+    {
+      "name": "screen_chat",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_agents",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_teams",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_skills",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_runs",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_approvals",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_runtime",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_autonomy",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_observability",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_audit",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_projects",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_kanban",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_models",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_gateway",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_logs",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "screen_settings",
+      "status": "PASS",
+      "http_errors": []
+    },
+    {
+      "name": "real_ollama_chat",
+      "status": "PASS",
+      "elapsed_s": 12.73,
+      "answer": "AUDITORIA_OK",
+      "session_id": "d24ca02b"
+    },
+    {
+      "name": "reload_chat_persistence",
+      "status": "PASS",
+      "session_id": "d24ca02b"
+    },
+    {
+      "name": "real_tool_read",
+      "status": "FAIL",
+      "elapsed_s": 14.36,
+      "answer": "AUDITORIA_OK",
+      "session_id": "d24ca02b"
+    },
+    {
+      "name": "backend_sessions",
+      "status": "PASS",
+      "data": {
+        "status": 200,
+        "data": {
+          "sessions": [
+            "d24ca02b"
+          ]
+        }
+      }
+    },
+    {
+      "name": "logout",
+      "status": "FAIL",
+      "error": "Seletor exact=True não encontrou Sair por glifo do ícone. Corrigido no followup; não é bug do produto."
+    },
+    {
+      "name": "javascript_errors",
+      "status": "PASS",
+      "errors": []
+    }
+  ],
+  "errors": [],
+  "responses": [],
+  "sse": [
+    {
+      "status": 200,
+      "body": "data: AUDITORIA_OK\n\nevent: done\ndata: d24ca02b\n\n"
+    },
+    {
+      "status": 200,
+      "body": "event: skill\ndata: {\"internal\": true, \"name\": \"Agent Reach — acesso multi-plataforma sem API paga\", \"score\": 0.31}\n\ndata: AUDITORIA_OK\n\nevent: done\ndata: d24ca02b\n\n"
+    }
+  ]
+}

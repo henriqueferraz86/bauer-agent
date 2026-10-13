@@ -12,8 +12,8 @@ Governança no ciclo (Sprint 3): kill-switch antes de tudo; policy_check com
 gate de orçamento (operation runtime.execute); ask → waiting_approval com
 ApprovalRecord real; custo registrado no BudgetManager ao concluir.
 
-Opt-in por config (``kernel.enabled``, default False) — os caminhos atuais de
-execução permanecem intocados até a migração (Sprint 6 do plano).
+Ligado por padrão (``kernel.enabled: true``); desligar exige configuração
+explícita. Caminhos legados continuam disponíveis quando o Kernel é desligado.
 """
 
 from __future__ import annotations
@@ -321,9 +321,14 @@ class BauerKernel:
             yield {"event": "final", "run": early}
             return
 
-        self.runs.start_run(run.id)
-        trajectory.append("running")
         started_monotonic = time.monotonic()
+        self.runs.start_run(run.id)
+        terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
+                                         started_monotonic=started_monotonic)
+        if terminal is not None:
+            yield {"event": "final", "run": terminal}
+            return
+        trajectory.append("running")
 
         chunks: list[str] = []
         #: metadados do run (tool_calls_count, cost) — SÓ de run.completed/started.
@@ -383,6 +388,11 @@ class BauerKernel:
                 # Caller abandonou o stream (desconexão SSE, .close()) — sem isto
                 # o run ficaria preso em `running` até o recover() (15min).
                 # BaseException, então o `except Exception` abaixo não o captura.
+                self._persist_execution_metrics(run.id, {
+                    k: v for k, v in meta.items()
+                    if k not in {"event", "status", "run_id", "runtime_adapter"}
+                })
+                self._record_elapsed_since(run.id, started_monotonic)
                 self._cancelar_se_nao_terminal(run.id, "stream interrompido pelo cliente")
                 raise
             except Exception as exc:  # noqa: BLE001 — falha do executor é estado, não crash
@@ -407,6 +417,11 @@ class BauerKernel:
             result = {"output": "".join(chunks), **{k: v for k, v in meta.items()
                                                      if k not in {"event", "status", "run_id", "runtime_adapter"}}}
             self._persist_execution_metrics(run.id, result)
+            terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
+                                             started_monotonic=started_monotonic)
+            if terminal is not None:
+                yield {"event": "final", "run": terminal}
+                return
 
             # Dentro do pulso de propósito: os gates são a outra metade do
             # problema. AcceptanceGate e TestsGate valem 600s cada por default —
@@ -414,6 +429,11 @@ class BauerKernel:
             # de estado no meio.
             if self.evaluator is not None:
                 verdict = self._avaliar(run, request, result, trajectory)
+                terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
+                                                 started_monotonic=started_monotonic)
+                if terminal is not None:
+                    yield {"event": "final", "run": terminal}
+                    return
                 if not getattr(verdict, "passed", True):
                     self._record_elapsed_since(run.id, started_monotonic)
                     self._fail_se_nao_terminal(
@@ -424,15 +444,9 @@ class BauerKernel:
                     return
 
             self._record_elapsed_since(run.id, started_monotonic)
-            cost = self._extract_cost(result)
-            self.runs.complete_run(run.id, output={"output": result.get("output")},
-                                   cost_estimate=cost,
-                                   tool_calls_count=int(result.get("tool_calls_count") or 0),
-                                   usage_known=result.get("usage_known"),
-                                   llm_calls_count=result.get("llm_calls_count"),
-                                   elapsed_seconds=result.get("elapsed_seconds"))
-            trajectory.append("completed")
-            self._record_cost(run, cost)
+            completed = self.runs.complete_run(run.id, output={"output": result.get("output")})
+            trajectory.append(completed.status)
+            self._record_cost(completed, completed.cost_estimate)
 
         yield {"event": "final",
               "run": self._result(run.id, session_id, trajectory, decision=decision,
@@ -586,6 +600,10 @@ class BauerKernel:
         # quando não há evaluator.
         while True:
             self.runs.start_run(run.id)  # → running (evento run.started existente)
+            terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
+                                             started_monotonic=started_monotonic)
+            if terminal is not None:
+                return terminal
             trajectory.append("running")
 
             # Laço de resiliência (Sprint 4): até max_retries no MESMO executor
@@ -594,6 +612,10 @@ class BauerKernel:
             attempt = 0
             last_error = ""
             while True:
+                terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
+                                                 started_monotonic=started_monotonic)
+                if terminal is not None:
+                    return terminal
                 alvo = self._nome_do_executor(executor, adapter)
                 if (self.breaker is not None and executor is None
                         and self.breaker.is_open(alvo)):
@@ -611,16 +633,22 @@ class BauerKernel:
                         # evaluator gates can terminate the run. The final
                         # terminal transition measures wall time including gates.
                         self._persist_execution_metrics(run.id, result)
+                        terminal = self._terminal_result(
+                            run.id, session_id, trajectory, decision=decision,
+                            started_monotonic=started_monotonic)
+                        if terminal is not None:
+                            return terminal
                         if result.get("status") == "cancelled":
                             # Interrupção deliberada no MEIO da execução
                             # (kill-switch entre rodadas, Ctrl+C). NÃO é falha:
                             # retry, fallback, gates e replan estariam todos
                             # errados — ninguém pediu para insistir. E não conta
                             # contra o circuito: o executor não falhou.
-                            self.runs.update_run(run.id, status="cancelled",
-                                                 error=str(result.get("error") or "cancelado"))
+                            self._record_elapsed_since(run.id, started_monotonic)
+                            cancelled = self.runs.update_run(run.id, status="cancelled",
+                                                            error=str(result.get("error") or "cancelado"))
                             self._release_budget(run.id)
-                            trajectory.append("cancelled")
+                            trajectory.append(cancelled.status)
                             return self._result(run.id, session_id, trajectory,
                                                 decision=decision, output=result.get("output"))
                         if (result.get("status") == "failed"
@@ -684,6 +712,10 @@ class BauerKernel:
             if self.evaluator is None:
                 break
             verdict = self._avaliar(run, request, result, trajectory)
+            terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
+                                             started_monotonic=started_monotonic)
+            if terminal is not None:
+                return terminal
             if getattr(verdict, "passed", True):
                 break
             reason = getattr(verdict, "reason", "")
@@ -737,15 +769,9 @@ class BauerKernel:
                        "replan_attempt": replans_used}
 
         self._record_elapsed_since(run.id, started_monotonic)
-        cost = self._extract_cost(result)
-        self.runs.complete_run(run.id, output={"output": result.get("output")},
-                               cost_estimate=cost,
-                               tool_calls_count=int(result.get("tool_calls_count") or 0),
-                               usage_known=result.get("usage_known"),
-                               llm_calls_count=result.get("llm_calls_count"),
-                               elapsed_seconds=result.get("elapsed_seconds"))
-        trajectory.append("completed")
-        self._record_cost(run, cost)
+        completed = self.runs.complete_run(run.id, output={"output": result.get("output")})
+        trajectory.append(completed.status)
+        self._record_cost(completed, completed.cost_estimate)
         return self._result(run.id, session_id, trajectory, decision=decision,
                             output=result.get("output"))
 
@@ -777,7 +803,9 @@ class BauerKernel:
         quê. Publica QUAIS gates rodaram: sem isso, "validation.failed" diz que
         reprovou e esconde onde.
         """
-        self._transition(run, "evaluating", trajectory)
+        if not self._transition(run, "evaluating", trajectory):
+            from types import SimpleNamespace
+            return SimpleNamespace(passed=False, reason="run already terminal")
         nomes = [getattr(g, "name", "gate") for g in getattr(self.evaluator, "gates", [])]
         self._publish("run.validation.started", run, status="evaluating",
                       data={"gates": nomes})
@@ -805,36 +833,39 @@ class BauerKernel:
         return verdict
 
     def _persist_execution_metrics(self, run_id: str, result: dict[str, Any]) -> None:
-        """Persist executor usage as soon as it is available, even on failure.
+        """Accumulate usage deltas from one attempt, even when it fails.
 
         These are audit fields, not a completion decision: only the Kernel
         decides the run's terminal status after retries and quality gates.
         """
         from ...logging_config import log_suppressed
 
-        changes: dict[str, Any] = {}
+        increments: dict[str, float | int] = {}
         cost = self._extract_cost(result)
         if cost is not None:
-            changes["cost_estimate"] = cost
+            increments["cost_estimate"] = max(0.0, cost)
         if result.get("tool_calls_count") is not None:
             try:
-                changes["tool_calls_count"] = max(0, int(result["tool_calls_count"]))
+                increments["tool_calls_count"] = max(0, int(result["tool_calls_count"]))
             except (TypeError, ValueError) as exc:
                 log_suppressed("kernel.metrics.tool_calls", exc)
-        if result.get("usage_known") is not None:
-            changes["usage_known"] = bool(result["usage_known"])
         if result.get("llm_calls_count") is not None:
             try:
-                changes["llm_calls_count"] = max(0, int(result["llm_calls_count"]))
+                increments["llm_calls_count"] = max(0, int(result["llm_calls_count"]))
             except (TypeError, ValueError) as exc:
                 log_suppressed("kernel.metrics.llm_calls", exc)
         if result.get("elapsed_seconds") is not None:
             try:
-                changes["elapsed_seconds"] = max(0.0, float(result["elapsed_seconds"]))
+                increments["executor_elapsed_seconds"] = max(0.0, float(result["elapsed_seconds"]))
             except (TypeError, ValueError) as exc:
                 log_suppressed("kernel.metrics.elapsed", exc)
-        if changes:
-            self.runs.update_run(run_id, **changes)
+        if increments or result.get("usage_known") is not None:
+            updated = self.runs.accumulate_metrics(
+                run_id, increments=increments,
+                usage_known=bool(result["usage_known"]) if result.get("usage_known") is not None else None,
+            )
+            if cost is not None:
+                self._record_cost(updated, updated.cost_estimate)
 
     def _record_elapsed_since(self, run_id: str, started_monotonic: float) -> None:
         elapsed = max(0.0, time.monotonic() - started_monotonic)
@@ -846,22 +877,15 @@ class BauerKernel:
 
     def _fail_se_nao_terminal(self, run_id: str, error: str,
                               trajectory: list[str]) -> None:
-        """fail_run que NÃO sobrescreve um desfecho já decidido.
-
-        ``RunManager.cancel_run`` protege terminais; ``fail_run`` não. Isso abre
-        uma corrida real: o usuário cancela (``/loop/{id}/stop``) enquanto o
-        executor está retornando falha — e o ``failed`` apagava o ``cancelled``.
-        Cancelamento é decisão de quem manda; falha é consequência. A decisão
-        vence.
-        """
+        """Close a failed attempt without replacing another writer's terminal."""
         from ..runtime.run_manager import TERMINAL_RUN_STATUSES
         atual = self.runs.get_run(run_id)
         if atual is not None and atual.status in TERMINAL_RUN_STATUSES:
             trajectory.append(atual.status)
             return
-        self.runs.fail_run(run_id, error)
+        updated = self.runs.fail_run(run_id, error)
         self._release_budget(run_id)
-        trajectory.append("failed")
+        trajectory.append(updated.status)
 
     def _cancelar_se_nao_terminal(self, run_id: str, motivo: str) -> None:
         """`cancelled` que NÃO sobrescreve um desfecho já decidido.
@@ -877,14 +901,36 @@ class BauerKernel:
         self.runs.update_run(run_id, status="cancelled", error=motivo)
         self._release_budget(run_id)
 
-    def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> None:
+    def _terminal_result(self, run_id: str, session_id: str, trajectory: list[str], *,
+                         decision: Any = None,
+                         started_monotonic: float | None = None) -> KernelRun | None:
+        from ..runtime.run_manager import TERMINAL_RUN_STATUSES
+
+        current = self._require_run(run_id)
+        if current.status not in TERMINAL_RUN_STATUSES:
+            return None
+        if started_monotonic is not None:
+            self._record_elapsed_since(run_id, started_monotonic)
+        if not trajectory or trajectory[-1] != current.status:
+            trajectory.append(current.status)
+        self._release_budget(run_id)
+        return self._result(run_id, session_id, trajectory, decision=decision)
+
+    def _transition(self, run: Any, new_status: str, trajectory: list[str]) -> bool:
+        from ..runtime.run_manager import TERMINAL_RUN_STATUSES
+
         current = self.runs.get_run(run.id).status
+        if current in TERMINAL_RUN_STATUSES:
+            return False
         ensure_transition(current, new_status)
-        self.runs.update_run(run.id, status=new_status)
+        updated = self.runs.update_run(run.id, status=new_status, expected_status=current)
+        if updated.status != new_status:
+            return False
         trajectory.append(new_status)
         # estados novos não têm evento dedicado no run_manager — publica o genérico
         if new_status in KERNEL_ONLY_STATES:
             self._publish("run.state.changed", run, status=new_status)
+        return True
 
     def _evaluate_policy(self, request: KernelRequest, run: Any):
         if self.policy is None:
@@ -941,7 +987,9 @@ class BauerKernel:
 
     def _extract_cost(self, result: dict[str, Any]) -> float | None:
         try:
-            raw = result.get("cost_estimate") or result.get("cost_usd")
+            raw = result.get("cost_estimate")
+            if raw is None:
+                raw = result.get("cost_usd")
             return float(raw) if raw is not None else None
         except (TypeError, ValueError):
             return None
@@ -961,6 +1009,9 @@ class BauerKernel:
         if self.budget is None or not run_id:
             return
         try:
+            run = self.runs.get_run(run_id)
+            if run is not None and run.cost_estimate is not None:
+                self._record_cost(run, run.cost_estimate)
             self.budget.release_run_reservation(run_id)
         except Exception as exc:  # noqa: BLE001 — accounting must not change outcome
             from ...logging_config import log_suppressed

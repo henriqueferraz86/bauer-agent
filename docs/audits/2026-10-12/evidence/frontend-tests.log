@@ -1,0 +1,12 @@
+
+> bauer-desktop@0.1.0 test
+> vitest run
+
+
+ RUN  v4.1.11 /home/henrique/bauer-agent/desktop
+
+
+ Test Files  5 passed (5)
+      Tests  21 passed (21)
+   Start at  18:33:07
+   Duration  205ms (transform 139ms, setup 0ms, import 229ms, tests 23ms, environment 0ms)

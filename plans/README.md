@@ -70,6 +70,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [057](057-agno-capability-expansion.md) | Abrir o catálogo completo compatível do Agno no Bauer com governança por agente | Agentes, tools, dados, workflows e governança | P1 | XXL (fatiado em sprints) | Sprint 17 (#151) | TODO |
 | [058](058-p3-tool-error-paths.md) | Cobrir e normalizar falhas de permissão/I/O nas filesystem tools | P3 | P3 | M | — | DONE |
 | [059](059-p4-guarded-autonomy.md) | Fechar gates, orçamento e dependências no caminho de autonomia persistente | P4 | P4 | L | 056 | DONE |
+| [060](060-auditoria-profunda-browser-2026-10-12.md) | Auditoria profunda com equipe, baseline CI e jornadas Chromium | Auditoria/qualidade | P1 | L | — | DONE auditoria; Sprint 27 concluiu 17 correções funcionais; segurança excluída/pendente (docs/audits/2026-10-12/CORRECTIONS.md) |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
@@ -197,7 +198,11 @@ rodadas diferentes reusaram os mesmos números). `023-auditoria-completa-
 2026-07.md` tem sua própria tabela de status interna com ~10 itens ainda
 `TODO`. Não foram re-auditados nem reindexados nesta rodada (fora do
 escopo do pedido do usuário) — fica registrado aqui para quem for arrumar
-a numeração depois.
+a numeração depois. A manutenção local em 2026-10-13 revalidou nove
+linhas do plano 023 histórico e marcou as correções já presentes como DONE;
+ver [STATUS_RECONCILIATION.md](../specs/sprint-27-functional-audit-corrections/STATUS_RECONCILIATION.md).
+A colisão de números, os itens de segurança e direções de arquitetura não foram
+resolvidos por essa atualização de status.
 
 **Rodada 5 (2026-07-18, commit `ced7dc2`) — tarefas agênticas + App Factory pelo `bauer serve`/Desktop com modelos locais**:
 planos 023–027, motivados por um deploy real (Ubuntu + Ollama, usuário no Desktop).

@@ -103,34 +103,54 @@ def test_run_inexistente_levanta(runs):
         runs.fail_run_se_nao_terminal("run-que-nao-existe", "x")
 
 
-def test_fail_run_cru_continua_sobrescrevendo(runs):
-    """A versão sem guarda é MANTIDA de propósito: há caminhos onde forçar
-    `failed` é correto (recuperação pós-restart marca run preso). Trocar o
-    comportamento de `fail_run` global mudaria esses call sites sem que ninguém
-    pedisse."""
+def test_fail_run_preserva_primeiro_terminal(runs):
+    """K02: todos os call sites preservam o primeiro terminal em transação."""
     r = _run(runs)
     runs.start_run(r.id)
     runs.complete_run(r.id, output={})
 
     runs.fail_run(r.id, "forçado")
 
-    assert runs.get_run(r.id).status == "failed"
+    assert runs.get_run(r.id).status == "completed"
 
 
 # ─── o call site ─────────────────────────────────────────────────────────────
 
 
-def test_o_stream_usa_a_versao_protegida():
-    """Ratchet: o `/stream` tem DOIS pontos de timeout e os dois precisam da
-    guarda. Um só protegido deixaria a corrida viva pela metade."""
-    import re
-    from pathlib import Path
+def test_timeout_do_observador_preserva_custodia_do_worker(tmp_path, monkeypatch):
+    """A conexão corta; o worker segue running, persiste e só então conclui."""
+    from threading import Event
+    import time
+    from fastapi.testclient import TestClient
+    from bauer.server import create_app
+    from bauer.session_store import SessionStore
+    from bauer.tool_router import ToolRouter
 
-    fonte = (Path(__file__).resolve().parent.parent
-             / "bauer" / "server.py").read_text(encoding="utf-8")
+    entered, release = Event(), Event()
 
-    protegidos = fonte.count("fail_run_se_nao_terminal(")
-    crus = len(re.findall(r'fail_run\(\s*run\.id,\s*"stream turn timeout"', fonte))
+    def turn(ctx, *_a, **_k):
+        entered.set()
+        assert release.wait(5)
+        ctx.add_assistant("final completo")
+        return "final completo", []
 
-    assert protegidos >= 2, f"só {protegidos} ponto(s) de timeout protegido(s)"
-    assert crus == 0, "timeout do /stream voltou a usar fail_run sem guarda"
+    monkeypatch.setattr("bauer.agent.run_one_turn", turn)
+    monkeypatch.setattr("bauer.server._STREAM_TURN_TIMEOUT_SECONDS", 0.02)
+    app = create_app(model_name="controlled", client=object(), applied_context=4096,
+                     router=ToolRouter(workspace=tmp_path), system_prompt="",
+                     sessions_dir=tmp_path / "sessions", rate_limit_requests=0)
+    manager = RunManager(root=tmp_path / "runtime")
+    with TestClient(app) as client:
+        try:
+            response = client.get("/stream", params={"message": "controlled", "session_id": "same"})
+            assert response.status_code == 200
+            assert entered.is_set()
+            run = manager.list_runs()[0]
+            assert run.status == "running"
+        finally:
+            release.set()
+        deadline = time.monotonic() + 5
+        while manager.get_run(run.id).status == "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert manager.get_run(run.id).status == "completed"
+        assert SessionStore(tmp_path / "sessions").load("same")[-1]["content"] == "final completo"

@@ -33,9 +33,10 @@ MUTATING_TOOLS = frozenset({
     "browser_dialog", "browser_cdp",
     "kanban_create", "kanban_complete", "kanban_block", "kanban_unblock",
     "kanban_heartbeat", "kanban_comment", "kanban_link",
+    "kanban_write",
     "skill_manage", "app_factory_init", "lsp_format", "lsp_rename",
     "verify_app", "mixture_of_agents", "image_generate", "text_to_speech",
-    "video_analyze", "vision_analyze", "video_generate",
+    "video_analyze", "vision_analyze",
     "channel_send", "send_message", "social_post",
     "memory", "todo", "mcp_call", "http_request", "delegate_task",
 })

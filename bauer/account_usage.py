@@ -25,6 +25,8 @@ Different providers return slightly different shapes for token usage:
 
 All keys are always present. Zero is the default. Use `merge_usage()` to
 accumulate over multiple turns within a session.
+Canonical prompt_tokens includes cached input. Anthropic's native input_tokens
+counts only uncached input, so cache read/creation tokens are added once.
 """
 
 from __future__ import annotations
@@ -58,13 +60,14 @@ def normalize_usage(raw: Any) -> dict[str, int]:
     if not isinstance(raw, Mapping):
         return {k: 0 for k in _CANONICAL_KEYS}
 
-    # Coalesce known synonyms for prompt/completion tokens.
+    # Explicit canonical zero is still a value; only None/missing falls back
+    # to native input. This also distinguishes a mixed payload with null keys.
+    canonical_prompt = raw.get("prompt_tokens")
+    if canonical_prompt is None:
+        canonical_prompt = raw.get("promptTokens")
     prompt = _coerce_int(
-        raw.get("prompt_tokens")
-        or raw.get("input_tokens")
-        or raw.get("promptTokens")
-        or raw.get("inputTokens")
-        or 0
+        canonical_prompt if canonical_prompt is not None
+        else raw.get("input_tokens") or raw.get("inputTokens") or 0
     )
     completion = _coerce_int(
         raw.get("completion_tokens")
@@ -75,7 +78,7 @@ def normalize_usage(raw: Any) -> dict[str, int]:
     )
 
     # OpenAI nests cached_tokens under prompt_tokens_details.
-    cache_read = _coerce_int(raw.get("cache_read_input_tokens") or 0)
+    cache_read = _coerce_int(raw.get("cache_read_input_tokens") or raw.get("cacheReadInputTokens") or 0)
     if not cache_read:
         details = raw.get("prompt_tokens_details") or raw.get("promptTokensDetails") or {}
         if isinstance(details, Mapping):
@@ -86,6 +89,14 @@ def normalize_usage(raw: Any) -> dict[str, int]:
         or raw.get("cacheCreationInputTokens")
         or 0
     )
+
+    # Anthropic reports regular input separately from cached reads/creation.
+    # Canonical/OpenAI prompt_tokens already includes cached input; detecting
+    # native keys keeps normalizing an already canonical payload idempotent.
+    if canonical_prompt is None and any(
+        key in raw for key in ("input_tokens", "inputTokens")
+    ):
+        prompt += cache_read + cache_create
 
     # Total: trust provider if supplied AND consistent, else recompute.
     provider_total = _coerce_int(raw.get("total_tokens") or raw.get("totalTokens") or 0)

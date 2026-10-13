@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "name": "real_write_read_roundtrip",
+      "status": "PASS",
+      "answer": "O arquivo `browser-real-output.txt` foi criado com o conteúdo exato `REAL_BROWSER_WRITE_OK`. Confirmei a gravação lendo o arquivo novamente, e o conteúdo está correto.",
+      "file_exists": true,
+      "file_content": "REAL_BROWSER_WRITE_OK",
+      "elapsed_s": 30.85,
+      "tool_events": 2
+    },
+    {
+      "name": "real_written_conversation_reload",
+      "status": "PASS"
+    },
+    {
+      "name": "hud_after_model_switch",
+      "status": "BUG",
+      "backend_model": "qwen2.5-coder:3b",
+      "hud": "local\nqwen3-coder:30b"
+    }
+  ],
+  "sse": [
+    "event: tool\ndata: {\"internal\": true, \"name\": \"write_file\", \"label\": \"Escrevendo arquivo\", \"icon\": \"file-pencil\"}\n\nevent: tool\ndata: {\"internal\": true, \"name\": \"read_file\", \"label\": \"Lendo arquivos\", \"icon\": \"file-text\"}\n\ndata: O arquivo `browser-real-output.txt` foi criado com o conteúdo exato `REAL_BROWSER_WRITE_OK`. Confirmei a gravação lendo o arquivo novamente, e o conteúdo está correto.\n\nevent: done\ndata: 57d6014a\n\n"
+  ]
+}

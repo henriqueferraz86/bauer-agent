@@ -107,16 +107,24 @@ class TestMutacao:
         for tool in ("write_file", "patch", "delete_file", "move_file", "run_command"):
             assert tool in MUTATING_TOOLS
 
-    def test_mutating_tools_sao_todas_reais(self):
+    def test_mutating_tools_sao_todas_reais(self, tmp_path):
         """Nenhum nome fantasma: toda entrada de MUTATING_TOOLS precisa existir
-        no catalogo real de tools (_TOOL_SECURITY). Trava contra o bug de
+        no catalogo efetivo de tools. Trava contra o bug de
         2026-08-18: 5 nomes fantasmas (copy_file, shell, kanban_update,
         kanban_claim, browser_fill) ficaram anos na lista sem nunca terem
         sido tools de verdade."""
-        from bauer.tool_router import _TOOL_SECURITY
+        from bauer.shell_runner import ShellRunner
+        from bauer.tool_router import ToolRouter
 
-        fantasmas = MUTATING_TOOLS - set(_TOOL_SECURITY)
-        assert not fantasmas, f"nomes de tool que nao existem em _TOOL_SECURITY: {fantasmas}"
+        router = ToolRouter(workspace=tmp_path, web_enabled=True, shell_runner=ShellRunner(workspace=tmp_path))
+        # O TestsGate também consulta esta lista em históricos anteriores à
+        # migração Kanban; os nomes antigos continuam reconhecidos para isso.
+        legados = {
+            "kanban_create", "kanban_complete", "kanban_block", "kanban_unblock",
+            "kanban_heartbeat", "kanban_comment", "kanban_link",
+        }
+        fantasmas = MUTATING_TOOLS - set(router.available_tools()) - legados
+        assert not fantasmas, f"nomes de tool que nao existem no catalogo: {fantasmas}"
 
     def test_run_command_nunca_e_dedupado(self):
         d = ToolCallDeduper()

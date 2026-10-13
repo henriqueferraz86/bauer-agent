@@ -61,6 +61,16 @@ class JsonlStateStore:
             collection, record, forbidden_statuses=forbidden_statuses
         )
 
+    def patch_record(self, collection: str, record_id: str, changes: dict[str, Any],
+                     **options: Any) -> tuple[dict[str, Any], str, bool]:
+        return self._store.patch_record(collection, record_id, changes, **options)
+
+    def reserve_run_slot(self, **options: Any) -> tuple[bool, int]:
+        return self._store.reserve_run_slot(**options)
+
+    def release_run_slot(self, run_id: str) -> None:
+        self._store.release_run_slot(run_id)
+
     def _path(self, collection: str) -> Path:
         safe = collection.strip().replace("/", "_").replace("\\", "_")
         return self.root / f"{safe}.jsonl"
@@ -148,6 +158,9 @@ class SqliteStateStore:
                 ON runtime_records(collection, sequence);
             CREATE INDEX IF NOT EXISTS runtime_records_latest
                 ON runtime_records(collection, record_id, sequence DESC);
+            CREATE TABLE IF NOT EXISTS runtime_run_slots (
+                run_id TEXT PRIMARY KEY
+            );
         """)
 
     def _migrate_jsonl_once(self, conn: sqlite3.Connection) -> None:
@@ -262,6 +275,92 @@ class SqliteStateStore:
             self._insert(conn, safe_collection, data)
             self._append_audit(safe_collection, data)
         return True
+
+    def reserve_run_slot(self, *, run_id: str | None, limit: int,
+                         stale_after_s: int) -> tuple[bool, int]:
+        """Check live runs and reserve a persisted candidate in one transaction.
+
+        Legacy callers without a persisted run only validate current capacity;
+        they cannot own a slot until a run exists.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from .resilience import RunHeartbeat, run_is_live
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_s)
+        with self._connect() as conn, self._write(conn):
+            def latest(collection: str) -> list[dict[str, Any]]:
+                rows = conn.execute(
+                    "SELECT payload FROM runtime_records WHERE sequence IN "
+                    "(SELECT MAX(sequence) FROM runtime_records WHERE collection=? GROUP BY record_id)",
+                    (collection,),
+                ).fetchall()
+                return [json.loads(row["payload"]) for row in rows]
+
+            reserved = {row["run_id"] for row in conn.execute("SELECT run_id FROM runtime_run_slots")}
+            heartbeats = {item["id"]: item for item in latest(RunHeartbeat.COLECAO)}
+            active = 0
+            candidate = None
+            for run in latest("runs"):
+                identity = str(run.get("id") or "")
+                if run_id is not None and identity == run_id:
+                    candidate = run
+                    continue
+                if (run.get("status") in {"created", "planning", "policy_check"}
+                        and identity not in reserved):
+                    continue  # Persisted candidates have not been admitted yet.
+                if run_is_live(run, heartbeats.get(identity), cutoff=cutoff):
+                    active += 1
+            if (run_id in reserved and candidate is not None
+                    and run_is_live(candidate, heartbeats.get(run_id), cutoff=cutoff)):
+                return True, active  # The same admission must not consume two slots.
+            if active >= limit:
+                return False, active
+            if candidate is not None:
+                conn.execute("INSERT OR IGNORE INTO runtime_run_slots(run_id) VALUES (?)", (run_id,))
+            return True, active
+
+    def release_run_slot(self, run_id: str) -> None:
+        with self._connect() as conn, self._write(conn):
+            conn.execute("DELETE FROM runtime_run_slots WHERE run_id=?", (run_id,))
+
+    def patch_record(
+        self, collection: str, record_id: str, changes: dict[str, Any], *,
+        forbidden_statuses: set[str] | None = None,
+        expected_status: str | None = None,
+        increments: dict[str, float | int] | None = None,
+        maxima: dict[str, float] | None = None,
+        conjunctions: dict[str, bool] | None = None,
+    ) -> tuple[dict[str, Any], str, bool]:
+        """Merge a patch with the current record under the SQLite writer lock."""
+        from ...privacy import redact_data
+
+        safe_collection = self._safe_collection(collection)
+        with self._connect() as conn, self._write(conn):
+            row = conn.execute(
+                "SELECT payload FROM runtime_records WHERE collection=? AND record_id=? "
+                "ORDER BY sequence DESC LIMIT 1", (safe_collection, record_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Record not found: {record_id}")
+            current = json.loads(row["payload"])
+            previous_status = str(current.get("status") or "")
+            if (previous_status in (forbidden_statuses or set())
+                    or (expected_status is not None and previous_status != expected_status)):
+                return current, previous_status, False
+            updated = {**current, **changes}
+            for key, delta in (increments or {}).items():
+                updated[key] = (current.get(key) or 0) + delta
+            for key, value in (maxima or {}).items():
+                updated[key] = max(float(current.get(key) or 0), value)
+            for key, value in (conjunctions or {}).items():
+                updated[key] = value if current.get(key) is None else bool(current[key]) and value
+            updated = redact_data(updated)
+            self._insert(conn, safe_collection, updated)
+            self._append_audit(safe_collection, updated)
+            if safe_collection == "runs" and updated.get("status") in {"completed", "failed", "cancelled"}:
+                conn.execute("DELETE FROM runtime_run_slots WHERE run_id=?", (record_id,))
+            return updated, previous_status, True
 
     def export_jsonl(self, collection: str, destination: str | Path | None = None) -> Path:
         """Exporta um snapshot legível do banco sem torná-lo fonte de verdade."""

@@ -1,0 +1,19 @@
+capacidade                         %    itens  meta   pendentes
+--------------------------------------------------------------------------------------------
+Uso obrigatorio do Kernel       100%  12/12   100% OK
+Kernel e ciclo de vida          100%  12/12    95% OK
+Context Builder                 100%  10/10    90% OK
+Validacao deterministica        100%   8/8     90% OK
+Contrato de tarefa                —   0/0    info   sem run autonomo registrado ainda — o campo
+Isolamento                       75%   3/4     85%     2-container
+Controle de progresso           100%   9/9     85% OK
+Observabilidade                 100%  17/17    90% OK
+Capacidade do runtime           100%   6/6    100% OK
+Retry, fallback e recovery      100%   6/6     90% OK
+Avaliacoes de harness           100%  23/23    85% OK
+--------------------------------------------------------------------------------------------
+MEDIA (so o mensuravel)          98%
+
+  2 capacidades ficam FORA por nao serem contaveis:
+    - Task Contract e Planner: qualidade do plano gerado exige juizo
+    - Policy e aprovacao: coberto por cenarios 8/9/22 + 31 property tests

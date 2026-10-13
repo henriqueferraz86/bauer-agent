@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 class OAIMessage(BaseModel):
     """Mensagem no subconjunto do contrato Chat Completions suportado."""
 
-    role: str
+    role: Literal["user", "assistant", "system", "developer"]
     content: str = Field(..., max_length=200_000)
 
 
@@ -33,6 +33,7 @@ class OAICompletionRequest(BaseModel):
     messages: list[OAIMessage] = Field(..., min_length=1, max_length=200)
     stream: bool = False
     session_id: str | None = None
+    history_mode: Literal["transcript", "incremental"] = "transcript"
     max_tokens: int | None = None
     temperature: float | None = None
 
@@ -47,18 +48,20 @@ class OpenAIRouteDependencies:
     run_manager: Any
     kernel: Any
     router: Any
+    fallback_clients: list[Any]
     metrics: Any
     state: dict[str, Any]
     new_context: Callable[[], Any]
     resolve_request_context: Callable[[str, Any], dict[str, Any]]
     effective_workspace: Callable[[Any], Any]
+    apply_request_context: Callable[[Any, dict[str, Any]], None]
     resolve_turn_model: Callable[[str], tuple[Any, str, Any]]
     publish_selected_skill: Callable[[str, str, str, dict[str, Any]], None]
     publish_route: Callable[[str, str, str, Any], None]
     format_response: Callable[[str], str]
     turn_cost_recorder: Callable[[str], Any]
     record_turn_budget: Callable[[Any, str, str], None]
-    run_one_turn: Callable[[Any, Any, Any, str], tuple[str, list[Any]]]
+    run_one_turn_with_fallback: Callable[..., tuple[str, list[Any]]]
     logger: logging.Logger
 
 
@@ -78,6 +81,11 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
         O handler é síncrono de propósito: o Starlette o executa em threadpool,
         sem bloquear o event loop com a busca de memória ou o cliente LLM.
         """
+        unsupported = [name for name in ("max_tokens", "temperature") if getattr(req, name) is not None]
+        if unsupported:
+            raise HTTPException(status_code=422, detail=f"Parâmetros não suportados: {', '.join(unsupported)}.")
+        if req.model is not None and req.model != deps.state["model"]:
+            raise HTTPException(status_code=422, detail="O modelo solicitado deve ser o modelo ativo; use /models/switch para selecioná-lo.")
         deps.metrics.chat_requests_total += 1
 
         sid = (
@@ -99,19 +107,15 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
             state={"transport": "openai", "endpoint": "/v1/chat/completions"},
         )
 
-        ctx = deps.new_context()
-        ctx.messages = deps.store.load(sid)
-        for msg in req.messages:
-            if msg.role == "user":
-                ctx.add_user(msg.content)
-            elif msg.role == "assistant":
-                ctx.add_assistant(msg.content)
-
-        turn_client, active_model, route = deps.resolve_turn_model(last_user_message)
+        if req.model is not None:
+            turn_client, active_model, route = deps.state["client"], req.model, None
+        else:
+            turn_client, active_model, route = deps.resolve_turn_model(last_user_message)
         completion_id = f"chatcmpl-bauer-{uuid.uuid4().hex[:12]}"
         request_input = {
             "messages": [msg.model_dump() for msg in req.messages],
             "stream": req.stream,
+            "history_mode": req.history_mode,
             "endpoint": "/v1/chat/completions",
             "message": last_user_message,
             "selected_agent": resolved.get("agent_id") or "",
@@ -142,8 +146,6 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
                     status_code=503,
                     detail=early.error or "Execução bloqueada.",
                 )
-            if req.stream:
-                deps.run_manager.start_run(run.id)
         else:
             run = deps.run_manager.create_run(
                 session_id=sid,
@@ -156,202 +158,126 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
         deps.publish_route(run.id, sid, request_agent_id, route)
         response_headers = {"X-Hermes-Session-Id": sid, "X-Bauer-Run-ID": run.id}
 
+        def execute_completion():
+            """One governed engine for batch and SSE, including tools/fallback/cost."""
+            from .cost_meter import cost_sink
+            from .core.kernel import continue_governed
+            from .tool_router import reset_runtime_ids, set_runtime_ids
+
+            ctx = deps.new_context()
+            # OpenAI clients send a complete transcript by default. Hermes
+            # clients that send only new turns request incremental explicitly.
+            ctx.messages = deps.store.load(sid) if req.history_mode == "incremental" else []
+            deps.apply_request_context(ctx, resolved)
+            instructions = [msg.content for msg in req.messages if msg.role in {"system", "developer"}]
+            if instructions:
+                ctx.system_prompt = "\n\n".join([ctx.system_prompt or "", *instructions]).strip()
+            for msg in req.messages:
+                if msg.role == "user":
+                    ctx.add_user(msg.content)
+                elif msg.role == "assistant":
+                    ctx.add_assistant(msg.content)
+
+            cost = deps.turn_cost_recorder(sid)
+            cost_token = cost_sink.set(cost)
+            ids_token = set_runtime_ids(sid, run.id)
+            turn: dict[str, Any] = {}
+
+            def execute_v1(payload: dict[str, Any]) -> dict[str, Any]:
+                feedback = (payload or {}).get("replan_feedback")
+                if feedback:
+                    ctx.add_user(f"A validação reprovou a resposta anterior: {feedback}\nCorrija e responda de novo.")
+                before_cost, before_calls = cost.total_usd, cost.calls
+                tool_log: list[dict[str, Any]] = []
+                outcome: dict[str, Any] = {}
+                try:
+                    answer, tool_log = deps.run_one_turn_with_fallback(
+                        ctx, deps.router, turn_client, active_model, deps.fallback_clients,
+                    )
+                    turn["response"] = deps.format_response(answer)
+                    outcome["output"] = turn["response"]
+                except Exception as exc:  # noqa: BLE001 - Kernel settles partial usage
+                    tool_log = getattr(exc, "partial_tool_log", tool_log)
+                    deps.logger.exception("Erro interno em /v1/chat/completions: %s", exc)
+                    outcome.update(status="failed", error="Erro interno durante a geração.")
+                turn["tool_log"] = tool_log
+                try:
+                    deps.store.save(sid, ctx.messages)
+                    deps.session_manager.touch_session(sid, state={"last_run_id": run.id})
+                except Exception as exc:  # noqa: BLE001 - persistence belongs to executor
+                    deps.logger.exception("Falha ao salvar sessão /v1/chat/completions: %s", exc)
+                    outcome.update(status="failed", error="Erro interno durante a geração.")
+                return {**outcome, "tool_calls_count": len(tool_log),
+                        "cost_estimate": round(cost.total_usd - before_cost, 6),
+                        "llm_calls_count": cost.calls - before_calls,
+                        "usage_known": cost.calls > before_calls and cost.usage_known}
+
+            try:
+                governed = continue_governed(deps.kernel, run.id, execute_v1)
+                if deps.kernel is None:
+                    deps.run_manager.update_run(
+                        run.id, cost_estimate=round(cost.total_usd, 6),
+                        tool_calls_count=len(turn.get("tool_log", [])), llm_calls_count=cost.calls, usage_known=bool(cost.calls) and cost.usage_known,
+                    )
+                    if governed.ok:
+                        deps.run_manager.complete_run(
+                            run.id, output={"response": turn.get("response", "")},
+                            tool_calls_count=len(turn.get("tool_log", [])),
+                            cost_estimate=round(cost.total_usd, 6),
+                        )
+                    else:
+                        deps.run_manager.fail_run(run.id, governed.error or "Erro interno durante a geração.")
+                recorded = deps.run_manager.get_run(run.id)
+                deps.metrics.tool_calls_total += recorded.tool_calls_count if recorded else 0
+                if not governed.ok:
+                    raise HTTPException(status_code=500, detail="Erro interno durante a geração.")
+                response = turn.get("response", "")
+                if cost.calls:
+                    prompt_tokens, completion_tokens = cost.prompt_tokens, cost.completion_tokens
+                else:
+                    prompt_tokens = sum(len(message.get("content", "")) // 4 for message in ctx.messages[:-1])
+                    completion_tokens = len(response) // 4
+                return response, {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                                  "total_tokens": prompt_tokens + completion_tokens}
+            finally:
+                cost_sink.reset(cost_token)
+                reset_runtime_ids(ids_token)
+                deps.record_turn_budget(cost, run.id, request_agent_id)
+
         if req.stream:
             deps.metrics.stream_requests_total += 1
 
             def oai_stream():
-                from .agent import MAX_TOOL_TURNS, _try_parse_tool
-                from .tool_router import reset_runtime_ids, set_runtime_ids
-
-                ids_token = set_runtime_ids(sid, run.id)
-                tool_count = 0
+                # Keep the existing buffered encoding, executing the same
+                # governed turn as batch so native tools/accounting cannot drift.
                 try:
-                    while True:
-                        current_run = deps.run_manager.get_run(run.id)
-                        if current_run is not None and current_run.status == "cancelled":
-                            deps.store.save(sid, ctx.messages)
-                            deps.session_manager.touch_session(
-                                sid, state={"last_run_id": run.id}
-                            )
-                            yield "data: [DONE]\n\n"
-                            return
+                    with deps.store.turn(sid):
+                        response, _usage = execute_completion()
+                except Exception:  # noqa: BLE001 - boundary SSE
+                    deps.logger.exception("Erro no stream OpenAI (run=%s)", run.id)
+                    error = json.dumps({"error": {"message": "Erro interno durante a geração.", "type": "server_error"}})
+                    yield f"data: {error}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                for delta, finish in (({"content": response}, None), ({}, "stop")):
+                    chunk = json.dumps({
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": int(time.time()), "model": active_model,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    }, ensure_ascii=False)
+                    yield f"data: {chunk}\n\n"
+                yield "data: [DONE]\n\n"
 
-                        parts: list[str] = []
-                        try:
-                            for chunk in turn_client.chat_stream(active_model, ctx.get_payload()):
-                                current_run = deps.run_manager.get_run(run.id)
-                                if current_run is not None and current_run.status == "cancelled":
-                                    deps.store.save(sid, ctx.messages)
-                                    deps.session_manager.touch_session(
-                                        sid, state={"last_run_id": run.id}
-                                    )
-                                    yield "data: [DONE]\n\n"
-                                    return
-                                parts.append(chunk)
-                        except Exception as exc:  # noqa: BLE001 - boundary SSE
-                            deps.logger.exception(
-                                "Erro interno durante stream OpenAI (run=%s)", run.id
-                            )
-                            error = json.dumps({
-                                "error": {
-                                    "message": "Erro interno durante a geração.",
-                                    "type": "server_error",
-                                }
-                            })
-                            yield f"data: {error}\n\n"
-                            deps.store.save(sid, ctx.messages)
-                            deps.session_manager.touch_session(
-                                sid, state={"last_run_id": run.id}
-                            )
-                            deps.run_manager.fail_run(run.id, str(exc))
-                            yield "data: [DONE]\n\n"
-                            return
+            return StreamingResponse(oai_stream(), media_type="text/event-stream", headers=response_headers)
 
-                        raw_response = "".join(parts)
-                        response = deps.format_response(raw_response)
-                        # Tool bridge parsing needs the internal response; the
-                        # public response is emitted only after sanitization.
-                        ctx.add_assistant(raw_response)
-                        action_dict = _try_parse_tool(raw_response, deps.router)
-                        if action_dict and tool_count < MAX_TOOL_TURNS:
-                            action_name = action_dict.get("action", "tool")
-                            try:
-                                tool_result = deps.router.execute(action_dict)
-                            except Exception:  # noqa: BLE001 - tool boundary
-                                deps.logger.exception(
-                                    "Erro ao executar tool no stream OpenAI (run=%s)", run.id
-                                )
-                                tool_result = "[Erro interno ao executar a ferramenta.]"
-                            # Tool execution is internal state.  It is kept in
-                            # ctx for the next model round but never sent to a
-                            # user-facing OpenAI/SSE stream.
-                            ctx.add_user(f"[Resultado de {action_name}]\n{tool_result}")
-                            tool_count += 1
-                            deps.metrics.tool_calls_total += 1
-                        else:
-                            safe_delta = json.dumps({
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": active_model,
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {"content": response},
-                                    "finish_reason": None,
-                                }],
-                            }, ensure_ascii=False)
-                            yield f"data: {safe_delta}\n\n"
-                            final_delta = json.dumps({
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": active_model,
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {},
-                                    "finish_reason": "stop",
-                                }],
-                            })
-                            yield f"data: {final_delta}\n\n"
-                            deps.store.save(sid, ctx.messages)
-                            deps.session_manager.touch_session(
-                                sid, state={"last_run_id": run.id}
-                            )
-                            deps.run_manager.complete_run(
-                                run.id,
-                                output={"response": response},
-                                tool_calls_count=tool_count,
-                            )
-                            yield "data: [DONE]\n\n"
-                            break
-                finally:
-                    reset_runtime_ids(ids_token)
-
-            return StreamingResponse(
-                oai_stream(), media_type="text/event-stream", headers=response_headers
-            )
-
-        from .cost_meter import cost_sink
-        from .core.kernel import continue_governed
-        from .tool_router import reset_runtime_ids, set_runtime_ids
-
-        cost = deps.turn_cost_recorder(sid)
-        cost_token = cost_sink.set(cost)
-        ids_token = set_runtime_ids(sid, run.id)
-        turn: dict[str, Any] = {}
-
-        def execute_v1(payload: dict[str, Any]) -> dict[str, Any]:
-            feedback = (payload or {}).get("replan_feedback")
-            if feedback:
-                ctx.add_user(
-                    "A validação reprovou a resposta anterior: "
-                    f"{feedback}\nCorrija e responda de novo."
-                )
-            answer, tool_log = deps.run_one_turn(ctx, deps.router, turn_client, active_model)
-            turn["response"] = deps.format_response(answer)
-            turn["tool_log"] = tool_log
-            return {
-                "output": turn["response"],
-                "tool_calls_count": len(tool_log),
-                "cost_estimate": round(cost.total_usd, 6),
-            }
-
-        try:
-            governed = continue_governed(deps.kernel, run.id, execute_v1)
-        except Exception as exc:  # noqa: BLE001 - HTTP boundary
-            deps.logger.exception("Erro interno em /v1/chat/completions: %s", exc)
-            if deps.kernel is None:
-                deps.run_manager.fail_run(run.id, str(exc))
-            raise HTTPException(
-                status_code=500,
-                detail="Erro interno — consulte os logs do servidor.",
-            ) from exc
-        finally:
-            cost_sink.reset(cost_token)
-            reset_runtime_ids(ids_token)
-
-        if not governed.ok:
-            deps.logger.warning("/v1/chat/completions não concluiu: %s", governed.error)
-            raise HTTPException(
-                status_code=500,
-                detail=governed.error or "Erro interno — consulte os logs do servidor.",
-            )
-
-        response = turn.get("response", "")
-        tool_log = turn.get("tool_log", [])
-        deps.metrics.tool_calls_total += len(tool_log)
-        deps.record_turn_budget(cost, run.id, request_agent_id)
-        deps.store.save(sid, ctx.messages)
-        deps.session_manager.touch_session(sid, state={"last_run_id": run.id})
-        if deps.kernel is None:
-            deps.run_manager.complete_run(
-                run.id,
-                output={"response": response},
-                tool_calls_count=len(tool_log),
-                cost_estimate=round(cost.total_usd, 6),
-            )
-
-        prompt_tokens = sum(len(message.get("content", "")) // 4 for message in ctx.messages[:-1])
-        completion_tokens = len(response) // 4
-        return JSONResponse(
-            content={
-                "id": completion_id,
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": active_model,
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": response},
-                    "finish_reason": "stop",
-                }],
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                },
-            },
-            headers=response_headers,
-        )
+        with deps.store.turn(sid):
+            response, usage = execute_completion()
+        return JSONResponse(content={
+            "id": completion_id, "object": "chat.completion", "created": int(time.time()),
+            "model": active_model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": response}, "finish_reason": "stop"}],
+            "usage": usage,
+        }, headers=response_headers)
 
     @router.get("/v1/models")
     def oai_models(_: None = Depends(deps.verify_key)):

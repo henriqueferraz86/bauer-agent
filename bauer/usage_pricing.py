@@ -160,6 +160,9 @@ def estimate_cost_usd(
     de ~14× que os modelos fora da tabela sofriam (caíam no fallback $1/$4 por
     1M). A estimativa por tabela vira só o plano B quando não há custo reportado.
     """
+    if provider_e_local(provider):
+        return 0.0
+
     reported = usage.get("cost")
     # Só confia num NÚMERO real (não bool, não Mock): isinstance exclui
     # MagicMock de teste, cujo float() é 1.0 por padrão e criava custo fantasma.

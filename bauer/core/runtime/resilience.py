@@ -182,9 +182,6 @@ class RuntimeRecovery:
             # devem virar failed por idade.
             if run.status not in RECOVERABLE_RUN_STATUSES:
                 continue
-            marker = run.updated_at or run.started_at
-            if _parse_datetime(marker) > cutoff:
-                continue
             # Sem transição há muito tempo NÃO é o mesmo que travado: o run pode
             # estar dentro de um turno longo ou dos gates. Quem tem pulso fresco
             # está vivo — e matar um run vivo é pior que deixar um morto na
@@ -192,8 +189,7 @@ class RuntimeRecovery:
             # `completed` por cima depois. Run sem pulso nenhum cai na regra
             # antiga (idade pura): caminhos que não passam pelo Kernel e runs
             # gravados antes disto continuam recuperáveis.
-            vivo = pulsos.get(run.id)
-            if vivo is not None and _parse_datetime(str(vivo["last_seen_at"])) > cutoff:
+            if run_is_live(run.__dict__, pulsos.get(run.id), cutoff=cutoff):
                 continue
             mensagem = f"runtime recovery: run stuck for more than {max_age_s}s"
             # `fail_run_se_nao_terminal`: entre o list_runs() acima e esta linha
@@ -215,6 +211,33 @@ def _worker_to_dict(worker: WorkerHeartbeat) -> dict[str, Any]:
         "last_seen_at": worker.last_seen_at,
         "metadata": dict(worker.metadata),
     }
+
+
+def run_is_live(run: dict[str, Any], heartbeat: dict[str, Any] | None, *,
+                cutoff: datetime) -> bool:
+    """One liveness rule for recovery and concurrency admission."""
+    from .run_manager import TERMINAL_RUN_STATUSES, WAITING_RUN_STATUSES
+
+    if run.get("status") in TERMINAL_RUN_STATUSES:
+        return False
+    if run.get("status") in WAITING_RUN_STATUSES:
+        return True
+    markers = [run.get("updated_at") or run.get("started_at") or run.get("created_at")]
+    if heartbeat:
+        markers.append(heartbeat.get("last_seen_at"))
+    valid_marker = False
+    for marker in markers:
+        if not marker:
+            continue
+        try:
+            valid_marker = True
+            if _parse_datetime(str(marker)) > cutoff:
+                return True
+        except (TypeError, ValueError) as exc:
+            from ...logging_config import log_suppressed
+            log_suppressed("runtime.liveness.timestamp", exc)
+            return True  # An unreadable timestamp cannot establish that a run died.
+    return not valid_marker
 
 
 def _parse_datetime(value: str) -> datetime:

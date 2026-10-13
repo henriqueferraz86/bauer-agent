@@ -181,6 +181,25 @@ def run_loop_rounds(
     last_text = ""
     all_tool_log: list[dict] = []
 
+    def preserve_tools(exc: BaseException) -> None:
+        try:
+            exc.partial_tool_log = [dict(entry) for entry in all_tool_log]  # type: ignore[attr-defined]
+        except Exception as accounting_exc:
+            from .logging_config import log_suppressed
+            log_suppressed("serve_loop.preserve_tools", accounting_exc)
+
+    def record_tools(tool_log: list[dict]) -> None:
+        all_tool_log.extend(tool_log)
+        try:
+            for entry in tool_log:
+                # Shared budgets reserve before dispatch; legacy turns need
+                # accounting here, including tools completed before failure.
+                if not entry.get("budget_accounted"):
+                    budget.consume_tool_call()
+        except Exception as exc:  # noqa: BLE001 — exhausted; the next round stops
+            from .logging_config import log_suppressed
+            log_suppressed("serve_loop.record_tools", exc)
+
     while True:
         if should_stop is not None:
             external = should_stop()
@@ -197,28 +216,26 @@ def run_loop_rounds(
         round_num += 1
         try:
             text, tool_log = turn_fn()
-        except Exception as exc:  # noqa: BLE001 — o loop para; o run registra o porquê
+        except BaseException as exc:
+            record_tools(getattr(exc, "partial_tool_log", []))
+            if not isinstance(exc, Exception):
+                preserve_tools(exc)
+                raise
             stop_reason = "provider_error"
             last_text = str(exc)
             break
 
         text = text or ""
         tool_log = tool_log or []
-        all_tool_log.extend(tool_log)
+        record_tools(tool_log)
         if text.strip():
             last_text = text
-        try:
-            for entry in tool_log:
-                # The tool engine can receive this exact budget (notably
-                # /loop) and reserves before dispatch. Legacy turn functions
-                # remain accounted here, but never count the same execution.
-                if not entry.get("budget_accounted"):
-                    budget.consume_tool_call()
-        except Exception:  # noqa: BLE001 — esgotou no meio: o topo do laço encerra
-            pass
-
         if on_round is not None:
-            on_round(round_num, text, tool_log)
+            try:
+                on_round(round_num, text, tool_log)
+            except BaseException as exc:
+                preserve_tools(exc)
+                raise
 
         if not tool_log:
             if not text.strip():

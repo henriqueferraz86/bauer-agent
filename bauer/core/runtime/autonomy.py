@@ -46,9 +46,8 @@ class BudgetExceededError(RuntimeError):
 
 
 class BudgetManager:
-    #: Depois disso, um run não-terminal é TRAVADO, não concorrente — e para de
-    #: contar contra `max_parallel_runs`. Mesmo limiar default de
-    #: ``RuntimeRecovery.recover_stuck_runs``, que é quem de fato o marca failed.
+    #: Run sem transição nem heartbeat recente para de contar como concorrente.
+    #: Esperas intencionais mantêm a vaga; a regra é compartilhada com recovery.
     stale_run_after_s: int = 900
 
     def __init__(
@@ -111,43 +110,19 @@ class BudgetManager:
         if profile.mode == "locked":
             raise BudgetExceededError("autonomy mode is locked")
 
-        # max_parallel_runs (antes config MORTO — nunca era lido/enforçado):
-        # conta os runs não-terminais e recusa se já está no teto. A run deste
-        # check ainda NÃO existe (é criada depois), então nenhum self-count.
-        # Também limita o overshoot do TOCTOU de budget a no máx. N× enquanto a
-        # reserva de custo por-run (a outra metade do #11) não é wired.
+        # Conta os outros runs não-terminais e recusa se já estão no teto.
+        # O Kernel persiste o candidato antes deste check; callers sem run_id
+        # ainda não o criaram. Exclua apenas o candidato identificado.
         if profile.max_parallel_runs and profile.max_parallel_runs > 0:
-            # "Paralelo" é o que está VIVO agora, não o que ficou não-terminal em
-            # algum momento da história. Sem o corte por idade, três Ctrl+C (ou
-            # três crashes, ou três threads órfãs de SSE) travavam TODA execução
-            # permanentemente com "max parallel runs reached: 3/3" — e só saía
-            # disso se alguém chamasse recover() à mão. Medido ao ligar o Kernel
-            # por default (HARNESS-020): o bloqueio pegou 4 testes de `bauer run`.
-            #
-            # Mesmo limiar do RuntimeRecovery.recover_stuck_runs: passou disso,
-            # é run travado (que o recover vai marcar failed), não concorrente.
-            from datetime import UTC, datetime, timedelta
-
-            from .resilience import _parse_datetime
-            from .run_manager import TERMINAL_RUN_STATUSES
-
-            cutoff = datetime.now(UTC) - timedelta(seconds=self.stale_run_after_s)
-            active = 0
-            for r in self.store.list_latest("runs"):
-                if r.get("status") in TERMINAL_RUN_STATUSES:
-                    continue
-                marker = r.get("updated_at") or r.get("started_at") or r.get("created_at")
-                if marker:
-                    try:
-                        if _parse_datetime(str(marker)) <= cutoff:
-                            continue  # travado, não paralelo
-                    except (ValueError, TypeError) as exc:
-                        # timestamp ilegível: não dá para provar que está travado,
-                        # então conta como paralelo — o lado seguro é barrar
-                        from ...logging_config import log_suppressed
-                        log_suppressed("autonomy.parallel_runs.timestamp", exc)
-                active += 1
-            if active >= profile.max_parallel_runs:
+            # A regra compartilhada com recovery considera transições recentes,
+            # heartbeat e esperas intencionais. Só runs realmente mortos deixam
+            # de ocupar vaga. Leitura e reserva são uma transação: candidatos
+            # ainda não admitidos não bloqueiam uns aos outros.
+            accepted, active = self.store.reserve_run_slot(
+                run_id=run_id, limit=profile.max_parallel_runs,
+                stale_after_s=self.stale_run_after_s,
+            )
+            if not accepted:
                 message = f"max parallel runs reached: {active}/{profile.max_parallel_runs}"
                 self.event_bus.publish(
                     "budget.exceeded",
@@ -180,6 +155,7 @@ class BudgetManager:
                     estimated_cost_usd=estimated_cost_usd, limits=limits,
                 )
             except BudgetLedgerExceeded as exc:
+                self.store.release_run_slot(run_id)
                 self.event_bus.publish(
                     "budget.exceeded", run_id=run_id, agent_id=agent_id,
                     status="exceeded", message=str(exc), data={"scope": "atomic"},
@@ -246,6 +222,7 @@ class BudgetManager:
 
     def release_run_reservation(self, run_id: str) -> None:
         self.ledger.release(run_id)
+        self.store.release_run_slot(run_id)
 
     def _period_status(self, scope: str, limit: float | None) -> dict[str, Any]:
         used = self._used_for_scope(scope)

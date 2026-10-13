@@ -3,7 +3,7 @@ r"""`bauer run` — entrada autônoma única: roda uma tarefa de ponta a ponta.
 A porta da frente para "faça isso do início ao fim, sem eu ter que confirmar
 cada passo". Fachada FINA (plano 022): a máquina de rodadas mora em
 ``serve_loop.run_loop_rounds`` (a MESMA da UI web), a governança no Kernel
-(``kernel.admit`` quando ``kernel.enabled``), e este módulo só monta o
+(``kernel.execute`` quando ``kernel.enabled``), e este módulo só monta o
 contexto, mostra os limites em PT e traduz o desfecho em exit code.
 
     cd C:\caminho\do\projeto
@@ -23,6 +23,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 
 import typer
 
@@ -378,7 +379,7 @@ def run(
     from ..progress_signals import SinaisDeProgresso
     _sinais = SinaisDeProgresso(ws, ctx=ctx, bus=_bus)
 
-    def _on_round(n: int, text: str, tl: list) -> None:
+    def _flush_cost_to_budget() -> None:
         nonlocal _last_cost
         delta = _cost.total_usd - _last_cost
         _last_cost = _cost.total_usd
@@ -388,6 +389,11 @@ def run(
             except Exception as exc:  # esgotou: run_loop_rounds encerra no topo
                 from ..logging_config import log_suppressed
                 log_suppressed("run_cmd.consume_cost", exc)
+
+    def _on_round(n: int, text: str, tl: list) -> None:
+        nonlocal rounds
+        rounds = n
+        _flush_cost_to_budget()
         for _aviso in _sinais.rodada(n, text, tl):
             # Avisa, não interrompe: quem para o laço é o orçamento. Um detector
             # heurístico com poder de matar a tarefa erraria contra refatoração
@@ -420,20 +426,38 @@ def run(
         novo: se acabou, a passada seguinte encerra no topo).
         """
         nonlocal stop_reason, rounds
+        before_cost, before_calls = _cost.total_usd, _cost.calls
+        before_unknown = _cost.unknown_usage_calls
+        before_tools = budget.snapshot().tool_calls
+        started = time.monotonic()
         feedback = (payload or {}).get("replan_feedback")
         if feedback:
             ctx.add_user(f"A validação reprovou o resultado anterior: {feedback}\n"
                          f"Corrija isso e conclua.")
-        stop_reason, rounds, last_text, _tool_log = run_loop_rounds(
-            goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
-            should_stop=_should_stop, on_round=_on_round,
-        )
-        snap = budget.snapshot()
-        out: dict = {"output": last_text, "tool_calls_count": snap.tool_calls,
-                     "cost_estimate": round(snap.cost_usd, 6),
-                     "usage_known": _cost.unknown_usage_calls == 0,
-                     "llm_calls": _cost.calls,
-                     "elapsed_seconds": round(snap.elapsed_seconds, 3)}
+
+        def metrics(last_text: str) -> dict:
+            # Partial consumption also belongs to failed or interrupted turns.
+            _flush_cost_to_budget()
+            snap = budget.snapshot()
+            return {"output": last_text, "tool_calls_count": snap.tool_calls - before_tools,
+                    "cost_estimate": round(_cost.total_usd - before_cost, 6),
+                    "usage_known": _cost.calls > before_calls and _cost.unknown_usage_calls == before_unknown,
+                    "llm_calls_count": _cost.calls - before_calls,
+                    "elapsed_seconds": round(time.monotonic() - started, 3)}
+
+        try:
+            stop_reason, rounds, last_text, _tool_log = run_loop_rounds(
+                goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
+                should_stop=_should_stop, on_round=_on_round,
+            )
+        except KeyboardInterrupt as exc:
+            stop_reason = "interrupted"
+            exc.partial_metrics = metrics("")  # type: ignore[attr-defined]
+            raise
+        except Exception as exc:
+            stop_reason = "executor_error"
+            return {**metrics(""), "status": "failed", "error": str(exc)}
+        out = metrics(last_text)
         if stop_reason == "kill_switch":
             # cancelamento, não falha — o Kernel trata terminal sem retry/replan
             return {**out, "status": CANCELLED, "error": "runtime kill switch ativo"}

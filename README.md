@@ -1017,12 +1017,11 @@ curl -X POST http://localhost:7770/chat \
 curl "http://localhost:7770/stream?message=Olá&session_id=s1" \
   -H "X-API-Key: sua-chave"
 
-# 🔗 OpenAI-compatible (compatível com qualquer cliente OpenAI)
+# 🔗 OpenAI-compatible (subconjunto Chat Completions)
 curl -X POST http://localhost:7770/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sua-chave" \
   -d '{
-    "model": "bauer",
     "messages": [{"role": "user", "content": "Olá!"}],
     "stream": true
   }'
@@ -1045,7 +1044,28 @@ bauer_rate_limited_total      — 🚦 requisições bloqueadas por rate limit
 
 ### 🔗 Integração com clientes OpenAI-compatible
 
-O `bauer serve` expõe `/v1/chat/completions` no formato OpenAI SSE — funciona com qualquer cliente que suporte a API OpenAI (LangChain, LlamaIndex, Open WebUI, etc.).
+O `bauer serve` expõe `/v1/chat/completions` em batch e no formato OpenAI SSE.
+Ambos executam o mesmo turno, com tools nativas ou bridge, fallback e contabilidade.
+O SSE entrega a resposta após a execução do turno; não transmite tokens do provider
+em tempo real.
+
+Envie `messages` como transcript completo: o padrão `history_mode: "transcript"`
+substitui o histórico recebido para evitar duplicação em clientes SDK. Para enviar
+somente novas mensagens e reutilizar o histórico da sessão, informe
+`history_mode: "incremental"` e mantenha `session_id` (ou o header
+`X-Hermes-Session-Id`). São aceitos os papéis `user`, `assistant`, `system` e
+`developer`; instruções de sistema/desenvolvedor complementam o contexto do servidor.
+
+Omitir `model` usa o roteamento do servidor; se informado, deve ser o modelo ativo.
+`max_tokens` e `temperature` ainda não são suportados e retornam HTTP 422, assim
+como um modelo diferente do ativo. Clientes precisam configurar esse subconjunto
+explicitamente.
+
+Turnos da mesma sessão são serializados entre `/chat`, `/stream`, `/loop` e `/v1`.
+No POSIX, o lock também coordena processos que compartilham o diretório de sessões;
+no Windows, coordena threads do mesmo processo. Compartilhar esse diretório entre
+processos Windows não é suportado. Um timeout ou desconexão do observador SSE deixa
+o worker concluir e persistir o turno.
 
 ---
 
@@ -1444,10 +1464,10 @@ uv run pytest --cov=bauer --cov-report=term-missing
 uv run pytest --durations=10 -q
 
 # Lint crítico (mesmo check que bloqueia o CI)
-uv run ruff check bauer/ --select E9,F63,F7,F82
+uv run --with ruff==0.17.0 ruff check bauer/ --select E9,F63,F7,F82
 
 # Lint completo (informativo)
-uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
+uv run --with ruff==0.17.0 ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
 
 # Diagnóstico completo
 bauer doctor
@@ -1457,6 +1477,10 @@ bauer doctor --providers   # testa conectividade de todos os providers
 > Para contribuição, não substitua este fluxo por `pip install -e ".[dev]"`:
 > ele resolve as constraints no momento da instalação, enquanto o CI usa o
 > `uv.lock` versionado.
+
+Ruff usa um ambiente auxiliar `uv --with` com a mesma versão fixada no CI;
+não faz parte do extra `dev`. Os testes e mypy usam o ambiente do `uv.lock`.
+Com Ruff já em cache, `UV_OFFLINE=1` executa os gates sem acesso à rede.
 
 ---
 

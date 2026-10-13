@@ -41,9 +41,9 @@ def test_normalize_anthropic_shape():
         "cache_creation_input_tokens": 20,
     }
     out = normalize_usage(raw)
-    assert out["prompt_tokens"] == 200
+    assert out["prompt_tokens"] == 400
     assert out["completion_tokens"] == 50
-    assert out["total_tokens"] == 250
+    assert out["total_tokens"] == 450
     assert out["cache_read_input_tokens"] == 180
     assert out["cache_creation_input_tokens"] == 20
 
@@ -189,12 +189,12 @@ def test_usage_is_empty_false_for_real_usage():
 
 
 def test_cache_hit_ratio_full_hit():
-    u = normalize_usage({"input_tokens": 100, "cache_read_input_tokens": 100})
+    u = normalize_usage({"input_tokens": 0, "cache_read_input_tokens": 100})
     assert cache_hit_ratio(u) == 1.0
 
 
 def test_cache_hit_ratio_partial():
-    u = normalize_usage({"input_tokens": 100, "cache_read_input_tokens": 80})
+    u = normalize_usage({"input_tokens": 20, "cache_read_input_tokens": 80})
     assert cache_hit_ratio(u) == pytest.approx(0.8)
 
 

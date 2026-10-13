@@ -100,10 +100,11 @@ def run_governed(
         rodou.append(1)
         try:
             out = executor(payload) or {}
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as exc:
             # BaseException: o `except Exception` do Kernel NÃO pega, e o run
             # ficaria preso em `running` até o recover() de 15min.
-            out = {"status": CANCELLED, "error": "interrompido pelo usuário (Ctrl+C)"}
+            out = {**getattr(exc, "partial_metrics", {}),
+                   "status": CANCELLED, "error": "interrompido pelo usuário (Ctrl+C)"}
         ultimo.clear()
         ultimo.update(out)
         return out
@@ -170,8 +171,9 @@ def continue_governed(
     def _wrapped(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             out = executor(payload) or {}
-        except KeyboardInterrupt:
-            out = {"status": CANCELLED, "error": "interrompido pelo usuário (Ctrl+C)"}
+        except KeyboardInterrupt as exc:
+            out = {**getattr(exc, "partial_metrics", {}),
+                   "status": CANCELLED, "error": "interrompido pelo usuário (Ctrl+C)"}
         ultimo.clear()
         ultimo.update(out)
         return out
@@ -187,8 +189,9 @@ def _sem_kernel(executor, payload_in: dict[str, Any]) -> GovernedResult:
     """Kernel desligado: executa direto e traduz o dict de retorno."""
     try:
         result = executor(payload_in) or {}
-    except KeyboardInterrupt:
-        return GovernedResult(status=CANCELLED, error="interrompido pelo usuário (Ctrl+C)")
+    except KeyboardInterrupt as exc:
+        result = {**getattr(exc, "partial_metrics", {}),
+                  "status": CANCELLED, "error": "interrompido pelo usuário (Ctrl+C)"}
     status = str(result.get("status") or "completed")
     return GovernedResult(
         status=status, output=result.get("output"),

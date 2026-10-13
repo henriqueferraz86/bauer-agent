@@ -11,7 +11,7 @@ Bauer Agent é um runtime adaptativo para LLMs locais e cloud. Consulte o
 ```bash
 uv sync --frozen --extra dev
 uv run pytest tests/ -q --tb=short
-uv run ruff check bauer/ --select E9,F63,F7,F82
+uv run --with ruff==0.17.0 ruff check bauer/ --select E9,F63,F7,F82
 ```
 
 Use `uv` e o lockfile versionado; nunca substitua esse fluxo por `pip`.

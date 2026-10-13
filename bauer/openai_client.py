@@ -621,7 +621,10 @@ class OpenAIClient:
         from .retry_utils import retry_with_backoff
 
         def _collect() -> list[str]:
-            return list(self.chat_stream(model, messages))
+            from .agent_response import account_provider_call
+
+            with account_provider_call(self, model):
+                return list(self.chat_stream(model, messages))
 
         return retry_with_backoff(
             _collect,

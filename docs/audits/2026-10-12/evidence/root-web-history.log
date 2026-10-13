@@ -1,0 +1,7 @@
+TRAVERSAL_KERNEL_ENABLED 200 answer-overwrite
+TRAVERSAL_STORE [{'role': 'user', 'content': 'outside-original'}, {'role': 'user', 'content': 'overwrite'}, {'role': 'assistant', 'content': 'answer-overwrite'}]
+V1_RESULT 200 {'role': 'assistant', 'content': 'answer-first'}
+V1_RESULT 200 {'role': 'assistant', 'content': 'answer-second'}
+V1_PROVIDER_SECOND_CONTEXT [{'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'answer-first'}, {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'answer-first'}, {'role': 'user', 'content': 'second'}]
+V1_STORE [{'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'answer-first'}, {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'answer-first'}, {'role': 'user', 'content': 'second'}, {'role': 'assistant', 'content': 'answer-second'}]
+ROOT /tmp/bauer-web-history-review-m1yzxkvd

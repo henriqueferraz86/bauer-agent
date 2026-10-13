@@ -17,6 +17,7 @@ precisamente o universo que este gate precisa julgar.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -28,22 +29,24 @@ def arquivos_alterados(workspace: Path) -> "list[str] | None":
     """Caminhos alterados, relativos ao workspace. None se não for repo git."""
     try:
         proc = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=str(workspace),
-            capture_output=True, text=True, timeout=15,
+            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=str(workspace),
+            capture_output=True, timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
         return None
     saida: list[str] = []
-    for linha in proc.stdout.splitlines():
-        alvo = linha[3:].strip() if len(linha) > 3 else ""
+    registros = iter(proc.stdout.split(b"\0"))
+    for linha in registros:
+        alvo = os.fsdecode(linha[3:]) if len(linha) > 3 else ""
+        # Porcelain -z emits destination first, then a separate source record
+        # for renames/copies. No quoting or filename-based splitting is needed.
+        if b"R" in linha[:2] or b"C" in linha[:2]:
+            next(registros, None)
         if not alvo or _e_ruido(alvo):
             continue
-        # renomeio vem como "antigo -> novo"; o que importa é o destino
-        if " -> " in alvo:
-            alvo = alvo.split(" -> ", 1)[1]
-        saida.append(alvo.strip('"'))
+        saida.append(alvo)
     return saida
 
 

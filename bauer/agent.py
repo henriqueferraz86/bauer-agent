@@ -1309,12 +1309,46 @@ def _native_turn_interactive(
         context_result=_ctx_result_for_context, args_signature=_args_sig,
     )
 
+def _attach_partial_tool_log(exc: BaseException, tool_log: list[dict]) -> None:
+    """Preserve completed executions without changing the transport exception."""
+    try:
+        exc.partial_tool_log = [dict(entry) for entry in tool_log]  # type: ignore[attr-defined]
+    except Exception:
+        logging.getLogger("bauer.agent").debug("Partial tool log unavailable", exc_info=True)
+
+
 def run_one_turn(
     ctx,
     router: ToolRouter,
     client: OllamaClient,
     model_name: str,
     *,
+    budget: "IterationBudget | None" = None,  # noqa: F821
+    tool_timeout_s: float = 30.0,
+    tracer: "Any | None" = None,
+    session_id: str | None = None,
+    memory_provider: "Any | None" = None,
+) -> tuple[str, list[dict]]:
+    """Run a complete turn; failures carry completed tools in partial_tool_log."""
+    tool_log: list[dict] = []
+    try:
+        return _run_one_turn(
+            ctx, router, client, model_name, tool_log=tool_log, budget=budget,
+            tool_timeout_s=tool_timeout_s, tracer=tracer, session_id=session_id,
+            memory_provider=memory_provider,
+        )
+    except BaseException as exc:
+        _attach_partial_tool_log(exc, tool_log)
+        raise
+
+
+def _run_one_turn(
+    ctx,
+    router: ToolRouter,
+    client: OllamaClient,
+    model_name: str,
+    *,
+    tool_log: list[dict],
     budget: "IterationBudget | None" = None,  # noqa: F821
     tool_timeout_s: float = 30.0,
     tracer: "Any | None" = None,
@@ -1343,7 +1377,6 @@ def run_one_turn(
     from .tracing import _NoopTrace as _TraceNoop
 
     _memprov = memory_provider  # G25: lifecycle hooks
-    tool_log: list[dict] = []
     if budget is None:
         # `MAX_TOOL_TURNS + 1`: até MAX rodadas de tool call, +1 turno final para
         # o modelo emitir resposta de texto após a última tool.
@@ -1627,13 +1660,19 @@ def run_one_turn_with_fallback(
 
     _snapshot = list(ctx.messages)
     last_exc: Exception | None = None
+    partial_tool_log: list[dict] = []
     for idx, (_client, _model) in enumerate(attempts):
         if idx > 0:
             # Desfaz mutações parciais do turno que falhou antes de re-tentar.
             ctx.messages = list(_snapshot)
         try:
-            return run_one_turn(ctx, router, _client, _model, **kwargs)
-        except (OllamaError, OpenAIClientError) as exc:
+            answer, tool_log = run_one_turn(ctx, router, _client, _model, **kwargs)
+            return answer, [*partial_tool_log, *tool_log]
+        except BaseException as exc:
+            partial_tool_log.extend(getattr(exc, "partial_tool_log", []))
+            _attach_partial_tool_log(exc, partial_tool_log)
+            if not isinstance(exc, (OllamaError, OpenAIClientError)):
+                raise
             last_exc = exc
             # Última tentativa ou erro não-retryável → propaga.
             if idx >= len(attempts) - 1:

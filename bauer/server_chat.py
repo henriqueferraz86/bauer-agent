@@ -130,6 +130,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             cost = deps.turn_cost_recorder(session_id)
             cost_token = cost_sink.set(cost)
             ids_token = set_runtime_ids(session_id, run_id)
+            tool_log = []
             try:
                 if deps.runtime_mode() == "agno":
                     agno_result = deps.run_agno_turn(
@@ -142,25 +143,24 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                     response, tool_log = deps.run_one_turn_with_fallback(
                         ctx, active_router, turn_client, turn_model, deps.fallback_clients,
                     )
+                authorization_prompt = _allowlist_authorization_prompt(tool_log)
+                formatted = authorization_prompt or deps.format_response(response)
+                deps.store.save(session_id, ctx.messages)
+                deps.session_manager.touch_session(session_id, state={"last_run_id": run_id})
+                captured["tool_log"] = tool_log
+                return {"status": "completed", "output": formatted,
+                        "tool_calls_count": len(tool_log), "cost_estimate": round(cost.total_usd, 6),
+                        "llm_calls_count": cost.calls, "usage_known": bool(cost.calls) and cost.usage_known}
             except Exception as exc:  # noqa: BLE001 - Kernel registra o resultado
-                return {"status": "failed", "error": str(exc)}
+                tool_log = getattr(exc, "partial_tool_log", tool_log)
+                return {"status": "failed", "error": str(exc), "tool_calls_count": len(tool_log),
+                        "cost_estimate": round(cost.total_usd, 6),
+                        "llm_calls_count": cost.calls, "usage_known": bool(cost.calls) and cost.usage_known}
             finally:
+                deps.metrics.tool_calls_total += len(tool_log)
                 cost_sink.reset(cost_token)
                 reset_runtime_ids(ids_token)
-
-            deps.metrics.tool_calls_total += len(tool_log)
-            deps.record_turn_budget(cost, run_id, request_agent_id)
-            authorization_prompt = _allowlist_authorization_prompt(tool_log)
-            formatted = authorization_prompt or deps.format_response(response)
-            deps.store.save(session_id, ctx.messages)
-            deps.session_manager.touch_session(session_id, state={"last_run_id": run_id})
-            captured["tool_log"] = tool_log
-            return {
-                "status": "completed",
-                "output": formatted,
-                "tool_calls_count": len(tool_log),
-                "cost_estimate": round(cost.total_usd, 6),
-            }
+                deps.record_turn_budget(cost, run_id, request_agent_id)
 
         out = deps.kernel.execute(
             KernelRequest(
@@ -206,6 +206,10 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
     def chat(req: ChatRequest, _: None = Depends(deps.verify_key)):
         deps.metrics.chat_requests_total += 1
         session_id = req.session_id or deps.store.new_id()
+        with deps.store.turn(session_id):
+            return execute_chat(req, session_id)
+
+    def execute_chat(req: ChatRequest, session_id: str):
         active_router, active_project_id = deps.resolve_project_router(
             session_id, req.project_id
         )
@@ -249,6 +253,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
         cost = deps.turn_cost_recorder(session_id)
         cost_token = cost_sink.set(cost)
         ids_token = set_runtime_ids(session_id, run.id)
+        tool_log = []
         try:
             if deps.runtime_mode() == "agno":
                 agno_result = deps.run_agno_turn(
@@ -261,34 +266,31 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 response, tool_log = deps.run_one_turn_with_fallback(
                     ctx, active_router, turn_client, turn_model, deps.fallback_clients,
                 )
+            authorization_prompt = _allowlist_authorization_prompt(tool_log)
+            response = authorization_prompt or deps.format_response(response)
+            deps.store.save(session_id, ctx.messages)
+            deps.session_manager.touch_session(session_id, state={"last_run_id": run.id})
+            deps.run_manager.complete_run(
+                run.id, output={"response": response}, tool_calls_count=len(tool_log),
+                cost_estimate=round(cost.total_usd, 6), llm_calls_count=cost.calls,
+                usage_known=bool(cost.calls) and cost.usage_known,
+            )
+            return ChatResponse(
+                response=response, session_id=session_id, model=deps.state["model"],
+                tool_calls=[ToolCallLog(**item) for item in deps.public_tool_log(tool_log)],
+            )
         except Exception as exc:  # noqa: BLE001 - HTTP boundary
+            tool_log = getattr(exc, "partial_tool_log", tool_log)
             deps.logger.exception("Erro interno em /chat: %s", exc)
+            deps.run_manager.update_run(run.id, cost_estimate=round(cost.total_usd, 6),
+                                        tool_calls_count=len(tool_log), llm_calls_count=cost.calls,
+                                        usage_known=bool(cost.calls) and cost.usage_known)
             deps.run_manager.fail_run(run.id, str(exc))
-            raise HTTPException(
-                status_code=500,
-                detail="Erro interno — consulte os logs do servidor.",
-            ) from exc
+            raise HTTPException(status_code=500, detail="Erro interno — consulte os logs do servidor.") from exc
         finally:
+            deps.metrics.tool_calls_total += len(tool_log)
             cost_sink.reset(cost_token)
             reset_runtime_ids(ids_token)
-
-        deps.metrics.tool_calls_total += len(tool_log)
-        deps.record_turn_budget(cost, run.id, request_agent_id)
-        authorization_prompt = _allowlist_authorization_prompt(tool_log)
-        response = authorization_prompt or deps.format_response(response)
-        deps.store.save(session_id, ctx.messages)
-        deps.session_manager.touch_session(session_id, state={"last_run_id": run.id})
-        deps.run_manager.complete_run(
-            run.id,
-            output={"response": response},
-            tool_calls_count=len(tool_log),
-            cost_estimate=round(cost.total_usd, 6),
-        )
-        return ChatResponse(
-            response=response,
-            session_id=session_id,
-            model=deps.state["model"],
-            tool_calls=[ToolCallLog(**item) for item in deps.public_tool_log(tool_log)],
-        )
+            deps.record_turn_budget(cost, run.id, request_agent_id)
 
     return router

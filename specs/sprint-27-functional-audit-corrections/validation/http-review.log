@@ -1,0 +1,20 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 64%]
+........................................                                 [100%]
+=============================== warnings summary ===============================
+tests/test_server_accounting_producers.py: 55 warnings
+tests/test_server_openai_turns.py: 24 warnings
+tests/test_server_session_turns.py: 11 warnings
+tests/test_stream_timeout_nao_sobrescreve.py: 1 warning
+  /home/henrique/bauer-agent/bauer/desktop_api.py:366: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @router.on_event("shutdown")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+112 passed, 91 warnings in 18.91s

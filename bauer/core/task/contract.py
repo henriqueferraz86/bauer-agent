@@ -54,7 +54,11 @@ def _casa(caminho: str, padrao: str) -> bool:
     """Prefixo de diretório ou arquivo exato; ``*`` simples via fnmatch."""
     from fnmatch import fnmatch
 
-    bruto = padrao.replace("\\", "/").strip()
+    literal = padrao.replace("\\", "/")
+    prefixo_literal = literal.lstrip("./").rstrip("/")
+    if prefixo_literal and (caminho == prefixo_literal or caminho.startswith(prefixo_literal + "/")):
+        return True  # nomes de arquivo/diretório podem começar/terminar com espaços
+    bruto = literal.strip()
     # `.`, `./`, `*` e `**` são a forma natural de escrever "o projeto inteiro".
     # Sem este caso, `allowed: ["."]` não casava com NADA — o normalizador comia
     # o ponto e sobrava string vazia, então o contrato mais permissivo possível

@@ -134,7 +134,7 @@ class BudgetLedger:
 
     def settle(self, *, run_id: str, actual_cost_usd: float, agent_id: str = "default",
                company_id: str | None = None) -> bool:
-        """Replace an active reservation by actual cost; return whether it changed."""
+        """Settle a cumulative cost total; delayed snapshots cannot reduce spend."""
         now = _timestamp(None)
         amount = max(0.0, float(actual_cost_usd))
         with self._connect() as conn, self._write(conn):
@@ -142,8 +142,10 @@ class BudgetLedger:
                 "SELECT state, actual_usd FROM budget_runs WHERE run_id=?", (run_id,)
             ).fetchone()
             if (current is not None and current["state"] == "settled"
-                    and float(current["actual_usd"] or 0) == amount):
+                    and float(current["actual_usd"] or 0) >= amount):
                 return False
+            if current is not None:
+                amount = max(amount, float(current["actual_usd"] or 0))
             conn.execute(
                 """INSERT INTO budget_runs(run_id, agent_id, company_id, created_at,
                    reserved_usd, actual_usd, state, updated_at)

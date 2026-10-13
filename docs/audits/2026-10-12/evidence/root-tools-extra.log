@@ -1,0 +1,33 @@
+BUILTINS 67
+KANBAN_SECURITY {'permission': 'read', 'risk': 'low', 'approval': False}
+KANBAN_MUTATING False
+KANBAN_REPLAY True
+KANBAN_STALE_READ True
+EXTERNAL_AVAILABLE True
+EXTERNAL_SCHEMA False
+EXTERNAL_SECURITY {'permission': 'read', 'risk': 'low', 'approval': False}
+EXTERNAL_INFO_SECURITY True
+EXTERNAL_EXECUTE done
+SOCIAL_CHANNELS_SCHEMA string
+SOCIAL_SCHEMA_VALID_REJECTED social_post requer 'channels' (lista de integration ids). Use social_list_channels para ver os IDs disponíveis.
+KANBAN_SCHEMA_REQUIRED ['action', 'task_id', 'child_id', 'reason', 'progress', 'comment']
+DRY_MEMORY_RESULT Memory['x'] = 1
+DRY_MEMORY_FILE True
+DRY_KANBAN_RESULT [kanban] Tarefa criada: T0001 — 'created-during-dry-run' [medium]
+DRY_KANBAN_FILES ['.bauer_dispatch', 'TASKS.md', 'PROJECT.md', '.bauer_memory.json']
+SHELL_PRINTF_DENIED BlockedCommandError
+CRON_SHELL_RESULT [audit] Executado em 2026-10-12T18:37:07Z | exit: 0 | --- stdout --- | cron-audit
+POLICY_SHELL_DENIED waiting_approval: approval_id=appr-31bf495c-e3ce-4abd-8999-329f9d755a53 operation=shell.execute risk=high reason=matched policy ru
+PROBE_ROOT /tmp/bauer-tools-audit-2ci7yytz
+SECURITY_MISSING ['kanban_read', 'kanban_write']
+SECURITY_ORPHANS ['http_request', 'kanban_block', 'kanban_comment', 'kanban_complete', 'kanban_create', 'kanban_heartbeat', 'kanban_link', 'kanban_list', 'kanban_show', 'kanban_unblock', 'run_command', 'video_generate', 'web_fetch', 'web_search']
+SANDBOX_SYMLINK_BLOCKED True
+MEMORY_SYMLINK_OUTSIDE_WRITE wrote-outside
+EXTERNAL_WITH_LLM ran
+EXTERNAL_APPROVER_CALL_COUNT 0
+HTTP_POLICY_OPERATION None
+HTTP_DENY_RULE_CALL_COUNT 2
+HTTP_REDIRECT_FOREIGN_AUTH Bearer audit-token
+HTTP_OUTPUT HTTP 200 OK | Content-Type: text/plain | Content-Length: 2 | --- | ok
+SEND_MEDIA_OUTSIDE Mensagem (mídia) entregue em telegram:audit.
+SEND_MEDIA_RECEIVED_ABS_PATH /tmp/bauer-tools-audit-2ci7yytz/outside-private.txt

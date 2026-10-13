@@ -1,0 +1,30 @@
+{
+  "commit": "feb67a1b3524bd315fcb8b56ca70575cfb7aa9b9",
+  "python": "3.12.13",
+  "pytest": {
+    "collected": 7712,
+    "passed": 7697,
+    "skipped": 15,
+    "exit_code": 0
+  },
+  "ruff_critical": "passed",
+  "ruff_all": "passed",
+  "ruff_command": "uv run --with ruff ruff",
+  "mypy": {
+    "passed": true,
+    "source_files": 376,
+    "uses_project_ignores": true
+  },
+  "frontend": {
+    "test_files": 5,
+    "passed_tests": 21,
+    "build": "passed"
+  },
+  "chromium": "156.0.8078.4",
+  "playwright": "1.63.0",
+  "findings": {
+    "reproduced": 30,
+    "P1": 20,
+    "P2": 10
+  }
+}

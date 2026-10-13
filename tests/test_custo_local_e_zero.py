@@ -65,12 +65,9 @@ def test_custo_REAL_reportado_continua_vencendo():
 
 
 def test_local_com_custo_reportado_e_ignorado():
-    """Fronteira: se algum dia um adapter local reportar `cost`, ele ainda é
-    local. Mas a regra do `cost` reportado vem ANTES na função — este teste
-    documenta o comportamento real em vez de supor."""
+    """K05: provider local permanece gratuito mesmo com cost reportado."""
     valor = estimate_cost_usd("ollama", "x", {**USO, "cost": 0.99})
-    assert valor == 0.99, (
-        "custo reportado vence a tabela; se isso mudar, decida conscientemente")
+    assert valor == 0.0, "custo reportado local não pode consumir o guardrail"
 
 
 # ─── o efeito no guardrail ───────────────────────────────────────────────────

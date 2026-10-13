@@ -1,0 +1,66 @@
+{
+  "results": [
+    {
+      "name": "controlled_real_router_write_read",
+      "status": "PASS",
+      "answer": "CONTROLLED_TOOL_OK",
+      "file_exists": true,
+      "file_content": "CONTROLLED_TOOL_OK",
+      "tool_event_count": 2
+    },
+    {
+      "name": "controlled_provider_failure_safe_ui",
+      "status": "PASS",
+      "answer": "[Limite de iterações atingido]"
+    },
+    {
+      "name": "navigate_during_sse",
+      "status": "BUG",
+      "transport_finished": true,
+      "persisted_answer": "",
+      "session_id": ""
+    },
+    {
+      "name": "controlled_loop_stop",
+      "status": "PASS",
+      "data": {
+        "run_id": "run-6bfc0fd6-eace-4d85-a200-d7c3df74821e",
+        "session_id": "70721137",
+        "goal": "LOOP_TEST valide o fluxo de parar.",
+        "state": "stopped",
+        "rounds": 1,
+        "tool_calls": 0,
+        "cost_usd": 6e-05,
+        "stop_reason": "cancelled",
+        "last_text": "CONTROLLED_RESPONSE_OK",
+        "activity": "",
+        "limits": {
+          "max_minutes": 525600,
+          "max_tool_calls": 100000000,
+          "max_cost_usd": 1000000
+        },
+        "started_at": "2026-10-12T18:40:38.802598+00:00",
+        "finished_at": "2026-10-12T18:40:41.819970+00:00"
+      }
+    },
+    {
+      "name": "controlled_loop_reload",
+      "status": "PASS",
+      "run_id": "run-6bfc0fd6-eace-4d85-a200-d7c3df74821e",
+      "loop": {
+        "runId": "run-6bfc0fd6-eace-4d85-a200-d7c3df74821e",
+        "state": "stopped",
+        "rounds": 1,
+        "toolCalls": 0,
+        "costUsd": 6e-05,
+        "activity": "",
+        "stopReason": "cancelled"
+      }
+    }
+  ],
+  "sse": [
+    "event: tool\ndata: {\"internal\": true, \"name\": \"write_file\", \"label\": \"Escrevendo arquivo\", \"icon\": \"file-pencil\"}\n\nevent: tool\ndata: {\"internal\": true, \"name\": \"read_file\", \"label\": \"Lendo arquivos\", \"icon\": \"file-text\"}\n\ndata: CONTROLLED_TOOL_OK\n\nevent: done\ndata: 6be11452\n\n",
+    "data: [Limite de iterações atingido]\n\nevent: done\ndata: f7ba1ff4\n\n",
+    "data: CONTROLLED_RESPONSE_OK\n\nevent: done\ndata: 57dd8094\n\n"
+  ]
+}

@@ -1,0 +1,4 @@
+LOCAL_SWITCH 200 {'active': 'fake-cloud', 'provider': 'openai', 'context_tokens': 128000} openai
+CONCURRENT_REQUESTS 200 200
+CONCURRENT_HISTORY [{'role': 'user', 'content': 'B'}, {'role': 'assistant', 'content': 'answer-B'}]
+ROOT /tmp/bauer-web-audit2-jdctjvw4

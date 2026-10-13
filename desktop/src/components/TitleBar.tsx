@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { MODEL_SELECTION_EVENT, ModelSelection, refreshModelSelection } from "../modelSelection";
 
 interface Status {
   model: string;
@@ -14,18 +15,24 @@ export default function TitleBar() {
     let alive = true;
     const load = async () => {
       try {
-        const s = await api.get<{ model: string; provider: string }>("/status");
+        await refreshModelSelection();
         const g = await api.get<{ running: boolean }>("/api/gateway/status").catch(() => ({ running: false }));
-        if (alive) setSt({ model: s.model, provider: s.provider || "", gatewayOn: g.running });
+        if (alive) setSt((status) => ({ ...status, gatewayOn: g.running }));
       } catch {
         /* serve offline */
       }
     };
+    const selected = (event: Event) => {
+      const selection = (event as CustomEvent<ModelSelection>).detail;
+      if (alive) setSt((status) => ({ ...status, ...selection }));
+    };
+    window.addEventListener(MODEL_SELECTION_EVENT, selected);
     load();
     const t = setInterval(load, 10000);
     return () => {
       alive = false;
       clearInterval(t);
+      window.removeEventListener(MODEL_SELECTION_EVENT, selected);
     };
   }, []);
 

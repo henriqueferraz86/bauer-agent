@@ -82,12 +82,11 @@ PERMITIDOS: dict[str, tuple[int, str]] = {
         "kernel.enabled=false. A contagem registra somente esse legado.",
     ),
     "server_openai.py": (
-        4,
-        "A rota /v1 foi extraída de server.py em 2026-09-08. No modo "
-        "não-streaming governado, continue_governed() tem custódia. As quatro "
-        "chamadas restantes pertencem ao streaming SSE (admit-only, cujo "
-        "gerador é dono do run) e ao fallback explícito de kernel.enabled=false; "
-        "a mudança de arquivo não cria uma nova exceção arquitetural.",
+        2,
+        "Desde a Sprint 27, batch e SSE /v1 compartilham continue_governed() "
+        "com custódia e gates. As duas chamadas restantes pertencem somente "
+        "ao fallback explícito de kernel.enabled=false. A queda de 4 para 2 "
+        "remove o motor SSE próprio e trava a redução de dívida arquitetural.",
     ),
 }
 

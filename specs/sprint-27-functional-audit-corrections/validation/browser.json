@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "browser": "156.0.8078.4",
+  "provider": "controlled fixture",
+  "checks": [
+    "stream survives navigation",
+    "session and response persist after reload",
+    "new session disabled during turn",
+    "model switch updates titlebar and chat HUD",
+    "storage quota preserves mounted chat, completed turn and reset"
+  ],
+  "blocked_storage_attempts": {
+    "writes": 14,
+    "removes": 1
+  },
+  "external_requests": [],
+  "page_errors": []
+}

@@ -1,0 +1,21 @@
+BUILTINS 67
+KANBAN_SECURITY {'permission': 'read', 'risk': 'low', 'approval': False}
+KANBAN_MUTATING False
+KANBAN_REPLAY True
+KANBAN_STALE_READ True
+EXTERNAL_AVAILABLE True
+EXTERNAL_SCHEMA False
+EXTERNAL_SECURITY {'permission': 'read', 'risk': 'low', 'approval': False}
+EXTERNAL_INFO_SECURITY True
+EXTERNAL_EXECUTE done
+SOCIAL_CHANNELS_SCHEMA string
+SOCIAL_SCHEMA_VALID_REJECTED social_post requer 'channels' (lista de integration ids). Use social_list_channels para ver os IDs disponíveis.
+KANBAN_SCHEMA_REQUIRED ['action', 'task_id', 'child_id', 'reason', 'progress', 'comment']
+DRY_MEMORY_RESULT Memory['x'] = 1
+DRY_MEMORY_FILE True
+DRY_KANBAN_RESULT [kanban] Tarefa criada: T0001 — 'created-during-dry-run' [medium]
+DRY_KANBAN_FILES ['.bauer_dispatch', 'TASKS.md', 'PROJECT.md', '.bauer_memory.json']
+SHELL_PRINTF_DENIED BlockedCommandError
+CRON_SHELL_RESULT [audit] Executado em 2026-10-12T18:37:06Z | exit: 0 | --- stdout --- | cron-audit
+POLICY_SHELL_DENIED waiting_approval: approval_id=appr-a5da28bf-8b19-43f4-8bb5-ea9ea5e7d242 operation=shell.execute risk=high reason=matched policy ru
+PROBE_ROOT /tmp/bauer-tools-audit-sq8irvwt

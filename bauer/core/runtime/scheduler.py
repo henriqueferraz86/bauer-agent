@@ -216,18 +216,21 @@ class Scheduler:
                 lambda req=request: adapter.run_agent(req),
                 float(max_runtime_s or 0),
             )
-            if result.get("status") == "failed":
-                return {"status": "failed",
-                        "error": str(result.get("error") or "scheduled task failed")}
             tool_calls = int(result.get("tool_calls_count") or 0)
+            reported_cost = result.get("cost_estimate")
+            if reported_cost is None:
+                reported_cost = result.get("cost_usd")
+            cost = float(estimated_cost if reported_cost is None else reported_cost)
+            out = {**result, "output": result.get("output"),
+                   "tool_calls_count": tool_calls, "cost_estimate": cost,
+                   "_scheduler_result": result}
+            if result.get("status") == "failed":
+                return {**out, "status": "failed",
+                        "error": str(result.get("error") or "scheduled task failed")}
             if max_tool_calls and tool_calls > max_tool_calls:
-                return {"status": "failed",
+                return {**out, "status": "failed",
                         "error": f"scheduled task exceeded max_tool_calls={max_tool_calls}"}
-            cost = float(result.get("cost_estimate") or result.get("cost_usd")
-                         or estimated_cost or 0)
-            return {**result, "output": result.get("output"),
-                    "tool_calls_count": tool_calls, "cost_estimate": cost,
-                    "_scheduler_result": result}
+            return out
 
         from ..kernel.entry import run_governed
         gov = run_governed(
@@ -243,7 +246,9 @@ class Scheduler:
         )
         run_id = gov.run_id or ""
         resultado = gov.result.get("_scheduler_result", {}) if gov.result else {}
-        cost = float((gov.result or {}).get("cost_estimate") or 0)
+        # The last executor result is one attempt; the Run holds all attempts.
+        metered_run = self.run_manager.get_run(run_id) if run_id else None
+        cost = float(metered_run.cost_estimate or 0) if metered_run else 0.0
 
         if gov.blocked_before_start:
             # governança do Kernel barrou (kill-switch central, policy, budget)
@@ -258,15 +263,14 @@ class Scheduler:
             return {"task_id": task.id, "run_id": run_id, "status": "blocked",
                     "reason": "policy", "error": gov.error}
 
+        if metered_run is not None and metered_run.cost_estimate is not None:
+            # Consumption is independent of success. Kernel has budget=None;
+            # settle the cumulative snapshot once with the scheduler's scope.
+            self.budget_manager.record_run_cost(
+                run_id=run_id, agent_id=task.agent_id, company_id=company_id,
+                cost_usd=cost, metadata={"task_id": task.id},
+            )
         if gov.ok:
-            if cost:
-                # o Kernel recebe budget=None (ver _resolver_kernel): a
-                # contabilidade fica aqui, com company_id e task_id que o Kernel
-                # não conhece — sem isso o custo contaria DOBRADO
-                self.budget_manager.record_run_cost(
-                    run_id=run_id, agent_id=task.agent_id, company_id=company_id,
-                    cost_usd=cost, metadata={"task_id": task.id},
-                )
             self._after_run(task, run_id)
             return {"task_id": task.id, "run_id": run_id, "status": "completed",
                     "attempts": tentativas[0], "result": resultado or gov.result}

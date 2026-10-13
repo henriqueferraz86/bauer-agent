@@ -63,6 +63,7 @@ class Run:
     usage_known: bool | None = None
     llm_calls_count: int = 0
     elapsed_seconds: float | None = None
+    executor_elapsed_seconds: float | None = None
     validation_passed: bool | None = None
     validation_results: list[dict[str, Any]] = field(default_factory=list)
     updated_at: str = field(default_factory=lambda: _now_iso())
@@ -149,25 +150,41 @@ class RunManager:
     def list_runs(self) -> list[Run]:
         return [Run(**item) for item in self.store.list_latest("runs")]
 
-    def update_run(self, run_id: str, **changes: Any) -> Run:
-        run = self.get_run(run_id)
-        if run is None:
-            raise KeyError(f"Run not found: {run_id}")
-        data = run.__dict__.copy()
-        data.update(changes)
-        data["updated_at"] = _now_iso()
-        status = data.get("status")
-        if status not in RUN_STATUSES:
+    def update_run(self, run_id: str, *, expected_status: str | None = None,
+                   **changes: Any) -> Run:
+        status = changes.get("status")
+        if status is not None and status not in RUN_STATUSES:
             raise ValueError(f"Invalid run status: {status}")
-        if status in TERMINAL_RUN_STATUSES and not data.get("finished_at"):
-            data["finished_at"] = _now_iso()
+        changes["updated_at"] = _now_iso()
+        if status in TERMINAL_RUN_STATUSES:
+            changes.setdefault("finished_at", _now_iso())
+        maxima = {}
+        if changes.get("elapsed_seconds") is not None:
+            maxima["elapsed_seconds"] = max(0.0, float(changes.pop("elapsed_seconds")))
+        data, previous_status, changed = self.store.patch_record(
+            "runs", run_id, changes,
+            forbidden_statuses=TERMINAL_RUN_STATUSES if status is not None else set(),
+            expected_status=expected_status, maxima=maxima,
+        )
         updated = Run(**data)
-        self.store.upsert("runs", updated)
-        self._publish_status_event(updated)
+        if changed and updated.status != previous_status:
+            self._publish_status_event(updated)
         return updated
 
     def start_run(self, run_id: str) -> Run:
         return self.update_run(run_id, status="running")
+
+    def accumulate_metrics(self, run_id: str, *, increments: dict[str, float | int],
+                           usage_known: bool | None = None) -> Run:
+        """Add one executor attempt's usage without making a status decision."""
+        data, _, _ = self.store.patch_record(
+            "runs", run_id, {"updated_at": _now_iso()}, increments=increments,
+            conjunctions={"usage_known": usage_known} if usage_known is not None else {},
+        )
+        run = Run(**data)
+        if run.executor_elapsed_seconds is not None:
+            run = self.update_run(run_id, elapsed_seconds=run.executor_elapsed_seconds)
+        return run
 
     def complete_run(
         self,
@@ -197,47 +214,14 @@ class RunManager:
         return self.update_run(run_id, status="failed", error=error)
 
     def fail_run_se_nao_terminal(self, run_id: str, error: str) -> Run:
-        """`fail_run` que NÃO sobrescreve um desfecho já decidido.
+        """Compatibility alias for failure preserving the first terminal.
 
-        `cancel_run` protege terminais desde sempre; `fail_run` não — e isso é
-        uma corrida real, não hipótese. No `/stream`, dois escritores mexem no
-        mesmo run: o gerador SSE falha por timeout e a thread órfã do turno
-        completa quando o trabalho de verdade acaba. Se a thread termina
-        PRIMEIRO, o timeout chega depois e apaga o `completed`.
-
-        Medido no CI (2026-07-30): o run acabou `failed` com o trabalho
-        concluído, e o mesmo teste passa na máquina local — porque ali a thread
-        perde a corrida. Desfecho decidido por escalonamento não é desfecho.
-
-        A regra: quem chega primeiro ao terminal decide. Falha que chega depois
-        de um resultado é ruído sobre um fato já estabelecido.
+        All status changes now use the same transactional guard, including
+        ``fail_run``. This name remains available to existing SSE/recovery callers.
         """
-        run = self.get_run(run_id)
-        if run is None:
-            raise KeyError(f"Run not found: {run_id}")
-        if run.status in TERMINAL_RUN_STATUSES:
-            return run
-        data = run.__dict__.copy()
-        data.update(status="failed", error=error, updated_at=_now_iso())
-        if not data.get("finished_at"):
-            data["finished_at"] = _now_iso()
-        updated = Run(**data)
-        if not self.store.upsert_unless_status(
-            "runs", updated, forbidden_statuses=TERMINAL_RUN_STATUSES
-        ):
-            current = self.get_run(run_id)
-            if current is None:
-                raise KeyError(f"Run not found: {run_id}")
-            return current
-        self._publish_status_event(updated)
-        return updated
+        return self.update_run(run_id, status="failed", error=error)
 
     def cancel_run(self, run_id: str) -> Run:
-        run = self.get_run(run_id)
-        if run is None:
-            raise KeyError(f"Run not found: {run_id}")
-        if run.status in TERMINAL_RUN_STATUSES:
-            return run
         return self.update_run(run_id, status="cancelled")
 
     def _publish_status_event(self, run: Run) -> None:

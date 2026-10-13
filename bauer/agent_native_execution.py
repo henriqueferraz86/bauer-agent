@@ -25,6 +25,12 @@ def report_native_cost(client, model_name: str) -> None:
     """Reporta uso do provider sem permitir que telemetria interrompa o turno."""
     try:
         from .cost_meter import provider_from_client, report_llm_cost
-        report_llm_cost(provider_from_client(client), model_name, getattr(client, "last_usage", None))
+        try:
+            usage = getattr(client, "last_usage", None)
+        except Exception:
+            import logging
+            logging.getLogger("bauer.agent_native_execution").debug("Provider usage unavailable", exc_info=True)
+            usage = None
+        report_llm_cost(provider_from_client(client), model_name, usage)
     except Exception:  # noqa: BLE001 -- medição é acessória
         pass

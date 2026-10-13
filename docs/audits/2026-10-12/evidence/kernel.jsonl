@@ -1,0 +1,12 @@
+{"case": "parallel_self_count", "status": "failed", "executor_calls": 0, "error": "policy deny: max parallel runs reached: 1/1"}
+{"case": "fresh_heartbeat_ignored", "active_status": "running", "allowed_new_run_at_limit": true}
+{"case": "spent_cost_failed", "status": "failed", "run_cost": 0.4, "budget_used": 0.0}
+{"case": "spent_cost_cancelled", "status": "cancelled", "run_cost": 0.4, "budget_used": 0.0}
+{"case": "retry_cost_overwrite", "attempts": 2, "expected_cost": 0.8, "saved_cost": 0.4, "budget_used": 0.4, "expected_tools": 4, "saved_tools": 2}
+{"case": "success_overwrites_cancel", "final_status": "completed", "events": ["run.created", "run.state.changed", "run.planning.started", "run.state.changed", "policy.evaluated", "run.started", "run.cancelled", "run.cancelled", "run.cancelled", "run.completed"]}
+{"case": "elapsed_gate_time_overwritten", "elapsed_seconds": 0.001, "gate_delay_minimum": 0.04}
+{"case": "continue_ignores_kill_switch", "kill_switch": true, "status": "completed", "executor_calls": 1}
+{"case": "replan_ignores_kill_switch", "kill_switch": true, "status": "completed", "executor_calls": 2}
+{"case": "secrets_empty_git", "passed": true, "reason": "workspace n\u00e3o \u00e9 repo git \u2014 sem diff a escanear"}
+{"case": "anthropic_raw_cost_zero", "sink_cost": 0.0, "normalized_cost": 0.0105}
+{"case": "scope_untracked_dir_hides_forbidden_file", "git_paths": ["src/"], "direct_violation": "'src/private.py' est\u00e1 em scope.forbidden ('src/private.py')", "passed": true, "reason": "1 arquivo(s), todos no escopo"}

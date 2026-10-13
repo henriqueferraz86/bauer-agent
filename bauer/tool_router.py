@@ -63,6 +63,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .tool_policy import load_tool_policy
+from .tool_schema import parameters_from_descriptions
 from .runtime_ids import get_runtime_ids
 from .runtime_ids import reset_runtime_ids, set_runtime_ids  # noqa: F401 - API pública legada
 from .tools.agent_misc import MiscToolsMixin
@@ -1405,39 +1406,15 @@ class ToolRouter(
             # passar em chat_with_tools(model, messages, tools=schemas)
         """
         schemas: list[dict] = []
-        for name, info in self._tools.items():
-            if not self._is_tool_allowed_in_context(name):
-                continue
-            args_info = info.get("args", {})
-            # Constrói properties do schema JSON
-            properties: dict[str, dict] = {}
-            required: list[str] = []
-            for arg_name, arg_desc in args_info.items():
-                desc_str = arg_desc if isinstance(arg_desc, str) else str(arg_desc)
-                # Infere tipo a partir da descrição
-                if desc_str.startswith("int") or "int —" in desc_str:
-                    arg_type = "integer"
-                elif desc_str.startswith("bool") or "bool —" in desc_str:
-                    arg_type = "boolean"
-                elif desc_str.startswith("dict") or "dict —" in desc_str:
-                    arg_type = "object"
-                else:
-                    arg_type = "string"
-                properties[arg_name] = {"type": arg_type, "description": desc_str}
-                # Marca obrigatório se a descrição contém "(obrigatorio)"
-                if "obrigatorio" in desc_str.lower():
-                    required.append(arg_name)
-
+        for name in self.available_tools():
+            # O catálogo efetivo inclui extensões e seus overrides de built-ins.
+            info = self.tool_info(name)
             schemas.append({
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": info.get("description", ""),
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                    },
+                    "parameters": parameters_from_descriptions(info.get("args", {})),
                 },
             })
         # Wave 4.5: sanitise schemas before sending to LLM (fix nullable unions,

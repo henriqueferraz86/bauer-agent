@@ -2,7 +2,7 @@
 
 Bauer Agent é um **runtime adaptativo para LLMs locais e cloud** (Python 3.11+):
 sobe com o que tem, ajusta o que precisa, avisa claramente. CLI em Typer,
-servidor HTTP em FastAPI, e um Kernel de execução governada opt-in.
+servidor HTTP em FastAPI, e um Kernel de execução governada ligado por padrão.
 
 ## Como verificar (rode ANTES de abrir PR)
 
@@ -12,9 +12,14 @@ uv sync --frozen --extra dev
 
 # 2. Tudo o mais roda via `uv run`, que garante o venv do lock
 uv run pytest tests/ -q --tb=short
-uv run ruff check bauer/ --select E9,F63,F7,F82     # BLOQUEANTE no CI
-uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
+uv run --with ruff==0.17.0 ruff check bauer/ --select E9,F63,F7,F82  # BLOQUEANTE
+uv run --with ruff==0.17.0 ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
 ```
+
+Ruff roda num ambiente auxiliar criado por `uv --with`, na mesma versão fixada
+pelos jobs de lint do CI; não pertence ao extra `dev` do `uv.lock`. Os testes e
+mypy continuam usando exclusivamente o ambiente frozen. Com o pacote já em cache,
+`UV_OFFLINE=1` permite executar esses mesmos comandos sem acessar a rede.
 
 > **Use `uv sync --frozen`, não `pip install -e ".[dev]"`.** Os dois instalam
 > coisas *diferentes*: o `pip` resolve as constraints `>=` na hora, o `uv`
@@ -34,9 +39,10 @@ uv run ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
   `BAUER_HOME`/`BAUER_AGENTS_FILE` para caminhos inexistentes, então nenhum
   teste toca provider real. **Não reintroduza** carga de config real em teste
   (já causou CI de 5min→3.5h uma vez).
-- CI roda em **ubuntu-latest** (Python 3.11 e 3.12). Cuidado: código
-  Windows-específico não é validado no CI — teste localmente no Windows quando
-  mexer em paths/subprocess/keyring.
+- CI roda em **ubuntu-latest e windows-latest** (Python 3.11 e 3.12).
+  Casos com nomes de arquivo inválidos no Windows devem declarar skip apenas
+  nessa plataforma. Mudanças de paths/subprocess/keyring precisam preservar
+  os dois sistemas; testes locais em Windows complementam a matrix do CI.
 - Escreva testes junto com o código; siga o teste vizinho como padrão. Use
   `tmp_path`/`monkeypatch`, nunca escreva na raiz do repo.
 
@@ -95,7 +101,9 @@ contagem **cai**, o teste também falha, pedindo que você trave o ganho. Mesma
 mecânica de catraca vale para outros invariantes do repo.
 
 O runtime (`core/runtime/`) tem `scheduler` persistente + `run_manager` (estado
-em JSONL sob `$BAUER_HOME/memory/runtime/`) + `autonomy` (budget/kill-switch).
+em SQLite sob `$BAUER_HOME/memory/runtime/`) + `autonomy` (budget/kill-switch).
+`JsonlStateStore` é a fachada de compatibilidade; a memória manual do runtime
+continua sendo um backend JSONL separado.
 Ainda **convive** com `orchestrator.py` (a geração anterior) — migração em
 andamento, mas os caminhos de execução já passam pelo Kernel.
 

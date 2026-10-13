@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { switchModel } from "../modelSelection";
 
 interface Model {
   id: string;
@@ -85,8 +86,8 @@ export default function Models() {
 
   async function switchTo(m: Model) {
     try {
-      await api.post("/models/switch", { model: m.id, provider: m.provider });
-      setActive(m.id);
+      const selection = await switchModel(m.id, m.provider);
+      setActive(selection.model);
     } catch (e) { alert(String(e)); }
   }
 

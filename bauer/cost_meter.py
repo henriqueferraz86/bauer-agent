@@ -63,16 +63,20 @@ def report_llm_cost(provider: str, model: str, usage: dict[str, Any] | None) -> 
             except Exception as exc:  # noqa: BLE001 — accounting is auxiliary
                 logger.debug("cost sink falhou (ignorando usage ausente): %s", exc)
         return 0.0
+    normalized_usage = usage
     try:
+        from .account_usage import normalize_usage
         from .usage_pricing import estimate_cost_usd
-        cost = float(estimate_cost_usd(provider, model, usage) or 0.0)
-    except Exception:
+        normalized_usage = {**usage, **normalize_usage(usage)}
+        cost = float(estimate_cost_usd(provider, model, normalized_usage) or 0.0)
+    except Exception as exc:
+        logger.debug("estimativa de custo falhou (ignorada): %s", exc)
         cost = 0.0
 
     sink = cost_sink.get()
     if sink is not None:
         try:
-            sink(provider, model, dict(usage), cost)
+            sink(provider, model, dict(normalized_usage), cost)
         except Exception as exc:  # noqa: BLE001
             logger.debug("cost sink falhou (ignorado): %s", exc)
     return cost

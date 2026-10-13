@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, isNoSpeechError, streamSSE } from "../api/client";
+import { api, isNoSpeechError } from "../api/client";
 import Hud, { HudData } from "../components/Hud";
 import Markdown from "../components/Markdown";
-import { parseToolActivityEvent, sanitizeToolActivity, ToolActivity } from "../toolActivity";
+import { sanitizeToolActivity, ToolActivity } from "../toolActivity";
+import { ChatMessage as Message, ChatTurnState, currentChatTurn, runChatTurn, subscribeChatTurn } from "../chatStream";
+import { MODEL_SELECTION_EVENT, ModelSelection, refreshModelSelection, switchModel } from "../modelSelection";
 import {
   extractWakeCommand,
   isVoiceStop,
@@ -12,24 +14,6 @@ import {
   shouldStopRecording,
   VOICE_LEVEL_THRESHOLD,
 } from "../voice";
-
-interface LoopTag {
-  runId: string;
-  state: string;              // running | completed | stopped | failed
-  rounds: number;
-  toolCalls: number;
-  costUsd: number;
-  activity?: string;          // o que está fazendo agora (feedback ao vivo)
-  stopReason?: string | null;
-}
-interface Message {
-  role: "user" | "assistant";
-  text: string;
-  loop?: LoopTag;
-  streaming?: boolean;
-  toolActivities?: ToolActivity[];
-  toolActivityCount?: number;
-}
 
 interface LoopStatusResponse {
   run_id: string;
@@ -59,6 +43,8 @@ function redactLocalText(text: string): string {
 }
 
 function loadChatState(): { messages: Message[]; sessionId: string } {
+  const running = currentChatTurn();
+  if (running) return running;
   try {
     const raw = localStorage.getItem(CHAT_STATE_KEY);
     if (!raw) return { messages: [], sessionId: "" };
@@ -102,11 +88,20 @@ function loadChatState(): { messages: Message[]; sessionId: string } {
   }
 }
 
+function persistChatState(state: { messages: Message[]; sessionId: string }): void {
+  const cleanMessages = state.messages.map((message) => ({
+    ...message, text: redactLocalText(message.text), streaming: false,
+  }));
+  try {
+    localStorage.setItem(CHAT_STATE_KEY, JSON.stringify({ messages: cleanMessages, sessionId: state.sessionId }));
+  } catch { /* storage unavailable/full; the mounted chat can still finish */ }
+}
+
 export default function Chat() {
   const initialState = useRef(loadChatState());
   const [messages, setMessages] = useState<Message[]>(initialState.current.messages);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(Boolean(currentChatTurn()?.busy));
   const [sessionId, setSessionId] = useState<string>(initialState.current.sessionId);
   const [palIdx, setPalIdx] = useState(0);
   const [recording, setRecording] = useState(false);
@@ -114,10 +109,6 @@ export default function Chat() {
   const [voiceStatus, setVoiceStatus] = useState("");
   // HUD (plano 028 F5) — o mesmo painel de instrumentos do terminal.
   const [hud, setHud] = useState<HudData>({ provider: "", model: "" });
-  // Medição de tok/s: contada no CLIENTE, sobre o que de fato chegou. Em ref,
-  // não em state — atualizar state a cada delta re-renderizaria a árvore
-  // inteira dezenas de vezes por segundo só para mover um número.
-  const tps = useRef<{ t0: number; chars: number }>({ t0: 0, chars: 0 });
   const endRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -127,7 +118,8 @@ export default function Chat() {
   const voiceModeRef = useRef<VoiceMode>("once");
   const recordingRef = useRef(false);
   const transcribingRef = useRef(false);
-  const busyRef = useRef(false);
+  const busyRef = useRef(Boolean(currentChatTurn()?.busy));
+  const mountedRef = useRef(false);
   const voiceRestartTimerRef = useRef<number | null>(null);
   const voiceMonitorRef = useRef<number | null>(null);
   const voiceAudioContextRef = useRef<AudioContext | null>(null);
@@ -137,13 +129,21 @@ export default function Chat() {
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
 
   useEffect(() => {
-    const cleanMessages = messages.map((m) => ({
-      ...m,
-      text: redactLocalText(m.text),
-      streaming: false,
-    }));
-    localStorage.setItem(CHAT_STATE_KEY, JSON.stringify({ messages: cleanMessages, sessionId }));
+    if (!currentChatTurn()?.busy) persistChatState({ messages, sessionId });
   }, [messages, sessionId]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const unsubscribe = subscribeChatTurn((state: ChatTurnState) => {
+      setMessages(state.messages);
+      setSessionId(state.sessionId);
+      busyRef.current = state.busy;
+      setBusy(state.busy);
+      setHud((hud) => ({ ...hud, live: state.busy, tokensPerSecond: state.tokensPerSecond }));
+      scroll();
+    });
+    return () => { mountedRef.current = false; unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     scroll();
@@ -159,9 +159,10 @@ export default function Chat() {
     scroll();
   }
   function resetSession() {
+    if (currentChatTurn()?.busy) return;
     setMessages([]);
     setSessionId("");
-    localStorage.removeItem(CHAT_STATE_KEY);
+    try { localStorage.removeItem(CHAT_STATE_KEY); } catch { /* storage unavailable */ }
   }
 
   // ── Modo autônomo (/loop no serve) ────────────────────────────────────────
@@ -257,23 +258,14 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Provider e modelo para o HUD. Tenta ATÉ CONSEGUIR e então para.
-  //
-  // A primeira versão fazia uma chamada só no mount, com `.catch()` silencioso
-  // — e o HUD ficava vazio para sempre se aquele único request falhasse.
-  // Falha é comum: o serve pode subir depois da aba, e o rate limit do próprio
-  // serve (`serve.rate_limit_requests`) devolve 429 quando o TitleBar, que já
-  // faz polling de 10s, disputa a janela. Foi observado em uso: `/status` 200
-  // no TitleBar e o HUD em "—" na mesma página.
-  //
-  // Para quando obtém o dado: o modelo não muda no meio da sessão, então
-  // polling perpétuo só gastaria request.
+  // The initial status retries until available; later selections are broadcast
+  // by switches and the application's existing status polling.
   useEffect(() => {
     let vivo = true;
     let timer = 0;
 
     const tentar = () => {
-      api.get<{ model: string; provider: string }>("/status")
+      refreshModelSelection()
         .then((s) => {
           if (!vivo || !s?.model) return;
           setHud((h) => ({ ...h, model: s.model, provider: s.provider || "" }));
@@ -282,9 +274,19 @@ export default function Chat() {
         .catch(() => { /* serve offline/429: tenta de novo no próximo tick */ });
     };
 
+    const selected = (event: Event) => {
+      const selection = (event as CustomEvent<ModelSelection>).detail;
+      setHud((hud) => ({ ...hud, ...selection, turnModel: undefined }));
+    };
+    window.addEventListener(MODEL_SELECTION_EVENT, selected);
+
     tentar();
     timer = window.setInterval(tentar, 8000);
-    return () => { vivo = false; window.clearInterval(timer); };
+    return () => {
+      vivo = false;
+      window.clearInterval(timer);
+      window.removeEventListener(MODEL_SELECTION_EVENT, selected);
+    };
   }, []);
 
   // ── Comandos de barra (paridade com o menu "/" do Telegram) ───────────────
@@ -348,7 +350,7 @@ export default function Chat() {
         const provider = parts.length >= 2 ? parts[0] : "";
         const model = parts.length >= 2 ? parts.slice(1).join(" ") : parts[0];
         try {
-          await api.post("/models/switch", { model, ...(provider ? { provider } : {}) });
+          await switchModel(model, provider);
           appendInfo(`✅ Modelo trocado para \`${model}\`${provider ? ` (${provider})` : ""}.`);
         } catch (e) {
           appendInfo(`[Erro ao trocar modelo: ${e}]`);
@@ -445,82 +447,9 @@ export default function Chat() {
       }
     }
     setInput("");
-    busyRef.current = true;
-    setBusy(true);
-    setMessages((m) => [...m, { role: "user", text }]);
-    setMessages((m) => [...m, { role: "assistant", text: "", streaming: true }]);
-    scroll();
-
-    // Zera a medição por TURNO: acumular entre turnos daria uma média da
-    // sessão apresentada como velocidade instantânea.
-    tps.current = { t0: 0, chars: 0 };
-    setHud((h) => ({ ...h, tokensPerSecond: undefined, turnModel: undefined, live: true }));
-
-    const qs = new URLSearchParams({ message: text });
-    if (sessionId) qs.set("session_id", sessionId);
-
-    let responseText = "";
-    try {
-      await streamSSE(`/stream?${qs.toString()}`, (e) => {
-        setMessages((m) => {
-          const copy = [...m];
-          const last = copy[copy.length - 1];
-          if (e.event === "tool") {
-            const activity = parseToolActivityEvent(e.data);
-            if (!activity) return copy;
-            const activities = [...(last.toolActivities ?? []), activity];
-            last.toolActivities = activities.slice(-20);
-            last.toolActivityCount = (last.toolActivityCount ?? 0) + 1;
-          } else if (e.event === "skill" || e.event === "route" || e.event === "tool_result" || e.event === "debug" || e.event === "internal") {
-            // Internal execution and routing events never become chat
-            // messages. Tool events are shown separately using only their
-            // sanitized label, name and icon; arguments/results stay hidden.
-            return copy;
-          } else if (e.event === "done") {
-            setSessionId(e.data);
-            last.streaming = false;
-          } else {
-            last.text += e.data;
-            responseText += e.data;
-            // tok/s medido sobre o que chegou. ~4 chars por token é a
-            // aproximação usual; o servidor não manda contagem.
-            const agora = performance.now();
-            if (!tps.current.t0) tps.current = { t0: agora, chars: 0 };
-            tps.current.chars += e.data.length;
-            const seg = (agora - tps.current.t0) / 1000;
-            if (seg > 0.4) {
-              setHud((h) => ({ ...h, tokensPerSecond: tps.current.chars / 4 / seg, live: true }));
-            }
-          }
-          return copy;
-        });
-        scroll();
-      });
-      if (options?.speak) await playResponseAudio(responseText);
-    } catch (err) {
-      setMessages((m) => {
-        const copy = [...m];
-        // Do not echo transport/provider exceptions: they can contain
-        // commands, paths, headers or credentials. The server logs the
-        // sanitized diagnostic; the chat receives a safe summary only.
-        void err;
-        copy[copy.length - 1].text += "\nNão foi possível concluir a resposta. Tente novamente.";
-        copy[copy.length - 1].streaming = false;
-        return copy;
-      });
-    } finally {
-      setMessages((m) => {
-        const copy = [...m];
-        if (copy.length) copy[copy.length - 1].streaming = false;
-        return copy;
-      });
-      busyRef.current = false;
-      setBusy(false);
-      // Sai do estado "vivo": o brilho do HUD marca geração em curso, e
-      // deixá-lo aceso depois do turno seria decoração — o que a regra do
-      // plano 028 proíbe.
-      setHud((h) => ({ ...h, live: false }));
-    }
+    setHud((hud) => ({ ...hud, tokensPerSecond: undefined, turnModel: undefined, live: true }));
+    const responseText = await runChatTurn({ messages, sessionId }, text, persistChatState);
+    if (options?.speak && mountedRef.current) await playResponseAudio(responseText);
   }
 
   function stopVoiceMonitor() {
@@ -709,7 +638,7 @@ export default function Chat() {
         {sessionId && <span className="sub mono">· {sessionId.slice(0, 8)}</span>}
         <div className="spacer" />
         <Hud data={hud} />
-        <button className="btn" onClick={resetSession}>
+        <button className="btn" onClick={resetSession} disabled={busy}>
           <i className="ti ti-plus" /> Nova sessão
         </button>
       </div>

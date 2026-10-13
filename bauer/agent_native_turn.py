@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
 
 
@@ -27,13 +28,48 @@ def run_native_turn(
 ) -> str | None:
     """Executa tools nativas e atualiza contexto/log in-place."""
     schemas = router.get_tool_schemas()
+    # Usage belongs to this provider call. A previous successful call must not
+    # be charged again if this one fails before receiving a response.
+    previous_usage = None
+    cleared_usage = False
+    try:
+        previous_usage = getattr(client, "last_usage", None)
+        if isinstance(previous_usage, dict):
+            previous_usage = previous_usage.copy()
+        client.last_usage = None
+        cleared_usage = True
+    except Exception:
+        logging.getLogger("bauer.agent_native_turn").debug("Provider usage reset unavailable", exc_info=True)
+
+    def report_current_cost() -> None:
+        usage_unavailable = False
+        try:
+            current_usage = getattr(client, "last_usage", None)
+        except Exception:
+            logging.getLogger("bauer.agent_native_turn").debug("Provider usage unavailable", exc_info=True)
+            current_usage = None
+            usage_unavailable = True
+        if cleared_usage or usage_unavailable or (isinstance(current_usage, dict) and current_usage and current_usage != previous_usage):
+            report_cost(client, model_name)
+        else:
+            # Read-only telemetry may still contain the previous call's usage.
+            # Record this attempt as unknown without charging that stale value.
+            try:
+                from .cost_meter import provider_from_client, report_llm_cost
+                report_llm_cost(provider_from_client(client), model_name, None)
+            except Exception:
+                logging.getLogger("bauer.agent_native_turn").debug("Provider usage reporting failed", exc_info=True)
+
     try:
         message = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
-    except Exception as exc:
-        if is_unsupported_error(exc):
+    except BaseException as exc:
+        report_current_cost()
+        if isinstance(exc, Exception) and is_unsupported_error(exc):
             raise unsupported_error(str(exc)) from exc
-        return None
-    report_cost(client, model_name)
+        # Provider failure is not another tool round. Let the shared retry/
+        # fallback boundary classify it instead of exhausting the turn budget.
+        raise
+    report_current_cost()
     calls = message.get("tool_calls") or []
     content = message.get("content") or ""
     if not calls:

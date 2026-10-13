@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any, Callable
+import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from .ollama_client import OllamaError
 from .openai_client import OpenAIClientError
@@ -12,6 +15,57 @@ if TYPE_CHECKING:
     from .context_manager import ContextManager
     from .ollama_client import OllamaClient
     from rich.console import Console
+
+
+_ACCOUNTED_CALLS: ContextVar[dict[tuple[int, str], int] | None] = ContextVar(
+    "bauer_bridge_accounted_calls", default=None,
+)
+_log = logging.getLogger("bauer.agent_response")
+
+
+@contextmanager
+def account_provider_call(client: Any, model_name: str) -> Iterator[None]:
+    """Report one call's current usage, including failure, unless a nested call did.
+
+    The counter belongs to this execution context. A custom collector may wrap
+    the standard retry collector; its outer boundary must not charge the last
+    retry again. Usage reset/reporting remain best-effort auxiliary operations.
+    """
+    # Keep counters only for this collection stack, keyed by the provider call.
+    # Immutable updates isolate copied contexts; other clients/models nested in
+    # a custom provider still report their independent usage.
+    token = _ACCOUNTED_CALLS.set({}) if _ACCOUNTED_CALLS.get() is None else None
+    try:
+        key = (id(client), model_name)
+        before = (_ACCOUNTED_CALLS.get() or {}).get(key, 0)
+        previous_usage = None
+        cleared = False
+        try:
+            previous_usage = getattr(client, "last_usage", None)
+            if isinstance(previous_usage, dict):
+                previous_usage = previous_usage.copy()
+            client.last_usage = None
+            cleared = True
+        except Exception:  # noqa: BLE001 -- telemetry cannot prevent a provider call
+            _log.debug("Provider usage reset unavailable", exc_info=True)
+        try:
+            yield
+        finally:
+            if (_ACCOUNTED_CALLS.get() or {}).get(key, 0) == before:
+                try:
+                    from .cost_meter import provider_from_client, report_llm_cost
+
+                    usage = getattr(client, "last_usage", None)
+                    if not cleared and usage == previous_usage:
+                        usage = None
+                    report_llm_cost(provider_from_client(client), model_name, usage)
+                except Exception:  # noqa: BLE001 -- preserve provider failure/result
+                    _log.debug("Provider usage reporting failed", exc_info=True)
+                finally:
+                    _ACCOUNTED_CALLS.set({**(_ACCOUNTED_CALLS.get() or {}), key: before + 1})
+    finally:
+        if token is not None:
+            _ACCOUNTED_CALLS.reset(token)
 
 
 def stream_to_sink(
@@ -28,21 +82,24 @@ def stream_to_sink(
         emit_round_start()
         parts = []
         try:
-            for chunk in client.chat_stream(model_name, api_payload):
-                sink = get_sink()
-                if sink is not None and getattr(sink, "cancelled", False):
-                    from .voice_session import VoiceTurnCancelled
+            with account_provider_call(client, model_name):
+                for chunk in client.chat_stream(model_name, api_payload):
+                    sink = get_sink()
+                    if sink is not None and getattr(sink, "cancelled", False):
+                        from .voice_session import VoiceTurnCancelled
 
-                    raise VoiceTurnCancelled("turno de voz interrompido")
-                parts.append(chunk)
-                emit_delta(chunk)
-                if getattr(sink, "cancelled", False):
-                    from .voice_session import VoiceTurnCancelled
+                        raise VoiceTurnCancelled("turno de voz interrompido")
+                    parts.append(chunk)
+                    emit_delta(chunk)
+                    if getattr(sink, "cancelled", False):
+                        from .voice_session import VoiceTurnCancelled
 
-                    raise VoiceTurnCancelled("turno de voz interrompido")
+                        raise VoiceTurnCancelled("turno de voz interrompido")
             return parts
         except Exception as exc:  # noqa: BLE001 - classificado a seguir
-            if parts:
+            from .voice_session import VoiceTurnCancelled
+
+            if parts or isinstance(exc, VoiceTurnCancelled):
                 raise
             classified = classify_api_error(exc)
             if not classified.retryable or attempt >= max_retries:
@@ -84,12 +141,13 @@ def collect_response(
     from .delta_stream import get_sink
     from .openai_client import OpenAIClient as OpenAIClient
 
-    if get_sink() is not None:
-        parts = stream_to_sink_fn(client, model_name, api_payload)
-    elif isinstance(client, OpenAIClient) and hasattr(client, "chat_with_retry"):
-        parts = client.chat_with_retry(model_name, api_payload)
-    else:
-        parts = list(client.chat_stream(model_name, api_payload))
+    with account_provider_call(client, model_name):
+        if get_sink() is not None:
+            parts = stream_to_sink_fn(client, model_name, api_payload)
+        elif isinstance(client, OpenAIClient) and hasattr(client, "chat_with_retry"):
+            parts = client.chat_with_retry(model_name, api_payload)
+        else:
+            parts = list(client.chat_stream(model_name, api_payload))
     response = "".join(parts)
 
     try:
@@ -103,13 +161,6 @@ def collect_response(
         from .plugin_hooks import hooks
 
         hooks.emit("post_llm_call", model=model_name, messages=payload, response=response)
-    except Exception:
-        pass
-
-    try:
-        from .cost_meter import provider_from_client, report_llm_cost
-
-        report_llm_cost(provider_from_client(client), model_name, getattr(client, "last_usage", None))
     except Exception:
         pass
 

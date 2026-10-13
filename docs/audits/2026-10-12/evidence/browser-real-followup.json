@@ -1,0 +1,87 @@
+{
+  "results": [
+    {
+      "name": "login",
+      "status": "PASS"
+    },
+    {
+      "name": "model_switch_real_native",
+      "status": "PASS",
+      "model": "qwen3-coder:30b"
+    },
+    {
+      "name": "slash_new",
+      "status": "PASS"
+    },
+    {
+      "name": "real_native_read_file",
+      "status": "PASS",
+      "answer": "BAUER_BROWSER_AUDIT_20261012",
+      "elapsed_s": 51.98,
+      "tool_events": 1
+    },
+    {
+      "name": "real_loop_stop_requested",
+      "status": "PASS",
+      "run_id": "run-78d08a06-36a2-4313-bed7-6a705bed83ec"
+    },
+    {
+      "name": "real_loop_terminal",
+      "status": "PASS",
+      "data": {
+        "run_id": "run-78d08a06-36a2-4313-bed7-6a705bed83ec",
+        "session_id": "d0b0b185",
+        "goal": "Use read_file para conferir audit_marker.txt e confirme que a leitura foi concluída.",
+        "state": "stopped",
+        "rounds": 1,
+        "tool_calls": 1,
+        "cost_usd": 0,
+        "stop_reason": "cancelled",
+        "last_text": "A leitura do arquivo audit_marker.txt foi concluída com sucesso. O conteúdo do arquivo é:\n\nBAUER_BROWSER_AUDIT_20261012\n\nNão há alterações desde a última leitura.",
+        "activity": "",
+        "limits": {
+          "max_minutes": 525600,
+          "max_tool_calls": 100000000,
+          "max_cost_usd": 1000000
+        },
+        "started_at": "2026-10-12T18:38:00.088918+00:00",
+        "finished_at": "2026-10-12T18:38:28.267042+00:00"
+      }
+    },
+    {
+      "name": "loop_reload_persistence",
+      "status": "PASS",
+      "loop": {
+        "runId": "run-78d08a06-36a2-4313-bed7-6a705bed83ec",
+        "state": "running",
+        "rounds": 0,
+        "toolCalls": 0,
+        "costUsd": 0,
+        "activity": "Lendo arquivos",
+        "stopReason": null
+      }
+    },
+    {
+      "name": "logout_cookie_access_revoked",
+      "status": "PASS",
+      "http_status": 401
+    },
+    {
+      "name": "logout_chat_storage_retained",
+      "status": "BUG",
+      "message_count": 4,
+      "session_id": "d0b0b185"
+    },
+    {
+      "name": "wrong_password_rejected",
+      "status": "PASS"
+    },
+    {
+      "name": "login_after_logout",
+      "status": "PASS"
+    }
+  ],
+  "sse": [
+    "event: skill\ndata: {\"internal\": true, \"name\": \"Agent Reach — acesso multi-plataforma sem API paga\", \"score\": 0.3}\n\nevent: tool\ndata: {\"internal\": true, \"name\": \"read_file\", \"label\": \"Lendo arquivos\", \"icon\": \"file-text\"}\n\ndata: BAUER_BROWSER_AUDIT_20261012\n\nevent: done\ndata: d0b0b185\n\n"
+  ]
+}
