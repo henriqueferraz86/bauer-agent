@@ -33,3 +33,13 @@ Smoke do navegador contra `localhost:8000` confirmou a faixa de projeto ativo
 e o vínculo de `b1633939`, sem erros JavaScript e sem chamadas de provider.
 `chat-live-active.png`, `chat-live-session.png` e `live-browser.json` registram
 essa evidência. Testes automatizados nunca carregam config/provider reais.
+
+## Integração na master
+
+O primeiro CI do PR #156 passou build e 41 testes da SPA, mas o audit
+bloqueou cinco dependências transitivas já presentes no lock. Atualizadas
+somente brace-expansion (5.0.12), http-cache-semantics (4.3.0),
+ip-address (10.7.4), source-map-js (1.2.2) e undici (6.29.0). O override
+de brace-expansion exige agora a versão corrigida. Após `npm ci`,
+`npm test` e `npm run build` passaram; `npm audit --audit-level=high`
+reportou zero vulnerabilidades. Os artefatos compilados permaneceram iguais.
