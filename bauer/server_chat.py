@@ -64,6 +64,7 @@ class ChatRouteDependencies:
     runtime_mode: Callable[[], str]
     run_agno_turn: Callable[[str, str, str, str, Any, str, dict[str, Any]], dict[str, Any]]
     logger: logging.Logger
+    new_project_context: Callable[[Any], Any] | None = None
 
 
 def _allowlist_authorization_prompt(tool_log: list[dict] | None) -> str | None:
@@ -225,7 +226,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             session_id, agent_id=request_agent_id, state=session_state
         )
 
-        ctx = deps.new_context()
+        ctx = deps.new_project_context(active_router) if deps.new_project_context else deps.new_context()
         ctx.messages = deps.store.load(session_id)
         deps.apply_request_context(ctx, resolved)
         ctx.add_user(req.message)

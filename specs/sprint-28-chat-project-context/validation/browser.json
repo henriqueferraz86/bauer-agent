@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "browser": "156.0.8078.4",
+  "checks": [
+    "active project before send",
+    "authoritative SSE context",
+    "session stays bound after activation",
+    "reload preserves session context",
+    "new session follows active",
+    "mobile width",
+    "fallback warning",
+    "unavailable context hides stale workspace"
+  ],
+  "page_errors": [],
+  "external_requests": []
+}

@@ -48,6 +48,8 @@ specs/*
 !specs/sprint-27-functional-audit-corrections/**
 !specs/fix-chatgpt-native-tools/
 !specs/fix-chatgpt-native-tools/**
+!specs/sprint-28-chat-project-context/
+!specs/sprint-28-chat-project-context/**
 companies/
 
 # Coverage reports

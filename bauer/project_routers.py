@@ -68,6 +68,19 @@ class ProjectRouterCache:
         with self._lock:
             cached = self._cache.get(project_id)
             if cached is not None:
+                # Registry edits and deleted/moved folders invalidate a live
+                # router as well, so public context matches the actual sandbox.
+                try:
+                    from . import projects_registry as pr
+                    entry = pr.get_project(project_id)
+                    path = Path(entry["path"]) if entry else None
+                    if (path is None or not path.is_dir() or pr.is_sensitive_dir(path)
+                            or Path(cached.workspace).resolve() != path.resolve()):
+                        self._cache.pop(project_id, None)
+                        return self._default
+                except Exception:  # noqa: BLE001 — invalid cache falls back safely
+                    self._cache.pop(project_id, None)
+                    return self._default
                 self._cache.move_to_end(project_id)
                 return cached
         router = self._build_safe(project_id)

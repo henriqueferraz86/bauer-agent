@@ -33,19 +33,14 @@
     "vitest": "^4.1.11"
   },
   "comment:overrides": [
-    "brace-expansion: a cadeia inteira de 8 vulns HIGH do audit (minimatch, glob,",
-    "cacache, make-fetch-happen, node-gyp, ttf2woff2, svgtofont, @tabler/icons-webfont)",
-    "e cascata de 'depends on vulnerable versions of' a partir de UMA raiz:",
-    "brace-expansion <=5.0.7 (DoS por expansao ilimitada). Nao existe 2.x corrigido —",
-    "5.0.8 e a unica versao com fix, e tem exports duais CJS/ESM, entao os consumidores",
-    "CJS que pedem ^2.0.2 (minimatch@9) continuam funcionando.",
+    "brace-expansion: fixa a cadeia transitiva de minimatch/glob do build de fontes.",
+    "5.0.12 corrige os DoS por expansao e recursao (GHSA-q2hr-2g5m-vwhr,",
+    "GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p) e mantem exports CJS/ESM.",
     "postcss: Path Traversal no auto-load de source map (GHSA-r28c-9q8g-f849).",
-    "npm audit fix nao resolve nenhum dos dois: o @tabler/icons-webfont e vulneravel",
-    "em >=3.36.1, ou seja, nao ha conserto para frente dentro do ^3.24.0 — o resolver",
-    "fica em loop se auto-sugerindo. Override e o caminho que corrige sem downgrade."
+    "Overrides garantem versoes corrigidas mesmo com constraints transitivas antigas."
   ],
   "overrides": {
-    "brace-expansion": "^5.0.8",
+    "brace-expansion": "^5.0.12",
     "postcss": "^8.5.23"
   }
 }

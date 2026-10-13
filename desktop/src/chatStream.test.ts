@@ -3,6 +3,49 @@ import { currentChatTurn, runChatTurn, subscribeChatTurn, ChatTurnState } from "
 import { SSEEvent } from "./api/client";
 
 describe("chat stream lifecycle", () => {
+  it("keeps authoritative context across navigation without placing metadata in the answer", async () => {
+    const project = { id: "a", name: "Projeto A", path: "/projetos/a" };
+    const context = {
+      session_id: "session-a", project, workspace: project.path,
+      source: "active", active_project: project, warning: null,
+    };
+    let emit!: (event: SSEEvent) => void;
+    let finish!: () => void;
+    let final: ChatTurnState | undefined;
+    let requestPath = "";
+    const running = runChatTurn({ messages: [], sessionId: "" }, "resuma o projeto", (state) => { final = state; },
+      async (path, callback) => {
+        requestPath = path;
+        emit = callback;
+        await new Promise<void>((resolve) => { finish = resolve; });
+      });
+    emit({ event: "context", data: JSON.stringify(context) });
+    let resumed: ChatTurnState | undefined;
+    const unsubscribe = subscribeChatTurn((state) => { resumed = state; });
+    expect(resumed).toMatchObject({ sessionId: "session-a", projectContext: context });
+    expect(resumed?.messages[1].text).toBe("");
+    unsubscribe();
+    emit({ event: "message", data: "Resumo do projeto A" });
+    emit({ event: "done", data: "session-a" });
+    finish();
+    expect(await running).toBe("Resumo do projeto A");
+    expect(final).toMatchObject({ sessionId: "session-a", projectContext: context, busy: false });
+    expect(new URLSearchParams(requestPath.split("?")[1]).has("project_id")).toBe(false);
+  });
+
+  it("discards malformed context events without revealing them as response text", async () => {
+    const answer = await runChatTurn({ messages: [], sessionId: "existing" }, "hello", () => {},
+      async (path, emit) => {
+        const query = new URLSearchParams(path.split("?")[1]);
+        expect(query.get("session_id")).toBe("existing");
+        expect(query.has("project_id")).toBe(false);
+        emit({ event: "context", data: "{invalid context" });
+        emit({ event: "message", data: "Resposta" });
+        emit({ event: "done", data: "existing" });
+      });
+    expect(answer).toBe("Resposta");
+  });
+
   it("persists the final response and session after the screen unsubscribes", async () => {
     let emit!: (event: SSEEvent) => void;
     let finish!: () => void;

@@ -22,6 +22,7 @@ class AgnoRuntimeAdapter:
         config: Any | None = None,
         adapter_config: dict[str, Any] | None = None,
         chatgpt_client: Any | None = None,
+        tool_router: Any | None = None,
     ):
         self.config = config
         self.adapter_config = adapter_config or self._adapter_config_from(config)
@@ -33,6 +34,7 @@ class AgnoRuntimeAdapter:
         self.tool_context = str(self.adapter_config.get("tool_context") or "worker")
         self.tool_policy_path = self.adapter_config.get("tool_policy_path")
         self.chatgpt_client = chatgpt_client
+        self._tool_router = tool_router
         self._agents: dict[str, Any] = {}
         self._teams: dict[str, Any] = {}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -866,6 +868,8 @@ class AgnoRuntimeAdapter:
         return None
 
     def _build_tool_router(self) -> Any:
+        if self._tool_router is not None:
+            return self._tool_router
         from bauer.shell_runner import ShellRunner
         from bauer.tool_router import ToolRouter
 

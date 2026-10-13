@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "url": "http://127.0.0.1:8000/#/chat",
+  "project": "investimentosOS",
+  "workspace": "/home/henrique/projetos/investimentosOS",
+  "checks": [
+    "fresh chat active project",
+    "existing session b1633939 bound project"
+  ],
+  "page_errors": [],
+  "provider_calls": 0
+}

@@ -6,6 +6,7 @@ import Markdown from "../components/Markdown";
 import { sanitizeToolActivity, ToolActivity } from "../toolActivity";
 import { ChatMessage as Message, ChatTurnState, currentChatTurn, runChatTurn, subscribeChatTurn } from "../chatStream";
 import { MODEL_SELECTION_EVENT, ModelSelection, refreshModelSelection, switchModel } from "../modelSelection";
+import { ChatContextLoader, ChatProjectContext, chatContextDescription, parseChatProjectContext } from "../chatProjectContext";
 import {
   extractWakeCommand,
   isVoiceStop,
@@ -42,13 +43,20 @@ function redactLocalText(text: string): string {
     .replace(/\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{30,})\b/g, "[REDACTED]");
 }
 
-function loadChatState(): { messages: Message[]; sessionId: string } {
+interface StoredChatState {
+  messages: Message[];
+  sessionId: string;
+  projectContext?: ChatProjectContext;
+}
+
+function loadChatState(): StoredChatState {
   const running = currentChatTurn();
   if (running) return running;
   try {
     const raw = localStorage.getItem(CHAT_STATE_KEY);
     if (!raw) return { messages: [], sessionId: "" };
-    const parsed = JSON.parse(raw) as { messages?: Message[]; sessionId?: string };
+    const parsed = JSON.parse(raw) as { messages?: Message[]; sessionId?: string; projectContext?: unknown };
+    const projectContext = parseChatProjectContext(parsed.projectContext);
     const isPublicMessage = (message: Message) => {
       const candidate = message as Message & {
         type?: string;
@@ -82,18 +90,21 @@ function loadChatState(): { messages: Message[]; sessionId: string } {
           })
         : [],
       sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : "",
+      projectContext: projectContext?.session_id === (parsed.sessionId || null) ? projectContext : undefined,
     };
   } catch {
     return { messages: [], sessionId: "" };
   }
 }
 
-function persistChatState(state: { messages: Message[]; sessionId: string }): void {
+function persistChatState(state: StoredChatState): void {
   const cleanMessages = state.messages.map((message) => ({
     ...message, text: redactLocalText(message.text), streaming: false,
   }));
   try {
-    localStorage.setItem(CHAT_STATE_KEY, JSON.stringify({ messages: cleanMessages, sessionId: state.sessionId }));
+    localStorage.setItem(CHAT_STATE_KEY, JSON.stringify({
+      messages: cleanMessages, sessionId: state.sessionId, projectContext: state.projectContext,
+    }));
   } catch { /* storage unavailable/full; the mounted chat can still finish */ }
 }
 
@@ -103,6 +114,12 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(Boolean(currentChatTurn()?.busy));
   const [sessionId, setSessionId] = useState<string>(initialState.current.sessionId);
+  const [projectContext, setProjectContext] = useState<ChatProjectContext | null>(initialState.current.projectContext ?? null);
+  const [contextStatus, setContextStatus] = useState<"loading" | "ready" | "unavailable">(
+    currentChatTurn()?.projectContext ? "ready" : "loading",
+  );
+  const [contextRefresh, setContextRefresh] = useState(0);
+  const contextLoader = useRef(new ChatContextLoader());
   const [palIdx, setPalIdx] = useState(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -129,12 +146,20 @@ export default function Chat() {
   const scroll = () => requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "smooth" }));
 
   useEffect(() => {
-    if (!currentChatTurn()?.busy) persistChatState({ messages, sessionId });
-  }, [messages, sessionId]);
+    if (!currentChatTurn()?.busy) persistChatState({ messages, sessionId, projectContext: projectContext ?? undefined });
+  }, [messages, sessionId, projectContext]);
 
   useEffect(() => {
     mountedRef.current = true;
     const unsubscribe = subscribeChatTurn((state: ChatTurnState) => {
+      contextLoader.current.invalidate();
+      if (state.projectContext) {
+        setProjectContext(state.projectContext);
+        setContextStatus("ready");
+      } else if (state.busy) {
+        setProjectContext(null);
+        setContextStatus("loading");
+      }
       setMessages(state.messages);
       setSessionId(state.sessionId);
       busyRef.current = state.busy;
@@ -144,6 +169,32 @@ export default function Chat() {
     });
     return () => { mountedRef.current = false; unsubscribe(); };
   }, []);
+
+  useEffect(() => {
+    const loader = contextLoader.current;
+    loader.reset(sessionId);
+    // The running turn's SSE metadata is authoritative until it finishes.
+    if (busy) return () => loader.invalidate();
+    setContextStatus("loading");
+    setProjectContext((context) => context?.session_id === (sessionId || null) ? context : null);
+    let disposed = false;
+    const refresh = async () => {
+      if (currentChatTurn()?.busy) return;
+      const result = await loader.load();
+      if (!result || disposed) return;
+      setProjectContext(result.context);
+      setContextStatus(result.unavailable ? "unavailable" : "ready");
+    };
+    void refresh();
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 15000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      disposed = true;
+      loader.invalidate();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [sessionId, busy, contextRefresh]);
 
   useEffect(() => {
     scroll();
@@ -160,6 +211,10 @@ export default function Chat() {
   }
   function resetSession() {
     if (currentChatTurn()?.busy) return;
+    contextLoader.current.invalidate();
+    setProjectContext(null);
+    setContextStatus("loading");
+    setContextRefresh((revision) => revision + 1);
     setMessages([]);
     setSessionId("");
     try { localStorage.removeItem(CHAT_STATE_KEY); } catch { /* storage unavailable */ }
@@ -630,6 +685,8 @@ export default function Chat() {
     }
   }
 
+  const contextDescription = projectContext ? chatContextDescription(projectContext) : null;
+
   return (
     <div className="main">
       <div className="page-head">
@@ -640,6 +697,29 @@ export default function Chat() {
         <Hud data={hud} />
         <button className="btn" onClick={resetSession} disabled={busy}>
           <i className="ti ti-plus" /> Nova sessão
+        </button>
+      </div>
+
+      <div className="chat-project-context" aria-label="Contexto do projeto" aria-live="polite">
+        <i className="ti ti-folders" aria-hidden="true" />
+        <div className="chat-project-details">
+          {contextStatus === "ready" && projectContext && contextDescription ? (
+            <>
+              <div className="chat-project-title">
+                <strong>{projectContext.project?.name ?? "Sem projeto vinculado"}</strong>
+                <span className="tag accent">{contextDescription.label}</span>
+              </div>
+              <div className="chat-project-path mono" title={projectContext.workspace}>{projectContext.workspace}</div>
+              {contextDescription.warning && <div className="chat-project-warning">{contextDescription.warning}</div>}
+            </>
+          ) : (
+            <span className="chat-project-status">
+              {contextStatus === "loading" ? "Consultando projeto e workspace do chat…" : "Projeto e workspace indisponíveis. Tentando consultar novamente…"}
+            </span>
+          )}
+        </div>
+        <button className="btn" onClick={() => navigate("/projects")} title="Selecionar o projeto para uma nova sessão">
+          Projetos <i className="ti ti-arrow-right" aria-hidden="true" />
         </button>
       </div>
 
