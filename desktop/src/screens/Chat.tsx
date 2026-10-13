@@ -7,6 +7,8 @@ import { sanitizeToolActivity, ToolActivity } from "../toolActivity";
 import { ChatMessage as Message, ChatTurnState, currentChatTurn, runChatTurn, subscribeChatTurn } from "../chatStream";
 import { MODEL_SELECTION_EVENT, ModelSelection, refreshModelSelection, switchModel } from "../modelSelection";
 import { ChatContextLoader, ChatProjectContext, chatContextDescription, parseChatProjectContext } from "../chatProjectContext";
+import { activityPollDelay, chatActivityStore } from "../chatActivity";
+import ChatActivityPanel from "../components/ChatActivityPanel";
 import {
   extractWakeCommand,
   isVoiceStop,
@@ -120,6 +122,8 @@ export default function Chat() {
   );
   const [contextRefresh, setContextRefresh] = useState(0);
   const contextLoader = useRef(new ChatContextLoader());
+  const [activityState, setActivityState] = useState(chatActivityStore.current());
+  const [activityRefresh, setActivityRefresh] = useState(0);
   const [palIdx, setPalIdx] = useState(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -196,6 +200,35 @@ export default function Chat() {
     };
   }, [sessionId, busy, contextRefresh]);
 
+  useEffect(() => chatActivityStore.subscribe(setActivityState), []);
+
+  useEffect(() => {
+    chatActivityStore.selectSession(sessionId);
+    if (!sessionId) return;
+    let disposed = false;
+    let cycle = 0;
+    let timer: number | undefined;
+    const refresh = async () => {
+      const startedAt = ++cycle;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (disposed) return;
+      if (!document.hidden) await chatActivityStore.refresh();
+      if (!disposed && startedAt === cycle) timer = window.setTimeout(refresh, activityPollDelay(chatActivityStore.current(), busyRef.current));
+    };
+    const resume = () => { if (!document.hidden) void refresh(); };
+    void refresh();
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      disposed = true;
+      cycle += 1;
+      chatActivityStore.invalidate();
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [sessionId, busy, contextRefresh, activityRefresh]);
+
   useEffect(() => {
     scroll();
   }, []);
@@ -212,6 +245,7 @@ export default function Chat() {
   function resetSession() {
     if (currentChatTurn()?.busy) return;
     contextLoader.current.invalidate();
+    chatActivityStore.selectSession("", true);
     setProjectContext(null);
     setContextStatus("loading");
     setContextRefresh((revision) => revision + 1);
@@ -280,6 +314,7 @@ export default function Chat() {
         "/loop", { message: goal, ...(sessionId ? { session_id: sessionId } : {}) },
       );
       setSessionId(r.session_id);
+      setActivityRefresh((revision) => revision + 1);
       setMessages((m) => [...m, {
         role: "assistant", text: "", streaming: true,
         loop: { runId: r.run_id, state: "running", rounds: 0, toolCalls: 0, costUsd: 0 },
@@ -688,7 +723,7 @@ export default function Chat() {
   const contextDescription = projectContext ? chatContextDescription(projectContext) : null;
 
   return (
-    <div className="main">
+    <div className="main chat-main">
       <div className="page-head">
         <i className="ti ti-message-2 head-icon" />
         <span className="title">Chat</span>
@@ -722,6 +757,10 @@ export default function Chat() {
           Projetos <i className="ti ti-arrow-right" aria-hidden="true" />
         </button>
       </div>
+
+      <ChatActivityPanel state={activityState.sessionId === sessionId ? activityState : {
+        sessionId, snapshot: null, status: sessionId ? "loading" : "awaiting",
+      }} />
 
       <div className="content">
         {messages.length === 0 && (

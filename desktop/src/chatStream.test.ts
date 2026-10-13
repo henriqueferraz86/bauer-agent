@@ -1,8 +1,61 @@
 import { describe, expect, it } from "vitest";
 import { currentChatTurn, runChatTurn, subscribeChatTurn, ChatTurnState } from "./chatStream";
 import { SSEEvent } from "./api/client";
+import { ChatActivitySnapshot, chatActivityStore } from "./chatActivity";
 
 describe("chat stream lifecycle", () => {
+  it("activity metadata survives navigation and transport done never declares a running task complete", async () => {
+    const snapshot: ChatActivitySnapshot = {
+      session_id: "activity-session", runs: [{
+        run_id: "activity-run", task: "Revisar código", status: "running", agent_id: "bauer", agent_name: "Bauer",
+        runtime: "kernel", started_at: "2026-10-13T12:00:00Z", updated_at: "2026-10-13T12:00:01Z", agents: [],
+      }],
+    };
+    let emit!: (event: SSEEvent) => void;
+    let finish!: () => void;
+    let saved: ChatTurnState | undefined;
+    const running = runChatTurn({ messages: [], sessionId: "activity-session" }, "revise", (state) => { saved = state; },
+      async (_path, callback) => {
+        emit = callback;
+        await new Promise<void>((resolve) => { finish = resolve; });
+      });
+    emit({ event: "activity", data: JSON.stringify(snapshot) });
+    let resumed: ChatTurnState | undefined;
+    const off = subscribeChatTurn((state) => { resumed = state; });
+    expect(resumed?.activity).toEqual(snapshot);
+    expect(resumed?.messages[1].text).toBe("");
+    off();
+    emit({ event: "message", data: "Ainda em execução no servidor" });
+    emit({ event: "done", data: "activity-session" });
+    finish();
+    expect(await running).toBe("Ainda em execução no servidor");
+    expect(saved?.activity?.runs[0].status).toBe("running");
+    expect(chatActivityStore.current()).toMatchObject({ snapshot, status: "ready" });
+    await chatActivityStore.refresh(async () => ({ ...snapshot, runs: [{ ...snapshot.runs[0], status: "completed" }] }));
+    expect(chatActivityStore.current().snapshot?.runs[0].status).toBe("completed");
+  });
+
+  it("ignores another session's activity and signals uncertainty on a failed transport", async () => {
+    const snapshot: ChatActivitySnapshot = { session_id: "another-session", runs: [] };
+    const response = await runChatTurn({ messages: [], sessionId: "selected-session" }, "teste", () => {}, async (_path, emit) => {
+      emit({ event: "activity", data: JSON.stringify(snapshot) });
+      emit({ event: "activity", data: "{ malformed payload" });
+      throw new Error("stream disconnected");
+    });
+    expect(response).toBe("");
+    expect(chatActivityStore.current()).toMatchObject({ sessionId: "selected-session", snapshot: null, status: "unavailable" });
+  });
+
+  it("a null activity fallback signals unknown status while preserving the public answer", async () => {
+    const answer = await runChatTurn({ messages: [], sessionId: "selected-session" }, "teste", () => {}, async (_path, emit) => {
+      emit({ event: "activity", data: "null" });
+      emit({ event: "message", data: "Resposta preservada" });
+      emit({ event: "done", data: "selected-session" });
+    });
+    expect(answer).toBe("Resposta preservada");
+    expect(chatActivityStore.current().status).toBe("unavailable");
+  });
+
   it("keeps authoritative context across navigation without placing metadata in the answer", async () => {
     const project = { id: "a", name: "Projeto A", path: "/projetos/a" };
     const context = {

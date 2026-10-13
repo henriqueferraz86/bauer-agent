@@ -2,6 +2,7 @@
 import { streamSSE, SSEEvent } from "./api/client";
 import { parseToolActivityEvent, ToolActivity } from "./toolActivity";
 import { ChatProjectContext, parseChatProjectContext } from "./chatProjectContext";
+import { ChatActivitySnapshot, chatActivityStore, parseChatActivity } from "./chatActivity";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -26,10 +27,14 @@ export interface ChatTurnState {
   busy: boolean;
   tokensPerSecond?: number;
   projectContext?: ChatProjectContext;
+  activity?: ChatActivitySnapshot;
 }
 
 let active: ChatTurnState | null = null;
 const listeners = new Set<(state: ChatTurnState) => void>();
+chatActivityStore.subscribe((state) => {
+  if (active && state.sessionId === active.sessionId) active = { ...active, activity: state.snapshot ?? undefined };
+});
 
 export function currentChatTurn(): ChatTurnState | null {
   return active;
@@ -48,8 +53,10 @@ export async function runChatTurn(
   stream: typeof streamSSE = streamSSE,
 ): Promise<string> {
   if (active?.busy) throw new Error("A chat turn is already running");
+  chatActivityStore.selectSession(state.sessionId);
   active = {
     ...state, busy: true,
+    activity: chatActivityStore.current().snapshot ?? undefined,
     messages: [...state.messages, { role: "user", text }, { role: "assistant", text: "", streaming: true }],
   };
   let responseText = "";
@@ -81,6 +88,16 @@ export async function runChatTurn(
         const context = parseChatProjectContext(event.data);
         if (!context) return;
         active = { ...active, projectContext: context, sessionId: context.session_id ?? active.sessionId };
+        chatActivityStore.selectSession(active.sessionId);
+      } else if (event.event === "activity") {
+        const snapshot = parseChatActivity(event.data);
+        if (!snapshot) { chatActivityStore.unavailable(); return; }
+        if (!active.sessionId && snapshot.session_id) {
+          active = { ...active, sessionId: snapshot.session_id };
+          chatActivityStore.selectSession(active.sessionId);
+        }
+        if (!chatActivityStore.accept(snapshot)) return;
+        active = { ...active, activity: snapshot };
       } else if (event.event === "tool") {
         const activity = parseToolActivityEvent(event.data);
         if (!activity) return;
@@ -106,6 +123,7 @@ export async function runChatTurn(
       publish();
     });
   } catch {
+    chatActivityStore.unavailable();
     updateLast((last) => { last.text += "\nNão foi possível concluir a resposta. Tente novamente."; });
   } finally {
     updateLast((last) => { last.streaming = false; });

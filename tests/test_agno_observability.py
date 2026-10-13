@@ -55,3 +55,51 @@ def test_agno_task_and_tool_event_enums_are_normalized():
     assert AgnoRuntimeAdapter._agno_event_name(SimpleNamespace(event="team_tool_call_started")) == "ToolCallStarted"
     assert AgnoRuntimeAdapter._agno_event_name(SimpleNamespace(event="TeamToolCallStarted")) == "ToolCallStarted"
     assert AgnoRuntimeAdapter._agno_event_name(SimpleNamespace(event="RunEvent.run_started")) == "RunStarted"
+
+
+def test_installed_agno_task_events_preserve_assignment_and_task_without_result():
+    from agno.run.team import TaskCreatedEvent, TaskUpdatedEvent
+
+    created = TaskCreatedEvent(task_id="task-1", title="Revisar", description="Revisar testes",
+                               assignee="reviewer", status="pending")
+    updated = TaskUpdatedEvent(task_id="task-1", title="Revisar", assignee="reviewer",
+                               status="completed", result="private result")
+    events = [AgnoRuntimeAdapter._normalize_agent_event(
+        event, run_id="run", session_id="session", team_id="team", member_event=False,
+    ) for event in (created, updated)]
+    assert events[0]["status"] == "queued"
+    assert events[0]["data"]["task"] == "Revisar testes"
+    assert events[1]["status"] == "completed"
+    assert events[1]["agent_id"] == "reviewer"
+    assert "result" not in events[1]["data"]
+
+
+def test_run_agent_forwards_public_lifecycle_with_best_effort_sink(monkeypatch):
+    seen = []
+    adapter = AgnoRuntimeAdapter(activity_sink=seen.append)
+    lifecycle = {"event": "agent.started", "agent_id": "reviewer"}
+    monkeypatch.setattr(adapter, "stream_agent", lambda request: iter([
+        lifecycle, {"event": "message.delta", "content": "answer"},
+        {"event": "run.completed", "status": "completed"},
+    ]))
+    assert adapter.run_agent({"run_id": "run"})["output"] == "answer"
+    assert seen == [lifecycle]
+
+    def broken(event):
+        raise OSError("store unavailable")
+
+    adapter._activity_sink = broken
+    assert adapter.run_agent({"run_id": "run"})["status"] == "completed"
+
+
+def test_run_agent_preserves_member_tool_identity_without_duplicating_root_tools(monkeypatch):
+    seen = []
+    adapter = AgnoRuntimeAdapter(activity_sink=seen.append)
+    member = {"event": "tool.call.requested", "agent_id": "reviewer", "tool_name": "read_file",
+              "data": {"member_event": True}}
+    root = {**member, "data": {"member_event": False}}
+    monkeypatch.setattr(adapter, "stream_agent", lambda request: iter([
+        member, root, {"event": "run.completed", "output": "answer"},
+    ]))
+    assert adapter.run_agent({"run_id": "run"})["output"] == "answer"
+    assert seen == [member]

@@ -8,11 +8,18 @@ interpretador Python e o config.yaml para rodar bauer dentro do sandbox
 from __future__ import annotations
 
 import re
+import logging
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Iterator
+from uuid import uuid4
 
+from ..privacy import redact_text
 from ..shell_runner import ShellError
 from .base import ToolError
 
+
+logger = logging.getLogger("bauer.tools.execution")
 
 _CODE_DENYLIST: list[tuple] = [
     (re.compile(r"\bos\.system\s*\("),
@@ -398,6 +405,41 @@ class ExecToolsMixin:
         except Exception:
             return None, False, _agents_file
 
+    @contextmanager
+    def _delegate_activity(self, agent_name: str, task: str) -> Iterator[None]:
+        """Publish the actual delegated execution without arguments or outputs."""
+        delegation_id = f"delegation-{uuid4()}"
+        public_name = redact_text(agent_name).replace("\x00", "")[:160] if agent_name else "Subagente"
+        agent_id = public_name if agent_name else delegation_id
+        data = {
+            "delegation_id": delegation_id,
+            "agent_name": public_name,
+            "task": redact_text(task).replace("\x00", "")[:500],
+        }
+
+        def publish(event_type: str, status: str) -> None:
+            try:
+                bus = getattr(self, "_event_bus", None)
+                if bus is not None:
+                    bus.publish(
+                        event_type, run_id=self._runtime_run_id,
+                        session_id=self._runtime_session_id, agent_id=agent_id,
+                        status=status, data=data,
+                    )
+            except Exception as exc:  # noqa: BLE001 — observability cannot break delegation
+                logger.debug("delegated activity event failed: %s", type(exc).__name__)
+
+        publish("task.delegated", "delegated")
+        publish("agent.started", "running")
+        try:
+            yield
+        except BaseException as exc:
+            cancelled = isinstance(exc, (KeyboardInterrupt, GeneratorExit))
+            publish("agent.cancelled" if cancelled else "agent.failed", "cancelled" if cancelled else "failed")
+            raise
+        else:
+            publish("agent.completed", "completed")
+
     def _delegate_task(self, args: dict) -> str:
         """Delega subtarefa a sub-agente local ou remoto.
 
@@ -411,8 +453,6 @@ class ExecToolsMixin:
         agente resolvido, cai no comportamento genérico (LLM direto sem
         especialização, ou subprocess).
         """
-        import subprocess
-
         task = args.get("task", "").strip()
         if not task:
             raise ToolError("delegate_task requer 'task'.")
@@ -430,6 +470,13 @@ class ExecToolsMixin:
 
         _ag, _matched_by_name, _agents_file = self._resolve_delegate_agent(agent_name, full_task)
         _resolved_name = agent_name if (_ag and _matched_by_name) else (_ag.name if _ag else "")
+
+        with self._delegate_activity(_resolved_name, task):
+            return self._execute_delegated_task(full_task, _ag, _resolved_name, _agents_file, timeout)
+
+    def _execute_delegated_task(self, full_task: str, _ag: Any, _resolved_name: str, _agents_file: str, timeout: int) -> str:
+        """Existing remote/local/subprocess dispatch inside activity lifecycle."""
+        import subprocess
 
         # ── Dispatch remoto via agent registry ────────────────────────────────
         if _ag and _ag.url:

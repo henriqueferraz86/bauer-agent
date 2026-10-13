@@ -24,7 +24,7 @@ import pytest
 pytest.importorskip("fastapi", reason="requer bauer-agent[server]")
 
 
-# Superfície HTTP do serve em si (38 operações). `/metrics` NAO entra: usa
+# Superfície HTTP do serve em si (39 operações). `/metrics` NAO entra: usa
 # include_in_schema=False, entao nao aparece no OpenAPI — e coberto pelo
 # teste de auth mais abaixo, via TestClient.
 OPERACOES_CORE = {
@@ -37,6 +37,7 @@ OPERACOES_CORE = {
     "GET /audit/runs/{run_id}/score",
     "GET /audit/skills/insights",
     "GET /chat/context",
+    "GET /chat/activity",
     "GET /events",
     "GET /health",
     "GET /readyz",
@@ -144,6 +145,7 @@ OPERACOES_ESPERADAS = OPERACOES_CORE | OPERACOES_API
 # Query params obrigatoriamente presentes em rotas que os usam — extração
 # descuidada perde `Query(...)` sem que nenhum teste de rota perceba.
 PARAMS_ESPERADOS = {
+    "GET /chat/activity": {"session_id"},
     "GET /chat/context": {"session_id", "project_id"},
     "GET /events": {"limit"},
     "GET /audit": {"run_id", "limit"},
