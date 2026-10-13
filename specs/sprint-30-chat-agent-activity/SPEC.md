@@ -7,7 +7,7 @@ atividade sustentados pelo runtime, para turnos simples, delegação e /loop.
 ## Escopo
 Painel abaixo do projeto com tarefa, agente, estado, atividade e agentes delegados.
 Snapshot autenticado de sessão via GET /chat/activity?session_id=; primeiro
-snapshot SSE activity; polling2s quando tela visível, reconciliação depois de
+snapshot SSE internal de atividade; polling2s quando tela visível, reconciliação depois de
 reload/navegação/timeout, reset sessão e proteção contra resposta atrasada.
 Backend projeta RunManager e EventBus com dados públicos redigidos/limitados;
 sem expor argumentos, outputs de tools, prompts system ou configuração secreta.
@@ -35,7 +35,7 @@ updated_at: string}. Todos campos texto exceto agents/runs. Estados são nomes
 runtime (created/planning/policy_check/queued/running/waiting_approval/evaluating/
 retrying/paused/completed/failed/cancelled) mais delegated/unknown para membros.
 Endpoint devolve ativos mais última execução da sessão, teto5, nenhuma execução
-quando session_id vazio. SSE activity devolve mesmo envelope.
+quando session_id vazio. SSE internal com kind=chat.activity e payload devolve mesmo envelope.
 
 ## Critérios de aceite
 1. Agente/tarefa aparecem durante execução, confirmados por servidor.

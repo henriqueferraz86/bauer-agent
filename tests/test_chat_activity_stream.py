@@ -21,8 +21,10 @@ def test_stream_initial_activity_is_separate_and_matches_persisted_run(chat_proj
         response = client.get("/stream", params={"message": "Revise os testes"})
         frames = response.text.split("\n\n")
         assert frames[0].startswith("event: context\n")
-        assert frames[1].startswith("event: activity\n")
-        snapshot = json.loads(frames[1].split("data: ", 1)[1])
+        assert frames[1].startswith("event: internal\n")
+        metadata = json.loads(frames[1].split("data: ", 1)[1])
+        assert metadata["kind"] == "chat.activity"
+        snapshot = metadata["payload"]
         run = snapshot["runs"][0]
         sid = response.headers["X-Session-ID"]
         assert snapshot["session_id"] == sid
@@ -45,8 +47,10 @@ def test_blocked_admission_publishes_terminal_activity_without_starting_turn(cha
         response = client.get("/stream", params={"message": "Revise os testes"})
     frames = response.text.split("\n\n")
     assert frames[0].startswith("event: context\n")
-    assert frames[1].startswith("event: activity\n")
-    snapshot = json.loads(frames[1].split("data: ", 1)[1])
+    assert frames[1].startswith("event: internal\n")
+    metadata = json.loads(frames[1].split("data: ", 1)[1])
+    assert metadata["kind"] == "chat.activity"
+    snapshot = metadata["payload"]
     assert snapshot["runs"][0]["status"] == "cancelled"
     assert snapshot["runs"][0]["run_id"] == response.headers["X-Bauer-Run-ID"]
 
@@ -65,7 +69,7 @@ def test_accessory_snapshot_failure_does_not_break_response_or_claim_idle(chat_p
     monkeypatch.setattr("bauer.server_activity.build_chat_activity", unavailable)
     with TestClient(build()) as client:
         response = client.get("/stream", params={"message": "Revise os testes"})
-    assert "event: activity\ndata: null" in response.text
+    assert 'event: internal\ndata: {"kind": "chat.activity", "payload": null}' in response.text
     assert "data: Resposta preservada" in response.text
     assert "private store failure" not in response.text
 

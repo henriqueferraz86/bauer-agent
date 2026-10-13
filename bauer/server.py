@@ -957,7 +957,7 @@ def create_app(
 
         @app.get("/", include_in_schema=False)
         def web_ui():
-            return FileResponse(static_dir / "index.html")
+            return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-store"})
 
     # --- auth + rate limit -------------------------------------------------------
 
@@ -1652,7 +1652,7 @@ def create_app(
                 def _blocked_stream(msg=_blocked_msg):
                     import json
                     yield _sse(json.dumps(project_context, ensure_ascii=False), event="context")
-                    yield _sse(json.dumps(_chat_activity_snapshot(sid, _early.run_id), ensure_ascii=False), event="activity")
+                    yield _sse(json.dumps({"kind": "chat.activity", "payload": _chat_activity_snapshot(sid, _early.run_id)}, ensure_ascii=False), event="internal")
                     yield _sse(msg)
                     yield _sse(sid, event="done")
 
@@ -1699,7 +1699,7 @@ def create_app(
             from .agent import _extract_text_from_pseudo_json, run_one_turn_with_fallback
 
             yield _sse(_json.dumps(project_context, ensure_ascii=False), event="context")
-            yield _sse(_json.dumps(_chat_activity_snapshot(sid, run.id), ensure_ascii=False), event="activity")
+            yield _sse(_json.dumps({"kind": "chat.activity", "payload": _chat_activity_snapshot(sid, run.id)}, ensure_ascii=False), event="internal")
 
             events: "_queue.Queue[tuple[str, str]]" = _queue.Queue()
             result: dict = {}

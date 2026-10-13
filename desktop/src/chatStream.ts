@@ -89,8 +89,16 @@ export async function runChatTurn(
         if (!context) return;
         active = { ...active, projectContext: context, sessionId: context.session_id ?? active.sessionId };
         chatActivityStore.selectSession(active.sessionId);
-      } else if (event.event === "activity") {
-        const snapshot = parseChatActivity(event.data);
+      } else if (event.event === "activity" || event.event === "internal") {
+        let payload: unknown = event.data;
+        if (event.event === "internal") {
+          try {
+            const metadata = JSON.parse(event.data);
+            if (metadata?.kind !== "chat.activity") return;
+            payload = metadata.payload;
+          } catch { return; }
+        }
+        const snapshot = parseChatActivity(payload);
         if (!snapshot) { chatActivityStore.unavailable(); return; }
         if (!active.sessionId && snapshot.session_id) {
           active = { ...active, sessionId: snapshot.session_id };
@@ -110,7 +118,7 @@ export async function runChatTurn(
       } else if (event.event === "done") {
         active = { ...active, sessionId: event.data };
         updateLast((last) => { last.streaming = false; });
-      } else {
+      } else if (event.event === "message") {
         updateLast((last) => { last.text += event.data; });
         responseText += event.data;
         const now = performance.now();
@@ -118,7 +126,7 @@ export async function runChatTurn(
         chars += event.data.length;
         const seconds = (now - started) / 1000;
         if (seconds > 0.4) active = { ...active!, tokensPerSecond: chars / 4 / seconds };
-      }
+      } else return;
       // Persistence is independent of React state and mounted subscribers.
       publish();
     });

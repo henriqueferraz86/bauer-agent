@@ -26,7 +26,7 @@ REQUESTS = []
 
 def agent(agent_id, name, task, status="running", tool=None):
     return {"agent_id": agent_id, "name": name, "task": task, "status": status,
-            "activity": "Executando ferramenta" if tool else "Executando tarefa",
+            "activity": "Concluído" if status == "completed" else "Estado não informado" if status == "unknown" else "Executando ferramenta" if tool else "Executando tarefa",
             "tool_name": tool, "updated_at": STAMP}
 
 
@@ -79,7 +79,7 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/stream":
             STREAMS += 1
             body = ("event: context\ndata: " + json.dumps(project_context(SID)) + "\n\n"
-                    "event: activity\ndata: " + json.dumps(ACTIVITY) + "\n\n"
+                    "event: internal\ndata: " + json.dumps({"kind": "chat.activity", "payload": ACTIVITY}) + "\n\n"
                     "data: Resposta controlada concluída.\n\n"
                     "event: done\ndata: " + SID + "\n\n").encode()
             self.send_response(200)
@@ -179,13 +179,33 @@ def main():
             page.get_by_role("button", name="Nova sessão").click()
             expect(panel).to_contain_text("Aguardando uma tarefa")
             assert panel.locator("[data-run-id]").count() == 0
+            leaked = snapshot()
+            stored = {
+                "sessionId": SID, "messages": [
+                    {"role": "user", "text": leaked["runs"][0]["task"]},
+                    {"role": "assistant", "text": json.dumps(leaked) + "Resumo preservado após atualização."},
+                ],
+            }
+            # Seed before React mounts; a pending reset effect in the old
+            # page must not overwrite the migration fixture during reload.
+            page.close()
+            page = context.new_page()
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.add_init_script("localStorage.setItem('bauer.chatState.v1', JSON.stringify(" + json.dumps(stored) + "))")
+            page.goto(origin + "/#/chat")
+            panel = page.get_by_label("Atividade dos agentes", exact=True)
+            expect(page.get_by_text("Resumo preservado após atualização.", exact=True)).to_be_visible()
+            assert '"runs"' not in page.locator(".msgs").inner_text()
+            expect(panel).to_contain_text("Concluída")
+            page.screenshot(path=str(OUTPUT / "chat-formatting-fixed.png"), full_page=True)
             assert not errors, errors
             assert not external, external
             assert REQUESTS and set(REQUESTS) == {SID}, REQUESTS
             result = {"passed": True, "browser": browser.version, "streams": STREAMS,
                       "checks": ["actual member task and tool", "SSE done preserves running runtime", "mobile no overflow and composer visible",
                                  "reload and navigation preserve session", "approval paused retry", "terminal unknown child preserves finished sibling",
-                                 "unavailable suppresses stale spinner", "poll recovery", "reset clears agents", "activity metadata excluded from answer"],
+                                 "unavailable suppresses stale spinner", "poll recovery", "reset clears agents", "activity metadata excluded from answer",
+                                 "legacy metadata prefix repaired without removing answer"],
                       "page_errors": errors, "console_errors": stderr, "external_requests": external}
             (OUTPUT / "browser.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(result))

@@ -299,6 +299,7 @@ class TestStaticSpaAssets:
         client = _client(_make_app(tmp_path))
         html = client.get("/")
         assert html.status_code == 200
+        assert html.headers["cache-control"] == "no-store"
 
         refs = re.findall(r'(?:src|href)="(\.?/assets/[^"]+)"', html.text)
         assert refs, "index.html não referencia nenhum /assets/* (build inesperado)"

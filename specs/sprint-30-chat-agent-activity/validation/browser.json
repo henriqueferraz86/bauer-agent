@@ -12,7 +12,8 @@
     "unavailable suppresses stale spinner",
     "poll recovery",
     "reset clears agents",
-    "activity metadata excluded from answer"
+    "activity metadata excluded from answer",
+    "legacy metadata prefix repaired without removing answer"
   ],
   "page_errors": [],
   "console_errors": [

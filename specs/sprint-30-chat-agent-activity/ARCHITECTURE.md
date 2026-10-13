@@ -2,7 +2,7 @@
 
 server_activity projeta runs/eventos da sessão selecionada em envelope público.
 register_observability_routes registra GET /chat/activity com verify_key.
-Snapshot inicial SSE activity vai após context, antes da execução/erro de admissão;
+Snapshot inicial SSE internal(kind=chat.activity, payload) vai após context, antes da execução/erro de admissão;
 frontend consome metadata separado do corpo do assistente. Polling mesmo endpoint
 mantém atualizações reais enquanto backend roda, inclusive após fim da conexão.
 Panel inicia aguardando snapshot; frontend valida payload, ordena/limita e
@@ -19,3 +19,11 @@ inclusive após fallback. Agno run_agent encaminha lifecycle/task e tools de
 membros explicitamente identificados ao bus do servidor (sem repetir tools da
 raiz). TaskCreated/Updated oficiais preservam tarefa/assignee/status, sem result.
 Snapshot SSE indisponível é null: frontend sinaliza desconhecido e preserva texto.
+
+Correção de compatibilidade13/10: abas anteriores ignoram `internal` mas
+imprimem eventos novos desconhecidos. Activity agora usa esse canal existente
+com kind explícito, mantendo o evento activity antigo reconhecido na SPA nova.
+Somente eventos message alimentam a resposta. Index HTML usa no-store; assets
+continuam versionados por hash. Histórico da aba remove apenas prefixo válido
+activity que corresponde à mesma sessão e tarefa da mensagem anterior, preserva
+texto subsequente e JSON de outra tarefa/sessão ou em fences.

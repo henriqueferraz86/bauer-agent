@@ -1,9 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { currentChatTurn, runChatTurn, subscribeChatTurn, ChatTurnState } from "./chatStream";
 import { SSEEvent } from "./api/client";
 import { ChatActivitySnapshot, chatActivityStore } from "./chatActivity";
 
 describe("chat stream lifecycle", () => {
+  it("separates internal activity from text through the actual fragmented SSE parser", async () => {
+    const snapshot = { session_id: "network-session", runs: [] };
+    const wire = 'event: internal\ndata: ' + JSON.stringify({ kind: "chat.activity", payload: snapshot })
+      + '\n\nevent: future-control\ndata: {"private":true}\n\ndata: Resposta pública\n\nevent: done\ndata: network-session\n\n';
+    const encoded = new TextEncoder().encode(wire);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < encoded.length; i += 7) controller.enqueue(encoded.slice(i, i + 7));
+        controller.close();
+      },
+    }))));
+    try {
+      expect(await runChatTurn({ messages: [], sessionId: "network-session" }, "teste", () => {})).toBe("Resposta pública");
+      expect(chatActivityStore.current()).toMatchObject({ snapshot, status: "ready" });
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it("receives backwards compatible internal activity without rendering JSON or future control events", async () => {
+    const snapshot = { session_id: "compatible-session", runs: [] };
+    const answer = await runChatTurn({ messages: [], sessionId: "compatible-session" }, "teste", () => {}, async (_path, emit) => {
+      emit({ event: "internal", data: JSON.stringify({ kind: "chat.activity", payload: snapshot }) });
+      emit({ event: "internal", data: "{bad json" });
+      emit({ event: "future-control", data: '{"secret":"metadata"}' });
+      emit({ event: "message", data: "Resposta formatada" });
+      emit({ event: "done", data: "compatible-session" });
+    });
+    expect(answer).toBe("Resposta formatada");
+    expect(chatActivityStore.current()).toMatchObject({ snapshot, status: "ready" });
+  });
   it("activity metadata survives navigation and transport done never declares a running task complete", async () => {
     const snapshot: ChatActivitySnapshot = {
       session_id: "activity-session", runs: [{

@@ -7,7 +7,7 @@ import { sanitizeToolActivity, ToolActivity } from "../toolActivity";
 import { ChatMessage as Message, ChatTurnState, currentChatTurn, runChatTurn, subscribeChatTurn } from "../chatStream";
 import { MODEL_SELECTION_EVENT, ModelSelection, refreshModelSelection, switchModel } from "../modelSelection";
 import { ChatContextLoader, ChatProjectContext, chatContextDescription, parseChatProjectContext } from "../chatProjectContext";
-import { activityPollDelay, chatActivityStore } from "../chatActivity";
+import { activityPollDelay, chatActivityStore, stripLeakedActivityPrefix } from "../chatActivity";
 import ChatActivityPanel from "../components/ChatActivityPanel";
 import {
   extractWakeCommand,
@@ -76,13 +76,15 @@ function loadChatState(): StoredChatState {
       messages: Array.isArray(parsed.messages)
         ? parsed.messages
           .filter((m) => m && isPublicMessage(m))
-          .map((m) => {
+          .map((m, index, messages) => {
             const candidate = m as Message & { toolActivities?: unknown[]; toolActivityCount?: unknown };
             const toolActivities = Array.isArray(candidate.toolActivities)
               ? candidate.toolActivities.map(sanitizeToolActivity).filter((activity): activity is ToolActivity => activity !== null).slice(-20)
               : undefined;
             return {
               ...m,
+              text: m.role === "assistant" && typeof m.text === "string" && messages[index - 1]?.role === "user"
+                ? stripLeakedActivityPrefix(m.text, parsed.sessionId || "", messages[index - 1].text) : m.text,
               streaming: false,
               toolActivities,
               toolActivityCount: typeof candidate.toolActivityCount === "number"

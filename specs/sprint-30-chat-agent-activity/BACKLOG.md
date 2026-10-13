@@ -7,3 +7,5 @@
 - [x] Lifecycle público de delegações nativas e Agno.
 - [x] Build, testes/gates e revisão independente.
 - [x] Navegador desktop/móvel/reload/reset/timeout e entrega.
+
+- [x] Compatibilidade com abas antigas: metadata interna, eventos desconhecidos fora da resposta, HTML sem cache e reparo do prefixo salvo.

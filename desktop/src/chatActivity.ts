@@ -121,6 +121,30 @@ export async function fetchChatActivity(sessionId: string): Promise<ChatActivity
   return parsed;
 }
 
+/** Repair the exact metadata prefix rendered by an older chat bundle. */
+export function stripLeakedActivityPrefix(text: string, sessionId: string, task: string): string {
+  if (!sessionId || typeof task !== "string" || !text.startsWith('{"session_id":') || text.length > 256000) return text;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}" && --depth === 0) {
+      const snapshot = parseChatActivity(text.slice(0, i + 1));
+      const publicTask = redactActivityText(task.replace(/\s+/g, " ").trim(), 320);
+      return snapshot?.session_id === sessionId && snapshot.runs.some((run) => run.task === publicTask)
+        ? text.slice(i + 1).replace(/^\s*\n/, "") : text;
+    }
+  }
+  return text;
+}
+
 export function activityPollDelay(state: ChatActivityState, busy = false): number {
   return busy || state.status === "unavailable" || state.status === "loading"
     || state.snapshot?.runs.some((run) => !TERMINAL.has(run.status)) ? 2000 : 10000;

@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { api } from "./api/client";
 import {
   ChatActivitySnapshot, ChatActivityStore, RunActivity, activityPollDelay,
-  activityStatusDisplay, fetchChatActivity, parseChatActivity,
+  activityStatusDisplay, fetchChatActivity, parseChatActivity, stripLeakedActivityPrefix,
 } from "./chatActivity";
 import ChatActivityPanel from "./components/ChatActivityPanel";
 
@@ -24,6 +24,17 @@ const snapshot: ChatActivitySnapshot = { session_id: "session-a", runs: [run] };
 afterEach(() => vi.restoreAllMocks());
 
 describe("public activity payload", () => {
+  it("repairs only the leaked snapshot prefix matching this session and preceding task", () => {
+    const leaked = JSON.stringify(snapshot);
+    expect(stripLeakedActivityPrefix(leaked + "Resumo preservado", "session-a", run.task)).toBe("Resumo preservado");
+    expect(stripLeakedActivityPrefix(leaked, "session-a", run.task)).toBe("");
+    expect(stripLeakedActivityPrefix(leaked, "session-b", run.task)).toBe(leaked);
+    expect(stripLeakedActivityPrefix(leaked, "session-a", "outra tarefa")).toBe(leaked);
+    expect(stripLeakedActivityPrefix("```json\n" + leaked, "session-a", run.task)).toContain(leaked);
+    expect(stripLeakedActivityPrefix('{"session_id": "incompleto', "session-a", run.task)).toContain("incompleto");
+    const quoted = { ...snapshot, runs: [{ ...run, task: 'Revisar {"chave": "valor"}' }] };
+    expect(stripLeakedActivityPrefix(JSON.stringify(quoted) + "Resposta", "session-a", quoted.runs[0].task)).toBe("Resposta");
+  });
   it("parses HTTP/SSE metadata and drops internal fields and tool arguments", () => {
     const value = { ...snapshot, provider: "internal", runs: [{ ...run, prompt: "private", agents: run.agents.map((agent) => ({ ...agent, arguments: "private" })) }] };
     expect(parseChatActivity(value)).toEqual(snapshot);

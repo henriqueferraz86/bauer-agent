@@ -16,3 +16,17 @@
 
 Estados sem informação são explícitos; não se infere sucesso pelo texto ou
 pelo fim do stream. A matriz remota CI acompanha a PR separadamente.
+
+## Correção do JSON na resposta (compatibilidade)
+
+Suíte Python completa aprovada novamente;39 regressões SSE/static aprovadas.
+62 testes SPA + TypeScript/Vite aprovados. Teste de rede usa o parser SSE real
+com bytes UTF-8 fragmentados, metadata interna e evento desconhecido, garantindo
+resposta somente textual. Snapshot antigo continua aceito. Index no-store
+coberto pelo teste que baixa os assets reais. Dois Ruff e mypy379 aprovados.
+Browser11 cenários aprovados: histórico contaminado é reparado preservando
+resposta e o painel; captura `validation/chat-formatting-fixed.png`.
+
+A SPA atualizada foi confirmada no servidor local. Havia uma execução ativa,
+portanto o processo do servidor foi preservado; código backend novo será
+carregado no próximo restart normal. A SPA aceita também o wire anterior.
