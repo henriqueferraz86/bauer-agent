@@ -340,38 +340,73 @@ def create_app(
     from .project_routers import ProjectRouterCache
     project_router_cache = ProjectRouterCache(router, _build_project_router)
 
-    def _resolve_project_router(sid: "str | None", explicit_project_id: "str | None"):
-        """(router, project_id) para este turno.
+    def _resolve_chat_project(sid: "str | None", explicit_project_id: "str | None"):
+        """Resolve ferramentas e contexto público sem criar sessão ou run."""
+        from . import projects_registry as pr
 
-        Precedência: project_id explícito no request > projeto já fixado
-        NESTA sessão (sticky — grava na 1ª vez que resolve, nunca troca
-        sozinho depois) > projeto ativo global (registry). `project_id` no
-        retorno é None quando o router usado é o default (nada para taggear).
-        """
+        active_entry = None
+        try:
+            active_id = pr.get_active()
+            active_entry = pr.get_project(active_id) if active_id else None
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("project resolve: registry indisponível: %s", exc)
+            active_id = None
         pid = (explicit_project_id or "").strip() or None
+        source = "explicit" if pid else "default"
         if not pid and sid:
             try:
                 existing = session_manager.get_session(sid)
                 pid = (existing.state or {}).get("project_id") if existing else None
+                if pid:
+                    source = "session"
             except Exception as exc:  # noqa: BLE001
                 _log.debug("project resolve: sessão indisponível: %s", exc)
         if not pid:
-            try:
-                from . import projects_registry as pr
-                pid = pr.get_active()
-            except Exception as exc:  # noqa: BLE001
-                _log.debug("project resolve: registry indisponível: %s", exc)
+            pid = active_id
+            if pid:
+                source = "active"
         resolved_router = project_router_cache.get(pid)
-        active_project_id = pid if resolved_router is not router else None
-        return resolved_router, active_project_id
+        entry = None
+        if pid and resolved_router is not router:
+            try:
+                entry = pr.get_project(pid)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("project resolve: metadados indisponíveis: %s", exc)
 
-    def _current_system_prompt() -> str:
+        def public_project(value):
+            if not value:
+                return None
+            return {key: str(value[key]) for key in ("id", "name", "path")}
+
+        warning = None
+        if pid and resolved_router is router:
+            source = "default"
+            warning = "Não foi possível abrir o projeto solicitado. Este chat usa o workspace padrão."
+        elif source == "session" and active_id and pid != active_id:
+            warning = "Esta sessão mantém seu projeto original. Nova sessão usa o projeto ativo."
+        return resolved_router, {
+            "session_id": sid,
+            "project": public_project(entry),
+            "workspace": str(_effective_ws(resolved_router)),
+            "source": source,
+            "active_project": public_project(active_entry),
+            "warning": warning,
+        }
+
+    def _resolve_project_router(sid: "str | None", explicit_project_id: "str | None"):
+        resolved_router, context = _resolve_chat_project(sid, explicit_project_id)
+        project = context["project"]
+        return resolved_router, project["id"] if project else None
+
+    def _current_system_prompt(active_router=None) -> str:
         """Refresh request-scoped prompt data such as current date/time.
 
         Anexa o estado da App Factory (projeto governado ativo, gate, docs
         pendentes) por-request, para o modelo conduzir o Spec-Driven Development
         pelo Desktop. Best-effort — ver plans/024.
         """
+        effective_router = active_router if active_router is not None else router
+        effective_workspace = _effective_ws(effective_router)
         try:
             from .agent import _build_system_prompt
 
@@ -382,15 +417,20 @@ def create_app(
             # mesma falha do `.runtime_state.json`, só que com um cache em
             # memória no lugar do arquivo.
             _modo = modo_de_tool_calling(_state.get("client") or client)
-            prompt = _build_system_prompt(router, tool_mode=_modo)
-            if workspace is not None:
+            prompt = _build_system_prompt(effective_router, tool_mode=_modo)
+        except Exception as exc:  # noqa: BLE001 — prompt refresh is best-effort
+            _log.debug("system prompt refresh failed: %s", exc)
+            prompt = system_prompt
+        if effective_workspace is not None:
+            prompt += f"\nWorkspace efetivo deste turno: {effective_workspace}. Use esta pasta para consultar o projeto.\n"
+            try:
                 from . import app_factory as _af
-                prompt += _af.system_prompt_section(workspace)
-            return prompt
-        except Exception:
-            return system_prompt
+                prompt += _af.system_prompt_section(effective_workspace)
+            except Exception as exc:  # noqa: BLE001 — factory failure keeps workspace context
+                _log.debug("app factory prompt failed: %s", exc)
+        return prompt
 
-    def _new_context() -> ContextManager:
+    def _new_context(active_router=None) -> ContextManager:
         # Le do _state, nao da closure do boot: o contexto muda junto com o
         # modelo. `provider` tambem passa a ser informado — sem ele o
         # ContextManager caia no default "ollama" para escolher a janela de
@@ -400,55 +440,9 @@ def create_app(
         ctx, _ = (
             ContextBuilder(applied_context=int(_state["applied_context"]),
                            provider=str(_state["provider"] or "ollama"))
-            .instrucao("seguranca", _current_system_prompt())
+            .instrucao("seguranca", _current_system_prompt(active_router))
             .montar())
         return ctx
-
-    def _active_project_hint(effective_workspace: Path) -> "str | None":
-        """Bloco de contexto que direciona o turno para a pasta do projeto ativo.
-
-        Fase 0 (steer suave): o botão "Ativar" da tela Projetos grava o projeto
-        ativo no registry; aqui traduzimos isso num aviso efêmero para o modelo
-        manter a edição de arquivos DENTRO da subpasta do projeto. NÃO é parede.
-
-        Desde a Fase 1 (router-por-projeto, ver project_routers.py), a maioria
-        dos casos nem chega a precisar deste aviso: quando o projeto ativo
-        resolve para um ToolRouter próprio, `effective_workspace` JÁ é a pasta
-        do projeto — a sandbox real supre a necessidade do nudge, e a função
-        devolve None (nada a "direcionar": já se está lá). Este bloco só
-        dispara no caminho de FALLBACK: o projeto está ativo mas, por algum
-        motivo (pasta sumida, sensível, cache falhou), o turno segue no router
-        default — aí o nudge ainda ajuda, mesmo sem ser uma parede real."""
-        try:
-            from . import projects_registry as pr
-
-            pid = pr.get_active()
-            if not pid:
-                return None
-            entry = pr.get_project(pid)
-            if not entry:
-                return None
-            proj = Path(entry["path"]).resolve()
-            try:
-                rel = proj.relative_to(effective_workspace.resolve())
-            except ValueError:
-                return None  # projeto fora do workspace efetivo deste turno
-            rel_str = str(rel).replace("\\", "/")
-            if rel_str in (".", ""):
-                return None  # já é a raiz do workspace efetivo: nada a direcionar
-            name = entry.get("name") or proj.name
-            return (
-                "<projeto-ativo>\n"
-                f"[Projeto ativo: '{name}' — pasta `{rel_str}/` dentro do workspace.]\n"
-                f"Trabalhe DENTRO dessa pasta: ao criar, ler ou editar arquivos, "
-                f"use caminhos começando por `{rel_str}/` "
-                f"(ex.: `{rel_str}/src/App.tsx`). Só use outra pasta se o usuário "
-                f"pedir explicitamente.\n"
-                "</projeto-ativo>"
-            )
-        except Exception as exc:  # noqa: BLE001 — hint é auxílio; nunca quebra o turno
-            _log.debug("active project hint failed: %s", exc)
-            return None
 
     def _project_brief_block(effective_workspace: Path) -> "str | None":
         """(B) Auto-carrega o PROJECT.md do projeto como brief/convenções do turno.
@@ -519,14 +513,13 @@ def create_app(
         except Exception as exc:
             _log.debug("skill match failed: %s", exc)
         if effective_workspace is not None:
-            resolved["project_hint"] = _active_project_hint(effective_workspace)
             resolved["project_brief"] = _project_brief_block(effective_workspace)
             resolved["memory_context"] = _memory_context_block(message, effective_workspace)
         return resolved
 
     def _apply_request_context(ctx: ContextManager, resolved: dict) -> None:
         # Ordem: brief estável do projeto → especialista → skill → memória
-        # (referência) → nudge de pasta (fallback). Os mais "sempre-ligados"
+        # (referência). Os mais "sempre-ligados"
         # e estáveis primeiro.
         project_brief = resolved.get("project_brief")
         if project_brief:
@@ -550,9 +543,6 @@ def create_app(
         memory_context = resolved.get("memory_context")
         if memory_context:
             ctx.add_ephemeral_system(memory_context)
-        project_hint = resolved.get("project_hint")
-        if project_hint:
-            ctx.add_ephemeral_system(project_hint)
 
     def _run_input(message: str, endpoint: str, resolved: dict) -> dict:
         payload = {"message": message, "endpoint": endpoint}
@@ -791,16 +781,24 @@ def create_app(
         # context intentionally denies network tools such as web_search.
         adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
         adapter_cfg.setdefault("tool_context", "chat")
+        adapter_cfg["workspace"] = str(_effective_ws(active_router))
         adapter = AgnoRuntimeAdapter(
             config=cfg,
             adapter_config=adapter_cfg,
             chatgpt_client=_state["client"],
+            tool_router=active_router,
         )
         supported_tools = {
             "read_file", "write_file", "list_dir", "search_text",
             "run_command", "web_search", "memory",
         }
         tools = [name for name in active_router.available_tools() if name in supported_tools]
+        turn_context = _new_context(active_router)
+        _apply_request_context(turn_context, resolved)
+        instructions = "\n\n".join(
+            str(item.get("content") or "") for item in turn_context.get_payload()
+            if item.get("role") == "system"
+        )
         result = adapter.run_agent({
             "run_id": run_id,
             "session_id": session_id,
@@ -812,7 +810,7 @@ def create_app(
                 "name": "Bauer Server Agno Agent",
                 "provider": _state["provider"],
                 "model": turn_model,
-                "instructions": system_prompt,
+                "instructions": instructions,
                 "tools": tools,
                 "session_id": session_id,
                 "user_id": "serve-user",
@@ -1437,6 +1435,7 @@ def create_app(
         effective_workspace=_effective_ws,
         apply_request_context=_apply_request_context,
         new_context=_new_context,
+        new_project_context=_new_context,
         resolve_turn_model=_resolve_turn_model,
         run_input=_run_input,
         publish_selected_skill=_publish_selected_skill,
@@ -1576,6 +1575,16 @@ def create_app(
             background=BackgroundTask(cleanup),
         )
 
+    @app.get("/chat/context")
+    def chat_context(
+        session_id: Optional[str] = Query(None),
+        project_id: Optional[str] = Query(None),
+        _: None = Depends(_verify_key),
+    ):
+        """Projeto/workspace efetivos, sem iniciar uma conversa ou execução."""
+        _, context = _resolve_chat_project(session_id, project_id)
+        return context
+
     @app.get("/stream")
     def stream(
         message: str = Query(..., description="Mensagem do usuario"),
@@ -1586,7 +1595,8 @@ def create_app(
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
-        active_router, active_project_id = _resolve_project_router(sid, project_id)
+        active_router, project_context = _resolve_chat_project(sid, project_id)
+        active_project_id = project_context["project"]["id"] if project_context["project"] else None
         resolved = _resolve_request_context(message, _effective_ws(active_router))
         resolved["project_id"] = active_project_id
         request_agent_id = resolved.get("agent_id") or "serve.stream"
@@ -1622,6 +1632,8 @@ def create_app(
                     _blocked_msg = f"⛔ {_early.error or _early.policy_reason or 'bloqueado pela política'}"
 
                 def _blocked_stream(msg=_blocked_msg):
+                    import json
+                    yield _sse(json.dumps(project_context, ensure_ascii=False), event="context")
                     yield _sse(msg)
                     yield _sse(sid, event="done")
 
@@ -1640,7 +1652,7 @@ def create_app(
                 status="running",
             )
 
-        ctx = _new_context()
+        ctx = _new_context(active_router)
         _publish_selected_skill(run.id, sid, request_agent_id, resolved)
 
         # Roteamento por-turno resolvido AQUI (fora da thread): o par
@@ -1666,6 +1678,8 @@ def create_app(
             import threading as _threading
 
             from .agent import _extract_text_from_pseudo_json, run_one_turn_with_fallback
+
+            yield _sse(_json.dumps(project_context, ensure_ascii=False), event="context")
 
             events: "_queue.Queue[tuple[str, str]]" = _queue.Queue()
             result: dict = {}
@@ -2072,7 +2086,7 @@ def create_app(
                 runtime_adapter="bauer_native", input=run_input, status="running",
             )
 
-        ctx = _new_context()
+        ctx = _new_context(active_router)
         _turn_client, _turn_model, _route = _resolve_turn_model(req.message, sid)
         _publish_route(run.id, sid, request_agent_id, _route)
 

@@ -298,8 +298,9 @@ def test_chat_refreshes_system_prompt_each_request(tmp_path: Path):
 
     first_payload = mock_client.chat_stream.call_args_list[0][0][1]
     second_payload = mock_client.chat_stream.call_args_list[1][0][1]
-    assert first_payload[0]["content"] == "fresh time 1"
-    assert second_payload[0]["content"] == "fresh time 2"
+    assert first_payload[0]["content"].startswith("fresh time 1\n")
+    assert second_payload[0]["content"].startswith("fresh time 2\n")
+    assert f"Workspace efetivo deste turno: {tmp_path}." in second_payload[0]["content"]
 
 
 def test_chat_response_is_trimmed_and_blank_lines_normalized(tmp_path: Path):

@@ -1,6 +1,7 @@
 /** A chat turn belongs to the application and survives screen navigation. */
 import { streamSSE, SSEEvent } from "./api/client";
 import { parseToolActivityEvent, ToolActivity } from "./toolActivity";
+import { ChatProjectContext, parseChatProjectContext } from "./chatProjectContext";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -24,6 +25,7 @@ export interface ChatTurnState {
   sessionId: string;
   busy: boolean;
   tokensPerSecond?: number;
+  projectContext?: ChatProjectContext;
 }
 
 let active: ChatTurnState | null = null;
@@ -75,7 +77,11 @@ export async function runChatTurn(
   try {
     await stream(`/stream?${query}`, (event: SSEEvent) => {
       if (!active) return;
-      if (event.event === "tool") {
+      if (event.event === "context") {
+        const context = parseChatProjectContext(event.data);
+        if (!context) return;
+        active = { ...active, projectContext: context, sessionId: context.session_id ?? active.sessionId };
+      } else if (event.event === "tool") {
         const activity = parseToolActivityEvent(event.data);
         if (!activity) return;
         updateLast((last) => {
