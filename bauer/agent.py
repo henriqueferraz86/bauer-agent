@@ -669,7 +669,24 @@ def _build_system_prompt(
         tool_infos.append(f'  {name}({args_str}) — {info["description"]}')
     tools_section = "\n".join(tool_infos)
 
-    tool_names = ", ".join(router.available_tools())
+    available_tools = router.available_tools()
+    tool_names = ", ".join(available_tools)
+    shell_protocol_block = (
+        "# EXECUCAO DE COMANDOS\n"
+        "Use run_command(command) para executar comandos e validar o resultado.\n"
+        "Voce tem acesso real ao terminal pelas ferramentas listadas.\n"
+        "Se um comando for bloqueado por allowlist, peca autorizacao explicita\n"
+        "para adicionar o comando; aguarde a confirmacao do usuario.\n"
+        "Confirmacao e obrigatoria nesse caso e prevalece sobre as regras de autonomia.\n"
+        "Nao contorne bloqueios via outra ferramenta e nao afirme que executou testes\n"
+        "sem resultado real da ferramenta.\n\n"
+        if "run_command" in available_tools else
+        "# TERMINAL INDISPONIVEL NESTA CONFIGURACAO\n"
+        "run_command nao esta habilitado ou autorizado neste router.\n"
+        "Informe esse bloqueio e solicite habilitacao de tools.shell_enabled\n"
+        "ou revisao de tools.tool_allowlist/politica antes de executar comandos.\n"
+        "Nao prometa execucao e nao contorne a restricao por outra ferramenta.\n\n"
+    )
 
     if tool_mode == "native":
         # Function calling nativo: as tools são invocadas pela API. NÃO ensinar
@@ -699,11 +716,7 @@ def _build_system_prompt(
             "  'como se escreve um fibonacci?'      -> texto puro com o codigo em bloco\n"
             "So responda em TEXTO PURO quando o pedido for saudacao, pergunta, explicacao ou\n"
             "conversa — ou seja, quando NAO houver nada para mudar no disco nem executar.\n\n"
-            "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
-            "Se o usuario pedir um comando shell (ex: 'pytest tests/', 'git status', 'python script.py'),\n"
-            "VOCE PODE E DEVE executar via a tool run_command (arg `command`). NUNCA responda\n"
-            "'nao tenho acesso ao terminal' — voce TEM. Se o comando exigir argumentos, rode com\n"
-            "--help primeiro para descobrir, depois com os argumentos certos.\n"
+            f"{shell_protocol_block}"
             "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
             "NUNCA responda 'O que prefere?' / 'Deseja que eu...' / 'sou apenas seu assistente' — AGE.\n"
             "Responda sempre em portugues.\n\n"
@@ -722,14 +735,7 @@ def _build_system_prompt(
             '{"action": "NOME_DA_TOOL", "args": {"parametro": "valor"}}\n\n'
             "# QUANDO NAO USAR FERRAMENTA (maioria dos casos)\n"
             "Para saudacoes, perguntas, explicacoes, codigo, matematica, conversas — responda em TEXTO PURO.\n\n"
-            "# VOCE TEM ACESSO REAL AO SHELL — NAO NEGUE ISSO\n"
-            "Se o usuario digitar uma linha de comando shell (ex: 'bauer orchestrate run',\n"
-            "'pytest tests/', 'git status', 'python script.py'), VOCE PODE E DEVE executar\n"
-            "via a tool `run_command`. NUNCA responda 'nao tenho acesso ao terminal' — voce TEM.\n"
-            "Use run_command com o comando EXATO que o usuario pediu (passe arg `command`).\n"
-            "Exemplo: usuario diz 'bauer orchestrate run' -> {\"action\":\"run_command\",\"args\":{\"command\":\"bauer orchestrate run\"}}\n"
-            "Se o comando exigir argumentos extras, execute primeiro com --help para descobrir,\n"
-            "depois rode com os argumentos certos.\n\n"
+            f"{shell_protocol_block}"
             "EXEMPLOS CORRETOS:\n"
             "  Pergunta: 'oi'                  -> resposta: 'Ola! Como posso ajudar?'\n"
             "  Pergunta: 'que horas sao?'       -> resposta: 'Sao X horas.'\n"
@@ -743,7 +749,6 @@ def _build_system_prompt(
             "ERRADO (nunca faca isso):\n"
             "  Pergunta: 'oi' -> {\"action\": \"resposta\", ...}  <- ERRADO, use texto puro\n"
             "  Qualquer resposta: 'O que prefere?' / 'Se quiser posso...' / 'Deseja que eu...' <- ERRADO\n"
-            "  Qualquer resposta: 'nao tenho acesso ao terminal' / 'sou apenas seu assistente' <- ERRADO, voce TEM run_command\n\n"
             "Depois de executar uma ferramenta, resuma o resultado em texto normal.\n"
             "Responda sempre em portugues.\n\n"
         )

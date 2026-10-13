@@ -355,7 +355,7 @@ agents:
     )
 
     research_adapter = AgnoRuntimeAdapter(
-        adapter_config={"db_file": str(tmp_path / "research.db"), "workspace": str(workspace)}
+        adapter_config={"db_file": str(tmp_path / "research.db"), "workspace": str(workspace), "tool_context": "chat"}
     )
     research_result = research_adapter.run_agent(
         {
@@ -379,10 +379,10 @@ agents:
     assert "finding" in research_result["output"]
 
 
-def test_unknown_agno_tool_fails_instead_of_being_silently_dropped():
+def test_unknown_agno_tool_fails_instead_of_being_silently_dropped(tmp_path):
     from bauer.core.runtime.adapters.base import RuntimeAdapterError
 
-    adapter = AgnoRuntimeAdapter()
+    adapter = AgnoRuntimeAdapter(adapter_config={"workspace": str(tmp_path)})
 
     with pytest.raises(RuntimeAdapterError, match="not registered in the Bauer capability catalog"):
         adapter._map_tools(["unknown_toolkit.operation"])
@@ -443,8 +443,9 @@ contexts:
         }
     )
 
-    assert result["status"] == "completed"
-    assert "tool denied" in result["output"]
+    assert result["status"] == "failed"
+    assert "not authorized" in result["error"]
+    assert "blocked" not in result.get("output", "")
 
 
 def test_agno_adapter_returns_clean_error_when_agno_fails(monkeypatch, tmp_path):
@@ -467,3 +468,153 @@ def test_agno_adapter_returns_clean_error_when_agno_fails(monkeypatch, tmp_path)
     assert result["event"] == "run.failed"
     assert result["runtime_adapter"] == "agno"
     assert result["error"] == "agno runtime unavailable"
+
+
+class OAuthSchemaToolClientStub:
+    def __init__(self, tool_name, arguments):
+        self.tool_name = tool_name
+        self.arguments = arguments
+        self.calls = []
+
+    def chat_stream_events(self, model, messages, *, tools=None, tool_choice=None):
+        self.calls.append({"messages": messages, "tools": tools})
+        results = [message for message in messages if message.get("role") == "tool"]
+        if results:
+            yield {"type": "text_delta", "delta": str(results[-1]["content"])}
+            return
+        yield {"type": "tool_call", "tool_call": {
+            "id": "extra-tool-call", "type": "function", "function": {
+                "name": self.tool_name, "arguments": json.dumps(self.arguments),
+            },
+        }}
+
+
+@pytest.mark.parametrize("tool_name,arguments", [
+    ("datetime_now", {"format": "br", "tz": "utc"}),
+    ("patch", {"path": "note.txt", "old_string": "before", "new_string": "after"}),
+    ("process", {"action": "list"}),
+])
+def test_generic_bauer_tools_keep_schema_and_execute_real_router(tmp_path, monkeypatch, tool_name, arguments):
+    from agno.tools.function import Function
+    from bauer.tool_router import ToolRouter
+
+    (tmp_path / "note.txt").write_text("before", encoding="utf-8")
+    router = ToolRouter(workspace=tmp_path)
+    schema = next(item["function"] for item in router.get_tool_schemas()
+                  if item["function"]["name"] == tool_name)
+    executed = []
+    original = router.execute_native_call
+    def execute(name, args):
+        executed.append((name, args.copy()))
+        return original(name, args)
+    monkeypatch.setattr(router, "execute_native_call", execute)
+    client = OAuthSchemaToolClientStub(tool_name, arguments)
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "schema.db")},
+        tool_router=router, chatgpt_client=client,
+    )
+    mapped = adapter._map_tools([f"bauer.{tool_name}"])[0]
+    assert isinstance(mapped, Function)
+    assert mapped.name == tool_name
+    assert mapped.description == schema["description"]
+    assert mapped.parameters == schema["parameters"]
+    assert mapped.skip_entrypoint_processing is True
+    result = adapter.run_agent({
+        "task": "execute authorized tool", "agent_spec": {
+            "id": "generic-agent", "provider": "openai", "model": "gpt-5.6-luna",
+            "tools": [tool_name],
+        },
+    })
+    assert result["status"] == "completed", result
+    assert executed == [(tool_name, arguments)]
+    sent = client.calls[0]["tools"][0]["function"]
+    assert sent["name"] == tool_name
+    assert sent["description"] == schema["description"]
+    assert sent["parameters"] == schema["parameters"]
+    assert any(message.get("role") == "tool" for message in client.calls[-1]["messages"])
+    assert result["metadata"]["tools"][0]["tool_name"] == tool_name
+    if tool_name == "patch":
+        assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "after"
+
+
+def test_generic_tool_denied_by_router_is_not_advertised(tmp_path):
+    from bauer.core.runtime.adapters.base import RuntimeAdapterError
+    from bauer.tool_router import ToolRouter
+
+    router = ToolRouter(workspace=tmp_path, tool_allowlist=["list_dir"])
+    adapter = AgnoRuntimeAdapter(tool_router=router)
+    with pytest.raises(RuntimeAdapterError, match="authorized"):
+        adapter._map_tools(["datetime_now"])
+    assert adapter._bauer_tool_callable("datetime_now") is None
+    with pytest.raises(RuntimeAdapterError, match="not registered"):
+        adapter._map_tools(["unknown_toolkit.operation"])
+    assert router._tool_call_count == 0
+
+
+def test_generic_tool_policy_change_is_enforced_and_kept_in_sdk_log(tmp_path, monkeypatch):
+    from bauer.tool_router import ToolRouter
+
+    router = ToolRouter(workspace=tmp_path)
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "denied.db")}, tool_router=router,
+    )
+    mapped = adapter._map_tools(["datetime_now"])[0]
+    monkeypatch.setattr(router, "_is_tool_allowed_in_context", lambda *args, **kwargs: False)
+    result = adapter.run_agent({
+        "task": "try tool after revocation", "agent_spec": {
+            "id": "revoked-agent", "tools": [mapped],
+            "agno_model": NamedToolCallingModel(id="revoked-model", tool_name="datetime_now", tool_args={}),
+        },
+    })
+    assert result["status"] == "completed"
+    assert "tool denied" in result["output"]
+    assert "tool denied" in str(result["metadata"]["tools"])
+    assert router._tool_call_count == 0
+
+
+def test_shell_allowlist_block_stays_in_sdk_tool_result(tmp_path, monkeypatch):
+    from bauer.shell_runner import ShellRunner
+    from bauer.tool_router import ToolRouter
+
+    def unexpected_process(*args, **kwargs):
+        pytest.fail("unapproved command started a process")
+    monkeypatch.setattr("subprocess.Popen", unexpected_process)
+    router = ToolRouter(workspace=tmp_path, shell_runner=ShellRunner(workspace=tmp_path))
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "shell.db")}, tool_router=router,
+    )
+    result = adapter.run_agent({
+        "task": "try unapproved command", "agent_spec": {
+            "id": "shell-agent", "tools": ["run_command"],
+            "agno_model": NamedToolCallingModel(id="shell-model", tool_name="run_command", tool_args={"command": "unapproved_bauer_command"}),
+        },
+    })
+    assert result["status"] == "completed"
+    assert "Antes de continuar, pergunte ao usuario" in result["output"]
+    assert "Antes de continuar, pergunte ao usuario" in str(result["metadata"]["tools"])
+
+
+@pytest.mark.parametrize("run_fails", [False, True])
+def test_tool_event_log_deduplicates_aggregates_and_preserves_partial_failure(tmp_path, monkeypatch, run_fails):
+    from agno.models.response import ToolExecution
+    from agno.run.agent import RunCompletedEvent, RunErrorEvent, ToolCallCompletedEvent, ToolCallErrorEvent, ToolCallStartedEvent
+
+    first = ToolExecution(tool_call_id="call-1", tool_name="datetime_now", tool_args={}, result="first")
+    second = ToolExecution(tool_call_id="call-2", tool_name="datetime_now", tool_args={}, result="blocked", tool_call_error=True)
+    class ControlledAgent:
+        def run(self, *args, **kwargs):
+            yield ToolCallStartedEvent(tool=first)
+            yield ToolCallCompletedEvent(tool=first)
+            yield ToolCallErrorEvent(tool=second, error="blocked")
+            if run_fails:
+                yield RunErrorEvent(content="model failure", tools=[first, second])
+            else:
+                yield RunCompletedEvent(tools=[first, second])
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "events.db")})
+    monkeypatch.setattr(adapter, "_runtime_for_request", lambda *args, **kwargs: ControlledAgent())
+    result = adapter.run_agent({"task": "controlled tools"})
+    assert result["status"] == ("failed" if run_fails else "completed")
+    log = result["metadata"]["tools"]
+    assert len(log) == 2
+    assert [item["tool_call_id"] for item in log] == ["call-1", "call-2"]
+    assert log[1]["status"] == "failed" and log[1]["result"] == "blocked"

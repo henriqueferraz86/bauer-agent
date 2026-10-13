@@ -17,8 +17,28 @@ import re
 import shlex
 import subprocess
 import time
+import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Iterator
+
+
+logger = logging.getLogger("bauer.shell_runner")
+_blocked_command_observer: ContextVar[Callable[["ShellRunner", str, list[str]], None] | None] = ContextVar(
+    "bauer_blocked_command_observer", default=None,
+)
+
+
+@contextmanager
+def observe_blocked_commands(observer: Callable[["ShellRunner", str, list[str]], None]) -> Iterator[None]:
+    """Observe real allowlist denials in this execution context, without granting access."""
+    token = _blocked_command_observer.set(observer)
+    try:
+        yield
+    finally:
+        _blocked_command_observer.reset(token)
 
 
 class ShellError(Exception):
@@ -227,7 +247,16 @@ class ShellRunner:
         """
         self._check_denylist(command)
         args = self._parse_command(command)
-        self._check_allowlist(args)
+        try:
+            self._check_allowlist(args)
+        except BlockedCommandError:
+            observer = _blocked_command_observer.get()
+            if observer is not None:
+                try:
+                    observer(self, command, args)
+                except Exception as exc:  # noqa: BLE001 — observers never change the denial
+                    logger.debug("blocked command observer failed: %s", exc)
+            raise
         if self.safe_mode and not confirm:
             self._check_medium_risk(command)
         return args
@@ -269,6 +298,11 @@ class ShellRunner:
         base = self._base_command(args)
         if (base in _ALLOWLIST or base in self.extra_allowed_commands
                 or base in self._runtime_allowed):
+            return
+        # A different chat/project runner may have learned this command after
+        # this instance was cached. Reload only when permission is still absent.
+        self._runtime_allowed.update(load_learned_commands())
+        if base in self._runtime_allowed:
             return
         # Fora da allowlist: se houver callback interativo, pergunta e (talvez)
         # aprende — em vez de bloquear em silêncio. "always" persiste.

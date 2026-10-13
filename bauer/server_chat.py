@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from contextlib import nullcontext
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -65,6 +66,7 @@ class ChatRouteDependencies:
     run_agno_turn: Callable[[str, str, str, str, Any, str, dict[str, Any]], dict[str, Any]]
     logger: logging.Logger
     new_project_context: Callable[[Any], Any] | None = None
+    shell_approvals: Any | None = None
 
 
 def _allowlist_authorization_prompt(tool_log: list[dict] | None) -> str | None:
@@ -94,6 +96,35 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
     """Cria a rota ``/chat`` e preserva os dois caminhos de execução."""
 
     router = APIRouter()
+
+    def run_chat_turn(req, session_id, run_id, active_router, turn_model, resolved, ctx, turn_client, message=None):
+        approvals = deps.shell_approvals
+        if message is None:
+            message = approvals.resolve(session_id, req.message, active_router) if approvals else req.message
+        if message != req.message:
+            ctx.add_ephemeral_system(message)
+        capture = approvals.capture(session_id, deps.effective_workspace(active_router), message) if approvals else nullcontext()
+        with capture:
+            if deps.runtime_mode() == "agno":
+                result = deps.run_agno_turn(
+                    message, session_id, run_id, resolved.get("agent_id") or "serve.chat",
+                    active_router, turn_model, resolved,
+                )
+                response, tool_log = result["response"], result["tool_log"]
+            else:
+                response, tool_log = deps.run_one_turn_with_fallback(
+                    ctx, active_router, turn_client, turn_model, deps.fallback_clients,
+                )
+        prompt = approvals.prompt(session_id, deps.effective_workspace(active_router), presented=False) if approvals else _allowlist_authorization_prompt(tool_log)
+        return prompt or response, tool_log
+
+    def mark_shell_question_presented(session_id, active_router, response):
+        if deps.shell_approvals is None:
+            return
+        workspace = deps.effective_workspace(active_router)
+        prompt = deps.shell_approvals.prompt(session_id, workspace, presented=False)
+        if prompt and prompt in response:
+            deps.shell_approvals.prompt(session_id, workspace)
 
     def chat_via_kernel(
         req: ChatRequest,
@@ -133,19 +164,16 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             ids_token = set_runtime_ids(session_id, run_id)
             tool_log = []
             try:
-                if deps.runtime_mode() == "agno":
-                    agno_result = deps.run_agno_turn(
-                        req.message, session_id, run_id, request_agent_id,
-                        active_router, turn_model, resolved,
+                if "effective_message" not in captured:
+                    captured["effective_message"] = (
+                        deps.shell_approvals.resolve(session_id, req.message, active_router)
+                        if deps.shell_approvals else req.message
                     )
-                    response = agno_result["response"]
-                    tool_log = agno_result["tool_log"]
-                else:
-                    response, tool_log = deps.run_one_turn_with_fallback(
-                        ctx, active_router, turn_client, turn_model, deps.fallback_clients,
-                    )
-                authorization_prompt = _allowlist_authorization_prompt(tool_log)
-                formatted = authorization_prompt or deps.format_response(response)
+                response, tool_log = run_chat_turn(
+                    req, session_id, run_id, active_router, turn_model, resolved, ctx, turn_client,
+                    captured["effective_message"],
+                )
+                formatted = deps.format_response(response)
                 deps.store.save(session_id, ctx.messages)
                 deps.session_manager.touch_session(session_id, state={"last_run_id": run_id})
                 captured["tool_log"] = tool_log
@@ -196,6 +224,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 status_code=500,
                 detail="Erro interno — consulte os logs do servidor.",
             )
+        mark_shell_question_presented(session_id, active_router, out.output or "")
         return ChatResponse(
             response=out.output or "",
             session_id=session_id,
@@ -256,19 +285,10 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
         ids_token = set_runtime_ids(session_id, run.id)
         tool_log = []
         try:
-            if deps.runtime_mode() == "agno":
-                agno_result = deps.run_agno_turn(
-                    req.message, session_id, run.id, request_agent_id,
-                    active_router, turn_model, resolved,
-                )
-                response = agno_result["response"]
-                tool_log = agno_result["tool_log"]
-            else:
-                response, tool_log = deps.run_one_turn_with_fallback(
-                    ctx, active_router, turn_client, turn_model, deps.fallback_clients,
-                )
-            authorization_prompt = _allowlist_authorization_prompt(tool_log)
-            response = authorization_prompt or deps.format_response(response)
+            response, tool_log = run_chat_turn(
+                req, session_id, run.id, active_router, turn_model, resolved, ctx, turn_client,
+            )
+            response = deps.format_response(response)
             deps.store.save(session_id, ctx.messages)
             deps.session_manager.touch_session(session_id, state={"last_run_id": run.id})
             deps.run_manager.complete_run(
@@ -276,6 +296,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 cost_estimate=round(cost.total_usd, 6), llm_calls_count=cost.calls,
                 usage_known=bool(cost.calls) and cost.usage_known,
             )
+            mark_shell_question_presented(session_id, active_router, response)
             return ChatResponse(
                 response=response, session_id=session_id, model=deps.state["model"],
                 tool_calls=[ToolCallLog(**item) for item in deps.public_tool_log(tool_log)],
