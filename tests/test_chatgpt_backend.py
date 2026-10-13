@@ -192,6 +192,58 @@ def test_chat_stream_events_normalizes_function_call():
     assert body["reasoning"] == {"effort": "high"}
 
 
+@pytest.mark.parametrize("stream_deltas", [False, True])
+def test_chat_with_tools_uses_responses_and_preserves_native_contract(stream_deltas):
+    lines = [
+        'data: {"type":"response.output_text.delta","delta":"Vou "}',
+        'data: {"type":"response.output_text.delta","delta":"consultar."}',
+        'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_time","arguments":""}}',
+        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{}"}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2}}}',
+    ]
+    c = ChatGPTBackendClient(access_token="t", account_id="a")
+    seen = []
+    messages = [
+        {"role": "system", "content": "Seja breve."},
+        {"role": "tool", "tool_call_id": "previous", "content": "07:15"},
+    ]
+    tools = [{"type": "function", "function": {"name": "get_time"}}]
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp(lines))) as stream, \
+         patch("httpx.post", side_effect=AssertionError("chat/completions must not be used")):
+        result = c.chat_with_tools(
+            "gpt-5.6-luna", messages, tools, "required",
+            on_delta=seen.append if stream_deltas else None,
+        )
+
+    assert result == {
+        "content": "Vou consultar.",
+        "tool_calls": [{"id": "call_1", "type": "function",
+                        "function": {"name": "get_time", "arguments": "{}"}}],
+    }
+    assert seen == (["Vou ", "consultar."] if stream_deltas else [])
+    assert c.last_usage == {"input_tokens": 3, "output_tokens": 2}
+    assert stream.call_args.args == ("POST", f"{DEFAULT_CHATGPT_BASE}/responses")
+    body = stream.call_args.kwargs["json"]
+    assert body["stream"] is True
+    assert body["instructions"] == "Seja breve."
+    assert body["tool_choice"] == "required"
+    assert body["tools"][0]["name"] == "get_time"
+    assert body["input"] == [{"type": "function_call_output", "call_id": "previous", "output": "07:15"}]
+
+
+def test_chat_with_tools_callback_failure_does_not_interrupt_answer():
+    def broken_callback(_delta):
+        raise ValueError("closed renderer")
+
+    c = ChatGPTBackendClient(access_token="t")
+    with patch("httpx.stream", return_value=_FakeStream(_FakeResp([
+        'data: {"type":"response.output_text.delta","delta":"Olá!"}',
+    ]))):
+        assert c.chat_with_tools("gpt-5.6-luna", [], [], on_delta=broken_callback) == {
+            "content": "Olá!", "tool_calls": None,
+        }
+
+
 def test_luna_sets_high_reasoning_effort():
     c = ChatGPTBackendClient(access_token="t", model="gpt-5.6-luna")
     with patch("httpx.stream", return_value=_FakeStream(_FakeResp([

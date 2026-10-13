@@ -1725,6 +1725,10 @@ def create_app(
                 except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
                     result["error"] = exc
                     result["tool_log"] = getattr(exc, "partial_tool_log", [])
+                    _log.error(
+                        "Falha no turno /stream (run %s): %s: %s",
+                        run.id, type(exc).__name__, redact_text(str(exc)),
+                    )
                 finally:
                     cost_sink.reset(cost_token)
                     reset_sink(token)

@@ -8,7 +8,10 @@ de qualquer chamada ao LLM. kernel.enabled=false (default) = caminho legado.
 
 from __future__ import annotations
 
+import json
+import logging
 import textwrap
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -82,6 +85,77 @@ def test_stream_via_kernel_delivers_text_and_completes(tmp_path: Path):
     statuses = [r["status"] for r in store.list("runs") if r["id"] == run.id]
     assert statuses[:4] == ["created", "planning", "policy_check", "queued"]
     assert statuses[-1] == "completed"
+
+
+@pytest.mark.parametrize("with_tool", [False, True])
+def test_stream_chatgpt_uses_responses_through_real_native_agent(tmp_path: Path, with_tool: bool):
+    import httpx
+
+    from bauer.chatgpt_backend import ChatGPTBackendClient, DEFAULT_CHATGPT_BASE
+
+    client = ChatGPTBackendClient(access_token="fake", model="gpt-5.6-luna")
+    app = _app(tmp_path, _cfg(tmp_path, kernel_enabled=True), client)
+    requests = []
+
+    @contextmanager
+    def responses_stream(method, url, **kwargs):
+        assert (method, url) == ("POST", f"{DEFAULT_CHATGPT_BASE}/responses")
+        requests.append(kwargs["json"])
+        if with_tool and len(requests) == 1:
+            events = [{"type": "response.output_item.done", "item": {
+                "type": "function_call", "call_id": "call_calc",
+                "name": "calculate", "arguments": '{"expression":"2+2"}',
+            }}]
+        else:
+            events = [{"type": "response.output_text.delta", "delta": "Olá, resultado: 4."}]
+        events.append({"type": "response.completed", "response": {
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        }})
+        yield httpx.Response(200, text="\n\n".join(
+            "data: " + json.dumps(event) for event in events
+        ))
+
+    with patch("httpx.stream", side_effect=responses_stream), \
+         patch("httpx.post", side_effect=AssertionError("wrong native endpoint")):
+        response = TestClient(app).get("/stream", params={"message": "oi"})
+
+    assert response.status_code == 200
+    assert "Olá, resultado: 4." in response.text
+    assert "event: done" in response.text
+    assert len(requests) == (2 if with_tool else 1)
+    assert requests[0]["tools"]
+    if with_tool:
+        tool_result = next(item for item in requests[1]["input"] if item["type"] == "function_call_output")
+        assert tool_result == {"type": "function_call_output", "call_id": "call_calc", "output": "2+2 = 4"}
+    runs, _ = _runtime(tmp_path)
+    run = runs.list_runs()[0]
+    assert run.status == "completed"
+    assert run.tool_calls_count == int(with_tool)
+    assert run.llm_calls_count == len(requests)
+    assert run.usage_known is True
+
+
+def test_stream_failure_logs_sanitized_cause_without_exposing_it(tmp_path: Path):
+    from bauer.openai_client import OpenAIClientError
+
+    app = _app(tmp_path, _cfg(tmp_path, kernel_enabled=True), _make_client("unused"))
+    failure = OpenAIClientError("HTTP 403 Authorization: Bearer secret-token")
+    with patch("bauer.agent.run_one_turn_with_fallback", side_effect=failure), \
+         patch.object(logging.getLogger("bauer.server"), "error") as log_error:
+        response = TestClient(app).get("/stream", params={"message": "oi"})
+
+    assert "resposta indisponível" in response.text
+    assert "secret-token" not in response.text
+    assert "HTTP 403" not in response.text
+    assert "event: done" in response.text
+    log_error.assert_called_once()
+    args = log_error.call_args.args
+    assert args[2] == "OpenAIClientError"
+    assert "HTTP 403" in args[3]
+    assert "secret-token" not in args[3]
+    assert "[REDACTED]" in args[3]
+    runs, _ = _runtime(tmp_path)
+    assert runs.list_runs()[0].status == "failed"
 
 
 def test_stream_kill_switch_blocks_without_llm(tmp_path: Path):

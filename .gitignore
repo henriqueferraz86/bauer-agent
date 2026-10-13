@@ -46,6 +46,8 @@ specs/*
 !specs/sprint-26-p4-guarded-autonomy/**
 !specs/sprint-27-functional-audit-corrections/
 !specs/sprint-27-functional-audit-corrections/**
+!specs/fix-chatgpt-native-tools/
+!specs/fix-chatgpt-native-tools/**
 companies/
 
 # Coverage reports

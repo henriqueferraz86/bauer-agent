@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -274,6 +274,38 @@ class ChatGPTBackendClient(OpenAIClient):
         """The Responses bridge can round-trip Agno function calls."""
         return True
 
+    def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str = "auto",
+        *,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Adapt Responses SSE to the native agent's content/tool_calls contract.
+
+        The ChatGPT backend requires streaming even without a render callback.
+        Reusing its event parser also preserves function outputs and usage;
+        the inherited OpenAI method targets an unsupported chat/completions URL.
+        """
+        parts: list[str] = []
+        calls: list[dict] = []
+        for event in self.chat_stream_events(
+            model, messages, tools=tools, tool_choice=tool_choice,
+        ):
+            if event.get("type") == "text_delta":
+                delta = str(event.get("delta") or "")
+                parts.append(delta)
+                if on_delta is not None:
+                    try:
+                        on_delta(delta)
+                    except Exception as exc:  # noqa: BLE001 — rendering is auxiliary
+                        log_suppressed("chatgpt_backend.on_delta", exc)
+            elif event.get("type") == "tool_call":
+                calls.append(event["tool_call"])
+        return {"content": "".join(parts) or None, "tool_calls": calls or None}
+
     # ── Tradução chat/completions → Responses API ───────────────────────────
     @staticmethod
     def _to_responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
@@ -363,7 +395,7 @@ class ChatGPTBackendClient(OpenAIClient):
             "type": "function",
             "function": {
                 "name": name,
-                "arguments": str(item.get("arguments") or "{}"),
+                "arguments": str(item.get("arguments") or ""),
             },
         }
 
@@ -496,7 +528,9 @@ class ChatGPTBackendClient(OpenAIClient):
                 f"[ChatGPT] HTTP {_err_status} no backend.\n  Detalhe: {_err_body}"
             )
         for call_id in call_order:
-            yield {"type": "tool_call", "tool_call": calls[call_id]}
+            call = calls[call_id]
+            call["function"]["arguments"] = call["function"]["arguments"] or "{}"
+            yield {"type": "tool_call", "tool_call": call}
 
     def chat_stream(self, model: str, messages: list[dict]) -> Iterator[str]:
         """Streaming via Responses API. Yields deltas de texto."""
