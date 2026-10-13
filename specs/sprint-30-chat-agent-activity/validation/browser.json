@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "browser": "156.0.8078.4",
+  "streams": 1,
+  "checks": [
+    "actual member task and tool",
+    "SSE done preserves running runtime",
+    "mobile no overflow and composer visible",
+    "reload and navigation preserve session",
+    "approval paused retry",
+    "terminal unknown child preserves finished sibling",
+    "unavailable suppresses stale spinner",
+    "poll recovery",
+    "reset clears agents",
+    "activity metadata excluded from answer"
+  ],
+  "page_errors": [],
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+  ],
+  "external_requests": []
+}

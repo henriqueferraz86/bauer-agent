@@ -52,6 +52,8 @@ specs/*
 !specs/sprint-28-chat-project-context/**
 !specs/sprint-29-chat-tool-availability/
 !specs/sprint-29-chat-tool-availability/**
+!specs/sprint-30-chat-agent-activity/
+!specs/sprint-30-chat-agent-activity/**
 companies/
 
 # Coverage reports

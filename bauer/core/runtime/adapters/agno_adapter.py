@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import logging
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -23,6 +24,7 @@ class AgnoRuntimeAdapter:
         adapter_config: dict[str, Any] | None = None,
         chatgpt_client: Any | None = None,
         tool_router: Any | None = None,
+        activity_sink: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.config = config
         self.adapter_config = adapter_config or self._adapter_config_from(config)
@@ -35,6 +37,7 @@ class AgnoRuntimeAdapter:
         self.tool_policy_path = self.adapter_config.get("tool_policy_path")
         self.chatgpt_client = chatgpt_client
         self._tool_router = tool_router
+        self._activity_sink = activity_sink
         self._agents: dict[str, Any] = {}
         self._teams: dict[str, Any] = {}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -58,6 +61,15 @@ class AgnoRuntimeAdapter:
         last_event: dict[str, Any] = {}
         for event in self.stream_agent({**request, "run_id": run_id}):
             last_event = event
+            if self._activity_sink is not None and (
+                str(event.get("event", "")).startswith("agent.") or event.get("event") == "task.delegated"
+                or (event.get("event") in {"tool.call.requested", "tool.call.completed", "tool.call.failed"}
+                    and event.get("agent_id") and event.get("data", {}).get("member_event"))
+            ):
+                try:
+                    self._activity_sink(event)
+                except Exception:
+                    logging.getLogger("bauer.agno_adapter").debug("activity sink failed", exc_info=True)
             if event.get("event") == "message.delta":
                 chunks.append(str(event.get("content", "")))
             elif event.get("event") == "run.failed":
@@ -524,6 +536,7 @@ class AgnoRuntimeAdapter:
             "run_cancelled": "RunCancelled", "tool_call_started": "ToolCallStarted",
             "tool_call_completed": "ToolCallCompleted", "tool_call_error": "ToolCallError",
             "team_task_created": "TeamTaskCreated", "team_task_updated": "TeamTaskUpdated",
+            "teamtaskcreated": "TeamTaskCreated", "teamtaskupdated": "TeamTaskUpdated",
             "team_tool_call_started": "ToolCallStarted",
             "team_tool_call_completed": "ToolCallCompleted",
             "team_tool_call_error": "ToolCallError",
@@ -597,7 +610,13 @@ class AgnoRuntimeAdapter:
             assignee = str(getattr(event, "assignee", "") or "").strip()
             if assignee:
                 data.update({"task_id": getattr(event, "task_id", None), "assignee": assignee})
-                return {"event": "task.delegated", "status": "running", "agent_id": assignee,
+                task = str(getattr(event, "description", "") or getattr(event, "title", "") or "").strip()
+                if task:
+                    data["task"] = task
+                task_status = str(getattr(event, "status", "") or "")
+                status = {"pending": "queued", "in_progress": "running", "blocked": "paused",
+                          "completed": "completed", "failed": "failed"}.get(task_status, "delegated")
+                return {"event": "task.delegated", "status": status, "agent_id": assignee,
                         "run_id": run_id, "session_id": session_id, "data": data}
         return None
 

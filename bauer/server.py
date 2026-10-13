@@ -732,6 +732,24 @@ def create_app(
     except (OSError, ValueError, AttributeError):
         _log.debug("saved model selection is unavailable")
 
+    def _chat_activity_snapshot(session_id: str, run_id: str) -> dict[str, Any] | None:
+        from .server_activity import build_chat_activity
+        try:
+            return build_chat_activity(run_manager, event_bus, session_id, run_id=run_id)
+        except Exception:
+            _log.debug("chat activity snapshot unavailable", exc_info=True)
+            return None  # An unavailable snapshot must not claim there are no tasks.
+
+    def _publish_agno_activity(event: dict[str, Any]) -> None:
+        kind = event.get("event", "")
+        member_tool = kind in {"tool.call.requested", "tool.call.completed", "tool.call.failed"} and (
+            event.get("agent_id") and event.get("data", {}).get("member_event")
+        )
+        if not (kind.startswith("agent.") or kind == "task.delegated" or member_tool):
+            return
+        event_bus.publish(kind, **{key: event.get(key) for key in
+                          ("run_id", "session_id", "agent_id", "tool_name", "status", "data")})
+
     def _runtime_mode() -> str:
         return str(_state.get("runtime_mode") or "bauer_native")
 
@@ -789,6 +807,7 @@ def create_app(
             adapter_config=adapter_cfg,
             chatgpt_client=_state["client"],
             tool_router=active_router,
+            activity_sink=_publish_agno_activity,
         )
         tools = active_router.available_tools()
         turn_context = _new_context(active_router)
@@ -805,7 +824,7 @@ def create_app(
             "agent_id": request_agent_id,
             "agent_spec": {
                 "id": request_agent_id,
-                "name": "Bauer Server Agno Agent",
+                "name": "Bauer",
                 "provider": _state["provider"],
                 "model": turn_model,
                 "instructions": instructions,
@@ -1633,6 +1652,7 @@ def create_app(
                 def _blocked_stream(msg=_blocked_msg):
                     import json
                     yield _sse(json.dumps(project_context, ensure_ascii=False), event="context")
+                    yield _sse(json.dumps(_chat_activity_snapshot(sid, _early.run_id), ensure_ascii=False), event="activity")
                     yield _sse(msg)
                     yield _sse(sid, event="done")
 
@@ -1679,6 +1699,7 @@ def create_app(
             from .agent import _extract_text_from_pseudo_json, run_one_turn_with_fallback
 
             yield _sse(_json.dumps(project_context, ensure_ascii=False), event="context")
+            yield _sse(_json.dumps(_chat_activity_snapshot(sid, run.id), ensure_ascii=False), event="activity")
 
             events: "_queue.Queue[tuple[str, str]]" = _queue.Queue()
             result: dict = {}

@@ -160,6 +160,12 @@ def register_observability_routes(app, deps: ObservabilityDeps, verify_key) -> N
     def list_sessions(_: None = Depends(verify_key)):
         return {"sessions": deps.store.list_sessions()}
 
+    @app.get("/chat/activity")
+    def chat_activity(session_id: str | None = Query(None), _: None = Depends(verify_key)):
+        from .server_activity import build_chat_activity
+
+        return build_chat_activity(deps.run_manager, deps.event_bus, session_id)
+
     @app.get("/events")
     def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(verify_key)):
         return {"events": [EventBus.to_dict(event) for event in deps.event_bus.list_events(limit=limit)]}
