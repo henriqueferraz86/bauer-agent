@@ -234,6 +234,8 @@ def create_app(
         app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     store = SessionStore(sessions_dir)
+    from .server_shell_approval import ShellApprovalManager
+    shell_approvals = ShellApprovalManager()
     runtime_root = sessions_dir.parent / "runtime"
     _web_auth = None
     if api_key and web_auth_enabled:
@@ -788,11 +790,7 @@ def create_app(
             chatgpt_client=_state["client"],
             tool_router=active_router,
         )
-        supported_tools = {
-            "read_file", "write_file", "list_dir", "search_text",
-            "run_command", "web_search", "memory",
-        }
-        tools = [name for name in active_router.available_tools() if name in supported_tools]
+        tools = active_router.available_tools()
         turn_context = _new_context(active_router)
         _apply_request_context(turn_context, resolved)
         instructions = "\n\n".join(
@@ -1448,6 +1446,7 @@ def create_app(
         runtime_mode=_runtime_mode,
         run_agno_turn=_run_agno_turn,
         logger=_log,
+        shell_approvals=shell_approvals,
     )))
 
     @app.post("/transcribe")
@@ -1718,23 +1717,24 @@ def create_app(
                 # de duas threads pisando no session/run id uma da outra.
                 ids_token = set_runtime_ids(sid, run.id)
                 try:
-                    if _runtime_mode() == "agno":
-                        agno_result = _run_agno_turn(
-                            message, sid, run.id, request_agent_id, active_router,
-                            _turn_model, resolved,
-                        )
-                        resp = agno_result["response"]
-                        tool_log = agno_result["tool_log"]
-                        if resp:
-                            events.put(("delta", resp))
-                    else:
-                        resp, tool_log = run_one_turn_with_fallback(
-                            ctx, active_router, _turn_client, _turn_model, _fallback_clients,
-                        )
-                    from .server_chat import _allowlist_authorization_prompt
-                    result["response"] = (
-                        _allowlist_authorization_prompt(tool_log) or resp
-                    )
+                    effective_message = shell_approvals.resolve(sid, message, active_router)
+                    if effective_message != message:
+                        ctx.add_ephemeral_system(effective_message)
+                    with shell_approvals.capture(sid, _effective_ws(active_router), effective_message):
+                        if _runtime_mode() == "agno":
+                            agno_result = _run_agno_turn(
+                                effective_message, sid, run.id, request_agent_id, active_router,
+                                _turn_model, resolved,
+                            )
+                            resp = agno_result["response"]
+                            tool_log = agno_result["tool_log"]
+                        else:
+                            resp, tool_log = run_one_turn_with_fallback(
+                                ctx, active_router, _turn_client, _turn_model, _fallback_clients,
+                            )
+                    result["response"] = shell_approvals.prompt(sid, _effective_ws(active_router), presented=False) or resp
+                    if _runtime_mode() == "agno" and result["response"]:
+                        events.put(("delta", result["response"]))
                     result["tool_log"] = tool_log
                 except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
                     result["error"] = exc
@@ -1842,6 +1842,9 @@ def create_app(
                     text = "\n\n" + text.lstrip("\n")
                     turn_sep = False
                 emitted_any = True
+                prompt = shell_approvals.prompt(sid, _effective_ws(active_router), presented=False)
+                if prompt and prompt in text:
+                    shell_approvals.prompt(sid, _effective_ws(active_router))
                 return _sse(text, event=event)
 
             ended = False

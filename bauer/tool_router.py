@@ -1697,8 +1697,9 @@ class ToolRouter(
                 # NAO podem rodar inline na thread chamadora — senao da
                 # "greenlet.error: Cannot switch to a different thread".
                 import concurrent.futures as _cf
+                from contextvars import copy_context
                 _pool = self._get_browser_executor()
-                _future = _pool.submit(_fn, args)
+                _future = _pool.submit(copy_context().run, _fn, args)
                 _eff_timeout = _timeout_sec if _timeout_sec > 0 else 60
                 try:
                     result = _future.result(timeout=_eff_timeout)
@@ -1709,13 +1710,14 @@ class ToolRouter(
                     ) from _te
             elif _timeout_sec > 0:
                 import concurrent.futures as _cf
+                from contextvars import copy_context
                 if not _TIMED_TOOL_SLOTS.acquire(blocking=False):
                     raise ToolError(
                         f"Tool '{name}' não pôde iniciar: limite de workers com timeout atingido. "
                         "Aguarde uma operação em andamento terminar."
                     )
                 try:
-                    _future = _TIMED_TOOL_EXECUTOR.submit(_fn, args)
+                    _future = _TIMED_TOOL_EXECUTOR.submit(copy_context().run, _fn, args)
                 except Exception:
                     _TIMED_TOOL_SLOTS.release()
                     raise

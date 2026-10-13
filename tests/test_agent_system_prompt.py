@@ -77,3 +77,17 @@ def test_prompt_keeps_windows_constraints(monkeypatch):
     assert "Voce roda em **Windows** com Python no venv. Subprocess usa `shell=False`." in prompt
     assert "`C:/...` ou `/Users/...`" in prompt
     assert "NAO use: `dir` (use tool list_dir)" in prompt
+
+
+def test_prompt_reflects_terminal_availability_and_approval_precedence(tmp_path):
+    from bauer.agent import _build_system_prompt
+    from bauer.tool_router import ToolRouter
+
+    for mode in ("native", "bridge"):
+        enabled = _prompt(mode)
+        assert "aguarde a confirmacao do usuario" in enabled
+        assert "prevalece sobre as regras de autonomia" in enabled
+        disabled = _build_system_prompt(ToolRouter(workspace=tmp_path), tool_mode=mode)
+        assert "TERMINAL INDISPONIVEL NESTA CONFIGURACAO" in disabled
+        assert "Voce tem acesso real ao terminal" not in disabled
+        assert "tools.shell_enabled" in disabled

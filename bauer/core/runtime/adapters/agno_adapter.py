@@ -203,6 +203,24 @@ class AgnoRuntimeAdapter:
         run_id = str(request.get("run_id") or f"run-{uuid4()}")
         session_id = str(request.get("session_id") or f"session-{uuid4()}")
         user_id = str(request.get("user_id") or "local-user")
+        tools: list[dict[str, Any]] = []
+        tool_positions: dict[str, int] = {}
+
+        def remember_tools(items: Any, *, error: str | None = None) -> None:
+            for item in self._serialize_tools(items):
+                if error:
+                    item["status"] = "failed"
+                    item["result"] = item["result"] or error
+                key = str(item.get("tool_call_id") or json.dumps({
+                    "name": item["tool_name"], "args": item.get("tool_args"),
+                    "result": item["result"],
+                }, sort_keys=True, default=str))
+                if key in tool_positions:
+                    previous = tools[tool_positions[key]]
+                    previous.update({field: value for field, value in item.items() if value is not None})
+                else:
+                    tool_positions[key] = len(tools)
+                    tools.append(item)
 
         yield {
             "event": "run.started",
@@ -218,7 +236,6 @@ class AgnoRuntimeAdapter:
             prompt = self._prompt_from_request(request)
             final_content = ""
             agno_run_id = None
-            tools: list[dict[str, Any]] = []
             team_request = self._is_team_request(request)
             observed_member_messages: set[str] = set()
             for event in agent.run(
@@ -227,6 +244,12 @@ class AgnoRuntimeAdapter:
             ):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
                 agno_event = self._agno_event_name(event)
+                singular_tool = getattr(event, "tool", None)
+                if singular_tool is not None and agno_event in {"ToolCallCompleted", "ToolCallError"}:
+                    remember_tools([singular_tool], error=str(getattr(event, "error", "") or "") or None)
+                event_tools = getattr(event, "tools", None)
+                if event_tools and agno_event != "ToolCallStarted":
+                    remember_tools(event_tools)
                 member_id = str(getattr(event, "agent_id", "") or "").strip()
                 member_name = str(getattr(event, "agent_name", "") or "").strip()
                 parent_run_id = getattr(event, "parent_run_id", None)
@@ -270,9 +293,6 @@ class AgnoRuntimeAdapter:
                         "runtime_adapter": self.name,
                         "content": str(content),
                     }
-                event_tools = getattr(event, "tools", None)
-                if event_tools:
-                    tools.extend(self._serialize_tools(event_tools))
         except Exception as exc:  # noqa: BLE001
             failed = {
                 "event": "run.failed",
@@ -281,6 +301,7 @@ class AgnoRuntimeAdapter:
                 "session_id": session_id,
                 "runtime_adapter": self.name,
                 "error": str(exc),
+                "metadata": {"tools": tools},
             }
             self._runs[run_id] = failed
             yield failed
@@ -782,11 +803,14 @@ class AgnoRuntimeAdapter:
     def _map_tools(self, tools: Any) -> list[Any]:
         if not tools:
             return []
+        from agno.tools.function import Function
         from ..agno_catalog import AgnoCapabilityCatalog
 
         mapped: list[Any] = []
         for tool in tools:
-            if callable(tool):
+            if isinstance(tool, Function):
+                mapped.append(tool)
+            elif callable(tool):
                 mapped.append(tool)
             elif isinstance(tool, dict) and callable(tool.get("callable")):
                 mapped.append(tool["callable"])
@@ -794,18 +818,19 @@ class AgnoRuntimeAdapter:
                 mapped.append(tool["function"])
             elif isinstance(tool, str):
                 capability = AgnoCapabilityCatalog.find(tool) or AgnoCapabilityCatalog.resolve_bauer_tool(tool)
-                if capability is None:
-                    raise RuntimeAdapterError(
-                        f"Agno tool '{tool}' is not registered in the Bauer capability catalog."
-                    )
-                if not capability.factory_registered:
+                if capability is not None and not capability.factory_registered:
                     raise RuntimeAdapterError(
                         f"Agno capability '{capability.id}' is cataloged but has no Bauer adapter yet."
                     )
                 mapped_tool = self._bauer_tool_callable(tool)
                 if mapped_tool is None:
+                    if capability is None:
+                        raise RuntimeAdapterError(
+                            f"Agno tool '{tool}' is not registered in the Bauer capability catalog "
+                            "or authorized by the Bauer ToolRouter."
+                        )
                     raise RuntimeAdapterError(
-                        f"Agno capability '{capability.id}' has no registered Bauer adapter."
+                        f"Agno capability '{capability.id}' is not authorized by the Bauer ToolRouter."
                     )
                 mapped.append(mapped_tool)
             else:
@@ -815,6 +840,12 @@ class AgnoRuntimeAdapter:
     def _bauer_tool_callable(self, tool_name: str) -> Any | None:
         router = self._build_tool_router()
         normalized = tool_name.strip().removeprefix("bauer.")
+        schemas = router.get_tool_schemas()
+        schema = next((item.get("function") for item in schemas
+                       if isinstance(item, dict) and isinstance(item.get("function"), dict)
+                       and item["function"].get("name") == normalized), None)
+        if schema is None:
+            return None
 
         if normalized == "read_file":
             def read_file(path: str, offset: int = 1, limit: int = 0) -> str:
@@ -865,7 +896,19 @@ class AgnoRuntimeAdapter:
                 return router.execute_native_call("memory", args)
             return memory
 
-        return None
+        from copy import deepcopy
+        from agno.tools.function import Function
+
+        def execute_bauer_tool(**kwargs: Any) -> str:
+            return router.execute_native_call(normalized, kwargs)
+
+        return Function(
+            name=normalized,
+            description=str(schema.get("description") or ""),
+            parameters=deepcopy(schema.get("parameters") or {"type": "object", "properties": {}}),
+            entrypoint=execute_bauer_tool,
+            skip_entrypoint_processing=True,
+        )
 
     def _build_tool_router(self) -> Any:
         if self._tool_router is not None:
@@ -884,10 +927,6 @@ class AgnoRuntimeAdapter:
             policy_enabled=True,
             policy_rules_path=self.adapter_config.get("policy_rules_path"),
             policy_root=self.adapter_config.get("policy_root", "memory/runtime"),
-            tool_allowlist=[
-                "read_file", "write_file", "list_dir", "search_text",
-                "run_command", "web_search", "memory",
-            ],
         )
 
     @staticmethod
@@ -928,8 +967,10 @@ class AgnoRuntimeAdapter:
             serialized.append(
                 {
                     "tool_name": data.get("tool_name") or data.get("name"),
+                    "tool_call_id": data.get("tool_call_id") or data.get("id"),
+                    "tool_args": data.get("tool_args"),
                     "result": data.get("result"),
-                    "status": data.get("status"),
+                    "status": data.get("status") or ("failed" if data.get("tool_call_error") else "completed"),
                 }
             )
         return serialized

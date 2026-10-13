@@ -50,6 +50,8 @@ specs/*
 !specs/fix-chatgpt-native-tools/**
 !specs/sprint-28-chat-project-context/
 !specs/sprint-28-chat-project-context/**
+!specs/sprint-29-chat-tool-availability/
+!specs/sprint-29-chat-tool-availability/**
 companies/
 
 # Coverage reports
