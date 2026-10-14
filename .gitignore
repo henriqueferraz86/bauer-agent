@@ -97,3 +97,6 @@ graphify-out/
 
 # Worktrees temporarios do proprio Bauer (scratch, nunca versionado).
 .bauer_worktrees/
+
+!specs/sprint-31-settings-daily-budget/
+!specs/sprint-31-settings-daily-budget/**

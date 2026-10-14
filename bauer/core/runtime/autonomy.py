@@ -109,6 +109,15 @@ class BudgetManager:
         profile = self.get_profile()
         if profile.mode == "locked":
             raise BudgetExceededError("autonomy mode is locked")
+        if profile.daily_budget_usd == 0:
+            used = self._used_for_scope("daily")
+            message = f"budget exceeded for daily: used=${used:.4f} limit=$0.0000"
+            self.event_bus.publish(
+                "budget.exceeded", run_id=run_id, agent_id=agent_id,
+                status="exceeded", message=message,
+                data={"scope": "daily", "used_usd": used, "limit_usd": 0.0},
+            )
+            raise BudgetExceededError(message)
 
         # Conta os outros runs não-terminais e recusa se já estão no teto.
         # O Kernel persiste o candidato antes deste check; callers sem run_id

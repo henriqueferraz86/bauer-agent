@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import GoogleButton from "../auth/GoogleButton";
+import SettingsBudgetCard from "../components/SettingsBudgetCard";
 import {
   startOpenAIBrowserAuth,
   type OpenAIAuthStart,
@@ -157,6 +158,7 @@ export default function Config() {
         {msg && <span className="sub">{msg}</span>}
       </div>
       <div className="content">
+        <SettingsBudgetCard />
         {/* Conta da interface web — a API key não fica mais no navegador. */}
         {auth.state.enabled && <div className="card" style={{ marginBottom: 16 }}>
           <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>CONTA DA INTERFACE</div>
