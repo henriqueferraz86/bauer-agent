@@ -40,7 +40,13 @@ def _no_documento() -> str:
     return texto[i:f + len(MARCA_FIM)].strip()
 
 
-def test_tabela_do_plano_esta_em_dia():
+def test_tabela_do_plano_esta_em_dia(monkeypatch):
+    from evals.harness import medir
+
+    # The versioned table describes code, not the developer's live run history.
+    # This informational row uses the clean-checkout baseline; the actual
+    # measurement command continues reporting real local runs as designed.
+    monkeypatch.setattr(medir, "_runs_autonomos", lambda: [])
     doc, med = _no_documento(), _gerado()
     assert doc == med, (
         f"A tabela em {PLANO.name} divergiu da medição.\n"

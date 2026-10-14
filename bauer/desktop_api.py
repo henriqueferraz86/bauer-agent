@@ -1090,6 +1090,27 @@ def build_desktop_router(
 
         return BudgetManager(root=_runtime_root).status()
 
+    @router.put("/obs/budget")
+    def update_obs_budget(payload: Any = Body(...)):
+        """Update only the daily cap in the same profile consumed by the Kernel."""
+        import math
+        from .core.runtime.autonomy import BudgetManager
+
+        if not isinstance(payload, dict) or set(payload) != {"daily_budget_usd"}:
+            raise HTTPException(status_code=422, detail="Envie somente o campo obrigatório daily_budget_usd.")
+        value = payload["daily_budget_usd"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(status_code=422, detail="daily_budget_usd deve ser um número finito não negativo.")
+        try:
+            valid = math.isfinite(value) and value >= 0
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise HTTPException(status_code=422, detail="daily_budget_usd deve ser um número finito não negativo.")
+        budget = BudgetManager(root=_runtime_root)
+        budget.set_profile(daily_budget_usd=float(value))
+        return budget.status()
+
     # -- Auditoria e governanca (Fase 11) ---------------------------------
     @router.get("/audit/report")
     def phase11_audit_report(last: str = Query("24h", description="24h | 7d | 2w | 30d")):

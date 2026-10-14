@@ -1,0 +1,36 @@
+{
+  "passed": true,
+  "browser": "156.0.8078.4",
+  "checks": [
+    "initial exceeded rolling24h",
+    "invalid input no PUT",
+    "raise20 remaining10.3055 preserves usage",
+    "reload persisted policy",
+    "zero visibly blocks",
+    "save503 preserves draft and effective limit",
+    "consult after save503 preserves draft without PUT",
+    "retry successful save",
+    "390px card no overflow",
+    "load503 retry"
+  ],
+  "requests": [
+    {
+      "daily_budget_usd": 20
+    },
+    {
+      "daily_budget_usd": 0
+    },
+    {
+      "daily_budget_usd": 30
+    },
+    {
+      "daily_budget_usd": 30
+    }
+  ],
+  "page_errors": [],
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+  ],
+  "external_requests": []
+}

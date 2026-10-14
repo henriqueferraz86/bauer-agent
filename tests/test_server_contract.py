@@ -137,6 +137,7 @@ OPERACOES_API = {
     "POST /api/teams/{team_id}/runs",
     "POST /api/teams/runs/{run_id}/cancel",
     "PUT /api/config",
+    "PUT /api/obs/budget",
 }
 
 OPERACOES_ESPERADAS = OPERACOES_CORE | OPERACOES_API

@@ -188,6 +188,28 @@ input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-bo
 
 /* ── Cards ── */
 .card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.settings-budget-card { margin-bottom: 16px; }
+.settings-budget-heading { display: flex; align-items: center; gap: 8px; }
+.settings-budget-heading > .ti { color: var(--accent); font-size: 18px; }
+.settings-budget-heading strong { font-weight: 500; }
+.settings-budget-description, .settings-budget-help { font-size: 12px; color: var(--text-2); line-height: 1.5; margin-top: 8px; overflow-wrap: anywhere; }
+.settings-budget-notice { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--text-2); font-size: 12px; }
+.settings-budget-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 14px 0 10px; max-width: 560px; }
+.settings-budget-stats > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.settings-budget-stats span { color: var(--text-2); font-size: 11px; }
+.settings-budget-stats strong { font-family: var(--mono); font-size: 18px; font-weight: 500; overflow-wrap: anywhere; }
+.settings-budget-blocked { color: var(--amber); font-size: 12px; margin-top: 8px; line-height: 1.5; }
+.settings-budget-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
+.settings-budget-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; max-width: 100%; }
+.settings-budget-form input { width: 180px; max-width: 100%; }
+.settings-budget-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--red); font-size: 12px; margin-top: 10px; overflow-wrap: anywhere; }
+.settings-budget-feedback { color: var(--green); font-size: 12px; margin-top: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .settings-budget-stats { grid-template-columns: 1fr; gap: 10px; }
+  .settings-budget-form { align-items: stretch; flex-direction: column; }
+  .settings-budget-form input { width: 100%; }
+  .settings-budget-form .btn { align-self: flex-start; }
+}
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .metric { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
 .metric .lbl { font-size: 11px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
