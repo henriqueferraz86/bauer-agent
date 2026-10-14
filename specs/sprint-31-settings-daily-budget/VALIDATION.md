@@ -16,4 +16,5 @@ não meia-noite. Matriz remota CI acompanha PR separadamente.
 
 Beelink: serviço reiniciado sem runs ativos, healthOK e bundle confirmado.
 GET daily manteve limite2 e uso9.694501. PUTinválido -1 retornou422 antesescrita;
-perfil/consumo inteiros iguais antes/depois. Nenhum limite real elevado.
+campos da política e consumo iguais antes/depois (updated_at calculado do
+perfil default sem registro é desconsiderado). Nenhum limite real elevado.
