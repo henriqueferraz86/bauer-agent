@@ -2162,12 +2162,26 @@ def create_app(
                     except Exception:  # noqa: BLE001 — fallback p/ o nome cru
                         state_obj.activity = name
 
+                def on_retry(self, attempt: int, delay_s: float) -> None:
+                    state_obj.activity = (
+                        f"Modelo temporariamente indisponível; nova tentativa {attempt} "
+                        f"em aproximadamente {delay_s:.0f}s"
+                    )
+                    try:
+                        event_bus.publish(
+                            "agent.retry", run_id=run.id, session_id=sid,
+                            agent_id=request_agent_id, status="retrying",
+                            data={"attempt": attempt, "retry_after_s": round(delay_s, 2)},
+                        )
+                    except Exception:
+                        _log.debug("loop retry activity unavailable", exc_info=True)
+
             sink_token = set_sink(_LoopLiveSink())
 
             def _turn():
                 return run_one_turn_with_fallback(
                     ctx, active_router, _turn_client, _turn_model, _fallback_clients,
-                    budget=budget,
+                    budget=budget, interrupt_check=_should_stop,
                 )
 
             def _should_stop():
@@ -2176,9 +2190,12 @@ def create_app(
                 current = run_manager.get_run(run.id)
                 if current is not None and current.status == "cancelled":
                     return "cancelled"
+                _sync_loop_cost()
+                if budget.is_exhausted:
+                    return "budget_exhausted"
                 return None
 
-            def _on_round(n: int, text: str, tool_log: list) -> None:
+            def _sync_loop_cost() -> None:
                 nonlocal last_cost
                 delta = cost.total_usd - last_cost
                 last_cost = cost.total_usd
@@ -2187,6 +2204,9 @@ def create_app(
                         budget.consume_cost(delta)
                 except Exception as exc:  # noqa: BLE001 — esgotou: o laço encerra
                     _log.debug("loop budget consume: %s", exc)
+
+            def _on_round(n: int, text: str, tool_log: list) -> None:
+                _sync_loop_cost()
                 state_obj.rounds = n
                 state_obj.tool_calls += len(tool_log)
                 state_obj.cost_usd = round(cost.total_usd, 6)

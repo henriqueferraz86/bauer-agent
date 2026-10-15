@@ -221,6 +221,16 @@ def run_loop_rounds(
             if not isinstance(exc, Exception):
                 preserve_tools(exc)
                 raise
+            from .provider_retry import ProviderRetryInterrupted
+            if isinstance(exc, ProviderRetryInterrupted):
+                stop_reason = exc.reason
+                if not last_text:
+                    last_text = {
+                        "budget_exhausted": "Execução interrompida pelo limite de segurança.",
+                        "cancelled": "Execução cancelada pelo usuário.",
+                        "kill_switch": "Execução interrompida pelo kill-switch.",
+                    }[exc.reason]
+                break
             stop_reason = "provider_error"
             last_text = str(exc)
             break

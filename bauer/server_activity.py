@@ -22,7 +22,7 @@ _ACTIVITIES = {
     "created": "Criado", "planning": "Planejando", "policy_check": "Verificando política",
     "queued": "Aguardando execução", "running": "Executando tarefa",
     "waiting_approval": "Aguardando aprovação", "evaluating": "Validando resultado",
-    "retrying": "Refazendo tarefa", "paused": "Pausado", "completed": "Concluído",
+    "retrying": "Tentando novamente", "paused": "Pausado", "completed": "Concluído",
     "failed": "Falhou", "cancelled": "Cancelado", "delegated": "Tarefa delegada",
     "unknown": "Estado não informado",
 }
