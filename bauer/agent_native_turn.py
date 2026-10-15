@@ -66,6 +66,12 @@ def run_native_turn(
         report_current_cost()
         if isinstance(exc, Exception) and is_unsupported_error(exc):
             raise unsupported_error(str(exc)) from exc
+        try:
+            # Only this request boundary is eligible for in-turn retry; errors
+            # from schemas, tool dispatch and context handling are not requests.
+            exc._bauer_native_request_failed = True  # type: ignore[attr-defined]
+        except Exception:
+            logging.getLogger("bauer.agent_native_turn").debug("Provider error marker unavailable", exc_info=True)
         # Provider failure is not another tool round. Let the shared retry/
         # fallback boundary classify it instead of exhausting the turn budget.
         raise

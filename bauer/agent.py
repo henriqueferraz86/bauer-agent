@@ -24,7 +24,7 @@ import sys
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from rich.console import Console
 
@@ -1333,6 +1333,7 @@ def run_one_turn(
     tracer: "Any | None" = None,
     session_id: str | None = None,
     memory_provider: "Any | None" = None,
+    interrupt_check: "Callable[[], str | None] | None" = None,
 ) -> tuple[str, list[dict]]:
     """Run a complete turn; failures carry completed tools in partial_tool_log."""
     tool_log: list[dict] = []
@@ -1341,6 +1342,7 @@ def run_one_turn(
             ctx, router, client, model_name, tool_log=tool_log, budget=budget,
             tool_timeout_s=tool_timeout_s, tracer=tracer, session_id=session_id,
             memory_provider=memory_provider,
+            interrupt_check=interrupt_check,
         )
     except BaseException as exc:
         _attach_partial_tool_log(exc, tool_log)
@@ -1359,6 +1361,7 @@ def _run_one_turn(
     tracer: "Any | None" = None,
     session_id: str | None = None,
     memory_provider: "Any | None" = None,
+    interrupt_check: "Callable[[], str | None] | None" = None,
 ) -> tuple[str, list[dict]]:
     """Executa um turno completo do agente, incluindo tool calls encadeados.
 
@@ -1426,9 +1429,19 @@ def _run_one_turn(
     use_native = _client_supports_native_tools(client)
 
     if use_native:
+        from .provider_retry import (
+            MAX_CONSECUTIVE_RETRIES, check_provider_retry_interrupt,
+            is_retryable_provider_error, retry_delay_s, wait_provider_retry,
+        )
+        from .delta_stream import emit_provider_retry, emit_round_start
+
         _native_empty_recovered = False
+        _provider_retries = 0
         while not _budget_exhausted():
+            check_provider_retry_interrupt(interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
             _consume_llm()
+            if _provider_retries:
+                emit_round_start()
             try:
                 result = _run_native_tool_turn(ctx, router, client, model_name, tool_log,
                                                _guardrail=_guardrail, _deduper=_deduper,
@@ -1440,6 +1453,24 @@ def _run_one_turn(
                 if hasattr(budget, "refund"):
                     budget.refund()
                 break
+            except Exception as exc:
+                request_failed = getattr(exc, "_bauer_native_request_failed", False) is True
+                if request_failed:
+                    try:
+                        del exc._bauer_native_request_failed  # type: ignore[attr-defined]
+                    except Exception:
+                        logging.getLogger("bauer.agent").debug("Provider error marker cleanup unavailable", exc_info=True)
+                if (not request_failed or _provider_retries >= MAX_CONSECUTIVE_RETRIES
+                        or not is_retryable_provider_error(exc)):
+                    raise
+                check_provider_retry_interrupt(interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
+                _provider_retries += 1
+                _retry_delay = retry_delay_s(_provider_retries)
+                emit_provider_retry(_provider_retries, _retry_delay)
+                wait_provider_retry(_retry_delay, interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
+                continue
+
+            _provider_retries = 0
 
             # Resposta vazia sem tool call: o bridge já recuperava disso desde
             # sempre (retry → force_compress → retry); o caminho native devolvia
@@ -1487,6 +1518,8 @@ def _run_one_turn(
             if hard_stop:
                 return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
         if use_native:
+            if _provider_retries:
+                check_provider_retry_interrupt(interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
             # Budget esgotado sem resposta final (ainda em native)
             return "[Limite de iterações atingido]", tool_log
 

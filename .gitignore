@@ -100,3 +100,6 @@ graphify-out/
 
 !specs/sprint-31-settings-daily-budget/
 !specs/sprint-31-settings-daily-budget/**
+
+!specs/sprint-32-native-provider-retry/
+!specs/sprint-32-native-provider-retry/**

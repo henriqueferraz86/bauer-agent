@@ -9,6 +9,7 @@ Protocolo do sink (todos os métodos opcionais):
   - ``on_delta(chunk: str)`` — token de texto (modo Tool Bridge / stream)
   - ``on_round()`` — nova chamada ao LLM começou (finalizar segmento)
   - ``on_tool(name: str)`` — tool prestes a executar (mostrar progresso)
+  - ``on_retry(attempt: int, delay_s: float)`` — espera de retry do provider
 
 Emissores nunca levantam: streaming é cosmético — um sink quebrado não pode
 derrubar o turno.
@@ -61,6 +62,19 @@ def emit_round_start() -> None:
         if handler:
             handler()
     except Exception:  # noqa: BLE001
+        pass
+
+
+def emit_provider_retry(attempt: int, delay_s: float) -> None:
+    """Emit only bounded retry metadata, without provider errors or prompts."""
+    sink = _sink.get()
+    if sink is None:
+        return
+    try:
+        handler = getattr(sink, "on_retry", None)
+        if handler:
+            handler(attempt, delay_s)
+    except Exception:  # noqa: BLE001 — streaming is cosmetic
         pass
 
 

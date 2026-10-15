@@ -92,9 +92,21 @@ def test_openai_transport_uses_shared_provider_fallback(tmp_path, stream):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("partial", [False, True])
-def test_fallback_counts_current_partial_usage_without_reusing_stale_usage(tmp_path, stream, partial):
+def test_fallback_counts_current_partial_usage_without_reusing_stale_usage(tmp_path, monkeypatch, stream, partial):
+    from bauer import provider_retry
+
+    monkeypatch.setattr(provider_retry, "wait_provider_retry",
+                        lambda _delay, **kwargs: provider_retry.check_provider_retry_interrupt(**kwargs))
     usage = {"prompt_tokens": 100, "completion_tokens": 0} if partial else None
     primary, fallback = ControlledClient(failure=True, failure_usage=usage), ControlledClient()
+    primary_attempts = []
+    original_request = primary.chat_with_tools
+
+    def counted_request(*args, **kwargs):
+        primary_attempts.append(True)
+        return original_request(*args, **kwargs)
+
+    monkeypatch.setattr(primary, "chat_with_tools", counted_request)
     primary.last_usage = {"prompt_tokens": 999_000, "completion_tokens": 999_000}
     app = make_app(tmp_path, primary, governed=True, fallback_clients=[(fallback, "gpt-4o")])
     response = TestClient(app).post("/v1/chat/completions", json={
@@ -103,8 +115,10 @@ def test_fallback_counts_current_partial_usage_without_reusing_stale_usage(tmp_p
     assert response.status_code == 200
     assert "CONTROLLED_OK" in response.text
     run = RunManager(root=tmp_path / "runtime").get_run(response.headers["X-Bauer-Run-ID"])
-    assert run.cost_estimate == pytest.approx(0.0035 + (0.00025 if partial else 0))
-    assert run.llm_calls_count == 2
+    assert len(primary_attempts) == 3  # Original request and two bounded retries.
+    assert len(fallback.calls) == 1
+    assert run.cost_estimate == pytest.approx(0.0035 + (3 * 0.00025 if partial else 0))
+    assert run.llm_calls_count == 4
     assert run.usage_known is partial
 
 
