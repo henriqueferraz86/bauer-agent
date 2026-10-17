@@ -50,6 +50,11 @@ os.environ["BAUER_HOME"] = tempfile.mkdtemp(prefix="bauer-tests-home-")
 os.environ["BAUER_AGENTS_FILE"] = str(
     Path(tempfile.gettempdir()) / "bauer-tests-no-such-agents" / "agents.yaml"
 )
+# A suíte não tem operador humano. Pedidos não resolvidos devem expirar em
+# tempo finito; testes de aprovação interativa definem seus próprios prazos.
+# O serviço real mantém o prazo de produção de uma hora.
+os.environ.setdefault("BAUER_APPROVAL_WAIT_SECONDS", "2")
+
 # Mesma hermeticidade para MCP: `MCP_SERVER_<NOME>` no ambiente VENCE o
 # config.yaml na descoberta de servidores, então um dev com MCP configurado
 # via env via servidores a mais do que o teste montou.

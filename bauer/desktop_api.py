@@ -1576,7 +1576,7 @@ def build_desktop_router(
         return {"skills": [manifest.to_dict() for manifest in SkillRegistry().list()]}
 
     @router.post("/approvals/{approval_id}/approve")
-    def approve_policy_request(approval_id: str):
+    def approve_policy_request(approval_id: str, body: dict | None = Body(default=None)):
         from dataclasses import asdict
 
         from .core.events import EventBus
@@ -1584,15 +1584,20 @@ def build_desktop_router(
         from .core.policy import ApprovalManager
         from .core.runtime.run_manager import RunManager
 
+        scope = (body or {}).get("scope", "once")
+        if scope not in ("once", "run", "always") or set(body or {}) - {"scope"}:
+            raise HTTPException(status_code=422, detail="Escopo deve ser once ou run.")
         try:
             bus = EventBus(root=_runtime_root)
             result = BauerKernel(
                 runs=RunManager(root=_runtime_root, event_bus=bus), bus=bus,
                 approvals=ApprovalManager(root=_runtime_root, event_bus=bus),
-            ).approve(approval_id)
+            ).approve(approval_id, scope=scope)
             return asdict(result) if hasattr(result, "__dataclass_fields__") else result
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+        except ValueError:
+            raise HTTPException(status_code=409, detail="A aprovação não pode ser aplicada ao estado ou escopo atual.")
 
     @router.post("/approvals/{approval_id}/deny")
     def deny_policy_request(approval_id: str):
@@ -1609,6 +1614,8 @@ def build_desktop_router(
             ).deny(approval_id)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+        except ValueError:
+            raise HTTPException(status_code=409, detail="A aprovação já foi resolvida ou a execução terminou.")
 
     # ── Config ────────────────────────────────────────────────────────────
     from . import config_admin as ca

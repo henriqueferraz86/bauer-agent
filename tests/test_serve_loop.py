@@ -479,3 +479,59 @@ def test_loops_list_endpoint(tmp_path: Path):
     _wait_done(tc, run_id)
     loops = tc.get("/loops").json()["loops"]
     assert any(item["run_id"] == run_id for item in loops)
+
+
+@pytest.mark.parametrize("decision", ["approve", "deny"])
+def test_loop_projects_playwright_card_and_resumes_only_after_decision(tmp_path, monkeypatch, decision):
+    from bauer.shell_runner import ShellRunner, CommandResult
+
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("BAUER_APPROVAL_WAIT_SECONDS", "20")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    runner = ShellRunner(workspace=workspace)
+    router = ToolRouter(workspace=workspace, shell_runner=runner)
+    executed = []
+    monkeypatch.setattr(runner, "_execute", lambda args: (
+        executed.append(args) or CommandResult(command=args, returncode=0, stdout="ok", stderr="", elapsed_ms=1)
+    ))
+    calls = []
+
+    def turn(ctx, active_router, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            output = active_router.execute_native_call("run_command", {"command": "playwright --token private-value"})
+            return "ferramenta concluída", [{"tool": "run_command", "result": output}]
+        return "validação concluída", []
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", turn)
+    monkeypatch.setattr("bauer.projects_registry._DEFAULT_REGISTRY", tmp_path / "projects.json")
+    cfg = _cfg(tmp_path)
+    app = create_app(model_name="m", applied_context=4096, router=router, client=MagicMock(),
+                     system_prompt="test", sessions_dir=tmp_path / "sessions", config_path=cfg,
+                     api_key="", rate_limit_requests=0)
+    tc = TestClient(app)
+    run_id = tc.post("/loop", json={"message": "validar navegador", "session_id": "loop-approval"}).json()["run_id"]
+    try:
+        deadline = time.monotonic() + 10
+        status = {}
+        while time.monotonic() < deadline:
+            status = tc.get(f"/loop/{run_id}").json()
+            if status.get("approvals"):
+                break
+            time.sleep(0.025)
+        assert status["state"] == "waiting_approval", status
+        assert not executed
+        card = status["approvals"][0]
+        assert card["status"] == "pending"
+        assert card["tool_name"] == "run_command"
+        assert "playwright" in card["reason"]
+        assert "private-value" not in str(status)
+        assert "payload" not in card
+        assert tc.post(f"/api/approvals/{card['id']}/{decision}").status_code == 200
+        final = _wait_done(tc, run_id)
+        assert final["state"] == ("completed" if decision == "approve" else "failed"), final
+        assert bool(executed) == (decision == "approve")
+        assert final["approvals"][0]["status"] == ("approved" if decision == "approve" else "denied")
+    finally:
+        tc.post(f"/loop/{run_id}/stop")

@@ -470,18 +470,27 @@ class BauerKernel:
     # ── aprovações (Sprint 3) ────────────────────────────────────────────────
 
     def approve(self, approval_id: str, *, continue_with: dict[str, Any] | None = None,
-                executor: Any | None = None) -> KernelRun | dict[str, Any]:
+                executor: Any | None = None, scope: str = "once") -> KernelRun | dict[str, Any]:
         """Aprova e retoma: waiting_approval → queued (→ execução, se possível).
 
-        Sem ApprovalManager injetado, KeyError. Retorna o KernelRun final se a
+        Sem ApprovalManager injetado, ValueError. Retorna o KernelRun final se a
         continuação rodou; senão o dict do resume (run fica queued).
         """
         if self.approvals is None:
-            raise RuntimeError("ApprovalManager não injetado no Kernel")
-        record = self.approvals.approve(approval_id)
+            raise ValueError("ApprovalManager não injetado no Kernel")
+        record, changed = self.approvals.resolve_for_run(
+            approval_id, "approved", scope=scope, run_status="queued",
+        )
         if not record.run_id:
-            return {"approval_id": approval_id, "status": "approved", "run_id": None}
-        resumed = self.resume(record.run_id)
+            return {"approval_id": approval_id, "status": "approved", "run_id": None,
+                    "scope": record.scope}
+        run = self._require_run(record.run_id)
+        resumed = {"approval_id": approval_id, "run_id": run.id,
+                   "status": run.status, "scope": record.scope}
+        if not changed:
+            return resumed
+        self._publish("run.state.changed", run, status=run.status,
+                      message="approval accepted")
         # Public approval endpoints do not have an executor to recover. Keep a
         # faithful queued state for a worker instead of pretending to resume.
         if executor is None and continue_with is None:
@@ -509,15 +518,26 @@ class BauerKernel:
 
     def deny(self, approval_id: str) -> dict[str, Any]:
         """Nega a aprovação: waiting_approval → failed (policy denied)."""
+        return self._reject_approval(approval_id, "denied")
+
+    def expire_approval(self, approval_id: str) -> dict[str, Any]:
+        """Expire a pending request and fail its run under Kernel custody."""
+        return self._reject_approval(approval_id, "expired")
+
+    def _reject_approval(self, approval_id: str, status: str) -> dict[str, Any]:
         if self.approvals is None:
-            raise RuntimeError("ApprovalManager não injetado no Kernel")
-        record = self.approvals.deny(approval_id)
-        if record.run_id:
+            raise ValueError("ApprovalManager não injetado no Kernel")
+        record, changed = self.approvals.resolve_for_run(
+            approval_id, status, run_status="failed",
+        )
+        if record.run_id and changed:
             run = self.runs.get_run(record.run_id)
-            if run is not None and run.status == "waiting_approval":
-                self.runs.fail_run(record.run_id, f"aprovação negada: {record.reason}")
+            if run is not None:
+                if run.status == "failed":
+                    self.runs._publish_status_event(run)
                 self._release_budget(record.run_id)
-        return {"approval_id": approval_id, "status": "denied", "run_id": record.run_id}
+        return {"approval_id": approval_id, "status": status, "run_id": record.run_id,
+                "scope": record.scope}
 
     # ── operações de ciclo de vida (Sprint 2) ────────────────────────────────
 
@@ -536,7 +556,7 @@ class BauerKernel:
         from ..runtime.adapters.base import adapter_resume
         run = self._require_run(run_id)
         ensure_transition(run.status, "queued")
-        self.runs.update_run(run_id, status="queued")
+        self._transition(run, "queued", [])
         self._publish("run.state.changed", run, status="queued",
                       message=f"resumed from {run.status}")
         adapter_result = adapter_resume(self._adapter_for(run), run_id)
@@ -545,7 +565,21 @@ class BauerKernel:
     def cancel(self, run_id: str) -> dict[str, Any]:
         """Cancela o run (idempotente em terminais) e avisa o adapter."""
         run = self._require_run(run_id)
-        cancelled = self.runs.cancel_run(run_id)
+        try:
+            cancelled = self.runs.cancel_run(run_id)
+        except ValueError:
+            # Another terminal writer may win between cancel_run's read and
+            # its guarded upsert. Return that outcome without overwriting it.
+            cancelled = self._require_run(run_id)
+            if cancelled.status not in {"completed", "failed", "cancelled"}:
+                raise
+        if self.approvals is not None:
+            for record in self.approvals.list("pending"):
+                if record.run_id == run_id:
+                    try:
+                        self.expire_approval(record.id)
+                    except ValueError:
+                        pass  # a concurrent human decision already resolved it
         self._release_budget(run_id)
         adapter_result: dict[str, Any] = {}
         try:
@@ -883,7 +917,7 @@ class BauerKernel:
         if atual is not None and atual.status in TERMINAL_RUN_STATUSES:
             trajectory.append(atual.status)
             return
-        updated = self.runs.fail_run(run_id, error)
+        updated = self.runs.fail_run_se_nao_terminal(run_id, error)
         self._release_budget(run_id)
         trajectory.append(updated.status)
 

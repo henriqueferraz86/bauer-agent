@@ -152,7 +152,7 @@ def register_observability_routes(app, deps: ObservabilityDeps, verify_key) -> N
     """Registra sessões, eventos, runs, auditoria e aprovações sem capturar create_app."""
     from dataclasses import asdict
     from datetime import datetime
-    from fastapi import Depends, HTTPException, Query
+    from fastapi import Body, Depends, HTTPException, Query
     from .core.events import EventBus
     from .core.observability import AuditLog
 
@@ -165,6 +165,13 @@ def register_observability_routes(app, deps: ObservabilityDeps, verify_key) -> N
         from .server_activity import build_chat_activity
 
         return build_chat_activity(deps.run_manager, deps.event_bus, session_id)
+
+    @app.get("/sessions/{session_id}/messages")
+    def get_session_messages(session_id: str, _: None = Depends(verify_key)):
+        """Histórico público para o Chat recuperar um turno aprovado fora dele."""
+        loader = getattr(deps.store, "load_public", None)
+        messages = loader(session_id) if callable(loader) else []
+        return {"session_id": session_id, "messages": messages}
 
     @app.get("/events")
     def list_events(limit: int = Query(100, ge=1, le=1000), _: None = Depends(verify_key)):
@@ -232,13 +239,18 @@ def register_observability_routes(app, deps: ObservabilityDeps, verify_key) -> N
         return {"approvals": [asdict(record) for record in deps.approval_manager.list(status=status or None)]}
 
     @app.post("/approvals/{approval_id}/approve")
-    def approve_request(approval_id: str, _: None = Depends(verify_key)):
+    def approve_request(approval_id: str, body: dict | None = Body(default=None), _: None = Depends(verify_key)):
+        scope = (body or {}).get("scope", "once")
+        if scope not in ("once", "run", "always") or set(body or {}) - {"scope"}:
+            raise HTTPException(status_code=422, detail="Escopo deve ser once ou run.")
         try:
             from .core.kernel import BauerKernel
-            result = BauerKernel(runs=deps.run_manager, bus=deps.event_bus, approvals=deps.approval_manager).approve(approval_id)
+            result = BauerKernel(runs=deps.run_manager, bus=deps.event_bus, approvals=deps.approval_manager).approve(approval_id, scope=scope)
             return asdict(result) if hasattr(result, "__dataclass_fields__") else result
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+        except ValueError:
+            raise HTTPException(status_code=409, detail="A aprovação não pode ser aplicada ao estado ou escopo atual.")
 
     @app.post("/approvals/{approval_id}/deny")
     def deny_request(approval_id: str, _: None = Depends(verify_key)):
@@ -247,6 +259,8 @@ def register_observability_routes(app, deps: ObservabilityDeps, verify_key) -> N
             return BauerKernel(runs=deps.run_manager, bus=deps.event_bus, approvals=deps.approval_manager).deny(approval_id)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")
+        except ValueError:
+            raise HTTPException(status_code=409, detail="A aprovação já foi resolvida ou a execução terminou.")
 
     @app.delete("/sessions/{session_id}")
     def delete_session(session_id: str, _: None = Depends(verify_key)):

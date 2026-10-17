@@ -59,6 +59,8 @@ import logging
 import os
 import re
 import threading
+from contextvars import ContextVar
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -86,6 +88,17 @@ from .tools.sqlite import SqliteToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
+
+_POLICY_APPROVAL_WAIT: ContextVar[bool] = ContextVar("policy_approval_wait", default=False)
+
+
+def set_policy_approval_wait(enabled: bool):
+    return _POLICY_APPROVAL_WAIT.set(enabled)
+
+
+def reset_policy_approval_wait(token) -> None:
+    _POLICY_APPROVAL_WAIT.reset(token)
+
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +434,11 @@ class ToolRouter(
         # ver server.py. Default "enforce" preserva o comportamento de quem liga
         # policy_enabled diretamente.
         self._policy_mode = "enforce"
+        # O serve em modo enforce mantém a própria tool call bloqueada até a
+        # decisão humana. Fora dele, preservamos a semântica histórica: a
+        # chamada falha imediatamente com um ToolError que o caller decide
+        # como apresentar.
+        self._wait_for_policy_approval = False
         self._policy_rules_path = policy_rules_path
         self._policy_root = Path(policy_root)
         self._runtime_session_id = session_id or None
@@ -1432,7 +1450,17 @@ class ToolRouter(
         action = {"action": tool_name, "args": tool_args}
         return self.execute(action)
 
-    def _evaluate_runtime_policy(self, tool_name: str, args: dict) -> None:
+    def _evaluate_runtime_policy(self, tool_name: str, args: dict) -> bool | None:
+        from .core.runtime.run_manager import RunManager, TERMINAL_RUN_STATUSES
+
+        manager = RunManager(root=self._policy_root, event_bus=self._event_bus)
+        run = manager.get_run(self._runtime_run_id) if self._runtime_run_id else None
+        if run is not None:
+            if run.status in TERMINAL_RUN_STATUSES:
+                raise ToolError(f"run is terminal: {run.status}")
+            if run.session_id != self._runtime_session_id:
+                raise ToolError("runtime session does not match run")
+        wait_for_approval = self._wait_for_policy_approval or _POLICY_APPROVAL_WAIT.get()
         operation = _policy_operation_for_tool(tool_name)
         if operation is None:
             return
@@ -1442,9 +1470,8 @@ class ToolRouter(
 
             root = self._policy_root
             approvals = ApprovalManager(root=root, event_bus=self._event_bus)
-            if approval_id and approvals.is_approved(approval_id, operation=operation, tool_name=tool_name):
-                return
-            engine = PolicyEngine(workspace=self.workspace, rules_path=self._policy_rules_path)
+            engine = PolicyEngine(workspace=self.workspace, rules_path=self._policy_rules_path,
+                                  runtime_root=root)
             decision = engine.evaluate(operation, args)
             if self._event_bus is not None:
                 self._event_bus.publish(
@@ -1472,11 +1499,46 @@ class ToolRouter(
                         data={"operation": operation, "risk_level": decision.risk_level},
                     )
                 raise ToolError(f"policy denied: {decision.reason}")
+            needs_command_approval = False
+            if (tool_name == "run_command" and self._shell_runner is not None
+                    and (wait_for_approval or self._policy_mode == "enforce")):
+                from .shell_runner import BlockedCommandError, validate_command_syntax
+
+                command = args.get("command", "")
+                command_args = validate_command_syntax(command)
+                self._shell_runner._check_denylist(command)
+                try:
+                    self._shell_runner._check_allowlist(command_args, allow_prompt=False)
+                except BlockedCommandError:
+                    needs_command_approval = True
+                    decision.action = "ask"
+                    decision.reason = (
+                        f"Comando '{self._shell_runner._base_command(command_args)}' "
+                        "fora da allowlist; requer aprovação humana."
+                    )
+            authorization = dict(
+                operation=operation, tool_name=tool_name, payload=args,
+                run_id=self._runtime_run_id, session_id=self._runtime_session_id,
+            )
+            if approval_id:
+                if approvals.authorize(approval_id, **authorization, resume_run=True):
+                    return True
+                raise ToolError("approval does not authorize this call or was already consumed")
             if decision.action == "ask":
+                # Match the CLI's explicit permanent command authorization.
+                # Only the stock shell rule is covered; custom policy still asks.
+                if operation == "shell.execute" and tool_name == "run_command" and set(decision.matched_rules) == {"shell.execute.ask"}:
+                    from .shell_runner import ShellRunner, load_learned_commands, validate_command_syntax
+
+                    base = ShellRunner._base_command(validate_command_syntax(str(args.get("command", ""))))
+                    if base in load_learned_commands():
+                        return
+                if approvals.authorize(None, **authorization):
+                    return True
                 # Modo audit: registra a trilha e deixa passar (operador presente;
                 # sem fluxo de aprovar-e-retomar no chat, bloquear todo shell
                 # quebraria o uso normal). deny já foi tratado acima e bloqueia.
-                if self._policy_mode == "audit":
+                if self._policy_mode == "audit" and not needs_command_approval:
                     if self._event_bus is not None:
                         self._event_bus.publish(
                             "approval.accepted",
@@ -1488,6 +1550,10 @@ class ToolRouter(
                             data={"operation": operation, "risk_level": decision.risk_level},
                         )
                     return
+                # O run precisa entrar em espera ANTES de a aprovação ficar
+                # visível. Caso contrário, um clique rápido pode resolver o
+                # record enquanto o run ainda está "running" e o Kernel rejeita
+                # a transição running → queued.
                 record = approvals.request(
                     operation=operation,
                     tool_name=tool_name,
@@ -1496,17 +1562,70 @@ class ToolRouter(
                     payload=args,
                     run_id=self._runtime_run_id,
                     session_id=self._runtime_session_id,
+                    suspend_run=run is not None or bool(wait_for_approval),
                 )
-                if self._runtime_run_id:
-                    try:
-                        from .core.runtime.run_manager import RunManager
+                if wait_for_approval and self._runtime_run_id:
+                    wait_seconds = max(
+                        1.0,
+                        float(os.environ.get("BAUER_APPROVAL_WAIT_SECONDS", "3600")),
+                    )
+                    deadline = time.monotonic() + wait_seconds
+                    while time.monotonic() < deadline:
+                        run = manager.get_run(self._runtime_run_id)
+                        if run is None or run.status in TERMINAL_RUN_STATUSES:
+                            if run is not None:
+                                from .core.kernel.kernel import BauerKernel
 
-                        RunManager(root=root, event_bus=self._event_bus).update_run(
-                            self._runtime_run_id,
-                            status="waiting_approval",
+                                try:
+                                    BauerKernel(
+                                        runs=manager, bus=self._event_bus, approvals=approvals,
+                                    ).expire_approval(record.id)
+                                except ValueError:
+                                    pass  # decision already resolved; keep its outcome
+                            raise ToolError(
+                                f"approval stopped: run is {run.status if run else 'missing'}"
+                            )
+                        current = approvals.get(record.id)
+                        if current is None:
+                            raise ToolError(
+                                "approval request disappeared: "
+                                f"approval_id={record.id}"
+                            )
+                        if current.status == "approved":
+                            # A decision alone does not resume a run. Kernel
+                            # commits queued with the decision; legacy writers
+                            # can still expose approved before that transition.
+                            latest_decision = PolicyEngine(
+                                workspace=self.workspace, rules_path=self._policy_rules_path,
+                                runtime_root=root,
+                            ).evaluate(operation, args)
+                            if latest_decision.action == "deny":
+                                raise ToolError(f"policy denied: {latest_decision.reason}")
+                            if approvals.authorize(record.id, **authorization, resume_run=True):
+                                return True
+                            if current.consumed_at:
+                                raise ToolError("approval was already consumed")
+                        if current.status in {"denied", "expired", "cancelled"}:
+                            raise ToolError(
+                                f"approval {current.status}: "
+                                f"approval_id={record.id} reason={current.reason}"
+                            )
+                        time.sleep(0.25)
+                    from .core.kernel.kernel import BauerKernel
+
+                    kernel = BauerKernel(runs=manager, bus=self._event_bus, approvals=approvals)
+                    try:
+                        kernel.expire_approval(record.id)
+                    except ValueError:
+                        # Resolution won the timeout race. Do not replace it or
+                        # execute after the caller's wait budget has elapsed.
+                        kernel._fail_se_nao_terminal(
+                            self._runtime_run_id, "approval timed out before execution", [],
                         )
-                    except Exception:
-                        pass
+                    raise ToolError(
+                        "approval timed out: "
+                        f"approval_id={record.id} wait_seconds={wait_seconds:g}"
+                    )
                 raise ToolError(
                     f"waiting_approval: approval_id={record.id} operation={operation} "
                     f"risk={decision.risk_level} reason={decision.reason}"
@@ -1562,8 +1681,10 @@ class ToolRouter(
                 f"tool denied: '{name}' nao permitido no contexto '{self.tool_context}'."
             )
 
+        approved_call = False
         if self._policy_enabled:
-            self._evaluate_runtime_policy(name, args)
+            approved_call = self._evaluate_runtime_policy(name, args) is True
+        approved_command = args.get("command") if approved_call and name == "run_command" else None
 
         # LIMITS-001: enforça max_tool_calls por sessão
         self._tool_call_count += 1
@@ -1689,6 +1810,14 @@ class ToolRouter(
             # Per-tool timeout enforcement (Wave E)
             _timeout_sec = _TOOL_TIMEOUTS.get(name, 0)
             _fn = (_ext_fn if _ext_fn is not None else self._tools[name]["fn"])
+            if approved_command is not None and self._shell_runner is not None and _ext_fn is None:
+                # Install the grant inside the worker, including timed tools.
+                # No shared allowlist mutation or model-provided bypass flag.
+                _command_fn = _fn
+
+                def _fn(call_args):
+                    with self._shell_runner.approved_call(approved_command):
+                        return _command_fn(call_args)
             if name.startswith("browser_"):
                 # G18: TODA browser tool roda na MESMA thread dedicada e persistente.
                 # Playwright sync e thread-affine (greenlet): a pagina criada num
@@ -1731,10 +1860,7 @@ class ToolRouter(
                     ) from _te
             else:
                 # Tool externa (ToolRegistry) tem prioridade sobre built-in
-                if _ext_fn is not None:
-                    result = _ext_fn(args)
-                else:
-                    result = self._tools[name]["fn"](args)
+                result = _fn(args)
         except Exception as _exc:
             _audit_error = _exc
             _duration_ms = (_time.monotonic() - _t0) * 1000

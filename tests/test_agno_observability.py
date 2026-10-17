@@ -103,3 +103,15 @@ def test_run_agent_preserves_member_tool_identity_without_duplicating_root_tools
     ]))
     assert adapter.run_agent({"run_id": "run"})["output"] == "answer"
     assert seen == [member]
+
+
+def test_event_sink_streams_content_without_widening_public_activity_sink(monkeypatch):
+    events, activity = [], []
+    adapter = AgnoRuntimeAdapter(event_sink=events.append, activity_sink=activity.append)
+    lifecycle = {"event": "agent.started", "agent_id": "reviewer"}
+    delta = {"event": "message.delta", "content": "answer"}
+    finished = {"event": "run.completed", "status": "completed"}
+    monkeypatch.setattr(adapter, "stream_agent", lambda request: iter([lifecycle, delta, finished]))
+    assert adapter.run_agent({"run_id": "run"})["output"] == "answer"
+    assert events == [lifecycle, delta, finished]
+    assert activity == [lifecycle]

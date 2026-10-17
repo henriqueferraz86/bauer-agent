@@ -49,6 +49,7 @@ OPERACOES_CORE = {
     "GET /runs/{run_id}/events",
     "GET /runs/{run_id}/trace",
     "GET /sessions",
+    "GET /sessions/{session_id}/messages",
     "GET /status",
     "GET /stream",
     "GET /tools",

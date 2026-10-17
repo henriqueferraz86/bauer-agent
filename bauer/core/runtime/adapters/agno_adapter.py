@@ -5,12 +5,24 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ..agent_spec import AgentSpec, agent_spec_from_mapping, agno_agent_spec_from_bauer
 from .base import RuntimeAdapterError
+
+
+_ACTIVE_AGNO_SESSION_ID: ContextVar[str] = ContextVar("bauer_agno_session_id", default="")
+
+
+def _in_agno_session(session_id: str, events: Iterator[Any]) -> Iterator[Any]:
+    token = _ACTIVE_AGNO_SESSION_ID.set(session_id)
+    try:
+        yield from events
+    finally:
+        _ACTIVE_AGNO_SESSION_ID.reset(token)
 
 
 class AgnoRuntimeAdapter:
@@ -25,6 +37,10 @@ class AgnoRuntimeAdapter:
         chatgpt_client: Any | None = None,
         tool_router: Any | None = None,
         activity_sink: Callable[[dict[str, Any]], None] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+        runtime_event_bus: Any | None = None,
+        runtime_policy_root: str | Path | None = None,
+        runtime_policy_mode: str | None = None,
     ):
         self.config = config
         self.adapter_config = adapter_config or self._adapter_config_from(config)
@@ -32,12 +48,43 @@ class AgnoRuntimeAdapter:
         self.base_url = str(self.adapter_config.get("base_url") or "http://localhost:7777")
         self.timeout_s = int(self.adapter_config.get("timeout_s") or self.adapter_config.get("timeout_seconds") or 120)
         self.db_file = Path(str(self.adapter_config.get("db_file") or "memory/runtime/agno/sessions.db"))
-        self.workspace = Path(str(self.adapter_config.get("workspace") or "workspace"))
+        workspace = (
+            self.adapter_config.get("workspace")
+            or getattr(getattr(config, "agent", None), "workspace", None)
+            or "workspace"
+        )
+        if not isinstance(workspace, (str, Path)):
+            raise RuntimeAdapterError("Agno workspace must be a path string or Path.")
+        self.workspace = Path(workspace).resolve()
         self.tool_context = str(self.adapter_config.get("tool_context") or "worker")
         self.tool_policy_path = self.adapter_config.get("tool_policy_path")
+        tools_config = getattr(config, "tools", None)
+        self.shell_safe_mode = bool(self.adapter_config.get(
+            "shell_safe_mode", getattr(tools_config, "safe_mode", True)
+        ))
+        self.shell_timeout_s = int(self.adapter_config.get(
+            "shell_timeout_s", getattr(tools_config, "timeout_seconds", self.timeout_s)
+        ))
+        self.shell_max_output_bytes = int(self.adapter_config.get(
+            "shell_max_output_kb", getattr(tools_config, "max_output_kb", 50)
+        )) * 1024
+        extra_commands = self.adapter_config.get(
+            "extra_allowed_commands",
+            getattr(tools_config, "extra_allowed_commands", []),
+        ) or []
+        if isinstance(extra_commands, str):
+            extra_commands = [item.strip() for item in extra_commands.split(",") if item.strip()]
+        self.shell_extra_allowed_commands = list(extra_commands)
         self.chatgpt_client = chatgpt_client
         self._tool_router = tool_router
         self._activity_sink = activity_sink
+        self._event_sink = event_sink
+        # The server creates a short-lived Agno adapter per turn. Keep the
+        # governance objects explicit so routers created lazily for Agno tools
+        # use the same approval store and event stream as /stream.
+        self.runtime_event_bus = runtime_event_bus
+        self.runtime_policy_root = runtime_policy_root
+        self.runtime_policy_mode = runtime_policy_mode
         self._agents: dict[str, Any] = {}
         self._teams: dict[str, Any] = {}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -61,6 +108,11 @@ class AgnoRuntimeAdapter:
         last_event: dict[str, Any] = {}
         for event in self.stream_agent({**request, "run_id": run_id}):
             last_event = event
+            if self._event_sink is not None:
+                try:
+                    self._event_sink(event)
+                except Exception:
+                    logging.getLogger("bauer.agno_adapter").debug("event sink failed", exc_info=True)
             if self._activity_sink is not None and (
                 str(event.get("event", "")).startswith("agent.") or event.get("event") == "task.delegated"
                 or (event.get("event") in {"tool.call.requested", "tool.call.completed", "tool.call.failed"}
@@ -147,13 +199,13 @@ class AgnoRuntimeAdapter:
             final_content = ""
             agno_run_id = None
             member_events: list[dict[str, Any]] = []
-            for event in team.run(
+            for event in _in_agno_session(session_id, team.run(
                 prompt,
                 stream=True,
                 run_id=run_id,
                 session_id=session_id,
                 user_id=user_id,
-            ):
+            )):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
                 event_name = str(getattr(event, "event", "") or "").lower()
                 if "error" in event_name or "cancel" in event_name:
@@ -250,10 +302,10 @@ class AgnoRuntimeAdapter:
             agno_run_id = None
             team_request = self._is_team_request(request)
             observed_member_messages: set[str] = set()
-            for event in agent.run(
+            for event in _in_agno_session(session_id, agent.run(
                 prompt, stream=True, stream_events=True,
                 run_id=run_id, session_id=session_id, user_id=user_id,
-            ):
+            )):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
                 agno_event = self._agno_event_name(event)
                 singular_tool = getattr(event, "tool", None)
@@ -451,12 +503,13 @@ class AgnoRuntimeAdapter:
         from ..agent_registry import RuntimeAgentRegistry
         from ..team_registry import TeamRegistry
 
-        agent_roots: list[str | Path] = [Path(__file__).resolve().parents[2] / "data" / "agent_specs"]
+        package_root = Path(__file__).resolve().parents[3]
+        agent_roots: list[str | Path] = [package_root / "data" / "agent_specs"]
         workspace_agents = self.workspace / "agents.yaml"
         if workspace_agents.exists():
             agent_roots.insert(0, workspace_agents)
         agents = RuntimeAgentRegistry(roots=agent_roots)
-        team_roots: list[str | Path] = [Path(__file__).resolve().parents[2] / "data" / "team_specs"]
+        team_roots: list[str | Path] = [package_root / "data" / "team_specs"]
         workspace_teams = self.workspace / "teams"
         if workspace_teams.exists():
             team_roots.insert(0, workspace_teams)
@@ -464,8 +517,22 @@ class AgnoRuntimeAdapter:
         if team is None:
             raise RuntimeAdapterError(f"Agno team not found: {team_id}")
 
+        requested_agents = 0
+        try:
+            requested_agents = int(self._decision_value(request, "requested_agents") or 0)
+        except ValueError:
+            requested_agents = 0
+        member_ids = list(team.agents)
+        if requested_agents >= 2:
+            requested_agents = min(requested_agents, len(member_ids))
+            coordinator_id = team.coordinator or member_ids[0]
+            member_ids = [
+                coordinator_id,
+                *(member_id for member_id in member_ids if member_id != coordinator_id),
+            ][:requested_agents]
+
         members = []
-        for member_id in team.agents:
+        for member_id in member_ids:
             spec = agents.get(member_id)
             if spec is None:
                 raise RuntimeAdapterError(f"Agno team member not found: {member_id}")
@@ -504,6 +571,9 @@ class AgnoRuntimeAdapter:
             members=members,
             mode=mode,
             instructions=instructions,
+            determine_input_for_members=True,
+            delegate_to_all_members=requested_agents >= 2,
+            stream_member_events=True,
             add_history_to_context=True,
             num_history_runs=3,
         )
@@ -825,6 +895,21 @@ class AgnoRuntimeAdapter:
         from agno.tools.function import Function
         from ..agno_catalog import AgnoCapabilityCatalog
 
+        # A file read performed by one callable must be visible to the write
+        # callable created for the same Agent. Building a ToolRouter inside
+        # _bauer_tool_callable gave each function its own read-before-write
+        # tracker, so a legitimate read -> overwrite sequence was rejected.
+        # Keep routers local to this mapped tool set and session. An Agent may
+        # be cached and reused across sessions; a single router would then let
+        # a read in an older conversation authorize a later overwrite.
+        routers_by_session: dict[str, Any] = {}
+
+        def router_for_session() -> Any:
+            session_id = _ACTIVE_AGNO_SESSION_ID.get()
+            if session_id not in routers_by_session:
+                routers_by_session[session_id] = self._build_tool_router()
+            return routers_by_session[session_id]
+
         mapped: list[Any] = []
         for tool in tools:
             if isinstance(tool, Function):
@@ -841,7 +926,7 @@ class AgnoRuntimeAdapter:
                     raise RuntimeAdapterError(
                         f"Agno capability '{capability.id}' is cataloged but has no Bauer adapter yet."
                     )
-                mapped_tool = self._bauer_tool_callable(tool)
+                mapped_tool = self._bauer_tool_callable(tool, router_factory=router_for_session)
                 if mapped_tool is None:
                     if capability is None:
                         raise RuntimeAdapterError(
@@ -856,10 +941,24 @@ class AgnoRuntimeAdapter:
                 raise RuntimeAdapterError("Agno tools must be registered names or trusted callables.")
         return mapped
 
-    def _bauer_tool_callable(self, tool_name: str) -> Any | None:
-        router = self._build_tool_router()
+    def _bauer_tool_callable(
+        self,
+        tool_name: str,
+        *,
+        router: Any | None = None,
+        router_factory: Any | None = None,
+    ) -> Any | None:
+        # Direct callers remain supported; _map_tools supplies a session-aware
+        # factory shared by all Bauer callables belonging to the same Agent.
+        if router_factory is not None:
+            get_router = router_factory
+        elif router is not None:
+            def get_router() -> Any:
+                return router
+        else:
+            get_router = self._build_tool_router
         normalized = tool_name.strip().removeprefix("bauer.")
-        schemas = router.get_tool_schemas()
+        schemas = get_router().get_tool_schemas()
         schema = next((item.get("function") for item in schemas
                        if isinstance(item, dict) and isinstance(item.get("function"), dict)
                        and item["function"].get("name") == normalized), None)
@@ -871,22 +970,22 @@ class AgnoRuntimeAdapter:
                 args = {"path": path, "offset": offset}
                 if limit:
                     args["limit"] = limit
-                return router.execute_native_call("read_file", args)
+                return get_router().execute_native_call("read_file", args)
             return read_file
 
         if normalized == "write_file":
             def write_file(path: str, content: str, overwrite: bool = False) -> str:
-                return router.execute_native_call("write_file", {"path": path, "content": content, "overwrite": overwrite})
+                return get_router().execute_native_call("write_file", {"path": path, "content": content, "overwrite": overwrite})
             return write_file
 
         if normalized == "list_dir":
             def list_dir(path: str = ".") -> str:
-                return router.execute_native_call("list_dir", {"path": path})
+                return get_router().execute_native_call("list_dir", {"path": path})
             return list_dir
 
         if normalized == "search_text":
             def search_text(pattern: str, path: str = ".") -> str:
-                return router.execute_native_call(
+                return get_router().execute_native_call(
                     "search_text",
                     {"pattern": pattern, "path": path},
                 )
@@ -894,7 +993,33 @@ class AgnoRuntimeAdapter:
 
         if normalized == "run_command":
             def run_command(command: str, confirm: bool = False, background: bool = False) -> str:
-                return router.execute_native_call(
+                """Execute one command with shell=False in the configured workspace.
+
+                Paths resolve from that workspace, not the repository root.
+                Inspect list_dir('.') first; use explicit paths or command flags
+                such as git -C and docker compose --project-directory/-f.
+                No cd &&, chaining, pipes or redirects: use separate tool calls.
+                Quote arguments containing spaces or Python -c code. Parsing uses
+                POSIX quoting even on Windows; prefer quoted forward-slash paths.
+                Use background=True for long-running processes, not a trailing &.
+                confirm does not bypass policy approval, denylist or other guards.
+
+                In Docker, localhost and socket binds refer to this container.
+                A successful bind here does not prove a host port is free. The
+                Docker socket controls the daemon host; published ports and bind
+                mount source paths belong to that host. Check docker compose
+                version, inspect port mappings, and verify host access separately
+                (host.docker.internal on Docker Desktop when available). A healthy
+                container or HTTP 200 alone does not validate the application:
+                check the expected app identity/content at the intended host URL.
+                Report host access as unverified when it cannot be tested.
+
+                Args:
+                    command: A single executable and its quoted arguments.
+                    confirm: Explicit confirmation for the safe-mode risk gate.
+                    background: Start a tracked process without waiting for exit.
+                """
+                return get_router().execute_native_call(
                     "run_command",
                     {"command": command, "confirm": confirm, "background": background},
                 )
@@ -902,7 +1027,7 @@ class AgnoRuntimeAdapter:
 
         if normalized == "web_search":
             def web_search(query: str, max_results: int = 5) -> str:
-                return router.execute_native_call("web_search", {"query": query, "max_results": max_results})
+                return get_router().execute_native_call("web_search", {"query": query, "max_results": max_results})
             return web_search
 
         if normalized == "memory":
@@ -912,14 +1037,14 @@ class AgnoRuntimeAdapter:
                     args["key"] = key
                 if value:
                     args["value"] = value
-                return router.execute_native_call("memory", args)
+                return get_router().execute_native_call("memory", args)
             return memory
 
         from copy import deepcopy
         from agno.tools.function import Function
 
         def execute_bauer_tool(**kwargs: Any) -> str:
-            return router.execute_native_call(normalized, kwargs)
+            return get_router().execute_native_call(normalized, kwargs)
 
         return Function(
             name=normalized,
@@ -935,8 +1060,14 @@ class AgnoRuntimeAdapter:
         from bauer.shell_runner import ShellRunner
         from bauer.tool_router import ToolRouter
 
-        shell_runner = ShellRunner(workspace=self.workspace, safe_mode=True, timeout=self.timeout_s)
-        return ToolRouter(
+        shell_runner = ShellRunner(
+            workspace=self.workspace,
+            safe_mode=self.shell_safe_mode,
+            timeout=self.shell_timeout_s,
+            max_output_bytes=self.shell_max_output_bytes,
+            extra_allowed_commands=self.shell_extra_allowed_commands,
+        )
+        router = ToolRouter(
             workspace=self.workspace,
             shell_runner=shell_runner,
             web_enabled=True,
@@ -947,6 +1078,15 @@ class AgnoRuntimeAdapter:
             policy_rules_path=self.adapter_config.get("policy_rules_path"),
             policy_root=self.adapter_config.get("policy_root", "memory/runtime"),
         )
+        if self.runtime_event_bus is not None:
+            router._event_bus = self.runtime_event_bus  # type: ignore[attr-defined]
+        if self.runtime_policy_root is not None:
+            router._policy_root = Path(self.runtime_policy_root)  # type: ignore[attr-defined]
+        if self.runtime_policy_mode is not None:
+            router._policy_mode = self.runtime_policy_mode  # type: ignore[attr-defined]
+            router._policy_enabled = self.runtime_policy_mode != "off"  # type: ignore[attr-defined]
+            router._wait_for_policy_approval = self.runtime_policy_mode == "enforce"  # type: ignore[attr-defined]
+        return router
 
     @staticmethod
     def _normalize_spec(spec: Any) -> dict[str, Any]:

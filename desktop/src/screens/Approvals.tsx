@@ -27,8 +27,8 @@ export default function Approvals() {
     return () => clearInterval(t);
   }, [status]);
 
-  async function decide(id: string, action: "approve" | "deny") {
-    await api.post(`/api/approvals/${id}/${action}`);
+  async function decide(id: string, action: "approve" | "deny", scope = "once") {
+    await api.post(`/api/approvals/${id}/${action}`, action === "approve" ? { scope } : undefined);
     await load();
   }
 
@@ -61,6 +61,9 @@ export default function Approvals() {
             {approval.status === "pending" && (
               <div className="row">
                 <button className="btn primary" onClick={() => decide(approval.id, "approve")}><i className="ti ti-check" /> Aprovar</button>
+                {approval.operation === "shell.execute" && approval.tool_name === "run_command" && approval.run_id && approval.session_id && (
+                  <button className="btn" onClick={() => decide(approval.id, "approve", "always")}>Permitir sempre este comando (allowlist)</button>
+                )}
                 <button className="btn" onClick={() => decide(approval.id, "deny")}><i className="ti ti-x" /> Negar</button>
               </div>
             )}

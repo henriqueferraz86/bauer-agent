@@ -29,7 +29,7 @@ RAIZ = Path(__file__).resolve().parent.parent / "bauer"
 PERMITIDOS: dict[str, tuple[int, str]] = {
     # o dono legítimo: é ele que fecha depois dos gates
     "core/kernel/kernel.py": (
-        6,
+        4,
         "o Kernel É o dono do ciclo de vida — complete_run/fail_run depois dos "
         "gates, mais o cancelamento e o guarda de terminal (_fail_se_nao_terminal). "
         "Caiu de 8 para 6 em 2026-08-16: o stream() fechava run por fora em três "
