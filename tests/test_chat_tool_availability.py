@@ -18,6 +18,8 @@ from bauer.tools.base import ToolError
 @pytest.mark.parametrize('governed', [False, True])
 def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monkeypatch, mode, transport, governed):
     monkeypatch.setenv('BAUER_HOME', str(tmp_path / 'home'))
+    if transport == 'stream':
+        monkeypatch.setenv('BAUER_APPROVAL_WAIT_SECONDS', '30')
     monkeypatch.setattr('bauer.server._MEMORY_PREFETCH_ENABLED', False)
     monkeypatch.setattr('bauer.projects_registry._DEFAULT_REGISTRY', tmp_path / 'projects.json')
     workspace = tmp_path / 'project'
@@ -83,6 +85,41 @@ def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monk
         return response.text, response.headers['X-Session-ID']
 
     with TestClient(app) as client:
+        if transport == 'stream':
+            import threading
+            import time
+
+            result = {}
+            thread = threading.Thread(target=lambda: result.update(response=client.get(
+                '/stream', params={'message': 'rode fake-cli --version', 'session_id': 'pending-session'},
+            )), daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 10
+                cards = []
+                while time.monotonic() < deadline:
+                    cards = client.get('/api/obs/approvals?status=pending').json()['approvals']
+                    if cards:
+                        break
+                    time.sleep(0.025)
+                assert len(cards) == 1
+                assert executed == [] and load_learned_commands() == set()
+                # A bare yes in another session still cannot authorize this card.
+                other = client.post('/chat', json={'message': 'sim', 'session_id': 'other-session'})
+                assert other.status_code == 200
+                assert executed == [] and load_learned_commands() == set()
+                assert client.post(f"/api/approvals/{cards[0]['id']}/approve", json={'scope': 'always'}).status_code == 200
+                thread.join(10)
+                assert not thread.is_alive()
+                assert 'event: approval' in result['response'].text
+                assert executed == [['fake-cli', '--version']]
+                assert load_learned_commands() == {'fake-cli'}
+                assert ShellRunner(workspace=workspace).validate('fake-cli --version') == ['fake-cli', '--version']
+            finally:
+                for card in client.get('/api/obs/approvals?status=pending').json()['approvals']:
+                    client.post(f"/api/approvals/{card['id']}/deny")
+                thread.join(10)
+            return
         question, sid = send(client, 'rode fake-cli --version')
         assert "O comando 'fake-cli' está fora da allowlist" in question
         assert executed == [] and load_learned_commands() == set()

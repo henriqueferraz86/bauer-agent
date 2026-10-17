@@ -37,6 +37,7 @@ class AgnoRuntimeAdapter:
         chatgpt_client: Any | None = None,
         tool_router: Any | None = None,
         activity_sink: Callable[[dict[str, Any]], None] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
         runtime_event_bus: Any | None = None,
         runtime_policy_root: str | Path | None = None,
         runtime_policy_mode: str | None = None,
@@ -77,6 +78,7 @@ class AgnoRuntimeAdapter:
         self.chatgpt_client = chatgpt_client
         self._tool_router = tool_router
         self._activity_sink = activity_sink
+        self._event_sink = event_sink
         # The server creates a short-lived Agno adapter per turn. Keep the
         # governance objects explicit so routers created lazily for Agno tools
         # use the same approval store and event stream as /stream.
@@ -106,7 +108,16 @@ class AgnoRuntimeAdapter:
         last_event: dict[str, Any] = {}
         for event in self.stream_agent({**request, "run_id": run_id}):
             last_event = event
-            if self._activity_sink is not None:
+            if self._event_sink is not None:
+                try:
+                    self._event_sink(event)
+                except Exception:
+                    logging.getLogger("bauer.agno_adapter").debug("event sink failed", exc_info=True)
+            if self._activity_sink is not None and (
+                str(event.get("event", "")).startswith("agent.") or event.get("event") == "task.delegated"
+                or (event.get("event") in {"tool.call.requested", "tool.call.completed", "tool.call.failed"}
+                    and event.get("agent_id") and event.get("data", {}).get("member_event"))
+            ):
                 try:
                     self._activity_sink(event)
                 except Exception:

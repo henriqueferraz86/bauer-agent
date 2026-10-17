@@ -823,11 +823,6 @@ def create_app(
         adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
         adapter_cfg.setdefault("tool_context", "chat")
         adapter_cfg["workspace"] = str(_effective_ws(active_router))
-        def _on_adapter_event(event: dict[str, Any]) -> None:
-            _publish_agno_activity(event)
-            if on_event is not None:
-                on_event(event)
-
         adapter = AgnoRuntimeAdapter(
             config=cfg,
             adapter_config=adapter_cfg,
@@ -836,7 +831,8 @@ def create_app(
             runtime_policy_root=runtime_root,
             runtime_policy_mode=_SERVE_POLICY_MODE,
             tool_router=active_router,
-            activity_sink=_on_adapter_event,
+            activity_sink=_publish_agno_activity,
+            event_sink=on_event,
         )
         tools = active_router.available_tools()
         turn_context = _new_context(active_router)
