@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from ..privacy import redact_text
-from ..shell_runner import ShellError
+from ..shell_runner import ShellError, validate_command_syntax
 from .base import ToolError
 
 
@@ -150,6 +150,12 @@ class ExecToolsMixin:
             background = args.get("background", False)
             if not isinstance(background, bool):
                 raise ToolError("run_command: 'background' deve ser true ou false.")
+            # Validate the original input before rewrites, helper subprocesses
+            # or builtin guidance can hide unsupported shell syntax.
+            try:
+                validate_command_syntax(cmd)
+            except ShellError as exc:
+                raise ToolError(str(exc)) from exc
 
             # Transparência: `bauer <sub>` ou `python -m bauer <sub>`
             #   → `<venv_python> -m bauer.cli <sub> --config <root>/config.yaml`

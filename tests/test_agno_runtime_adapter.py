@@ -14,8 +14,9 @@ from agno.models.response import ModelResponse
 
 from bauer.core.runtime.agent_spec import parse_agents_yaml
 from bauer.core.runtime.adapters import get_runtime_adapter, list_runtime_adapters
-from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter, _ACTIVE_AGNO_SESSION_ID
 from bauer.core.runtime.adapters.chatgpt_oauth_model import build_chatgpt_oauth_model
+from bauer.tool_router import ToolError
 
 
 def add_numbers(a: int, b: int) -> str:
@@ -174,6 +175,69 @@ def test_agno_tool_router_can_use_chat_context(tmp_path):
     assert "web_search" in router.available_tools()
 
 
+def test_agno_file_tools_share_read_before_write_state_per_agent(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "existing.md"
+    target.write_text("before", encoding="utf-8")
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"workspace": str(workspace), "db_file": str(tmp_path / "agno.db")},
+    )
+
+    tools = dict(zip(("read_file", "write_file"), adapter._map_tools(["read_file", "write_file"])))
+    assert "before" in tools["read_file"](path="existing.md")
+    tools["write_file"](path="existing.md", content="after", overwrite=True)
+    assert target.read_text(encoding="utf-8") == "after"
+
+
+def test_agno_read_before_write_state_is_isolated_per_session(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "existing.md"
+    target.write_text("before", encoding="utf-8")
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"workspace": str(workspace), "db_file": str(tmp_path / "agno.db")},
+    )
+    read_file, write_file = adapter._map_tools(["read_file", "write_file"])
+
+    token = _ACTIVE_AGNO_SESSION_ID.set("session-a")
+    try:
+        assert "before" in read_file(path="existing.md")
+    finally:
+        _ACTIVE_AGNO_SESSION_ID.reset(token)
+
+    token = _ACTIVE_AGNO_SESSION_ID.set("session-b")
+    try:
+        with pytest.raises(ToolError, match="nao foi lido nesta sessao"):
+            write_file(path="existing.md", content="unauthorized", overwrite=True)
+    finally:
+        _ACTIVE_AGNO_SESSION_ID.reset(token)
+
+    token = _ACTIVE_AGNO_SESSION_ID.set("session-a")
+    try:
+        write_file(path="existing.md", content="after", overwrite=True)
+    finally:
+        _ACTIVE_AGNO_SESSION_ID.reset(token)
+    assert target.read_text(encoding="utf-8") == "after"
+
+
+def test_agno_read_before_write_state_is_not_shared_between_agents(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "existing.md"
+    target.write_text("before", encoding="utf-8")
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"workspace": str(workspace), "db_file": str(tmp_path / "agno.db")},
+    )
+
+    reader = adapter._map_tools(["read_file"])[0]
+    writer = adapter._map_tools(["write_file"])[0]
+    assert "before" in reader(path="existing.md")
+    with pytest.raises(ToolError, match="nao foi lido nesta sessao"):
+        writer(path="existing.md", content="after", overwrite=True)
+    assert target.read_text(encoding="utf-8") == "before"
+
+
 def test_chatgpt_oauth_model_delegates_to_bauer_backend():
     model = build_chatgpt_oauth_model(OAuthClientStub(), "gpt-5.6-luna")
     result = model.invoke(
@@ -288,6 +352,38 @@ def test_agno_adapter_streams_chunks(tmp_path):
     assert events[0]["event"] == "run.started"
     assert events[-1]["event"] == "run.completed"
     assert any(event["event"] == "message.delta" for event in events)
+
+
+def test_agno_adapter_loads_formal_team_specs_from_package_data(tmp_path, monkeypatch):
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "agno.db")})
+
+    class FakeTeamMode:
+        coordinate = "coordinate"
+
+    class FakeTeam:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    monkeypatch.setattr(adapter, "_require_agno_team", lambda: (FakeTeam, FakeTeamMode))
+    monkeypatch.setattr(
+        adapter,
+        "_build_agent",
+        lambda spec: type("Member", (), {"id": spec["id"], "model": object()})(),
+    )
+    monkeypatch.setattr(adapter, "_build_db", lambda: None)
+
+    team = adapter._team_for_request(
+        {"decision": {"requested_agents": 3}},
+        team_id="bauer.software_team",
+        session_id="team-session",
+        user_id="user-1",
+    )
+
+    assert team.id == "bauer.software_team"
+    assert len(team.members) == 3
+    assert [member.id for member in team.members] == ["bauer.product", "bauer.dev", "bauer.qa"]
+    assert team.delegate_to_all_members is True
+    assert team.stream_member_events is True
 
 
 def test_agno_adapter_maps_callable_tools(tmp_path):
@@ -446,6 +542,94 @@ contexts:
     assert result["status"] == "failed"
     assert "not authorized" in result["error"]
     assert "blocked" not in result.get("output", "")
+
+
+def test_agno_internal_router_resumes_same_approval_once(tmp_path):
+    """O router lazy do Agno compartilha a aprovação do turno do servidor."""
+    from threading import Thread
+    from time import sleep
+
+    from bauer.core.events import EventBus
+    from bauer.core.kernel import BauerKernel
+    from bauer.core.policy import ApprovalManager
+    from bauer.core.runtime.run_manager import RunManager
+    from bauer.tool_router import reset_runtime_ids, set_runtime_ids
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    bus = EventBus(root=runtime_root)
+    runs = RunManager(root=runtime_root, event_bus=bus)
+    run = runs.create_run(
+        session_id="approval-session", agent_id="serve-user",
+        runtime_adapter="agno", status="running",
+    )
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={
+            "db_file": str(tmp_path / "agno.db"),
+            "workspace": str(workspace),
+        },
+        runtime_event_bus=bus,
+        runtime_policy_root=runtime_root,
+        runtime_policy_mode="enforce",
+    )
+    router = adapter._build_tool_router()
+    result: dict[str, str] = {}
+
+    def execute() -> None:
+        token = set_runtime_ids("approval-session", run.id)
+        try:
+            result["value"] = router.execute_native_call(
+                "run_command", {"command": "python -c \"print('approved')\""}
+            )
+        finally:
+            reset_runtime_ids(token)
+
+    thread = Thread(target=execute, daemon=True)
+    thread.start()
+    approvals = ApprovalManager(root=runtime_root, event_bus=bus)
+    approval = None
+    for _ in range(40):
+        records = approvals.list(status="pending")
+        if records:
+            approval = records[0]
+            break
+        sleep(0.05)
+    assert approval is not None
+    assert runs.get_run(run.id).status == "waiting_approval"
+
+    BauerKernel(runs=runs, bus=bus, approvals=approvals).approve(approval.id)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert "approved" in result["value"]
+    assert len(approvals.list()) == 1
+
+
+def test_agno_internal_router_uses_global_shell_configuration(tmp_path):
+    from types import SimpleNamespace
+
+    tools = SimpleNamespace(
+        safe_mode=False,
+        timeout_seconds=47,
+        max_output_kb=73,
+        extra_allowed_commands=["docker", "docker-compose"],
+    )
+    adapter = AgnoRuntimeAdapter(
+        config=SimpleNamespace(tools=tools),
+        adapter_config={
+            "db_file": str(tmp_path / "agno.db"),
+            "workspace": str(tmp_path),
+        },
+    )
+
+    router = adapter._build_tool_router()
+    runner = router._shell_runner
+
+    assert runner.safe_mode is False
+    assert runner.timeout == 47
+    assert runner.max_output_bytes == 73 * 1024
+    assert runner.extra_allowed_commands == frozenset({"docker", "docker-compose"})
+    assert runner.validate("docker ps") == ["docker", "ps"]
 
 
 def test_agno_adapter_returns_clean_error_when_agno_fails(monkeypatch, tmp_path):

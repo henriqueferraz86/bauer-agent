@@ -1,3 +1,4 @@
+import { ApprovalsById, ApprovalCard, mergeApproval, parseApprovalEvent, updateApprovalRequest } from "./approvalState";
 /** A chat turn belongs to the application and survives screen navigation. */
 import { streamSSE, SSEEvent } from "./api/client";
 import { parseToolActivityEvent, ToolActivity } from "./toolActivity";
@@ -16,6 +17,8 @@ export interface ChatMessage {
     activity?: string;
     stopReason?: string | null;
   };
+  approvals?: ApprovalsById;
+  approvalTurnEnded?: boolean;
   streaming?: boolean;
   toolActivities?: ToolActivity[];
   toolActivityCount?: number;
@@ -44,6 +47,12 @@ export function subscribeChatTurn(listener: (state: ChatTurnState) => void): () 
   listeners.add(listener);
   if (active) listener(active);
   return () => { listeners.delete(listener); };
+}
+
+export function updateChatApproval(id: string, patch: Partial<ApprovalCard>): void {
+  if (!active) return;
+  active = { ...active, messages: active.messages.map((m) => ({ ...m, approvals: updateApprovalRequest(m.approvals, id, patch) })) };
+  listeners.forEach((listener) => { try { listener(active!); } catch { /* detached subscriber */ } });
 }
 
 export async function runChatTurn(
@@ -106,6 +115,11 @@ export async function runChatTurn(
         }
         if (!chatActivityStore.accept(snapshot)) return;
         active = { ...active, activity: snapshot };
+      } else if (event.event === "approval") {
+        const approval = parseApprovalEvent(event.data);
+        if (!approval) return;
+        if (approval.session_id) active = { ...active, sessionId: approval.session_id };
+        updateLast((last) => { last.approvals = mergeApproval(last.approvals, approval); });
       } else if (event.event === "tool") {
         const activity = parseToolActivityEvent(event.data);
         if (!activity) return;
@@ -117,7 +131,7 @@ export async function runChatTurn(
         return;
       } else if (event.event === "done") {
         active = { ...active, sessionId: event.data };
-        updateLast((last) => { last.streaming = false; });
+        updateLast((last) => { last.streaming = false; last.approvalTurnEnded = true; });
       } else if (event.event === "message") {
         updateLast((last) => { last.text += event.data; });
         responseText += event.data;
@@ -134,7 +148,7 @@ export async function runChatTurn(
     chatActivityStore.unavailable();
     updateLast((last) => { last.text += "\nNão foi possível concluir a resposta. Tente novamente."; });
   } finally {
-    updateLast((last) => { last.streaming = false; });
+    updateLast((last) => { last.streaming = false; last.approvalTurnEnded = true; });
     active = { ...active!, busy: false };
     publish();
     active = null;

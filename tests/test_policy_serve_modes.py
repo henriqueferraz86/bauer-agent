@@ -111,6 +111,63 @@ def test_serve_default_audit_mode_wires_policy_and_report_shows_ask(tmp_path):
     assert report.policy_ask >= 1          # a decisão "ask" foi contabilizada
 
 
+def test_serve_enforce_tool_approval_is_streamed_and_resumes(tmp_path):
+    """Aprovação criada dentro da tool call aparece no Chat e retoma a tool."""
+    from threading import Thread
+    from time import sleep
+    from unittest.mock import MagicMock, patch
+    from fastapi.testclient import TestClient
+
+    from bauer.server import create_app
+    from bauer.tool_router import ToolRouter
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    target = ws / "alvo.txt"
+    target.write_text("apagar", encoding="utf-8")
+    turns = iter([
+        '{"action": "delete_file", "args": {"path": "alvo.txt", "confirm": true}}',
+        "Pronto, apaguei o arquivo.",
+    ])
+    client = MagicMock()
+    client.chat_stream.side_effect = lambda *a, **k: iter([next(turns)])
+    client._provider = "openrouter"
+
+    with patch("bauer.projects_registry._DEFAULT_REGISTRY", tmp_path / "projects.json"), \
+         patch("bauer.server._SERVE_POLICY_MODE", "enforce"):
+        app = create_app(
+            model_name="m", applied_context=4096, router=ToolRouter(workspace=ws),
+            client=client, system_prompt="s", sessions_dir=tmp_path / "sessions",
+            api_key="", rate_limit_requests=0,
+        )
+
+    result: dict[str, str] = {}
+
+    def consume() -> None:
+        with TestClient(app).stream("GET", "/stream?message=apaga o alvo") as response:
+            result["body"] = "".join(response.iter_text())
+
+    thread = Thread(target=consume, daemon=True)
+    thread.start()
+    control = TestClient(app)
+    approval = None
+    for _ in range(80):
+        records = control.get("/api/obs/approvals?status=pending").json()["approvals"]
+        if records:
+            approval = records[-1]
+            break
+        sleep(0.05)
+    assert approval is not None
+    decision = control.post(f"/api/approvals/{approval['id']}/approve")
+    assert decision.status_code == 200
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert not target.exists()
+    assert "event: approval" in result["body"]
+    assert '"status": "approved"' in result["body"]
+    assert "Pronto, apaguei o arquivo." in result["body"]
+
+
 def test_deny_blocks_in_audit_mode(tmp_path):
     """deny é segurança real — bloqueia mesmo em audit."""
     from bauer.tools.base import ToolError

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 import time
 import logging
@@ -55,6 +56,53 @@ class SafeModeError(ShellError):
 
 class CommandTimeoutError(ShellError):
     """Comando excedeu o tempo limite."""
+
+
+def validate_command_syntax(command: str) -> list[str]:
+    """Parse one command for shell=False, without executing or asking approval.
+
+    Uses the same POSIX quoting on Windows and Linux. Unquoted shell control
+    operators are rejected before shlex removes quoting; quoted/escaped literal
+    operators (including Python -c snippets) remain ordinary arguments. This
+    checks syntax only: allowlist, denylist and policy still apply separately.
+    """
+    if not isinstance(command, str):
+        raise ShellError("Comando invalido: deve ser texto.")
+    if "\x00" in command:
+        raise ShellError("Comando invalido: caractere NUL.")
+
+    quote = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        # Match shlex(posix=True): outside quotes backslash escapes any char;
+        # inside double quotes it only removes escapes of backslash or quote.
+        if char == "\\" and quote != "'":
+            if not quote or command[index + 1:index + 2] in ('"', "\\"):
+                index += 2
+                continue
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in ("'", '"'):
+            quote = char
+        elif char in "&|;<>\r\n()`":
+            raise ShellError(
+                "Sintaxe de shell nao suportada: operador fora de aspas. "
+                "run_command usa shell=False e executa um unico comando. "
+                "Separe as chamadas; nao use cd &&, pipes ou redirecionamentos. "
+                "Use caminhos relativos ao workspace ou caminhos absolutos; "
+                "coloque argumentos literais e codigo Python -c entre aspas."
+            )
+        index += 1
+
+    try:
+        args = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise ShellError(f"Comando invalido (parsing falhou): {exc}") from exc
+    if not args or not args[0]:
+        raise ShellError("Comando vazio.")
+    return args
 
 
 _MAX_OUTPUT_BYTES = 50_000
@@ -164,7 +212,7 @@ def load_learned_commands() -> set[str]:
         return set()
 
 
-def add_learned_command(base: str) -> None:
+def add_learned_command(base: str, *, strict: bool = False) -> None:
     """Persiste um comando na allowlist aprendida. Best-effort."""
     base = (base or "").strip().lower()
     if not base:
@@ -179,7 +227,8 @@ def add_learned_command(base: str) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(yaml.safe_dump(sorted(cur), allow_unicode=True), encoding="utf-8")
     except Exception:
-        pass
+        if strict:
+            raise
 
 
 class ShellRunner:
@@ -220,6 +269,22 @@ class ShellRunner:
         # Comandos aprendidos (persistidos) + os liberados nesta sessão via
         # "session"/"once". Mesclam com a allowlist fixa e extra_allowed_commands.
         self._runtime_allowed: set[str] = set(load_learned_commands())
+        self._approved_args: ContextVar[tuple[str, ...] | None] = ContextVar(
+            "shell_approved_args", default=None,
+        )
+
+    @contextmanager
+    def approved_call(self, command: str):
+        """Trusted router scope after consuming a human approval, never model args.
+
+        Only the exact argv in this execution context bypasses the allowlist.
+        Denylist, syntax, safe_mode and subprocess limits still apply.
+        """
+        token = self._approved_args.set(tuple(validate_command_syntax(command)))
+        try:
+            yield
+        finally:
+            self._approved_args.reset(token)
 
     def run(self, command: str, confirm: bool = False) -> CommandResult:
         """Executa um comando controlado.
@@ -261,6 +326,36 @@ class ShellRunner:
             self._check_medium_risk(command)
         return args
 
+    def preflight(self, command: str, confirm: bool = False) -> list[str]:
+        """Check a final command before policy approval, without side effects.
+
+        Never invokes the allowlist callback, persists permissions or executes a
+        subprocess. Callers that rewrite commands must supply the final command
+        (not an alias such as bauer/which that execution later translates).
+        This is a feasibility snapshot, not authorization: run/validate must
+        still apply their guards at execution time.
+        """
+        args = validate_command_syntax(command)
+        self._check_denylist(command)
+        self._check_allowlist(args, allow_prompt=False)
+        if self.safe_mode and not confirm:
+            self._check_medium_risk(command)
+        if not self.workspace.is_dir():
+            raise ShellError(f"Workspace nao existe: {self.workspace}")
+        executable = Path(args[0])
+        # Explicit relative paths resolve against the child cwd. Bare names
+        # retain PATH lookup; do not silently add workspace to PATH.
+        if not executable.is_absolute() and executable.parent != Path("."):
+            executable = self.workspace / executable
+        elif args[0].startswith(("./", ".\\")):
+            executable = self.workspace / executable
+        if shutil.which(str(executable)) is None:
+            raise ShellError(
+                f"Comando nao encontrado: '{args[0]}'. "
+                "Verifique se esta instalado e no PATH."
+            )
+        return args
+
     # --- verificações de segurança -------------------------------------------
 
     def _check_denylist(self, command: str) -> None:
@@ -294,10 +389,12 @@ class ShellRunner:
         # So atribuicoes, sem binario: nao ha o que permitir.
         return ""
 
-    def _check_allowlist(self, args: list[str]) -> None:
+    def _check_allowlist(self, args: list[str], *, allow_prompt: bool = True) -> None:
+        if tuple(args) == self._approved_args.get():
+            return
         base = self._base_command(args)
         if (base in _ALLOWLIST or base in self.extra_allowed_commands
-                or base in self._runtime_allowed):
+                or base in self._runtime_allowed or base in load_learned_commands()):
             return
         # A different chat/project runner may have learned this command after
         # this instance was cached. Reload only when permission is still absent.
@@ -306,7 +403,7 @@ class ShellRunner:
             return
         # Fora da allowlist: se houver callback interativo, pergunta e (talvez)
         # aprende — em vez de bloquear em silêncio. "always" persiste.
-        if self.allowlist_callback is not None:
+        if allow_prompt and self.allowlist_callback is not None:
             try:
                 decision = str(self.allowlist_callback(base) or "deny").lower()
             except Exception:
@@ -346,16 +443,7 @@ class ShellRunner:
     # --- parsing e execução --------------------------------------------------
 
     def _parse_command(self, command: str) -> list[str]:
-        try:
-            # posix=True sempre: strip correto de aspas em caminhos Windows como
-            # "C:/path/python.exe" — com posix=False o shlex mantém as aspas no
-            # token e subprocess.run falha com FileNotFoundError.
-            args = shlex.split(command, posix=True)
-        except ValueError as exc:
-            raise ShellError(f"Comando invalido (parsing falhou): {exc}") from exc
-        if not args:
-            raise ShellError("Comando vazio.")
-        return args
+        return validate_command_syntax(command)
 
     def _execute(self, args: list[str]) -> CommandResult:
         if not self.workspace.is_dir():

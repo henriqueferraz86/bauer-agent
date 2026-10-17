@@ -1,9 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
-import { currentChatTurn, runChatTurn, subscribeChatTurn, ChatTurnState } from "./chatStream";
+import { currentChatTurn, runChatTurn, subscribeChatTurn, updateChatApproval, ChatTurnState } from "./chatStream";
 import { SSEEvent } from "./api/client";
 import { ChatActivitySnapshot, chatActivityStore } from "./chatActivity";
 
 describe("chat stream lifecycle", () => {
+  it("keeps approval cards across navigation and updates them without replacing turn text", async () => {
+    let emit!: (event: SSEEvent) => void;
+    let finish!: () => void;
+    let saved: ChatTurnState | undefined;
+    const running = runChatTurn({ messages: [], sessionId: "" }, "validar navegador", (state) => { saved = state; }, async (_path, callback) => {
+      emit = callback;
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+    emit({ event: "approval", data: JSON.stringify({ id: "approval-1", session_id: "approval-session", run_id: "run-1", operation: "shell.execute", tool_name: "run_command", status: "pending", reason: "approval needed" }) });
+    expect(saved?.sessionId).toBe("approval-session");
+    expect(saved?.messages[1].text).toBe("");
+    let resumed: ChatTurnState | undefined;
+    const off = subscribeChatTurn((state) => { resumed = state; });
+    expect(resumed?.messages[1].approvals?.["approval-1"].status).toBe("pending");
+    updateChatApproval("approval-1", { submitting: true });
+    expect(resumed?.messages[1].approvals?.["approval-1"].submitting).toBe(true);
+    emit({ event: "approval", data: JSON.stringify({ id: "approval-1", status: "approved" }) });
+    emit({ event: "message", data: "validado" });
+    emit({ event: "done", data: "approval-session" });
+    finish();
+    expect(await running).toBe("validado");
+    expect(saved?.messages[1].approvals?.["approval-1"].status).toBe("approved");
+    expect(saved?.messages[1].approvalTurnEnded).toBe(true);
+    off();
+  });
   it("separates internal activity from text through the actual fragmented SSE parser", async () => {
     const snapshot = { session_id: "network-session", runs: [] };
     const wire = 'event: internal\ndata: ' + JSON.stringify({ kind: "chat.activity", payload: snapshot })

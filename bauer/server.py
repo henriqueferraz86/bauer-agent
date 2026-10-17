@@ -37,6 +37,7 @@ Claw3D / Virtual Office:
 import hmac
 import os
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,6 +69,22 @@ from .server_observability import (
 # rodadas de tool call. O prazo continua configurável por ambiente para
 # instalações que precisem de um limite menor ou maior.
 _STREAM_TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_SERVE_TURN_TIMEOUT", "3600"))
+
+
+def _is_text_approval_confirmation(message: str) -> bool:
+    """Recognize only an unambiguous human confirmation token.
+
+    This is deliberately narrower than normal conversational intent. It is
+    used only when the same session has exactly one pending approval, so a
+    sentence such as "sim, faça isso" cannot accidentally authorize a tool.
+    """
+    normalized = unicodedata.normalize("NFKD", str(message or ""))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = " ".join(normalized.casefold().strip().split())
+    return normalized in {
+        "confirmo", "confirmar", "aprovo", "aprovado", "pode executar",
+        "sim, aprovo", "sim aprovo", "sim, pode executar", "sim pode executar",
+    }
 
 # Teto de chars do PROJECT.md auto-injetado por turno (B da "memória por
 # projeto"). Cabeçalho, não o arquivo inteiro: é pago a cada turno e prompt
@@ -312,6 +329,10 @@ def create_app(
             # Modo controla o que "ask" faz — ver _SERVE_POLICY_MODE.
             r._policy_enabled = _SERVE_POLICY_MODE != "off"  # type: ignore[attr-defined]
             r._policy_mode = _SERVE_POLICY_MODE  # type: ignore[attr-defined]
+            # A thread do turno precisa aguardar uma decisão humana também
+            # em audit quando o comando está fora da allowlist.
+            # O stream mostra o cartão e retoma a mesma chamada após aprovação.
+            r._wait_for_policy_approval = _SERVE_POLICY_MODE != "off"  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             from .logging_config import log_suppressed
             log_suppressed("serve.wire_router", exc)
@@ -784,6 +805,7 @@ def create_app(
         active_router: Any,
         turn_model: str,
         resolved: dict[str, Any],
+        on_event: Any | None = None,
     ) -> dict[str, Any]:
         """Executa um turno pelo adapter Agno escolhido no Server.
 
@@ -806,6 +828,9 @@ def create_app(
             config=cfg,
             adapter_config=adapter_cfg,
             chatgpt_client=_state["client"],
+            runtime_event_bus=event_bus,
+            runtime_policy_root=runtime_root,
+            runtime_policy_mode=_SERVE_POLICY_MODE,
             tool_router=active_router,
             activity_sink=_publish_agno_activity,
         )
@@ -816,7 +841,7 @@ def create_app(
             str(item.get("content") or "") for item in turn_context.get_payload()
             if item.get("role") == "system"
         )
-        result = adapter.run_agent({
+        request: dict[str, Any] = {
             "run_id": run_id,
             "session_id": session_id,
             "user_id": "serve-user",
@@ -833,10 +858,41 @@ def create_app(
                 "user_id": "serve-user",
             },
             "resolved": resolved,
-        })
-        if result.get("status") != "completed":
-            raise RuntimeError(str(result.get("error") or "Agno não concluiu o turno"))
-        raw_tools = result.get("metadata", {}).get("tools", [])
+        }
+
+        chunks: list[str] = []
+        last_event: dict[str, Any] = {}
+        observed_tools: list[dict[str, Any]] = []
+        for event in adapter.stream_agent(request):
+            current_run = run_manager.get_run(run_id)
+            if current_run is not None and (
+                current_run.status == "cancelled"
+                or (current_run.status == "failed" and current_run.error != "stream turn timeout")
+            ):
+                # Agno treats ToolError as model feedback. A terminal policy
+                # decision must stop that loop, not become a fabricated success.
+                raise RuntimeError(f"Execução encerrada: {current_run.status}")
+            last_event = event
+            if on_event is not None:
+                try:
+                    on_event(event)
+                except Exception as exc:  # noqa: BLE001 — UI nunca derruba run
+                    _log.debug("Agno stream event sink failed: %s", exc)
+            event_type = str(event.get("event") or "")
+            if event_type == "message.delta":
+                chunks.append(str(event.get("content") or ""))
+            elif event_type == "tool.call.requested":
+                observed_tools.append({
+                    "tool_name": str(event.get("tool_name") or "agno.tool"),
+                    "status": "requested",
+                })
+            elif event_type == "run.failed":
+                raise RuntimeError(str(event.get("error") or "Agno não concluiu o turno"))
+
+        if last_event.get("status") != "completed":
+            raise RuntimeError(str(last_event.get("error") or "Agno não concluiu o turno"))
+        metadata = last_event.get("metadata", {}) or {}
+        raw_tools = metadata.get("tools", []) or observed_tools
         tool_log = [
             {
                 "tool": str(item.get("tool_name") or "agno.tool"),
@@ -845,7 +901,10 @@ def create_app(
             for item in raw_tools
             if isinstance(item, dict)
         ]
-        return {"response": str(result.get("output") or ""), "tool_log": tool_log}
+        return {
+            "response": "".join(chunks) or str(last_event.get("output") or ""),
+            "tool_log": tool_log,
+        }
 
     # ── Roteamento por-turno (Fase 12 / Sprint 34c) — opt-in ──────────────────
     # Quando model.router_enabled=True e há profiles, cada turno escolhe o modelo
@@ -1613,6 +1672,39 @@ def create_app(
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
         sid = session_id or store.new_id()
+
+        # A typed confirmation is a decision only when it is unambiguous and
+        # scoped to this exact browser session. Previously "confirmo" became a
+        # new LLM turn, while the original approval stayed pending and the
+        # model kept requesting the same card. Multiple pending cards remain
+        # button-only to avoid choosing the wrong command.
+        if session_id and _kernel is not None and _is_text_approval_confirmation(message):
+            pending = [
+                record for record in approval_manager.list(status="pending")
+                if record.session_id == sid and record.run_id
+            ]
+            if len(pending) == 1:
+                record = pending[0]
+                try:
+                    scope = "run" if (
+                        record.operation == "shell.execute"
+                        and record.tool_name == "run_command"
+                    ) else "once"
+                    _kernel.approve(record.id, scope=scope)
+                except (KeyError, ValueError) as exc:
+                    _log.info("typed approval was not applicable: %s", type(exc).__name__)
+                else:
+                    def _typed_approval_ack():
+                        yield _sse(
+                            "Aprovação registrada para a solicitação pendente desta sessão. "
+                            "A execução continuará no stream original.",
+                        )
+                        yield _sse(sid, event="done")
+
+                    return StreamingResponse(
+                        _typed_approval_ack(), media_type="text/event-stream",
+                        headers={"X-Session-ID": sid, "X-Bauer-Run-ID": record.run_id},
+                    )
         active_router, project_context = _resolve_chat_project(sid, project_id)
         active_project_id = project_context["project"]["id"] if project_context["project"] else None
         resolved = _resolve_request_context(message, _effective_ws(active_router))
@@ -1627,6 +1719,8 @@ def create_app(
             state=session_state,
         )
 
+        waiting_for_approval = False
+        approval_id: str | None = None
         if _kernel is not None:
             # ── Kernel 6c: ADMISSÃO pelo kernel, execução com o motor de sempre.
             # O /stream mantém uma thread órfã com persistência própria após
@@ -1642,25 +1736,28 @@ def create_app(
                 runtime_adapter=_runtime_mode(),
             ))
             if _early is not None:
-                # governança barrou — SSE de erro sem tocar LLM/worker
-                if _early.status == "waiting_approval":
-                    _blocked_msg = (f"⏸ Aguardando aprovação ({_early.approval_id}): "
-                                    f"{_early.policy_reason}")
+                # Uma aprovação não é um fim de stream. Mantemos o contexto do
+                # turno e aguardamos a decisão mais abaixo, para que a mesma
+                # conexão possa continuar assim que a aba Approvals aprovar.
+                if _early.status == "waiting_approval" and _early.approval_id:
+                    waiting_for_approval = True
+                    approval_id = _early.approval_id
                 else:
                     _blocked_msg = f"⛔ {_early.error or _early.policy_reason or 'bloqueado pela política'}"
 
-                def _blocked_stream(msg=_blocked_msg):
-                    import json
-                    yield _sse(json.dumps(project_context, ensure_ascii=False), event="context")
-                    yield _sse(json.dumps({"kind": "chat.activity", "payload": _chat_activity_snapshot(sid, _early.run_id)}, ensure_ascii=False), event="internal")
-                    yield _sse(msg)
-                    yield _sse(sid, event="done")
+                    def _blocked_stream(msg=_blocked_msg):
+                        import json
+                        yield _sse(json.dumps(project_context, ensure_ascii=False), event="context")
+                        yield _sse(json.dumps({"kind": "chat.activity", "payload": _chat_activity_snapshot(sid, _early.run_id)}, ensure_ascii=False), event="internal")
+                        yield _sse(msg)
+                        yield _sse(sid, event="done")
 
-                return StreamingResponse(
-                    _blocked_stream(), media_type="text/event-stream",
-                    headers={"X-Session-ID": sid, "X-Bauer-Run-ID": _early.run_id},
-                )
-            run_manager.start_run(run.id)  # queued → running; worker completa/falha
+                    return StreamingResponse(
+                        _blocked_stream(), media_type="text/event-stream",
+                        headers={"X-Session-ID": sid, "X-Bauer-Run-ID": _early.run_id},
+                    )
+            if not waiting_for_approval:
+                run_manager.start_run(run.id)  # queued → running; worker completa/falha
         else:
             # caminho legado (kernel.enabled=false — default, intocado)
             run = run_manager.create_run(
@@ -1679,6 +1776,10 @@ def create_app(
         # `route` no gerador + evento de runtime na Observabilidade.
         _turn_client, _turn_model, _route = _resolve_turn_model(message, sid)
         _publish_route(run.id, sid, request_agent_id, _route)
+
+        # A desconexão de uma UI enquanto a aprovação ainda está pendente não
+        # deve cancelar a run: o operador pode aprovar pela aba Approvals.
+        execution_state = {"started": False}
 
         def _event_stream():
             # O turno roda no MESMO motor do CLI e do POST /chat —
@@ -1714,6 +1815,64 @@ def create_app(
                 def on_tool(self, name: str) -> None:
                     events.put(("tool", name))
 
+            def _safe_event_value(value: Any, *, limit: int = 120) -> str:
+                text = str(value or "")
+                text = " ".join(text.split())
+                return text[:limit]
+
+            def _on_agno_event(event: dict[str, Any]) -> None:
+                """Projeta eventos Agno para runtime + SSE sem payload sensível."""
+                event_type = _safe_event_value(event.get("event"), limit=64)
+                if event_type == "message.delta":
+                    events.put(("delta", str(event.get("content") or "")))
+                    return
+
+                data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                agent_id = _safe_event_value(event.get("agent_id"), limit=96)
+                agent_name = _safe_event_value(data.get("agent_name"), limit=96)
+                team_id = _safe_event_value(data.get("team_id"), limit=96)
+                status = _safe_event_value(event.get("status"), limit=32)
+                tool_name = _safe_event_value(event.get("tool_name"), limit=64)
+
+                publishable = {
+                    "agent.started", "agent.message.sent", "agent.completed",
+                    "agent.cancelled", "agent.failed", "task.delegated",
+                    "tool.call.requested", "tool.call.completed", "tool.call.failed",
+                }
+                if event_type not in publishable:
+                    return
+
+                safe_data = {
+                    "team_id": team_id or None,
+                    "agent_name": agent_name or None,
+                    "member_run_id": _safe_event_value(data.get("member_run_id"), limit=96) or None,
+                    "parent_run_id": _safe_event_value(data.get("parent_run_id"), limit=96) or None,
+                }
+                try:
+                    event_bus.publish(
+                        event_type,
+                        run_id=run.id,
+                        session_id=sid,
+                        agent_id=agent_id or request_agent_id,
+                        tool_name=tool_name or None,
+                        status=status or None,
+                        data=safe_data,
+                    )
+                except Exception as exc:  # noqa: BLE001 — telemetria best-effort
+                    _log.debug("Agno runtime event publish failed: %s", exc)
+
+                if event_type == "tool.call.requested" and tool_name:
+                    events.put(("tool", tool_name))
+                elif event_type.startswith("agent.") or event_type == "task.delegated":
+                    events.put(("agent", _json.dumps({
+                        "internal": True,
+                        "event": event_type,
+                        "status": status,
+                        "agent_id": agent_id,
+                        "agent_name": agent_name,
+                        "team_id": team_id,
+                    }, ensure_ascii=False)))
+
             _cost = _TurnCostRecorder(sid)
 
             @store.serialized(sid)
@@ -1745,17 +1904,16 @@ def create_app(
                         if _runtime_mode() == "agno":
                             agno_result = _run_agno_turn(
                                 effective_message, sid, run.id, request_agent_id, active_router,
-                                _turn_model, resolved,
+                                _turn_model, resolved, on_event=_on_agno_event,
                             )
                             resp = agno_result["response"]
                             tool_log = agno_result["tool_log"]
+                            ctx.add_assistant(_format_server_response(str(resp)))
                         else:
                             resp, tool_log = run_one_turn_with_fallback(
                                 ctx, active_router, _turn_client, _turn_model, _fallback_clients,
                             )
                     result["response"] = shell_approvals.prompt(sid, _effective_ws(active_router), presented=False) or resp
-                    if _runtime_mode() == "agno" and result["response"]:
-                        events.put(("delta", result["response"]))
                     result["tool_log"] = tool_log
                 except BaseException as exc:  # noqa: BLE001 — repassa ao gerador
                     result["error"] = exc
@@ -1782,7 +1940,13 @@ def create_app(
                     # acaba — mesmo com o cliente HTTP já desconectado.
                     try:
                         current = run_manager.get_run(run.id)
-                        already_cancelled = current is not None and current.status == "cancelled"
+                        terminal_status = current is not None and (
+                            current.status in {"completed", "cancelled"}
+                            or (
+                                current.status == "failed"
+                                and current.error != "stream turn timeout"
+                            )
+                        )
                         _tlog = result.get("tool_log") or []
                         _metrics.tool_calls_total += len(_tlog)
                         _record_turn_budget(_cost, run.id, request_agent_id)
@@ -1797,7 +1961,7 @@ def create_app(
                         except Exception as exc:  # noqa: BLE001 - settle completed work on save failure
                             result.setdefault("error", exc)
                             _log.exception("Falha ao salvar sessão /stream (run %s)", run.id)
-                        if not already_cancelled:
+                        if not terminal_status:
                             if "error" in result:
                                 run_manager.fail_run(run.id, str(result["error"]))
                             else:
@@ -1838,10 +2002,116 @@ def create_app(
                     event="route",
                 )
 
-            worker = _threading.Thread(
-                target=_worker, name=f"bauer-stream:{sid[:8]}", daemon=True,
-            )
-            worker.start()
+            worker_start_lock = _threading.Lock()
+
+            def _start_worker() -> None:
+                with worker_start_lock:
+                    if execution_state["started"]:
+                        return
+                    current = run_manager.get_run(run.id)
+                    if current is None or current.status not in {"queued", "running"}:
+                        return
+                    if current.status == "queued":
+                        run_manager.start_run(run.id)
+                    execution_state["started"] = True
+                    worker = _threading.Thread(
+                        target=_worker, name=f"bauer-stream:{sid[:8]}", daemon=True,
+                    )
+                    worker.start()
+
+            if waiting_for_approval:
+                def _await_initial_approval() -> None:
+                    """The admission wait survives navigation to Approvals."""
+                    wait_deadline = time.monotonic() + max(
+                        1.0, float(os.environ.get("BAUER_APPROVAL_WAIT_SECONDS", "3600")),
+                    )
+                    try:
+                        while time.monotonic() < wait_deadline:
+                            current = run_manager.get_run(run.id)
+                            if current is None or current.status in {"failed", "cancelled", "completed"}:
+                                return
+                            decision = approval_manager.get(approval_id or "")
+                            if decision is not None and decision.status == "approved" and current.status in {"queued", "running"}:
+                                _start_worker()
+                                return
+                            time.sleep(0.1)
+                        _kernel.expire_approval(approval_id or "")
+                    except Exception as exc:  # noqa: BLE001 — preserve terminal decisions
+                        _kernel._fail_se_nao_terminal(
+                            run.id, f"falha na espera de aprovação: {type(exc).__name__}", [],
+                        )
+
+                _threading.Thread(
+                    target=_await_initial_approval,
+                    name=f"bauer-approval:{sid[:8]}", daemon=True,
+                ).start()
+                # Não expõe payload/argumentos da solicitação. O cartão usa a
+                # mesma informação pública da aba Approvals.
+                record = approval_manager.get(approval_id or "")
+                from .approval_presentation import approval_summary
+
+                public_approval = {
+                    "id": approval_id,
+                    "run_id": run.id,
+                    "session_id": sid,
+                    "operation": getattr(record, "operation", "runtime.execute"),
+                    "tool_name": getattr(record, "tool_name", ""),
+                    "reason": redact_text(getattr(record, "reason", "A execução requer aprovação humana.")),
+                    "risk_level": getattr(record, "risk_level", "unknown"),
+                    "status": "pending",
+                    "scope": getattr(record, "scope", "once"),
+                    "summary": approval_summary(record),
+                }
+                yield _sse(_json.dumps(public_approval, ensure_ascii=False), event="approval")
+
+                while True:
+                    if execution_state["started"]:
+                        yield _sse(_json.dumps({"id": approval_id, "status": "approved"}), event="approval")
+                        break
+                    current = run_manager.get_run(run.id)
+                    if current is None or current.status in {"failed", "cancelled", "completed"}:
+                        record = approval_manager.get(approval_id or "")
+                        if record is not None:
+                            yield _sse(_json.dumps({
+                                "id": record.id, "status": record.status,
+                                "scope": getattr(record, "scope", "once"),
+                            }), event="approval")
+                        yield _sse("A execução foi encerrada; a aprovação não iniciará comandos.")
+                        yield _sse(sid, event="done")
+                        return
+                    record = approval_manager.get(approval_id or "")
+                    if record is None:
+                        run_manager.fail_run_se_nao_terminal(
+                            run.id, "solicitação de aprovação não encontrada"
+                        )
+                        yield _sse("A solicitação de aprovação não está mais disponível.")
+                        yield _sse(sid, event="done")
+                        return
+                    status = getattr(record, "status", "")
+                    if status == "approved":
+                        current = run_manager.get_run(run.id)
+                        if current is not None and current.status == "waiting_approval":
+                            # The decision endpoint owns the resume transition.
+                            # Do not race it after observing a persisted decision.
+                            yield _sse("", event="keepalive")
+                            time.sleep(0.1)
+                            continue
+                        # The independent waiter starts the worker, including
+                        # when the browser has already left the Chat.
+                        yield _sse("", event="keepalive")
+                        time.sleep(0.1)
+                        continue
+                    if status == "denied":
+                        yield _sse(_json.dumps({"id": approval_id, "status": "denied"}), event="approval")
+                        yield _sse("A aprovação foi negada; a execução não foi iniciada.")
+                        yield _sse(sid, event="done")
+                        return
+                    # Mantém a conexão viva sem transformar heartbeat em texto
+                    # do Chat. A decisão continua sendo lida do store.
+                    yield _sse("", event="keepalive")
+                    time.sleep(0.5)
+            else:
+                _start_worker()
 
             available = set(active_router.available_tools())
             gate = _StreamGate()  # retém possíveis tool-call JSON (ver docstring)
@@ -1869,9 +2139,45 @@ def create_app(
                 return _sse(text, event=event)
 
             ended = False
+            emitted_approval_status: dict[str, str] = {}
+            last_approval_clock = time.monotonic()
+
+            def _approval_frames():
+                """Emite cada approval do turno uma vez, inclusive se já resolveu."""
+                from .approval_presentation import approval_summary
+
+                for record in approval_manager.list():
+                    if record.run_id != run.id:
+                        continue
+                    if record.status not in {"pending", "approved", "denied", "expired", "cancelled"}:
+                        continue
+                    if emitted_approval_status.get(record.id) == record.status:
+                        continue
+                    emitted_approval_status[record.id] = record.status
+                    yield _sse(_json.dumps({
+                        "id": record.id,
+                        "run_id": run.id,
+                        "session_id": sid,
+                        "operation": record.operation,
+                        "tool_name": record.tool_name,
+                        "reason": redact_text(record.reason),
+                        "risk_level": record.risk_level,
+                        "status": record.status,
+                        "scope": getattr(record, "scope", "once"),
+                        "summary": approval_summary(record),
+                    }, ensure_ascii=False), event="approval")
+
             while not ended:
+                now = time.monotonic()
+                waiting_run = run_manager.get_run(run.id)
+                if waiting_run is not None and waiting_run.status == "waiting_approval":
+                    # Human response time is not tool/LLM execution time.
+                    deadline += now - last_approval_clock
+                last_approval_clock = now
+                for frame in _approval_frames():
+                    yield frame
                 try:
-                    kind, payload = events.get(timeout=1.0)
+                    kind, payload = events.get(timeout=0.25)
                 except _queue.Empty:
                     # Sem eventos: checa cancelamento e timeout de turno. Em
                     # ambos os casos a thread órfã continua até o fim do turno
@@ -1880,6 +2186,12 @@ def create_app(
                     if current_run is not None and current_run.status == "cancelled":
                         yield _sse(sid, event="done")
                         return
+                    # Tool calls em modo enforce ficam bloqueadas dentro da
+                    # thread do turno. Publicamos a solicitação aqui, sem
+                    # payload/argumentos, para o cartão aparecer no Chat em
+                    # paralelo à aba Approvals.
+                    for frame in _approval_frames():
+                        yield frame
                     if time.monotonic() > deadline:
                         yield _sse(
                             "⏱ Essa tarefa passou de "
@@ -1929,6 +2241,11 @@ def create_app(
                     except Exception:  # noqa: BLE001
                         _tool_data = _json.dumps({"internal": True})
                     yield _sse(_tool_data, event="tool")
+                elif kind == "agent":
+                    # O payload já foi projetado por allowlist em
+                    # `_on_agno_event`; o frontend ainda aplica sua própria
+                    # sanitização antes de renderizar.
+                    yield _sse(payload, event="agent")
                 else:  # "end"
                     ended = True
 
@@ -1946,6 +2263,10 @@ def create_app(
                     # lock, even after this connection stops observing it.
                     yield _sse(sid, event="done")
                     return
+
+            # A fast tool may finish before the poll observes its decision.
+            for frame in _approval_frames():
+                yield frame
 
             # Persistência (sessão + status/custo da run) já foi feita no
             # `finally` do _worker acima — é a ÚNICA fonte de verdade, inclusive
@@ -2000,11 +2321,30 @@ def create_app(
             try:
                 yield from interno
             except GeneratorExit:
-                try:
-                    run_manager.cancel_run(run.id)
-                except Exception as exc:  # noqa: BLE001 — teardown nunca propaga
-                    from .logging_config import log_suppressed
-                    log_suppressed("server.stream_disconnect_cancel", exc)
+                # A aprovação é uma espera deliberada. Se o usuário mudou de
+                # aba antes de decidir, preserve a run para a fila Approvals.
+                current = run_manager.get_run(run.id)
+                # Keep any run that has entered the approval protocol alive.
+                # A tool approval can be created a few milliseconds after the
+                # admission approval resumes; checking only ``pending`` here
+                # races that transition and cancels the run before the next
+                # card is persisted.  The approval ledger is the durable
+                # marker that this run belongs to a human-mediated workflow.
+                has_approval_protocol = any(
+                    record.run_id == run.id
+                    for record in approval_manager.list()
+                )
+                if (
+                    execution_state["started"]
+                    and current is not None
+                    and current.status not in {"waiting_approval", "queued"}
+                    and not has_approval_protocol
+                ):
+                    try:
+                        run_manager.cancel_run(run.id)
+                    except Exception as exc:  # noqa: BLE001 — teardown nunca propaga
+                        from .logging_config import log_suppressed
+                        log_suppressed("server.stream_disconnect_cancel", exc)
                 interno.close()
                 raise
 

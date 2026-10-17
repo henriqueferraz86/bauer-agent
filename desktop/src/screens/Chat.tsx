@@ -1,3 +1,8 @@
+import {
+  ApprovalCard, ApprovalScope, approvalStatusText, canApproveRun,
+  restoreApprovals, submitApprovalDecision, updateApprovalRequest,
+} from "../approvalState";
+import { updateChatApproval } from "../chatStream";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, isNoSpeechError } from "../api/client";
@@ -77,12 +82,14 @@ function loadChatState(): StoredChatState {
         ? parsed.messages
           .filter((m) => m && isPublicMessage(m))
           .map((m, index, messages) => {
+            const { approval: legacyApproval, approvals } = m as Message & { approval?: unknown };
             const candidate = m as Message & { toolActivities?: unknown[]; toolActivityCount?: unknown };
             const toolActivities = Array.isArray(candidate.toolActivities)
               ? candidate.toolActivities.map(sanitizeToolActivity).filter((activity): activity is ToolActivity => activity !== null).slice(-20)
               : undefined;
             return {
               ...m,
+              approvals: restoreApprovals(approvals, legacyApproval),
               text: m.role === "assistant" && typeof m.text === "string" && messages[index - 1]?.role === "user"
                 ? stripLeakedActivityPrefix(m.text, parsed.sessionId || "", messages[index - 1].text) : m.text,
               streaming: false,
@@ -116,6 +123,7 @@ export default function Chat() {
   const initialState = useRef(loadChatState());
   const [messages, setMessages] = useState<Message[]>(initialState.current.messages);
   const [input, setInput] = useState("");
+  const approvalRequests = useRef(new Set<string>());
   const [busy, setBusy] = useState(Boolean(currentChatTurn()?.busy));
   const [sessionId, setSessionId] = useState<string>(initialState.current.sessionId);
   const [projectContext, setProjectContext] = useState<ChatProjectContext | null>(initialState.current.projectContext ?? null);
@@ -516,9 +524,27 @@ export default function Chat() {
     }
   }
 
+  async function decideApproval(card: ApprovalCard, action: "approve" | "deny", scope: ApprovalScope = "once") {
+    await submitApprovalDecision(card, action, scope, approvalRequests.current, api.post, (id, patch) => {
+      updateChatApproval(id, patch);
+      setMessages((current) => current.map((message) => {
+        if (!Object.prototype.hasOwnProperty.call(message.approvals ?? {}, id)) return message;
+        const approvals = updateApprovalRequest(message.approvals, id, patch);
+        return { ...message, approvals };
+      }));
+    });
+  }
+
   async function send(overrideText?: string, options?: { speak?: boolean }) {
     const text = (overrideText ?? input).trim();
-    if (!text || busy) return;
+    if (!text) return;
+    const pending = messages.flatMap((m) => Object.values(m.approvals ?? {}).filter((a) => a.status === "pending"));
+    if (["confirmo", "confirmar", "aprovo", "aprovado", "pode executar", "sim, aprovo", "sim aprovo", "sim, pode executar", "sim pode executar"].includes(text.trim().toLocaleLowerCase("pt-BR")) && pending.length === 1) {
+      setInput("");
+      await decideApproval(pending[0], "approve", canApproveRun(pending[0]) ? "run" : "once");
+      return;
+    }
+    if (busy) return;
     // Um comando com barra SEMPRE roteia pro seu handler — mesmo quando a
     // paleta não está visível ou o envio veio do botão (avião). Sem isto,
     // `/loop …` escorregava pro /stream e estourava o timeout de 300s em vez
@@ -841,6 +867,43 @@ export default function Chat() {
                   <div className="text" style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
                 ) : (
                   <div className="text">
+                    {Object.values(m.approvals ?? {}).map((approval) => (
+                      <div className="approval-card" aria-live="polite" aria-busy={approval.submitting || false} key={approval.id}>
+                        <div className="approval-card-head">
+                          <i className="ti ti-shield-question" aria-hidden="true" />
+                          <strong>{approval.status === "pending" ? "Aprovação necessária" : "Aprovação"}</strong>
+                          {approval.risk_level && <span className="tag accent">{approval.risk_level}</span>}
+                        </div>
+                        <div className="approval-card-operation mono">{approval.operation} · {approval.tool_name}</div>
+                        {approval.summary && <div className="approval-card-summary">{approval.summary}</div>}
+                        <div className="approval-card-reason">{approval.reason}</div>
+                        {approval.status === "pending" && (
+                          <div className="row approval-card-actions">
+                            <button className="btn primary" disabled={approval.submitting} onClick={() => void decideApproval(approval, "approve", canApproveRun(approval) ? "run" : "once")}>
+                              <i className="ti ti-check" /> {canApproveRun(approval) ? "Aprovar tarefa" : "Aprovar"}
+                            </button>
+                            {canApproveRun(approval) && (
+                              <button className="btn" disabled={approval.submitting} onClick={() => void decideApproval(approval, "approve", "always")}>
+                                Permitir sempre este comando (allowlist)
+                              </button>
+                            )}
+                            {canApproveRun(approval) && (
+                              <button className="btn" disabled={approval.submitting} onClick={() => void decideApproval(approval, "approve", "once")}>
+                                <i className="ti ti-checks" /> Somente este comando
+                              </button>
+                            )}
+                            <button className="btn" disabled={approval.submitting} onClick={() => void decideApproval(approval, "deny")}>
+                              <i className="ti ti-x" /> Negar
+                            </button>
+                          </div>
+                        )}
+                        {((approval.status === "pending" && canApproveRun(approval)) || approval.scope === "run") && (
+                          <div className="muted approval-card-status">Aprovar tarefa ou digitar “confirmo” autoriza os comandos desta execução. Bloqueios de segurança continuam ativos; novas tarefas exigem outra aprovação.</div>
+                        )}
+                        <div className="muted approval-card-status">{approvalStatusText(approval, Boolean(m.streaming), m.approvalTurnEnded)}</div>
+                        {approval.error && <div className="approval-card-error" role="alert">{approval.error}</div>}
+                      </div>
+                    ))}
                     <Markdown text={m.text} />
                     {m.streaming && <span className="blink">▍</span>}
                   </div>

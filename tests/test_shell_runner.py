@@ -503,3 +503,16 @@ def test_build_shell_runner_passes_extra_allowed_commands(ws: Path):
     runner = _build_shell_runner(cfg, ws)
     assert runner is not None
     assert runner.extra_allowed_commands == frozenset({"docker"})
+
+
+def test_env_extends_extra_allowed_commands(monkeypatch):
+    from bauer.config_loader import BauerConfig
+    from bauer.env_loader import apply_env_to_config
+
+    cfg = BauerConfig(model={"provider": "ollama", "name": "m"})
+    cfg.tools.extra_allowed_commands = ["kubectl"]
+    monkeypatch.setenv("BAUER_EXTRA_ALLOWED_COMMANDS", "docker, docker-compose")
+
+    apply_env_to_config(cfg)
+
+    assert cfg.tools.extra_allowed_commands == ["kubectl", "docker", "docker-compose"]

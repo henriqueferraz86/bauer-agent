@@ -54,6 +54,9 @@ class JsonlStateStore:
     def list_latest(self, collection: str) -> list[dict[str, Any]]:
         return self._store.list_latest(collection)
 
+    def transaction(self):
+        return self._store.transaction()
+
     def upsert_unless_status(
         self, collection: str, record: Any, *, forbidden_statuses: set[str]
     ) -> bool:
@@ -209,7 +212,26 @@ class SqliteStateStore:
         return data
 
     def upsert(self, collection: str, record: Any) -> dict[str, Any]:
+        if self._safe_collection(collection) == "runs":
+            # RunManager callers may have read an active run before another
+            # writer cancelled it. Check again under the database writer lock.
+            with self.transaction() as tx:
+                return tx.upsert(collection, record)
         return self.append(collection, record)
+
+    @contextmanager
+    def transaction(self):
+        """Read and update related records under one cross-process writer lock.
+
+        Callers must use the yielded view, not open another store connection
+        inside this context. Audit copies are emitted only after commit.
+        """
+        with self._connect() as conn:
+            view = _StateTransaction(self, conn)
+            with self._write(conn):
+                yield view
+            for collection, data in view.audit:
+                self._append_audit(collection, data)
 
     def latest(self, collection: str, record_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -389,3 +411,38 @@ class SqliteStateStore:
 
 
 RuntimeStateStore = JsonlStateStore | SqliteStateStore
+
+
+class _StateTransaction:
+    def __init__(self, store: SqliteStateStore, conn: sqlite3.Connection):
+        self.store = store
+        self.conn = conn
+        self.audit: list[tuple[str, dict[str, Any]]] = []
+
+    def latest(self, collection: str, record_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """SELECT payload FROM runtime_records
+               WHERE collection=? AND record_id=? ORDER BY sequence DESC LIMIT 1""",
+            (self.store._safe_collection(collection), str(record_id)),
+        ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def upsert(self, collection: str, record: Any) -> dict[str, Any]:
+        from ...privacy import redact_data
+
+        collection = self.store._safe_collection(collection)
+        data = redact_data(JsonlStateStore._to_dict(record))
+        if collection == "runs":
+            current = self.latest(collection, str(data.get("id") or ""))
+            if (current and current.get("status") in {"completed", "failed", "cancelled"}
+                    and data.get("status") != current.get("status")):
+                # The orphaned /stream worker has historically been allowed
+                # to finish after this transport-only timeout. Human denial,
+                # cancellation and approval expiration are never transport timeouts.
+                if not (current.get("status") == "failed"
+                        and current.get("error") == "stream turn timeout"
+                        and data.get("status") == "completed"):
+                    raise ValueError(f"Run is terminal: {current['status']}")
+        self.store._insert(self.conn, collection, data)
+        self.audit.append((collection, data))
+        return data

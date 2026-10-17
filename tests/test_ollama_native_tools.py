@@ -261,7 +261,9 @@ def test_system_prompt_deriva_o_modo_do_client():
     assert "SOMENTE com o JSON" in antigo
 
     # explícito continua vencendo a derivação
-    assert _build_system_prompt(router, "bridge", client=_client()) == antigo
+    explicito = _build_system_prompt(router, "bridge", client=_client())
+    assert "SOMENTE com o JSON" in explicito
+    assert "function calling nativo" not in explicito
 
 
 def test_call_sites_do_system_prompt_nao_ficam_no_default():
@@ -418,6 +420,17 @@ def test_registry_carrega_sem_cwd_e_sem_path(monkeypatch, tmp_path):
     monkeypatch.setenv("BAUER_HOME", str(tmp_path / "vazio"))
     reg = load_registry()
     assert reg.names(), "registry vazio — o models.yaml empacotado não foi lido"
+    assert reg.get("qwen3-coder:30b") is not None
+
+
+def test_registry_ignora_diretorio_chamado_models_yaml(monkeypatch, tmp_path):
+    """Um diretório homônimo no CWD não é uma fonte YAML legível."""
+    (tmp_path / "models.yaml").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "home-vazio"))
+
+    reg = load_registry()
+
     assert reg.get("qwen3-coder:30b") is not None
 
 

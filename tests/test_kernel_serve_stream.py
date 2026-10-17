@@ -12,6 +12,8 @@ import json
 import logging
 import textwrap
 from contextlib import contextmanager
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -210,3 +212,53 @@ def test_stream_legacy_path_untouched(tmp_path: Path):
     resp = TestClient(app).get("/stream?message=oi")
     assert "legado segue normal" in resp.text
     assert "event: done" in resp.text
+
+
+def test_stream_approval_is_visible_and_resumes_after_rest_api_decision(tmp_path: Path):
+    """Aprovar na aba Approvals retoma o mesmo stream, sem repetir o pedido."""
+    cfg = _cfg(tmp_path, kernel_enabled=True)
+    client = _make_client("execução retomada")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    policy_dir = ws / ".bauer"
+    policy_dir.mkdir()
+    (policy_dir / "policy.yaml").write_text(
+        "rules:\n  - id: runtime.ask\n    operation: runtime.execute\n    action: ask\n    reason: aprovação humana necessária\n",
+        encoding="utf-8",
+    )
+    with patch("bauer.projects_registry._DEFAULT_REGISTRY", tmp_path / "p.json"), \
+         patch("bauer.agent._try_parse_tool", return_value=None):
+        app = create_app(
+            model_name="deepseek/deepseek-v4-flash", applied_context=4096,
+            router=ToolRouter(workspace=ws), client=client, system_prompt="s",
+            sessions_dir=tmp_path / "sessions", api_key="", rate_limit_requests=0,
+            config_path=cfg,
+        )
+
+    result: dict[str, str] = {}
+
+    def consume_stream() -> None:
+        with TestClient(app).stream("GET", "/stream?message=precisa-aprovar") as response:
+            result["body"] = "".join(response.iter_text())
+
+    thread = threading.Thread(target=consume_stream, daemon=True)
+    thread.start()
+    approval = None
+    control = TestClient(app)
+    for _ in range(40):
+        approvals = control.get("/api/obs/approvals?status=pending").json()["approvals"]
+        if approvals:
+            approval = approvals[0]
+            break
+        time.sleep(0.05)
+    assert approval is not None
+
+    decision = control.post(f"/api/approvals/{approval['id']}/approve")
+    assert decision.status_code == 200
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert "event: approval" in result["body"]
+    assert '"operation": "runtime.execute"' in result["body"]
+    assert '"status": "approved"' in result["body"]
+    assert "execução retomada" in result["body"]
+    client.chat_stream.assert_called_once()
