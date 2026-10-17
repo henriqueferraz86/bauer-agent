@@ -50,7 +50,7 @@ def test_allowlist_requires_human_even_with_allow_policy_and_never_overrides_den
         workspace=tmp_path, shell_runner=ShellRunner(workspace=tmp_path),
         policy_enabled=True, policy_root=root,
     )
-    router._policy_mode = "audit"
+    router._policy_mode = "enforce"
     router._policy_rules_path = rules
     expected = "policy denied" if action == "deny" else "waiting_approval"
     with pytest.raises(ToolError, match=expected):

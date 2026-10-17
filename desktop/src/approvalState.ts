@@ -124,3 +124,13 @@ export async function submitApprovalDecision(
     inFlight.delete(card.id);
   }
 }
+
+export function mergeLoopApprovals(current: ApprovalsById | undefined, values: unknown): ApprovalsById {
+  let merged = current ?? {};
+  if (Array.isArray(values)) for (const value of values) merged = mergeApproval(merged, value);
+  return merged;
+}
+
+export function loopIsActive(state: string): boolean {
+  return ["running", "queued", "waiting_approval", "stopping"].includes(state);
+}

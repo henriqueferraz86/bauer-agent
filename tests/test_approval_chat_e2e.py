@@ -271,11 +271,12 @@ def test_waiting_for_human_does_not_exhaust_stream_execution_timeout(environment
     app, control, workspace, approvals, runs = environment
     # Leave real SDK/subprocess startup a realistic execution budget; the wait
     # itself is deliberately longer than that budget.
-    monkeypatch.setattr(server, "_STREAM_TURN_TIMEOUT_SECONDS", 3)
+    monkeypatch.setenv("BAUER_APPROVAL_WAIT_SECONDS", "30")
+    monkeypatch.setattr(server, "_STREAM_TURN_TIMEOUT_SECONDS", 8)
     thread, result = start_stream(app, "patient-session")
     record = pending(approvals)
     try:
-        time.sleep(3.3)
+        time.sleep(8.3)
         assert runs.get_run(record.run_id).status == "waiting_approval"
         assert thread.is_alive()
         assert control.post(f"/api/approvals/{record.id}/approve", json={"scope": "run"}).status_code == 200

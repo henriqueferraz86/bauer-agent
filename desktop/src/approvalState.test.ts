@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  ApprovalCard, approvalStatusText, canApproveRun, mergeApproval,
+  loopIsActive, mergeLoopApprovals, ApprovalCard, approvalStatusText, canApproveRun, mergeApproval,
   parseApprovalEvent, restoreApprovals, sanitizeApproval, submitApprovalDecision, updateApprovalRequest,
 } from "./approvalState";
 
@@ -11,6 +11,14 @@ const pending: ApprovalCard = {
 };
 
 describe("approval cards", () => {
+  it("keeps autonomous polling active while a card awaits a decision", () => {
+    const cards = mergeLoopApprovals(undefined, [pending]);
+    expect(cards[pending.id].status).toBe("pending");
+    expect(loopIsActive("waiting_approval")).toBe(true);
+    expect(loopIsActive("queued")).toBe(true);
+    expect(loopIsActive("completed")).toBe(false);
+    expect(mergeLoopApprovals(cards, [{ id: pending.id, status: "approved" }])[pending.id].status).toBe("approved");
+  });
   it("sends and restores an explicit permanent command decision", async () => {
     const post = vi.fn().mockResolvedValue({});
     let cards = mergeApproval(undefined, pending);

@@ -59,6 +59,7 @@ import logging
 import os
 import re
 import threading
+from contextvars import ContextVar
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -87,6 +88,17 @@ from .tools.sqlite import SqliteToolsMixin
 from .tools.utility import UtilityToolsMixin
 from .tools.web import WebToolsMixin
 from .unicode_utils import sanitize_surrogates as _sanitize_surrogates
+
+_POLICY_APPROVAL_WAIT: ContextVar[bool] = ContextVar("policy_approval_wait", default=False)
+
+
+def set_policy_approval_wait(enabled: bool):
+    return _POLICY_APPROVAL_WAIT.set(enabled)
+
+
+def reset_policy_approval_wait(token) -> None:
+    _POLICY_APPROVAL_WAIT.reset(token)
+
 
 logger = logging.getLogger(__name__)
 
@@ -1448,6 +1460,7 @@ class ToolRouter(
                 raise ToolError(f"run is terminal: {run.status}")
             if run.session_id != self._runtime_session_id:
                 raise ToolError("runtime session does not match run")
+        wait_for_approval = self._wait_for_policy_approval or _POLICY_APPROVAL_WAIT.get()
         operation = _policy_operation_for_tool(tool_name)
         if operation is None:
             return
@@ -1487,7 +1500,8 @@ class ToolRouter(
                     )
                 raise ToolError(f"policy denied: {decision.reason}")
             needs_command_approval = False
-            if tool_name == "run_command" and self._shell_runner is not None:
+            if (tool_name == "run_command" and self._shell_runner is not None
+                    and (wait_for_approval or self._policy_mode == "enforce")):
                 from .shell_runner import BlockedCommandError, validate_command_syntax
 
                 command = args.get("command", "")
@@ -1548,9 +1562,9 @@ class ToolRouter(
                     payload=args,
                     run_id=self._runtime_run_id,
                     session_id=self._runtime_session_id,
-                    suspend_run=run is not None or bool(self._wait_for_policy_approval),
+                    suspend_run=run is not None or bool(wait_for_approval),
                 )
-                if self._wait_for_policy_approval and self._runtime_run_id:
+                if wait_for_approval and self._runtime_run_id:
                     wait_seconds = max(
                         1.0,
                         float(os.environ.get("BAUER_APPROVAL_WAIT_SECONDS", "3600")),

@@ -32,3 +32,7 @@ preservando contexto de projeto, streaming persistente, orçamento e CAS do
 Kernel atuais. Cards são consumidos por chatStream.ts; navegação mantém
 aprovações e os controles de decisão. Frontend: 94 testes e build aprovados.
 Backend: testes focados aprovados; suíte global em validação antes do deploy.
+
+A31-14 done: `/loop/{run_id}` projeta cards sanitizados e estado de espera;
+o chat segue acompanhando a execução aguardando aprovação. Testes de
+aprovação/negação no loop aprovados; frontend com 95 testes aprovados.

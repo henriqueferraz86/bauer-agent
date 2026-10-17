@@ -1,6 +1,6 @@
 import {
   ApprovalCard, ApprovalScope, approvalStatusText, canApproveRun,
-  restoreApprovals, submitApprovalDecision, updateApprovalRequest,
+  restoreApprovals, mergeLoopApprovals, loopIsActive, submitApprovalDecision, updateApprovalRequest,
 } from "../approvalState";
 import { updateChatApproval } from "../chatStream";
 import { useEffect, useRef, useState } from "react";
@@ -24,6 +24,7 @@ import {
 } from "../voice";
 
 interface LoopStatusResponse {
+  approvals?: unknown;
   run_id: string;
   state: string;
   rounds: number | null;
@@ -303,9 +304,11 @@ export default function Chat() {
           m.loop!.stopReason = s.stop_reason ?? null;
           // texto parcial ao vivo (feedback durante a rodada) + final no fim
           if (s.last_text) m.text = s.last_text;
-          if (s.state !== "running") m.streaming = false;
+          m.approvals = mergeLoopApprovals(m.approvals, s.approvals);
+          m.streaming = loopIsActive(s.state);
+          m.approvalTurnEnded = !loopIsActive(s.state);
         });
-        if (s.state !== "running") stopPolling(runId);
+        if (!loopIsActive(s.state)) stopPolling(runId);
       } catch {
         /* serve fora do ar? tenta de novo no próximo tick */
       }
@@ -349,7 +352,7 @@ export default function Chat() {
   // o GET /loop/{id} responde mesmo pós-restart (cai no Run persistido).
   useEffect(() => {
     for (const m of initialState.current.messages) {
-      if (m.loop && (m.loop.state === "running" || m.loop.state === "stopping")) {
+      if (m.loop && loopIsActive(m.loop.state)) {
         pollLoop(m.loop.runId);
       }
     }
@@ -812,6 +815,7 @@ export default function Chat() {
                     <span className="lname">
                       <strong>
                         {m.loop.state === "running" ? "Modo autônomo"
+                          : m.loop.state === "waiting_approval" ? "Aguardando aprovação"
                           : m.loop.state === "stopping" ? "Parando…"
                           : m.loop.state === "completed" ? "Concluído"
                           : m.loop.state === "limit" ? "Limite atingido"

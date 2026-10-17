@@ -106,11 +106,7 @@ class AgnoRuntimeAdapter:
         last_event: dict[str, Any] = {}
         for event in self.stream_agent({**request, "run_id": run_id}):
             last_event = event
-            if self._activity_sink is not None and (
-                str(event.get("event", "")).startswith("agent.") or event.get("event") == "task.delegated"
-                or (event.get("event") in {"tool.call.requested", "tool.call.completed", "tool.call.failed"}
-                    and event.get("agent_id") and event.get("data", {}).get("member_event"))
-            ):
+            if self._activity_sink is not None:
                 try:
                     self._activity_sink(event)
                 except Exception:
@@ -1078,7 +1074,7 @@ class AgnoRuntimeAdapter:
         if self.runtime_policy_mode is not None:
             router._policy_mode = self.runtime_policy_mode  # type: ignore[attr-defined]
             router._policy_enabled = self.runtime_policy_mode != "off"  # type: ignore[attr-defined]
-            router._wait_for_policy_approval = self.runtime_policy_mode != "off"  # type: ignore[attr-defined]
+            router._wait_for_policy_approval = self.runtime_policy_mode == "enforce"  # type: ignore[attr-defined]
         return router
 
     @staticmethod

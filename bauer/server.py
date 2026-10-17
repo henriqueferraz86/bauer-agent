@@ -329,10 +329,9 @@ def create_app(
             # Modo controla o que "ask" faz — ver _SERVE_POLICY_MODE.
             r._policy_enabled = _SERVE_POLICY_MODE != "off"  # type: ignore[attr-defined]
             r._policy_mode = _SERVE_POLICY_MODE  # type: ignore[attr-defined]
-            # A thread do turno precisa aguardar uma decisão humana também
-            # em audit quando o comando está fora da allowlist.
-            # O stream mostra o cartão e retoma a mesma chamada após aprovação.
-            r._wait_for_policy_approval = _SERVE_POLICY_MODE != "off"  # type: ignore[attr-defined]
+            # Só os workers /stream e /loop ativam a espera via ContextVar.
+            # Chamadas HTTP síncronas devolvem a solicitação pendente.
+            r._wait_for_policy_approval = False  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             from .logging_config import log_suppressed
             log_suppressed("serve.wire_router", exc)
@@ -824,6 +823,11 @@ def create_app(
         adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
         adapter_cfg.setdefault("tool_context", "chat")
         adapter_cfg["workspace"] = str(_effective_ws(active_router))
+        def _on_adapter_event(event: dict[str, Any]) -> None:
+            _publish_agno_activity(event)
+            if on_event is not None:
+                on_event(event)
+
         adapter = AgnoRuntimeAdapter(
             config=cfg,
             adapter_config=adapter_cfg,
@@ -832,7 +836,7 @@ def create_app(
             runtime_policy_root=runtime_root,
             runtime_policy_mode=_SERVE_POLICY_MODE,
             tool_router=active_router,
-            activity_sink=_publish_agno_activity,
+            activity_sink=_on_adapter_event,
         )
         tools = active_router.available_tools()
         turn_context = _new_context(active_router)
@@ -860,39 +864,17 @@ def create_app(
             "resolved": resolved,
         }
 
-        chunks: list[str] = []
-        last_event: dict[str, Any] = {}
-        observed_tools: list[dict[str, Any]] = []
-        for event in adapter.stream_agent(request):
-            current_run = run_manager.get_run(run_id)
-            if current_run is not None and (
-                current_run.status == "cancelled"
-                or (current_run.status == "failed" and current_run.error != "stream turn timeout")
-            ):
-                # Agno treats ToolError as model feedback. A terminal policy
-                # decision must stop that loop, not become a fabricated success.
-                raise RuntimeError(f"Execução encerrada: {current_run.status}")
-            last_event = event
-            if on_event is not None:
-                try:
-                    on_event(event)
-                except Exception as exc:  # noqa: BLE001 — UI nunca derruba run
-                    _log.debug("Agno stream event sink failed: %s", exc)
-            event_type = str(event.get("event") or "")
-            if event_type == "message.delta":
-                chunks.append(str(event.get("content") or ""))
-            elif event_type == "tool.call.requested":
-                observed_tools.append({
-                    "tool_name": str(event.get("tool_name") or "agno.tool"),
-                    "status": "requested",
-                })
-            elif event_type == "run.failed":
-                raise RuntimeError(str(event.get("error") or "Agno não concluiu o turno"))
-
-        if last_event.get("status") != "completed":
-            raise RuntimeError(str(last_event.get("error") or "Agno não concluiu o turno"))
-        metadata = last_event.get("metadata", {}) or {}
-        raw_tools = metadata.get("tools", []) or observed_tools
+        result = adapter.run_agent(request)
+        current_run = run_manager.get_run(run_id)
+        if current_run is not None and (
+            current_run.status == "cancelled"
+            or (current_run.status == "failed" and current_run.error != "stream turn timeout")
+        ):
+            raise RuntimeError(f"Execução encerrada: {current_run.status}")
+        if result.get("status") != "completed":
+            raise RuntimeError(str(result.get("error") or "Agno não concluiu o turno"))
+        metadata = result.get("metadata", {}) or {}
+        raw_tools = metadata.get("tools", []) or []
         tool_log = [
             {
                 "tool": str(item.get("tool_name") or "agno.tool"),
@@ -902,7 +884,7 @@ def create_app(
             if isinstance(item, dict)
         ]
         return {
-            "response": "".join(chunks) or str(last_event.get("output") or ""),
+            "response": str(result.get("output") or ""),
             "tool_log": tool_log,
         }
 
@@ -1842,25 +1824,6 @@ def create_app(
                 if event_type not in publishable:
                     return
 
-                safe_data = {
-                    "team_id": team_id or None,
-                    "agent_name": agent_name or None,
-                    "member_run_id": _safe_event_value(data.get("member_run_id"), limit=96) or None,
-                    "parent_run_id": _safe_event_value(data.get("parent_run_id"), limit=96) or None,
-                }
-                try:
-                    event_bus.publish(
-                        event_type,
-                        run_id=run.id,
-                        session_id=sid,
-                        agent_id=agent_id or request_agent_id,
-                        tool_name=tool_name or None,
-                        status=status or None,
-                        data=safe_data,
-                    )
-                except Exception as exc:  # noqa: BLE001 — telemetria best-effort
-                    _log.debug("Agno runtime event publish failed: %s", exc)
-
                 if event_type == "tool.call.requested" and tool_name:
                     events.put(("tool", tool_name))
                 elif event_type.startswith("agent.") or event_type == "task.delegated":
@@ -1879,7 +1842,7 @@ def create_app(
             def _worker() -> None:
                 from .cost_meter import cost_sink
                 from .delta_stream import reset_sink, set_sink
-                from .tool_router import reset_runtime_ids, set_runtime_ids
+                from .tool_router import reset_runtime_ids, set_runtime_ids, set_policy_approval_wait, reset_policy_approval_wait
                 current = run_manager.get_run(run.id)
                 from .core.runtime.run_manager import TERMINAL_RUN_STATUSES
                 if current is not None and current.status in TERMINAL_RUN_STATUSES:
@@ -1895,6 +1858,7 @@ def create_app(
                 # o router de projeto, reusado por outra sessão/turno concorrente
                 # no MESMO projeto — instalar aqui (nesta thread) evita a corrida
                 # de duas threads pisando no session/run id uma da outra.
+                wait_token = set_policy_approval_wait(True)
                 ids_token = set_runtime_ids(sid, run.id)
                 try:
                     effective_message = shell_approvals.resolve(sid, message, active_router)
@@ -1926,6 +1890,7 @@ def create_app(
                     cost_sink.reset(cost_token)
                     reset_sink(token)
                     reset_runtime_ids(ids_token)
+                    reset_policy_approval_wait(wait_token)
                     # Persistência ÚNICA aqui (não no gerador): se o turno estourar
                     # o _STREAM_TURN_TIMEOUT_SECONDS, o gerador já retornou e a SSE
                     # já fechou, mas esta thread (órfã) continua rodando até o fim
@@ -2468,11 +2433,12 @@ def create_app(
             from datetime import UTC as _UTC, datetime as _dt
 
             from .cost_meter import cost_sink
-            from .tool_router import reset_runtime_ids, set_runtime_ids
+            from .tool_router import reset_runtime_ids, set_runtime_ids, set_policy_approval_wait, reset_policy_approval_wait
             ctx.messages = store.load(sid)
             _apply_request_context(ctx, resolved)
             cost = _TurnCostRecorder(sid)
             cost_token = cost_sink.set(cost)
+            wait_token = set_policy_approval_wait(True)
             ids_token = set_runtime_ids(sid, run.id)
             last_cost = 0.0
 
@@ -2623,6 +2589,7 @@ def create_app(
                 reset_sink(sink_token)
                 cost_sink.reset(cost_token)
                 reset_runtime_ids(ids_token)
+                reset_policy_approval_wait(wait_token)
                 state_obj.activity = ""
 
             _record_turn_budget(cost, run.id, request_agent_id)
@@ -2697,17 +2664,29 @@ def create_app(
     @app.get("/loop/{run_id}")
     def loop_status(run_id: str, _: None = Depends(_verify_key)):
         from .serve_loop import loop_registry
-        state = loop_registry().get(run_id)
-        if state is not None:
-            return state.to_dict()
-        # pós-restart: o registro vivo se foi, mas o Run persistido responde
+        from .approval_presentation import approval_summary
+
         run = run_manager.get_run(run_id)
-        if run is None:
+        state = loop_registry().get(run_id)
+        if state is None and run is None:
             raise HTTPException(status_code=404, detail=f"Loop '{run_id}' nao encontrado.")
-        return {"run_id": run.id, "session_id": run.session_id, "state": run.status,
-                "stop_reason": run.error, "rounds": None,
-                "tool_calls": run.tool_calls_count, "cost_usd": run.cost_estimate,
-                "last_text": (run.output or {}).get("response", "")}
+        result = state.to_dict() if state is not None else {
+            "run_id": run.id, "session_id": run.session_id, "state": run.status,
+            "stop_reason": run.error, "rounds": None,
+            "tool_calls": run.tool_calls_count, "cost_usd": run.cost_estimate,
+            "last_text": (run.output or {}).get("response", ""),
+        }
+        if run is not None and run.status == "waiting_approval":
+            result["state"] = "waiting_approval"
+        result["approvals"] = [
+            {"id": record.id, "run_id": record.run_id, "session_id": record.session_id,
+             "operation": record.operation, "tool_name": record.tool_name,
+             "reason": record.reason, "risk_level": record.risk_level,
+             "status": record.status, "scope": record.scope,
+             "summary": approval_summary(record)}
+            for record in approval_manager.list() if record.run_id == run_id
+        ]
+        return result
 
     @app.post("/loop/{run_id}/stop")
     def loop_stop(run_id: str, _: None = Depends(_verify_key)):

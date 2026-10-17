@@ -76,3 +76,7 @@ no localhost do container e porta Windows ocupada por outro serviço.
 - Testar duas tools reais consecutivas no Agno com uma decisão por tarefa,
   isolamento entre runs, negação, repetição de decisão e cancelamento.
 - Diferenciar execução de comando bem-sucedida de aplicação validada.
+
+O modo autônomo `/loop` também deve projetar aprovações sanitizadas no
+endpoint de status, continuar sendo acompanhado durante waiting_approval
+e apresentar os mesmos controles no chat até a decisão.
