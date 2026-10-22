@@ -52,7 +52,13 @@ LOG_FILE = Path("logs") / "gateway.log"
 
 
 def detect_service_platform() -> str:
-    """'windows' | 'systemd' | 'launchd' | 'unsupported'."""
+    """'windows' | 'systemd' | 'launchd' | 'background' | 'unsupported'.
+
+    ``background`` is the real-world default for containers and minimal
+    Linux images with no systemd/launchd/Task Scheduler (e.g. the Docker
+    deployment in docker-compose.yml) — ``unsupported`` stays a valid
+    explicit choice for callers that want the hard failure instead.
+    """
     if sys.platform == "win32":
         return "windows"
     if sys.platform == "darwin":
@@ -61,7 +67,7 @@ def detect_service_platform() -> str:
         from shutil import which
         if which("systemctl"):
             return "systemd"
-    return "unsupported"
+    return "background"
 
 
 def _launchd_label() -> str:
@@ -289,12 +295,14 @@ class GatewayServiceManager:
         project_dir: str | Path | None = None,
         platform: str | None = None,
         run_fn: Callable[..., Any] | None = None,
+        popen_fn: Callable[..., subprocess.Popen] | None = None,
     ) -> None:
         from .paths import get_bauer_home
         # working dir do serviço é sempre ~/.bauer/ (config.yaml e .env ficam lá)
         self.project_dir = Path(project_dir) if project_dir else get_bauer_home()
         self.platform = platform or detect_service_platform()
         self._run = run_fn or self._default_run
+        self._popen = popen_fn or subprocess.Popen
 
     @staticmethod
     def _default_run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -327,11 +335,86 @@ class GatewayServiceManager:
     def _launchctl(self, *args: str) -> subprocess.CompletedProcess:
         return self._run(["launchctl", *args])
 
+    # ── background helpers (sem gerenciador de serviço: Docker/containers) ──
+
+    def _start_background(self) -> str:
+        """Sobe `bauer gateway start` destacado; grava o próprio PID file.
+
+        Mesmo mecanismo de ``commands/gateway_cmd.py::_gateway_start_background``
+        — sem isso o botão "Iniciar" do painel web falha sempre que não há
+        systemd/launchd/Task Scheduler (caso do container ``bauer`` do
+        docker-compose.yml).
+        """
+        config_path = self.project_dir / "config.yaml"
+        pid_file = _pid_file(self.project_dir)
+        if pid_file.exists():
+            try:
+                import psutil
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+                if psutil.pid_exists(pid):
+                    return f"Gateway já rodando (pid={pid})."
+            except Exception:  # noqa: BLE001 — PID file obsoleto, sobe um novo
+                logger.debug("gateway background: pid file obsoleto", exc_info=True)
+
+        log_path = pid_file.parent / "gateway.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("ab")
+        cmd = [
+            sys.executable, "-m", "bauer.cli", "gateway", "start",
+            "--config", str(config_path.resolve()),
+        ]
+        popen_kwargs: dict[str, Any] = {
+            "stdout": log_handle, "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL, "close_fds": True,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+        try:
+            proc = self._popen(cmd, **popen_kwargs)
+        finally:
+            log_handle.close()
+
+        import time
+        real_pid = proc.pid
+        for _ in range(20):
+            time.sleep(0.1)
+            try:
+                real_pid = int(pid_file.read_text(encoding="utf-8").strip())
+                break
+            except Exception:  # noqa: BLE001 — pid file ainda não gravado
+                continue
+        return f"Gateway iniciado em background (pid={real_pid}). Sem restart automático no boot/crash."
+
+    def _stop_background(self) -> str:
+        pid_file = _pid_file(self.project_dir)
+        killed = 0
+        if pid_file.exists():
+            try:
+                import psutil
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+                psutil.Process(pid).terminate()
+                killed += 1
+            except Exception:  # noqa: BLE001 — PID já morto/inválido
+                logger.debug("gateway background: stop sem processo vivo", exc_info=True)
+            pid_file.unlink(missing_ok=True)
+        from .commands._runtime import _kill_bridge_processes
+        killed += _kill_bridge_processes(
+            "gateway_runtime", "telegram_bridge", "discord_bridge", "slack_bridge"
+        )
+        return f"Gateway parado ({killed} processo(s))." if killed else "Nenhum gateway em execução."
+
     # ── API ─────────────────────────────────────────────────────────────────
 
     def install(self) -> str:
         """Instala E inicia o serviço. Retorna mensagem de sucesso."""
         self._check_platform()
+        if self.platform == "background":
+            return self._start_background()
         python_path = _service_python(self.project_dir)
         (self.project_dir / "logs").mkdir(exist_ok=True)
 
@@ -391,6 +474,8 @@ class GatewayServiceManager:
     def uninstall(self) -> str:
         self._check_platform()
         self.stop(quiet=True)
+        if self.platform == "background":
+            return "Gateway parado. Sem artefato de serviço para remover (modo background)."
         if self.platform == "systemd":
             self._systemctl("disable", SERVICE_NAME)
             self._unit_path.unlink(missing_ok=True)
@@ -407,6 +492,8 @@ class GatewayServiceManager:
 
     def start(self) -> str:
         self._check_platform()
+        if self.platform == "background":
+            return self._start_background()
         if self.platform == "systemd":
             r = self._systemctl("start", SERVICE_NAME)
             if r.returncode != 0:
@@ -431,6 +518,9 @@ class GatewayServiceManager:
 
     def stop(self, quiet: bool = False) -> str:
         self._check_platform()
+        if self.platform == "background":
+            msg = self._stop_background()
+            return "" if quiet else msg
         if self.platform == "systemd":
             self._systemctl("stop", SERVICE_NAME)
             return f"Serviço {SERVICE_NAME} parado."
@@ -465,7 +555,11 @@ class GatewayServiceManager:
             st.detail = "plataforma sem systemd/launchd/Task Scheduler"
             return st
 
-        if self.platform == "systemd":
+        if self.platform == "background":
+            # installed/enabled não fazem sentido sem serviço do SO — running
+            # vem só do PID file, lido mais abaixo (comum a todas as plataformas).
+            pass
+        elif self.platform == "systemd":
             st.installed = self._unit_path.exists()
             if st.installed:
                 en = self._systemctl("is-enabled", SERVICE_NAME)

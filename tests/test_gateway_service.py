@@ -62,11 +62,19 @@ class TestTemplates:
 
 class TestDetectPlatform:
     def test_retorna_valor_valido(self):
-        assert detect_service_platform() in ("windows", "systemd", "unsupported")
+        assert detect_service_platform() in ("windows", "systemd", "launchd", "background")
 
     def test_windows_quando_win32(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")
         assert detect_service_platform() == "windows"
+
+    def test_background_quando_linux_sem_systemctl(self, monkeypatch):
+        # Caso real: container Docker (docker-compose.yml) sem systemd/launchd/
+        # Task Scheduler — antes retornava "unsupported" e o painel web não
+        # conseguia nem iniciar nem ver o status do gateway.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("shutil.which", lambda _name: None)
+        assert detect_service_platform() == "background"
 
 
 class TestFormatUptime:
@@ -189,6 +197,75 @@ class TestManagerWindows:
         out = mgr.logs(lines=10)
         assert "linha 99" in out
         assert "linha 89" not in out  # só as últimas 10
+
+
+class TestManagerBackground:
+    """Modo sem systemd/launchd/Task Scheduler — caso real do container Docker."""
+
+    def _mgr(self, tmp_path, popen_fn=None):
+        return GatewayServiceManager(
+            project_dir=tmp_path, platform="background",
+            run_fn=_FakeRun(), popen_fn=popen_fn,
+        )
+
+    def test_start_lanca_processo_destacado_e_le_pid_file(self, tmp_path):
+        from types import SimpleNamespace
+
+        calls: list[list[str]] = []
+
+        def fake_popen(cmd, **kw):
+            calls.append(cmd)
+            pid_file = tmp_path / "workspace" / ".bauer_gateway" / "gateway.pid"
+            pid_file.parent.mkdir(parents=True, exist_ok=True)
+            pid_file.write_text("4242", encoding="utf-8")
+            return SimpleNamespace(pid=4242)
+
+        mgr = self._mgr(tmp_path, popen_fn=fake_popen)
+        msg = mgr.start()
+        assert "4242" in msg
+        assert calls and "gateway" in calls[0] and "start" in calls[0]
+        assert "--config" in calls[0]
+
+    def test_start_nao_duplica_se_ja_rodando(self, tmp_path):
+        import os
+
+        from types import SimpleNamespace
+
+        pid_dir = tmp_path / "workspace" / ".bauer_gateway"
+        pid_dir.mkdir(parents=True)
+        (pid_dir / "gateway.pid").write_text(str(os.getpid()), encoding="utf-8")
+        calls: list[int] = []
+        mgr = self._mgr(
+            tmp_path, popen_fn=lambda *a, **k: calls.append(1) or SimpleNamespace(pid=1),
+        )
+        msg = mgr.start()
+        assert "já rodando" in msg
+        assert calls == []  # não subiu um segundo processo
+
+    def test_stop_mata_pid_file_e_orfaos(self, tmp_path, monkeypatch):
+        import os
+
+        import psutil
+
+        pid_dir = tmp_path / "workspace" / ".bauer_gateway"
+        pid_dir.mkdir(parents=True)
+        pid_file = pid_dir / "gateway.pid"
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+        monkeypatch.setattr(psutil.Process, "terminate", lambda self: None)
+        monkeypatch.setattr(
+            "bauer.commands._runtime._kill_bridge_processes", lambda *a, **k: 0,
+        )
+        mgr = self._mgr(tmp_path)
+        msg = mgr.stop()
+        assert not pid_file.exists()
+        assert "parado" in msg.lower()
+
+    def test_status_sem_processo_nao_consulta_gerenciador_de_servico(self, tmp_path):
+        mgr = self._mgr(tmp_path)
+        st = mgr.status()
+        assert st.platform == "background"
+        assert not st.installed
+        assert not st.running
 
 
 class TestUnsupported:

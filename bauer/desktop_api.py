@@ -534,7 +534,9 @@ def build_desktop_router(
         try:
             from .gateway_service import GatewayServiceManager
 
-            mgr = GatewayServiceManager()
+            # Mesmo diretório que /gateway/status usa para achar o PID file —
+            # sem isso o painel inicia um gateway e nunca o vê como rodando.
+            mgr = GatewayServiceManager(project_dir=get_config_path().parent)
             msg = mgr.start() if action == "start" else mgr.stop()
             return {"action": action, "detail": msg}
         except Exception as exc:  # noqa: BLE001

@@ -476,6 +476,9 @@ class TestGatewayEndpoints:
             M.return_value.start.return_value = "iniciado"
             r = env["client"].post("/api/gateway/start")
         assert r.json()["detail"] == "iniciado"
+        # Mesmo project_dir que /gateway/status usa pro PID file — senão o
+        # painel inicia o gateway e nunca o vê como rodando (ver gateway_service).
+        M.assert_called_once_with(project_dir=env["config_path"].parent)
 
 
 class TestObsEndpoints:
