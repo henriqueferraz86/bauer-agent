@@ -134,3 +134,56 @@ def test_memory_symlink_cannot_cross_project_workspace(tmp_path, action):
     with pytest.raises(ToolError, match="workspace"):
         router.execute({"action": "memory", "args": {"action": action, "key": "secret", "value": "change"}})
     assert sibling.read_text() == '{"secret": {"value": "PRIVATE"}}'
+
+
+@pytest.mark.parametrize("stop", ["cancel", "daily_budget"])
+def test_stop_after_native_request_prevents_tools_and_keeps_final_cost(tmp_path, monkeypatch, stop):
+    import json
+    import threading
+
+    from bauer.openai_client import OpenAIClient
+
+    entered, release = threading.Event(), threading.Event()
+
+    class Client(OpenAIClient):
+        def __init__(self):
+            super().__init__(host="http://unused.invalid", model="controlled")
+            self.calls = 0
+
+        def chat_with_tools(self, model, messages, **kwargs):
+            self.calls += 1
+            entered.set()
+            assert release.wait(5)
+            self.last_usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.25}
+            return {"content": "", "tool_calls": [{"id": "write", "type": "function", "function": {
+                "name": "write_file", "arguments": json.dumps({"path": "forbidden.txt", "content": "NO"})}}]}
+
+    backend, msg, project = setup_backend(tmp_path, monkeypatch)
+    backend._client = client = Client()
+    root = backend.sessions_dir.parent / "runtime"
+    budget = BudgetManager(root=root)
+    budget.set_profile(daily_budget_usd=1000)
+    results = []
+    worker = threading.Thread(target=lambda: results.append(backend.process(msg)))
+    worker.start()
+    try:
+        assert entered.wait(3)
+        if stop == "cancel":
+            assert "solicitad" in backend.cancel_channel_execution(msg).lower()
+        else:
+            budget.set_profile(daily_budget_usd=0)
+        # A blocked provider has not actually stopped or settled its cost yet.
+        live = RunManager(root=root).list_runs()[0]
+        assert live.status not in {"completed", "failed", "cancelled"}
+    finally:
+        release.set()
+        worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert results
+    assert client.calls == 1
+    assert not (project / "forbidden.txt").exists()
+    run = RunManager(root=root).list_runs()[0]
+    assert run.status in {"cancelled", "failed"}
+    assert run.cost_estimate == pytest.approx(0.25)
+    assert run.llm_calls_count == 1
+    assert budget.status()["daily"]["used_usd"] == pytest.approx(0.25)

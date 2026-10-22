@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
+from .process_control import run_process
+
 
 logger = logging.getLogger("bauer.shell_runner")
 _blocked_command_observer: ContextVar[Callable[["ShellRunner", str, list[str]], None] | None] = ContextVar(
@@ -451,7 +453,7 @@ class ShellRunner:
 
         start = time.monotonic()
         try:
-            proc = subprocess.run(
+            proc = run_process(
                 args,
                 cwd=self.workspace,
                 capture_output=True,

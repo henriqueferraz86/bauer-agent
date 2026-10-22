@@ -71,6 +71,7 @@ BOT_COMMANDS = [
     {"command": "projetos", "description": "Escolher o projeto desta conversa"},
     {"command": "projeto", "description": "Consultar projeto desta conversa"},
     {"command": "tarefas", "description": "Tarefas do projeto"},
+    {"command": "cancelar", "description": "Solicitar parada da tarefa atual"},
     {"command": "status", "description": "Modelo, contexto e sessão atual"},
     {"command": "model", "description": "Trocar provider/modelo (botões)"},
     {"command": "tasks", "description": "Tarefas do kanban do workspace"},
@@ -1037,6 +1038,22 @@ class TelegramBridge(BaseBridge):
             return
 
         command = text.split(None, 1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if command == "/cancelar":
+            if (message.get("chat") or {}).get("type") != "private":
+                self.send_text(chat_id, "Cancele tarefas em uma conversa privada autorizada com o bot.")
+                return
+            parts = text.split(None, 1)
+            run_id = parts[1].strip() if len(parts) > 1 else None
+            if run_id and len(run_id.split()) != 1:
+                self.send_text(chat_id, "Use /cancelar ou /cancelar <id da execução>.")
+                return
+            try:
+                response = self.backend.cancel_channel_execution(msg, run_id)
+            except Exception:
+                logger.exception("Falha ao solicitar cancelamento no Telegram")
+                response = "Não foi possível solicitar a parada. Consulte /status e tente novamente."
+            self.send_text(chat_id, response)
+            return
         if command == "/projetos":
             try:
                 self._send_project_picker(msg)

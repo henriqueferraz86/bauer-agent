@@ -1338,6 +1338,8 @@ def run_one_turn(
     """Run a complete turn; failures carry completed tools in partial_tool_log."""
     tool_log: list[dict] = []
     try:
+        from .execution_control import checkpoint_execution
+        checkpoint_execution()
         return _run_one_turn(
             ctx, router, client, model_name, tool_log=tool_log, budget=budget,
             tool_timeout_s=tool_timeout_s, tracer=tracer, session_id=session_id,
@@ -1427,6 +1429,12 @@ def _run_one_turn(
     _deduper = _Deduper()
 
     use_native = _client_supports_native_tools(client)
+    from .execution_control import checkpoint_execution, current_control
+
+    def _combined_interrupt_check() -> str | None:
+        control = current_control()
+        reason = control.check() if control is not None else None
+        return reason or (interrupt_check() if interrupt_check is not None else None)
 
     if use_native:
         from .provider_retry import (
@@ -1438,7 +1446,7 @@ def _run_one_turn(
         _native_empty_recovered = False
         _provider_retries = 0
         while not _budget_exhausted():
-            check_provider_retry_interrupt(interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
+            check_provider_retry_interrupt(interrupt_check=_combined_interrupt_check, budget_exhausted=_budget_exhausted)
             _consume_llm()
             if _provider_retries:
                 emit_round_start()
@@ -1463,11 +1471,11 @@ def _run_one_turn(
                 if (not request_failed or _provider_retries >= MAX_CONSECUTIVE_RETRIES
                         or not is_retryable_provider_error(exc)):
                     raise
-                check_provider_retry_interrupt(interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
+                check_provider_retry_interrupt(interrupt_check=_combined_interrupt_check, budget_exhausted=_budget_exhausted)
                 _provider_retries += 1
                 _retry_delay = retry_delay_s(_provider_retries)
                 emit_provider_retry(_provider_retries, _retry_delay)
-                wait_provider_retry(_retry_delay, interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
+                wait_provider_retry(_retry_delay, interrupt_check=_combined_interrupt_check, budget_exhausted=_budget_exhausted)
                 continue
 
             _provider_retries = 0
@@ -1492,6 +1500,10 @@ def _run_one_turn(
                     try:
                         recovered, diagnostico = _recover_empty_response(client, model_name, ctx)
                     except Exception as _rec_exc:  # noqa: BLE001
+                        from .provider_retry import ProviderRetryInterrupted
+                        from .execution_control import ExecutionControlError
+                        if isinstance(_rec_exc, (ProviderRetryInterrupted, ExecutionControlError)):
+                            raise
                         recovered, diagnostico = "", (
                             f"[Modelo retornou resposta vazia e a recuperação também "
                             f"falhou: {_rec_exc}]"
@@ -1519,15 +1531,18 @@ def _run_one_turn(
                 return "[Loop detectado — tarefa interrompida automaticamente]", tool_log
         if use_native:
             if _provider_retries:
-                check_provider_retry_interrupt(interrupt_check=interrupt_check, budget_exhausted=_budget_exhausted)
+                check_provider_retry_interrupt(interrupt_check=_combined_interrupt_check, budget_exhausted=_budget_exhausted)
             # Budget esgotado sem resposta final (ainda em native)
             return "[Limite de iterações atingido]", tool_log
 
     # Tool Bridge (fallback para Ollama e modelos sem native tool calling)
     _empty_recovered = False
+    response = "[Limite de iterações atingido]"
     while not _budget_exhausted():
+        checkpoint_execution()
         _consume_llm()
         response = _collect_response(client, model_name, ctx.get_payload())
+        checkpoint_execution()
 
         # Resposta vazia: recovery em camadas (retry → compress+retry).
         # Só tenta o recovery completo uma vez por run para não mascarar
@@ -1567,6 +1582,7 @@ def _run_one_turn(
         if actions is not None and len(tool_log) < MAX_TOOL_TURNS:
             combined_parts: list[str] = []
             for action_dict in actions:
+                checkpoint_execution()
                 if len(tool_log) >= MAX_TOOL_TURNS:
                     break
                 if hasattr(budget, "remaining_tool_calls"):
@@ -1700,6 +1716,8 @@ def run_one_turn_with_fallback(
     last_exc: Exception | None = None
     partial_tool_log: list[dict] = []
     for idx, (_client, _model) in enumerate(attempts):
+        from .execution_control import checkpoint_execution
+        checkpoint_execution()
         if idx > 0:
             # Desfaz mutações parciais do turno que falhou antes de re-tentar.
             ctx.messages = list(_snapshot)

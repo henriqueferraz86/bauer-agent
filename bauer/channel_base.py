@@ -36,6 +36,9 @@ from .channel_projects import (
     ChannelProjectContext, ChannelProjectError, ChannelProjectStore,
     context_key, operator_key, private_telegram,
 )
+from .channel_execution import (
+    ChannelExecution, ChannelExecutionRegistry, SessionWorker, governance_stop_reason,
+)
 
 _project_scope: ContextVar[tuple[int, ChannelProjectContext | None] | None] = ContextVar(
     "bauer_channel_project", default=None,
@@ -49,14 +52,8 @@ _MAX_ACTIVE_SESSIONS = 50
 # Mensagens aguardando na fila de uma sessão ocupada (busy queue)
 _MAX_PENDING_PER_SESSION = 5
 
-# Tempo máximo (segundos) que um turno pode segurar o lock antes de ser
-# considerado travado e a sessão ser reiniciada automaticamente.
-_MAX_TURN_SECONDS = 300
-
-# Timeout DURO por turno: se run_one_turn não retornar nesse tempo (ex.: LLM
-# lento/fora do ar sem timeout de socket, carga de modelo), o gateway responde
-# ao usuário em vez de ficar em "typing" eterno. A thread do turno é daemon —
-# a órfã segue e morre sozinha (quando o LLM enfim responde ou o processo sai).
+# Tempo de espera do transporte. Ao expirar, solicita interrupção; o worker
+# mantém contexto, lock e custódia do Kernel até a saída real.
 _TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_GATEWAY_TURN_TIMEOUT", "120"))
 
 
@@ -201,7 +198,8 @@ class AgentBackend:
         # Fila de mensagens que chegaram com a sessão ocupada (busy queue):
         # a thread ativa drena ao terminar o turno corrente.
         self._pending: dict[str, deque] = {}
-        self._pending_lock = threading.Lock()
+        self._pending_lock = threading.RLock()
+        self._executions = ChannelExecutionRegistry()
         # Rastreia quando cada sessão adquiriu o lock (monotonic seconds).
         # Permite detectar turno travado e resetar automaticamente.
         self._turn_started_at: dict[str, float] = {}
@@ -545,32 +543,41 @@ class AgentBackend:
             self._sessions[key] = entry
             # Evict LRU: o histórico já está persistido a cada turno —
             # derrubar do cache só libera RAM.
-            while len(self._sessions) > _MAX_ACTIVE_SESSIONS:
-                self._sessions.popitem(last=False)
+            for candidate in list(self._sessions):
+                if len(self._sessions) <= _MAX_ACTIVE_SESSIONS:
+                    break
+                if not self._sessions[candidate][1].locked():
+                    self._sessions.pop(candidate, None)
             return entry
 
-    def _clear_session(self, key: str) -> None:
+    def _clear_session(self, key: str) -> bool:
         with self._sessions_lock:
-            self._sessions.pop(key, None)
-        self._model_overrides.pop(key, None)
-        self._session_overrides.pop(key, None)
-        self._persist_project_model(key)
-        with self._pending_lock:
-            self._pending.pop(key, None)
+            current = self._sessions.get(key)
+            if current is not None and not current[1].acquire(blocking=False):
+                return False
         try:
-            self._store.delete(key)
-        except Exception:
-            logger.warning("Falha ao apagar sessão %s do store", key)
+            self._model_overrides.pop(key, None)
+            self._session_overrides.pop(key, None)
+            self._persist_project_model(key)
+            with self._pending_lock:
+                self._pending.pop(key, None)
+            try:
+                self._store.delete(key)
+            except Exception:
+                logger.warning("Falha ao apagar sessão %s do store", key)
+            with self._sessions_lock:
+                self._sessions.pop(key, None)
+        finally:
+            if current is not None:
+                current[1].release()
+        return True
 
     def _evict_session(self, key: str) -> None:
-        """Despeja só o ctx em memória (NÃO apaga o store).
-
-        Usado após timeout de turno: a thread órfã ainda referencia o ctx antigo
-        e pode mutá-lo; ao removê-lo do cache, a próxima mensagem recarrega um
-        ctx limpo do SQLite (histórico anterior ao turno travado intacto).
-        """
+        """Evict an idle context without deleting history or a live worker."""
         with self._sessions_lock:
-            self._sessions.pop(key, None)
+            current = self._sessions.get(key)
+            if current is None or not current[1].locked():
+                self._sessions.pop(key, None)
 
     # ── Processamento ──────────────────────────────────────────────────────
 
@@ -627,7 +634,8 @@ class AgentBackend:
         if command in ("/tasks", "/tarefas"):
             return self._cmd_tasks()
         if command in ("/clear", "/new"):
-            self._clear_session(self.session_key(msg))
+            if not self._clear_session(self.session_key(msg)):
+                return "⏳ Esta conversa ainda está trabalhando. Use /cancelar e aguarde a interrupção antes de /new."
             return "🧹 Conversa nova — histórico apagado."
 
         try:
@@ -648,9 +656,9 @@ class AgentBackend:
         detail = str(exc)[:200]
         if isinstance(exc, TurnTimeout):
             return (
-                "⏱ Demorei demais e cancelei este turno — o modelo pode estar "
-                "lento ou fora do ar. Tente de novo, troque com /model, ou "
-                "verifique o provider no servidor (`bauer doctor -p`)."
+                "⏱ O tempo de espera terminou; interrupção solicitada. "
+                "A conversa continua ocupada até o trabalho parar de fato. "
+                "Efeitos já realizados e custo consumido serão preservados."
             )
         try:
             from .error_classifier import FailReason, classify_api_error
@@ -686,8 +694,6 @@ class AgentBackend:
 
     def _run_turn(self, msg: ChannelMessage, text: str, on_delta: Any = None,
                   send_fn: Any = None) -> str:
-        # Provider+model override de sessão (/model <provider> <modelo>) tem
-        # prioridade; senão, usa model-only override ou o global.
         key = self.session_key(msg)
         if key in self._session_overrides:
             client, model, _provider = self._session_overrides[key]
@@ -696,59 +702,168 @@ class AgentBackend:
             model = self._model_overrides.get(key, self._model_name)
 
         ctx, lock = self._get_session(key)
-
-        # Sessão ocupada: enfileira e dá feedback imediato — a thread ativa
-        # drena a fila ao terminar (sem perder mensagem, sem travar polling).
         if not lock.acquire(blocking=False):
-            # Verifica se o turno atual está travado há tempo demais.
-            with self._turn_ts_lock:
-                started_at = self._turn_started_at.get(key, 0.0)
-            elapsed = time.monotonic() - started_at
-            if elapsed > _MAX_TURN_SECONDS:
-                logger.warning(
-                    "Sessão %s com lock travado há %.0fs (>%ds) — resetando.",
-                    key, elapsed, _MAX_TURN_SECONDS,
-                )
-                self._clear_session(key)
-                ctx, lock = self._get_session(key)
-                lock.acquire()  # lock recém-criado, sem contention
-            else:
-                with self._pending_lock:
-                    queue = self._pending.setdefault(key, deque())
-                    if len(queue) >= _MAX_PENDING_PER_SESSION:
-                        return "🚦 Fila cheia — aguarde a resposta atual antes de mandar mais."
-                    queue.append(text)
-                return "⏳ Ainda estou na sua mensagem anterior — esta entrou na fila."
+            with self._pending_lock:
+                active = self._live_session_execution(key)
+                if active is not None and active.batch.stop_queue.is_set():
+                    return "⏳ Interrupção solicitada; aguarde o trabalho parar. Esta mensagem não foi executada nem enfileirada."
+                queue = self._pending.setdefault(key, deque())
+                if len(queue) >= _MAX_PENDING_PER_SESSION:
+                    return "🚦 Fila cheia — aguarde a resposta atual antes de mandar mais."
+                queue.append((msg, text, client, model, on_delta, send_fn))
+            return "⏳ Ainda estou na sua mensagem anterior — esta entrou na fila."
 
+        batch = SessionWorker()
+        execution = self._new_channel_execution(msg, key, batch)
+        batch.current = execution
+        self._executions.add(execution)
         with self._turn_ts_lock:
             self._turn_started_at[key] = time.monotonic()
-        try:
-            response = self._execute_turn(ctx, key, client, model, text, on_delta)
-            # Drena mensagens que chegaram enquanto este turno rodava
-            while True:
-                with self._pending_lock:
-                    queue = self._pending.get(key)
-                    queued_text = queue.popleft() if queue else None
-                if queued_text is None:
-                    break
-                extra = self._execute_turn(ctx, key, client, model, queued_text, on_delta)
-                if send_fn is not None:
+
+        def work() -> None:
+            current = execution
+            current_text, current_client, current_model = text, client, model
+            current_delta, current_send = on_delta, send_fn
+            first = True
+            try:
+                while True:
                     try:
-                        send_fn(extra)
-                    except Exception:  # noqa: BLE001
-                        logger.warning("send_fn falhou entregando resposta da fila")
-                else:
-                    response = f"{response}\n\n{extra}"
-        except TurnTimeout:
-            # Turno travado: descarta o ctx em memória (a órfã não corrompe o
-            # histórico) e repassa — o process() vira resposta amigável.
-            self._evict_session(key)
-            raise
-        finally:
-            with self._turn_ts_lock:
-                self._turn_started_at.pop(key, None)
+                        response = self._execute_turn(
+                            ctx, key, current_client, current_model, current_text,
+                            current_delta, execution=current,
+                        )
+                    except BaseException:
+                        current.done.set()
+                        raise
+                    if first:
+                        batch.response = response
+                    elif current_send is not None:
+                        try:
+                            current_send(response)
+                        except Exception:
+                            logger.debug("Queued channel reply delivery failed", exc_info=True)
+                    else:
+                        batch.response += f"\n\n{response}"
+                    first = False
+                    if current.control.cancel_event.is_set():
+                        self._stop_worker_queue(current, current.requested_reason or "cancelled")
+                    with self._pending_lock:
+                        current.done.set()
+                        queue = self._pending.get(key)
+                        if batch.stop_queue.is_set() or not queue:
+                            break
+                        queued_msg, current_text, current_client, current_model, current_delta, queued_send = queue.popleft()
+                        current_send = queued_send or send_fn
+                        current = self._new_channel_execution(queued_msg, key, batch)
+                        batch.current = current
+                        self._executions.add(current)
+            except BaseException as exc:
+                batch.error = exc
+                self._stop_worker_queue(current, "error")
+            finally:
+                current.done.set()
+                with self._turn_ts_lock:
+                    self._turn_started_at.pop(key, None)
+                lock.release()
+                batch.done.set()
+                if batch.timed_out and send_fn is not None:
+                    terminal = (batch.response if batch.error is None else
+                                self._friendly_provider_error(batch.error))
+                    try:
+                        send_fn(terminal + self._pending_discard_notice(batch))
+                    except Exception:
+                        logger.debug("Late channel result delivery failed", exc_info=True)
+
+        inherited = copy_context()
+        worker = threading.Thread(target=lambda: inherited.run(work),
+                                  name=f"bauer-channel:{key}", daemon=True)
+        try:
+            worker.start()
+        except BaseException:
+            execution.done.set()
             lock.release()
-        return response
+            raise
+        if not batch.done.wait(timeout=_TURN_TIMEOUT_SECONDS):
+            batch.timed_out = True
+            with self._pending_lock:
+                if batch.done.is_set():
+                    if batch.error is not None:
+                        raise batch.error
+                    return batch.response + self._pending_discard_notice(batch)
+                current = batch.current or execution
+                if current.phase == "evaluating":
+                    self._stop_worker_queue(current, "validation_timeout", signal=False)
+                    return ("⏱ A execução já encerrou; a validação está em andamento. "
+                            "A conversa continua ocupada até a validação terminar."
+                            + self._pending_discard_notice(batch))
+                self._stop_worker_queue(current, "timeout")
+            return self._friendly_provider_error(TurnTimeout()) + self._pending_discard_notice(batch)
+        if batch.error is not None:
+            raise batch.error
+        return batch.response + self._pending_discard_notice(batch)
+
+    def _new_channel_execution(self, msg: ChannelMessage, key: str,
+                               batch: SessionWorker) -> ChannelExecution:
+        project = self._active_project()
+        return ChannelExecution(
+            owner=operator_key(msg), channel=msg.channel, chat_id=msg.chat_id,
+            project_id=project.project_id if project is not None else None,
+            session_key=key, workspace=Path(self._effective_router().workspace).resolve(),
+            batch=batch,
+        )
+
+    def _live_session_execution(self, key: str) -> ChannelExecution | None:
+        return self._executions.active_for_session(key)
+
+    def _stop_worker_queue(self, execution: ChannelExecution, reason: str,
+                           *, signal: bool = True) -> int:
+        with self._pending_lock:
+            execution.requested_reason = execution.requested_reason or reason
+            execution.batch.stop_queue.set()
+            pending = self._pending.pop(execution.session_key, ())
+            count = len(pending)
+            execution.batch.discarded_pending += count
+        if reason != "error" and signal:
+            execution.control.request_cancel()
+        return count
+
+    @staticmethod
+    def _pending_discard_notice(batch: SessionWorker) -> str:
+        if not batch.discarded_pending:
+            return ""
+        return (f"\n{batch.discarded_pending} mensagem(ns) pendente(s) não foram executadas; "
+                "reenvie as que desejar.")
+
+    def cancel_channel_execution(self, msg: ChannelMessage, run_id: str | None = None) -> str:
+        """Request stop for this private operator's current project only."""
+        if not private_telegram(msg):
+            return "Use /cancelar em uma conversa privada com o bot."
+        # Reading the saved binding does not require the project directory to
+        # still exist. Its owner can stop a worker after project removal.
+        try:
+            binding = self._project_store.binding(operator_key(msg))
+        except Exception:
+            logger.debug("Cancellation project binding unavailable", exc_info=True)
+            return "Não consegui validar o projeto desta conversa; nenhum cancelamento foi aplicado."
+        project_id = binding[0] if binding is not None else None
+        with self._pending_lock:
+            candidates = self._executions.owned(
+                owner=operator_key(msg), channel=msg.channel, chat_id=msg.chat_id,
+                project_id=project_id, run_id=run_id,
+            )
+            if not candidates:
+                return "Nenhuma execução ativa correspondente nesta conversa e projeto."
+            if len(candidates) > 1:
+                choices = "\n".join(f"/cancelar {job.id}" for job in candidates)
+                return f"Escolha a execução que deseja interromper:\n{choices}"
+            execution = candidates[0]
+            if execution.phase == "evaluating":
+                return "A execução já encerrou; a validação está em andamento. Aguarde o resultado."
+            self._stop_worker_queue(execution, "user")
+        return (f"Cancelamento solicitado para {execution.id}. "
+                "A conversa permanece ocupada até o trabalho parar de fato. "
+                "Efeitos e custo já consumidos serão preservados."
+                + self._pending_discard_notice(execution.batch))
 
     def _resolver_kernel(self) -> Any:
         """Kernel do canal (lazy). None = ``kernel.enabled`` desligado.
@@ -783,49 +898,82 @@ class AgentBackend:
             return kernel
 
     def _execute_turn(self, ctx: Any, key: str, client: Any, model: str,
-                      text: str, on_delta: Any = None) -> str:
-        """Um turno do agente com timeout DURO — nunca deixa o usuário sem resposta.
-
-        run_one_turn roda numa thread daemon; se não terminar em
-        _TURN_TIMEOUT_SECONDS, levanta TurnTimeout (a órfã segue e morre sozinha).
-        O sink de streaming é instalado DENTRO da thread do turno (ContextVar não
-        cruza threads).
-
-        Governado (S8): o turno inteiro é o executor de ``kernel.execute()`` —
-        Run persistido, policy antes do LLM, gates antes de concluir. O timeout
-        continua sendo daqui: a thread órfã não pertence ao Kernel, e um turno
-        que estourou o teto é falha real do ponto de vista do sistema, mesmo que
-        a órfã ainda esteja viva.
-        """
+                      text: str, on_delta: Any = None, *,
+                      execution: ChannelExecution | None = None) -> str:
+        """Run synchronously inside the session's custody-owning worker."""
         from .core.kernel import run_governed
         from .channel_governance import TurnMetrics, configure_router
+        from .provider_retry import ProviderRetryInterrupted
 
         configure_router(self._effective_router(), sessions_dir=self.sessions_dir)
-
-        canal = getattr(self, "name", None) or type(self).__name__.lower()
+        kernel = self._resolver_kernel()
+        canal = execution.channel if execution is not None else (
+            getattr(self, "name", None) or type(self).__name__.lower()
+        )
         falha: list[BaseException] = []
 
         def _executar(_payload):
             metrics = TurnMetrics()
+            if execution is not None:
+                execution.phase = "running"
+            control = execution.control if execution is not None else None
+            before_tools = control.tool_calls if control is not None else 0
+            if control is not None:
+                control.run_id = _payload.get("run_id")
+                profile = kernel.budget.get_profile() if kernel is not None and kernel.budget is not None else None
+                if profile is not None:
+                    control.max_tool_calls = profile.max_tool_calls_per_run or None
+                control.check_callback = lambda: governance_stop_reason(
+                    kernel, metrics, execution,
+                    max_runtime_s=profile.max_runtime_s_per_run if profile is not None else 0,
+                )
+
+            def result(**kwargs):
+                data = metrics.result(**kwargs)
+                if control is not None:
+                    data["tool_calls_count"] = max(
+                        data["tool_calls_count"], control.tool_calls - before_tools,
+                    )
+                return data
+
             try:
                 with metrics.context(key, _payload.get("run_id")):
-                    output = self._turno_cru(ctx, key, client, model, text, on_delta,
-                                             metrics=metrics)
-                return metrics.result(output=output)
+                    if control is None:
+                        output = self._turno_cru(ctx, key, client, model, text, on_delta,
+                                                 metrics=metrics)
+                    else:
+                        with control.activate():
+                            try:
+                                control.checkpoint()
+                                output = self._turno_cru(ctx, key, client, model, text, on_delta,
+                                                         metrics=metrics)
+                            finally:
+                                control.close()
+                            control.checkpoint()
+                return result(output=output)
+            except ProviderRetryInterrupted as exc:
+                reason = {
+                    "cancelled": "Execução cancelada. Efeitos já realizados foram preservados.",
+                    "kill_switch": "Execução interrompida pelo kill-switch.",
+                    "budget_exhausted": "Limite de execução atingido; trabalho interrompido.",
+                }[exc.reason]
+                return result(output=reason, status="cancelled", error=reason)
             except BaseException as exc:  # noqa: BLE001
-                # A exceção precisa fechar o Run como failed E chegar ao
-                # process(), que é onde vive a tradução amigável de erro de
-                # provider ("HTTP 401" -> "rode bauer doctor") e o evict de
-                # sessão no TurnTimeout. Engolir aqui trocaria mensagem útil por
-                # erro genérico.
                 falha.append(exc)
-                return metrics.result(status="failed", error=str(exc),
-                                      tool_log=getattr(exc, "partial_tool_log", []))
+                return result(status="failed", error=str(exc))
+            finally:
+                if execution is not None:
+                    execution.phase = "evaluating"
 
+        project = self._active_project()
         gov = run_governed(
-            self._resolver_kernel(), _executar,
+            kernel, _executar,
             agent_id=f"channel.{canal}", task=text, session_id=key,
-            input={"endpoint": f"canal:{canal}", "session": key},
+            runtime_adapter="bauer_native",
+            input={"endpoint": f"canal:{canal}", "session": key,
+                   "project_id": project.project_id if project is not None else None,
+                   "workspace": str(self._effective_router().workspace),
+                   "operator": execution.owner if execution is not None else None},
         )
         if falha:
             raise falha[0]
@@ -841,57 +989,38 @@ class AgentBackend:
 
     def _turno_cru(self, ctx: Any, key: str, client: Any, model: str,
                    text: str, on_delta: Any = None, *, metrics: Any = None) -> str:
-        """O turno em si (era o corpo de ``_execute_turn``)."""
+        """One turn in the existing worker, retaining partial history and cost."""
         from .agent import run_one_turn_with_fallback
+        from .execution_control import current_control
 
-        result: dict[str, Any] = {}
-
-        def _do() -> None:
-            token = None
-            if on_delta is not None:
-                try:
-                    from .delta_stream import set_sink
-                    token = set_sink(on_delta)
-                except Exception:  # noqa: BLE001
-                    token = None
-            try:
-                ctx.add_user(text)
-                resp, _tool_log = run_one_turn_with_fallback(
-                    ctx, self._effective_router(), client, model, self._fallback_clients,
-                )
-                if metrics is not None:
-                    metrics.record_tools(_tool_log)
-                result["response"] = resp
-            except BaseException as exc:  # noqa: BLE001 — repassa à thread chamadora
-                result["error"] = exc
-            finally:
-                if token is not None:
-                    try:
-                        from .delta_stream import reset_sink
-                        reset_sink(token)
-                    except Exception:  # noqa: BLE001
-                        pass
-
-        inherited = copy_context()
-        worker = threading.Thread(target=lambda: inherited.run(_do),
-                                  name=f"bauer-turn:{key}", daemon=True)
-        worker.start()
-        worker.join(timeout=_TURN_TIMEOUT_SECONDS)
-        if worker.is_alive():
-            logger.warning(
-                "Turno da sessão %s excedeu %ds (modelo %s) — respondendo timeout.",
-                key, _TURN_TIMEOUT_SECONDS, model,
-            )
-            raise TurnTimeout(
-                f"turno excedeu {_TURN_TIMEOUT_SECONDS}s — modelo {model} não respondeu"
-            )
-        if "error" in result:
-            raise result["error"]
-        response = result.get("response", "")
+        token = None
+        if on_delta is not None:
+            from .delta_stream import set_sink
+            token = set_sink(on_delta)
+        recorded_tools = False
         try:
-            self._store.save(key, ctx.messages)
-        except Exception:
-            logger.warning("Falha ao persistir sessão %s", key)
+            ctx.add_user(text)
+            response, tool_log = run_one_turn_with_fallback(
+                ctx, self._effective_router(), client, model, self._fallback_clients,
+            )
+            if metrics is not None:
+                metrics.record_tools(tool_log)
+                recorded_tools = True
+            control = current_control()
+            if control is not None:
+                control.checkpoint()
+        except BaseException as exc:
+            if metrics is not None and not recorded_tools:
+                metrics.record_tools(getattr(exc, "partial_tool_log", []))
+            raise
+        finally:
+            try:
+                self._store.save(key, ctx.messages)
+            except Exception:
+                logger.warning("Falha ao persistir sessão %s", key)
+            if token is not None:
+                from .delta_stream import reset_sink
+                reset_sink(token)
         self.msgs_processed += 1
         return (response or "").strip() or "🤔 O modelo não retornou resposta. Tente reformular."
 

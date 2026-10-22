@@ -715,14 +715,26 @@ Use esta estrutura exata:
 {_template}"""
 
     try:
+        from contextlib import nullcontext
+        from .execution_control import checkpoint_execution, current_control
+        from .agent_response import account_provider_call
+        checkpoint_execution()
         parts: list[str] = []
-        for chunk in client.chat_stream(model, [{"role": "user", "content": prompt}]):
-            parts.append(chunk)
+        accounting = account_provider_call(client, model) if current_control() is not None else nullcontext()
+        with accounting:
+            for chunk in client.chat_stream(model, [{"role": "user", "content": prompt}]):
+                checkpoint_execution()
+                parts.append(chunk)
+        checkpoint_execution()
         result = "".join(parts).strip()
         if result:
             return result, True
         return _summarize_messages(messages), False
-    except Exception:
+    except Exception as exc:
+        from .provider_retry import ProviderRetryInterrupted
+        from .execution_control import ExecutionControlError
+        if isinstance(exc, (ProviderRetryInterrupted, ExecutionControlError)):
+            raise
         return "", False
 
 

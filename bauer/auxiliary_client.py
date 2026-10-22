@@ -446,11 +446,26 @@ def call_aux_text(
     with a known fallback path rather than dealing with the (client, model)
     pair manually.
     """
+    from contextlib import nullcontext
+    from .execution_control import ExecutionControlError, checkpoint_execution, current_control
+    from .provider_retry import ProviderRetryInterrupted
+    checkpoint_execution()
     client, model = get_text_auxiliary_client(slot, cfg)
     if client is None or not model:
         return fallback
     try:
-        return "".join(client.chat_stream(model, messages))
+        checkpoint_execution()
+        from .agent_response import account_provider_call
+        accounting = account_provider_call(client, model) if current_control() is not None else nullcontext()
+        parts = []
+        with accounting:
+            for chunk in client.chat_stream(model, messages):
+                checkpoint_execution()
+                parts.append(chunk)
+        checkpoint_execution()
+        return "".join(parts)
+    except (ProviderRetryInterrupted, ExecutionControlError):
+        raise
     except Exception as exc:
         # Best-effort: clientes auxiliares (background_reviewer, etc.) são
         # opcionais. Falha (ex.: 429 do free tier) degrada em silêncio com o

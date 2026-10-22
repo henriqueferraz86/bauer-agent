@@ -2,7 +2,9 @@
 
 ## Status e objetivo
 
-- **Status**: IN PROGRESS — execução autorizada em 2026-10-21; sprint 33 iniciada.
+- **Status**: IN PROGRESS — execução autorizada em 2026-10-21; sprint 33 (etapa 1)
+  e sprint 34 (etapa 2, cancelamento) entregues com gates completos e revisão
+  cruzada em 2026-10-22; etapa 3 (atividade dos agentes) ainda não iniciada.
 - **Data/base**: 2026-10-21, checkout `e22e1aa`.
 - **Prioridade/esforço**: P1 / L, dividido em entregas pequenas.
 - **Objetivo**: conversar com o Bauer pelo celular sabendo em qual projeto ele
@@ -142,8 +144,10 @@ troca de projeto não redireciona tarefa em andamento.
 
 1. Registrar a relação operador/chat/projeto → run e disponibilizar
    `/cancelar`; se houver várias execuções, exigir escolha por identificador.
-2. Usar a API de cancelamento do Kernel e um sinal cooperativo propagado às
-   threads, chamadas de modelo, espera por retry e fronteiras de ferramentas.
+2. Usar sinal cooperativo propagado às threads, chamadas de modelo, espera por
+   retry e fronteiras de ferramentas. No worker vivo, o Kernel declara o
+   terminal somente depois da saída real, a partir do resultado do executor;
+   `Kernel.cancel` permanece para controle de runs sem worker e cleanup.
 3. Verificar cancelamento, kill-switch e budget antes de novo LLM/tool e antes
    de retomar uma aprovação. Preservar o custo já consumido.
 4. Para subprocessos gerenciados, propagar interrupção e encerrar a árvore
@@ -282,7 +286,7 @@ Checklist de execução:
 
 - [x] Contratos e baseline (etapa 0).
 - [x] Projeto e isolamento (etapa 1).
-- [ ] Cancelamento e limites (etapa 2).
+- [x] Cancelamento e limites (etapa 2).
 - [ ] Atividade dos agentes (etapa 3).
 - [ ] Aprovação remota exata (etapa 4).
 - [ ] Autonomia e recuperação (etapa 5).

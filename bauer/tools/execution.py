@@ -15,6 +15,9 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from ..privacy import redact_text
+from ..execution_control import checkpoint_execution
+from ..process_control import controlled_popen, process_owner, run_process
+from ..provider_retry import ProviderRetryInterrupted
 from ..shell_runner import ShellError, validate_command_syntax
 from .base import ToolError
 
@@ -80,7 +83,6 @@ def _find_bauer_python(workspace: Path) -> str:
     Resultado em cache por workspace para evitar subprocessos repetidos.
     """
     import sys
-    import subprocess
     import shutil as _shutil
 
     key = str(workspace)
@@ -90,11 +92,13 @@ def _find_bauer_python(workspace: Path) -> str:
     def _can_import_bauer(python_path: str) -> bool:
         try:
             # nosec: args são hardcoded — nenhum input do usuário; shell=False (default)
-            r = subprocess.run(
+            r = run_process(
                 [python_path, "-c", "import bauer.cli"],
                 capture_output=True, timeout=5,
             )
             return r.returncode == 0
+        except ProviderRetryInterrupted:
+            raise
         except Exception:
             return False
 
@@ -243,7 +247,7 @@ class ExecToolsMixin:
                 except ShellError as exc:
                     raise ToolError(str(exc)) from exc
                 try:
-                    proc = _sp.Popen(
+                    proc = controlled_popen(
                         cmd_args,
                         cwd=str(shell_runner.workspace),
                         stdout=_sp.PIPE, stderr=_sp.PIPE, stdin=_sp.PIPE,
@@ -270,6 +274,7 @@ class ExecToolsMixin:
                 _th.Thread(target=_reader, args=(proc.stderr, stderr_buf), daemon=True).start()
                 self._processes[pid_str] = {
                     "proc": proc,
+                    "owner": process_owner(),
                     "label": cmd_str[:40],
                     "command": cmd_str,
                     "stdout_buf": stdout_buf,
@@ -335,7 +340,7 @@ class ExecToolsMixin:
             tmp_path = f.name
 
         try:
-            result = subprocess.run(
+            result = run_process(
                 [sys.executable, tmp_path],
                 capture_output=True,
                 text=True,
@@ -346,6 +351,8 @@ class ExecToolsMixin:
             )
         except subprocess.TimeoutExpired:
             raise ToolError(f"Timeout: codigo excedeu {timeout}s de execucao.")
+        except ProviderRetryInterrupted:
+            raise
         except Exception as exc:
             raise ToolError(f"Erro ao executar codigo: {exc}")
         finally:
@@ -440,7 +447,7 @@ class ExecToolsMixin:
         try:
             yield
         except BaseException as exc:
-            cancelled = isinstance(exc, (KeyboardInterrupt, GeneratorExit))
+            cancelled = isinstance(exc, (KeyboardInterrupt, GeneratorExit, ProviderRetryInterrupted))
             publish("agent.cancelled" if cancelled else "agent.failed", "cancelled" if cancelled else "failed")
             raise
         else:
@@ -484,6 +491,7 @@ class ExecToolsMixin:
         """Existing remote/local/subprocess dispatch inside activity lifecycle."""
         import subprocess
 
+        checkpoint_execution()
         # ── Dispatch remoto via agent registry ────────────────────────────────
         if _ag and _ag.url:
             try:
@@ -502,6 +510,7 @@ class ExecToolsMixin:
                                                write=10.0, pool=5.0),
                     )
                     resp.raise_for_status()
+                    checkpoint_execution()
                     return f"[agente remoto: {_resolved_name}]\n{resp.json().get('response', '')}"
                 except _httpx.TimeoutException:
                     raise ToolError(
@@ -518,7 +527,7 @@ class ExecToolsMixin:
                         f"delegate_task: não foi possível conectar a {_resolved_name} "
                         f"em {endpoint}. Verifique se o bauer serve está rodando."
                     )
-            except ToolError:
+            except (ToolError, ProviderRetryInterrupted):
                 raise
             except Exception:
                 pass  # falha inesperada no dispatch remoto — continua com delegate local
@@ -538,9 +547,16 @@ class ExecToolsMixin:
                 if _ag and _ag.system:
                     messages.append({"role": "system", "content": _ag.system})
                 messages.append({"role": "user", "content": full_task})
-                chunks = list(self._llm_client.chat_stream(_model, messages))
+                checkpoint_execution()
+                chunks = []
+                for chunk in self._llm_client.chat_stream(_model, messages):
+                    checkpoint_execution()
+                    chunks.append(chunk)
+                checkpoint_execution()
                 _label = f"especialista '{_resolved_name}'" if _ag else "sub-agente"
                 return f"[{_label}]\n{''.join(chunks)}"
+            except ProviderRetryInterrupted:
+                raise
             except Exception:
                 pass  # fallback para subprocess
 
@@ -552,7 +568,7 @@ class ExecToolsMixin:
         if _resolved_name:
             cmd += ["--agent", _resolved_name, "--agents", _agents_file]
         try:
-            result = subprocess.run(
+            result = run_process(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -571,6 +587,8 @@ class ExecToolsMixin:
                 "delegate_task: bauer CLI nao encontrado. "
                 "Certifique-se de que o Bauer esta instalado no ambiente."
             )
+        except ProviderRetryInterrupted:
+            raise
         except Exception as exc:
             raise ToolError(f"delegate_task: erro ao chamar sub-agente: {exc}")
 

@@ -1451,6 +1451,9 @@ class ToolRouter(
         return self.execute(action)
 
     def _evaluate_runtime_policy(self, tool_name: str, args: dict) -> bool | None:
+        from .execution_control import ExecutionControlError, checkpoint_execution
+        from .provider_retry import ProviderRetryInterrupted
+        checkpoint_execution()
         from .core.runtime.run_manager import RunManager, TERMINAL_RUN_STATUSES
 
         manager = RunManager(root=self._policy_root, event_bus=self._event_bus)
@@ -1571,6 +1574,7 @@ class ToolRouter(
                     )
                     deadline = time.monotonic() + wait_seconds
                     while time.monotonic() < deadline:
+                        checkpoint_execution()
                         run = manager.get_run(self._runtime_run_id)
                         if run is None or run.status in TERMINAL_RUN_STATUSES:
                             if run is not None:
@@ -1602,6 +1606,7 @@ class ToolRouter(
                             if latest_decision.action == "deny":
                                 raise ToolError(f"policy denied: {latest_decision.reason}")
                             if approvals.authorize(record.id, **authorization, resume_run=True):
+                                checkpoint_execution()
                                 return True
                             if current.consumed_at:
                                 raise ToolError("approval was already consumed")
@@ -1632,6 +1637,8 @@ class ToolRouter(
                 )
         except ToolError:
             raise
+        except (ProviderRetryInterrupted, ExecutionControlError):
+            raise
         except Exception as exc:
             raise ToolError(f"policy evaluation failed: {exc}") from exc
 
@@ -1645,6 +1652,9 @@ class ToolRouter(
 
         Retorna resultado como string. Levanta ToolError ou SandboxError em falha.
         """
+        from .execution_control import ExecutionControlError, checkpoint_execution, current_control
+        from .provider_retry import ProviderRetryInterrupted
+        checkpoint_execution()
         action = self._parse(action_json)
 
         name = action.get("action", "")
@@ -1684,6 +1694,7 @@ class ToolRouter(
         approved_call = False
         if self._policy_enabled:
             approved_call = self._evaluate_runtime_policy(name, args) is True
+        checkpoint_execution()
         approved_command = args.get("command") if approved_call and name == "run_command" else None
 
         # LIMITS-001: enforça max_tool_calls por sessão
@@ -1776,6 +1787,7 @@ class ToolRouter(
         _sec = _TOOL_SECURITY.get(name, {})
         if _sec.get("approval") and not self._dry_run and self._llm_client is not None:
             try:
+                checkpoint_execution()
                 from .llm_approval import llm_evaluate_tool
                 _approval = llm_evaluate_tool(name, args, self._recent_messages)
                 if not _approval.approved:
@@ -1784,6 +1796,8 @@ class ToolRouter(
                         f"Motivo: {_approval.reason}. "
                         + (f"Sugestão: {_approval.suggestion}" if _approval.suggestion else "")
                     )
+            except (ProviderRetryInterrupted, ExecutionControlError):
+                raise
             except Exception:
                 pass  # approval nunca bloqueia por erro técnico
 
@@ -1818,6 +1832,14 @@ class ToolRouter(
                 def _fn(call_args):
                     with self._shell_runner.approved_call(approved_command):
                         return _command_fn(call_args)
+            if current_control() is not None:
+                _controlled_tool_fn = _fn
+
+                def _fn(call_args):
+                    control = current_control()
+                    if control is not None:
+                        control.before_tool()
+                    return _controlled_tool_fn(call_args)
             if name.startswith("browser_"):
                 # G18: TODA browser tool roda na MESMA thread dedicada e persistente.
                 # Playwright sync e thread-affine (greenlet): a pagina criada num
@@ -1833,10 +1855,15 @@ class ToolRouter(
                 try:
                     result = _future.result(timeout=_eff_timeout)
                 except _cf.TimeoutError as _te:
-                    raise ToolError(
-                        f"Tool '{name}' excedeu o timeout de {_eff_timeout}s. "
-                        "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
-                    ) from _te
+                    control = current_control()
+                    if control is not None:
+                        control.request_cancel()
+                        result = _future.result()
+                    else:
+                        raise ToolError(
+                            f"Tool '{name}' excedeu o timeout de {_eff_timeout}s. "
+                            "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                        ) from _te
             elif _timeout_sec > 0:
                 import concurrent.futures as _cf
                 from contextvars import copy_context
@@ -1854,10 +1881,15 @@ class ToolRouter(
                 try:
                     result = _future.result(timeout=_timeout_sec)
                 except _cf.TimeoutError as _te:
-                    raise ToolError(
-                        f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
-                        "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
-                    ) from _te
+                    control = current_control()
+                    if control is not None:
+                        control.request_cancel()
+                        result = _future.result()
+                    else:
+                        raise ToolError(
+                            f"Tool '{name}' excedeu o timeout de {_timeout_sec}s. "
+                            "Tente novamente com uma operação mais simples ou aumente timeout_seconds em tools.yaml."
+                        ) from _te
             else:
                 # Tool externa (ToolRegistry) tem prioridade sobre built-in
                 result = _fn(args)

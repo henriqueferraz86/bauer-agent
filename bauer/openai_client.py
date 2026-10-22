@@ -189,6 +189,8 @@ class OpenAIClient:
         do agent é código sensível (pareamento assistant↔tool, custo, fallback)
         e não deveria mudar só para ganhar streaming (plano 028 F1).
         """
+        from .execution_control import checkpoint_execution, current_control
+        checkpoint_execution()
         if on_delta is not None:
             return self._chat_with_tools_stream(model, messages, tools, tool_choice, on_delta)
         body: dict[str, Any] = {
@@ -203,9 +205,12 @@ class OpenAIClient:
         # (transiente). Backoff exponencial: 2s, 4s, 8s. Honra Retry-After
         # quando o provider o envia.
         import time as _time
-        _max_retries = 3
+        # Governed channel retries belong to the per-request agent boundary,
+        # where cancellation and each attempt's cost can be observed.
+        _max_retries = 0 if current_control() is not None else 3
         resp = None
         for _attempt in range(_max_retries + 1):
+            checkpoint_execution()
             try:
                 resp = httpx.post(
                     self._chat_url(),
@@ -295,6 +300,7 @@ class OpenAIClient:
         cobre a falha antes do primeiro token.
         """
         from .stream_tools import ToolCallAccumulator
+        from .execution_control import checkpoint_execution
 
         self.last_usage = {}
         conhecidas = {
@@ -308,6 +314,7 @@ class OpenAIClient:
         _error_body = ""
 
         try:
+            checkpoint_execution()
             with httpx.stream(
                 "POST",
                 self._chat_url(),
@@ -343,6 +350,7 @@ class OpenAIClient:
                         _error_body = ""
                 else:
                     for line in response.iter_lines():
+                        checkpoint_execution()
                         if not line or not line.startswith("data: "):
                             continue
                         payload = line[6:].strip()
@@ -398,6 +406,8 @@ class OpenAIClient:
         that don't honour the flag (e.g. some older OpenAI-compat backends)
         leave `last_usage = {}` — caller should fall back to an estimate.
         """
+        from .execution_control import checkpoint_execution
+        checkpoint_execution()
         # Reset usage before each call — readers compare to {} to detect "no data".
         self.last_usage = {}
         _error_body: str = ""
@@ -446,6 +456,7 @@ class OpenAIClient:
                     )
                 else:
                     for line in response.iter_lines():
+                        checkpoint_execution()
                         if not line or not line.startswith("data: "):
                             continue
                         payload = line[6:].strip()

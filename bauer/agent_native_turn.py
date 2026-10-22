@@ -27,6 +27,8 @@ def run_native_turn(
     is_unsupported_error: Callable[[Exception], bool],
 ) -> str | None:
     """Executa tools nativas e atualiza contexto/log in-place."""
+    from .execution_control import checkpoint_execution
+    checkpoint_execution()
     schemas = router.get_tool_schemas()
     # Usage belongs to this provider call. A previous successful call must not
     # be charged again if this one fails before receiving a response.
@@ -60,8 +62,10 @@ def run_native_turn(
             except Exception:
                 logging.getLogger("bauer.agent_native_turn").debug("Provider usage reporting failed", exc_info=True)
 
+    payload = ctx.get_payload()
+    checkpoint_execution()
     try:
-        message = client.chat_with_tools(model_name, ctx.get_payload(), tools=schemas)
+        message = client.chat_with_tools(model_name, payload, tools=schemas)
     except BaseException as exc:
         report_current_cost()
         if isinstance(exc, Exception) and is_unsupported_error(exc):
@@ -76,6 +80,7 @@ def run_native_turn(
         # fallback boundary classify it instead of exhausting the turn budget.
         raise
     report_current_cost()
+    checkpoint_execution()
     calls = message.get("tool_calls") or []
     content = message.get("content") or ""
     if not calls:
@@ -86,59 +91,78 @@ def run_native_turn(
         result = content or "[Limite de tool calls atingido]"
         ctx.add_assistant(result)
         return result
-    ctx.messages.append({"role": "assistant", "content": content, "tool_calls": calls})
-    for call in calls:
-        call_id = call.get("id", "call_0")
-        function = call.get("function", {})
-        name = function.get("name", "?")
-        args = _parse_arguments(function.get("arguments", "{}"))
-        blocked = False
-        if guardrail is not None:
-            pre = guardrail.before_call(name, args)
-            if pre.should_halt:
-                ctx.add_user(pre.message)
-                result = f"[BLOCKED] {pre.message}"
-                blocked = True
-                tool_log.append({"tool": name, "args_sig": args_signature(args), "result": result[:300]})
-                ctx.messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
-                if pre.action == "halt":
-                    return pre.message
-        if not blocked:
-            failed = False
-            cached = deduper.check(name, args) if deduper is not None else None
-            if cached is not None:
-                result = cached
-            else:
-                try:
-                    from .delta_stream import emit_tool
-                    emit_tool(name)
-                except Exception:
-                    pass
-                span = trace.span(f"tool:{name}", input={"args": args}) if trace is not None else None
-                try:
-                    result, timed_out = call_with_timeout(
-                        lambda: router.execute_native_call(name, args), tool_timeout_s, name,
-                    )
-                    failed = timed_out
-                    if span is not None:
-                        span.end(output=str(result)[:500], level="WARNING" if timed_out else "DEFAULT")
-                except Exception as exc:
-                    from .tool_router import SandboxError, ToolError
-                    if not isinstance(exc, (ToolError, SandboxError)):
-                        raise
-                    result = f"[Erro: {exc}]"
-                    failed = True
-                    if span is not None:
-                        span.end(output=result, level="ERROR")
-                if deduper is not None:
-                    deduper.record(name, args, result, failed=failed)
+    batch_message = {"role": "assistant", "content": content, "tool_calls": calls}
+    ctx.messages.append(batch_message)
+    try:
+        for call in calls:
+            checkpoint_execution()
+            call_id = call.get("id", "call_0")
+            function = call.get("function", {})
+            name = function.get("name", "?")
+            args = _parse_arguments(function.get("arguments", "{}"))
+            blocked = False
             if guardrail is not None:
-                post = guardrail.after_call(name, args, result, failed=failed)
-                if post.action == "warn":
-                    ctx.add_user(post.message)
-        ctx_result, _ = context_result(name, result)
-        tool_log.append({"tool": name, "args_sig": args_signature(args), "result": result[:300]})
-        ctx.messages.append({"role": "tool", "tool_call_id": call_id, "content": ctx_result})
+                pre = guardrail.before_call(name, args)
+                if pre.should_halt:
+                    ctx.add_user(pre.message)
+                    result = f"[BLOCKED] {pre.message}"
+                    blocked = True
+                    tool_log.append({"tool": name, "args_sig": args_signature(args), "result": result[:300]})
+                    ctx.messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+                    if pre.action == "halt":
+                        return pre.message
+            if not blocked:
+                failed = False
+                cached = deduper.check(name, args) if deduper is not None else None
+                if cached is not None:
+                    result = cached
+                else:
+                    try:
+                        from .delta_stream import emit_tool
+                        emit_tool(name)
+                    except Exception:
+                        pass
+                    span = trace.span(f"tool:{name}", input={"args": args}) if trace is not None else None
+                    try:
+                        result, timed_out = call_with_timeout(
+                            lambda: router.execute_native_call(name, args), tool_timeout_s, name,
+                        )
+                        failed = timed_out
+                        if span is not None:
+                            span.end(output=str(result)[:500], level="WARNING" if timed_out else "DEFAULT")
+                    except Exception as exc:
+                        from .tool_router import SandboxError, ToolError
+                        if not isinstance(exc, (ToolError, SandboxError)):
+                            raise
+                        result = f"[Erro: {exc}]"
+                        failed = True
+                        if span is not None:
+                            span.end(output=result, level="ERROR")
+                    if deduper is not None:
+                        deduper.record(name, args, result, failed=failed)
+                if guardrail is not None:
+                    post = guardrail.after_call(name, args, result, failed=failed)
+                    if post.action == "warn":
+                        ctx.add_user(post.message)
+            ctx_result, _ = context_result(name, result)
+            tool_log.append({"tool": name, "args_sig": args_signature(args), "result": result[:300]})
+            ctx.messages.append({"role": "tool", "tool_call_id": call_id, "content": ctx_result})
+    except Exception as exc:
+        from .execution_control import ExecutionControlError
+        from .provider_retry import ProviderRetryInterrupted
+        if isinstance(exc, (ProviderRetryInterrupted, ExecutionControlError)):
+            # Close the declared batch without replaying completed operations.
+            # Pending calls receive factual outputs for a valid next turn.
+            batch_index = next((index for index, item in enumerate(ctx.messages)
+                                if item is batch_message), None)
+            seen = {item.get("tool_call_id") for item in ctx.messages[(batch_index or 0) + 1:]
+                    if item.get("role") == "tool"}
+            for pending in calls if batch_index is not None else []:
+                pending_id = pending.get("id", "call_0")
+                if pending_id not in seen:
+                    ctx.messages.append({"role": "tool", "tool_call_id": pending_id,
+                                         "content": "[Cancelada antes da conclusão da operação; não repetir automaticamente.]"})
+        raise
     return None
 
 

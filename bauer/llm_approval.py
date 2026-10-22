@@ -134,6 +134,10 @@ def llm_evaluate_tool(
         return _parse_response(raw)
 
     except Exception as exc:
+        from .provider_retry import ProviderRetryInterrupted
+        from .execution_control import ExecutionControlError
+        if isinstance(exc, (ProviderRetryInterrupted, ExecutionControlError)):
+            raise
         logger.info("llm_approval: error evaluating %s — approving: %s", tool_name, exc)
         return LLMApprovalResult.allow(f"Approval check failed ({exc!r}) — fail-open")
 

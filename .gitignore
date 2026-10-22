@@ -107,3 +107,5 @@ graphify-out/
 !specs/sprint-32-native-provider-retry/**
 !specs/sprint-33-telegram-project-context/
 !specs/sprint-33-telegram-project-context/**
+!specs/sprint-34-telegram-cancellation/
+!specs/sprint-34-telegram-cancellation/**

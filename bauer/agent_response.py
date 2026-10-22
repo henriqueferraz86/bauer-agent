@@ -76,14 +76,17 @@ def stream_to_sink(
     from .delta_stream import emit_delta, emit_round_start, get_sink
     from .error_classifier import classify_api_error
     from .retry_utils import jittered_backoff
+    from .execution_control import ExecutionControlError, checkpoint_execution, controlled_sleep, current_control
 
     parts: list[str] = []
     for attempt in range(max_retries + 1):
+        checkpoint_execution()
         emit_round_start()
         parts = []
         try:
             with account_provider_call(client, model_name):
                 for chunk in client.chat_stream(model_name, api_payload):
+                    checkpoint_execution()
                     sink = get_sink()
                     if sink is not None and getattr(sink, "cancelled", False):
                         from .voice_session import VoiceTurnCancelled
@@ -95,11 +98,13 @@ def stream_to_sink(
                         from .voice_session import VoiceTurnCancelled
 
                         raise VoiceTurnCancelled("turno de voz interrompido")
+            checkpoint_execution()
             return parts
         except Exception as exc:  # noqa: BLE001 - classificado a seguir
             from .voice_session import VoiceTurnCancelled
+            from .provider_retry import ProviderRetryInterrupted
 
-            if parts or isinstance(exc, VoiceTurnCancelled):
+            if parts or isinstance(exc, (VoiceTurnCancelled, ProviderRetryInterrupted, ExecutionControlError)):
                 raise
             classified = classify_api_error(exc)
             if not classified.retryable or attempt >= max_retries:
@@ -112,7 +117,10 @@ def stream_to_sink(
                     from .logging_config import log_suppressed
 
                     log_suppressed("stream.on_retry", callback_exc)
-            time.sleep(wait)
+            if current_control() is not None:
+                controlled_sleep(wait)
+            else:
+                time.sleep(wait)
     return parts
 
 
@@ -121,6 +129,8 @@ def collect_response(
     stream_to_sink_fn: Callable[..., list[str]] = stream_to_sink,
 ) -> str:
     """Coleta uma resposta completa, com hooks, cache, custo e sanitização."""
+    from .execution_control import checkpoint_execution, current_control
+    checkpoint_execution()
     try:
         from .plugin_hooks import hooks
 
@@ -141,14 +151,16 @@ def collect_response(
     from .delta_stream import get_sink
     from .openai_client import OpenAIClient as OpenAIClient
 
+    checkpoint_execution()
     with account_provider_call(client, model_name):
-        if get_sink() is not None:
+        if get_sink() is not None or current_control() is not None:
             parts = stream_to_sink_fn(client, model_name, api_payload)
         elif isinstance(client, OpenAIClient) and hasattr(client, "chat_with_retry"):
             parts = client.chat_with_retry(model_name, api_payload)
         else:
             parts = list(client.chat_stream(model_name, api_payload))
     response = "".join(parts)
+    checkpoint_execution()
 
     try:
         from .unicode_utils import sanitize_surrogates
@@ -188,14 +200,24 @@ def recover_empty_response(
     collect_response_fn: Callable[..., str] = collect_response,
 ) -> tuple[str, str]:
     """Recupera resposta vazia com retry e compressão de contexto."""
-    time.sleep(2.0)
+    from .execution_control import ExecutionControlError, checkpoint_execution, controlled_sleep, current_control
+    from .provider_retry import ProviderRetryInterrupted
+    checkpoint_execution()
+    if current_control() is not None:
+        controlled_sleep(2.0)
+    else:
+        time.sleep(2.0)
+    checkpoint_execution()
     response = collect_response_fn(client, model_name, ctx.get_payload())
     if response.strip():
         return response, ""
 
     compressed = False
     try:
+        checkpoint_execution()
         compressed = ctx.force_compress()
+    except (ProviderRetryInterrupted, ExecutionControlError):
+        raise
     except Exception:
         compressed = False
     if compressed:

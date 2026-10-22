@@ -45,6 +45,17 @@ def call_with_timeout(
         ex.shutdown(wait=False)
         return result, False
     except _FutureTimeout:
+        from .execution_control import current_control
+        control = current_control()
+        if control is not None:
+            # The channel transport owns its response deadline. Custody must
+            # outlive this worker, including a non-interruptible external call.
+            control.request_cancel()
+            try:
+                result = future.result()
+            finally:
+                ex.shutdown(wait=True)
+            return result, True
         # Thread continua em background — não há como matar threads em Python.
         ex.shutdown(wait=False)
         msg = f"[Timeout: {name} excedeu {timeout_s:.0f}s — interrompido]"

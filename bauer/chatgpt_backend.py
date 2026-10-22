@@ -408,6 +408,8 @@ class ChatGPTBackendClient(OpenAIClient):
         tool_choice: Any | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Stream text and normalized function-call events from Responses."""
+        from .execution_control import checkpoint_execution
+        checkpoint_execution()
         self.last_usage = {}
         instructions, input_items = self._to_responses_input(messages)
         body: dict[str, Any] = {
@@ -435,6 +437,7 @@ class ChatGPTBackendClient(OpenAIClient):
         item_to_call: dict[str, str] = {}
 
         try:
+            checkpoint_execution()
             with httpx.stream(
                 "POST",
                 url,
@@ -456,6 +459,7 @@ class ChatGPTBackendClient(OpenAIClient):
                         _err_body = ""
                 else:
                     for line in response.iter_lines():
+                        checkpoint_execution()
                         if not line or not line.startswith("data:"):
                             continue
                         payload = line[5:].strip()

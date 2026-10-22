@@ -8,6 +8,9 @@ maior, mas tampouco fazem parte do nucleo de dispatch.
 from __future__ import annotations
 
 from .base import ToolError
+from ..execution_control import checkpoint_execution, current_control
+from ..process_control import controlled_popen, owns_process, process_owner, release_process, terminate_process_tree
+from ..provider_retry import ProviderRetryInterrupted
 
 
 class MiscToolsMixin:
@@ -169,6 +172,7 @@ class MiscToolsMixin:
         import subprocess
         import threading
 
+        checkpoint_execution()
         action = str(args.get("action", "")).strip().lower()
         if not action:
             raise ToolError("process: 'action' é obrigatório (start|list|poll|log|kill|write).")
@@ -208,12 +212,14 @@ class MiscToolsMixin:
                 )
             try:
                 cmd_args = _runner.validate(cmd_str, confirm=bool(args.get("confirm", False)))
+            except ProviderRetryInterrupted:
+                raise
             except Exception as exc:  # Blocked/SafeMode/ShellError
                 raise ToolError(f"process start: {exc}") from exc
 
             label = str(args.get("label", cmd_str[:40]))
             try:
-                proc = subprocess.Popen(
+                proc = controlled_popen(
                     cmd_args,
                     shell=False,
                     stdout=subprocess.PIPE,
@@ -224,6 +230,8 @@ class MiscToolsMixin:
                     errors="replace",
                     cwd=str(self.workspace),
                 )
+            except ProviderRetryInterrupted:
+                raise
             except Exception as exc:
                 raise ToolError(f"process start: falha ao iniciar — {exc}") from exc
 
@@ -248,6 +256,7 @@ class MiscToolsMixin:
 
             self._processes[pid_str] = {
                 "proc": proc,
+                "owner": process_owner(),
                 "label": label,
                 "command": str(command),
                 "stdout_buf": stdout_buf,
@@ -257,10 +266,11 @@ class MiscToolsMixin:
 
         # ── list ──────────────────────────────────────────────────────────────
         if action == "list":
-            if not self._processes:
+            visible = {pid: info for pid, info in list(self._processes.items()) if owns_process(info)}
+            if not visible:
                 return "[process] Nenhum processo em andamento."
-            lines = [f"[process] {len(self._processes)} processo(s):"]
-            for pid, info in self._processes.items():
+            lines = [f"[process] {len(visible)} processo(s):"]
+            for pid, info in visible.items():
                 proc = info["proc"]
                 rc = proc.poll()
                 status = f"exit:{rc}" if rc is not None else "running"
@@ -275,7 +285,7 @@ class MiscToolsMixin:
         pid = str(args.get("pid", "")).strip()
         if not pid:
             raise ToolError(f"process: 'pid' é obrigatório para action={action}.")
-        if pid not in self._processes:
+        if pid not in self._processes or not owns_process(self._processes[pid]):
             raise ToolError(f"process: PID '{pid}' não encontrado. Use action=list para ver ativos.")
 
         info = self._processes[pid]
@@ -285,6 +295,7 @@ class MiscToolsMixin:
             rc = proc.poll()
             if rc is None:
                 return f"[process] PID {pid} '{info['label']}' — running"
+            release_process(proc)
             del self._processes[pid]
             return f"[process] PID {pid} '{info['label']}' — finalizado com exit:{rc}"
 
@@ -302,14 +313,21 @@ class MiscToolsMixin:
             )
 
         if action == "kill":
-            try:
-                proc.terminate()
-                proc.wait(timeout=3)
-            except Exception:
+            if current_control() is not None:
+                terminate_process_tree(proc)
+            else:
                 try:
-                    proc.kill()
+                    proc.terminate()
+                    proc.wait(timeout=3)
                 except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+            if proc.poll() is None:
+                return f"[process] PID {pid} — interrupção solicitada; processo ainda em execução."
+            release_process(proc)
             del self._processes[pid]
             return f"[process] PID {pid} '{info['label']}' encerrado."
 

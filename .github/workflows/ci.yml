@@ -76,7 +76,7 @@ jobs:
           cache: pip
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.17.0
 
       - name: Verificar erros criticos (sintaxe, imports, nomes indefinidos)
         # E9xx: erros de sintaxe/runtime | F63x: asserts problemáticos
@@ -133,7 +133,7 @@ jobs:
           cache: pip
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.17.0
 
       - name: Avisos de estilo (nao bloqueante)
         # Regras de estilo amplo — reporta mas nao bloqueia merge.
