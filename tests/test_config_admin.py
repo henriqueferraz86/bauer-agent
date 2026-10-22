@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,18 @@ class TestEnvFile:
         assert env.read_text(encoding="utf-8").count("GROQ_API_KEY") == 1
         assert "new" in env.read_text(encoding="utf-8")
 
+    def test_salva_tambem_aplica_no_processo_ao_vivo(self, tmp_path, monkeypatch):
+        """Sem isto, a chave nova só vale após reiniciar o processo — ver
+        env_loader.load_dotenv(), que nunca sobrescreve um os.environ já
+        setado. A UI promete efeito imediato; precisa ser verdade."""
+        env = tmp_path / ".env"
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        save_env_value("GROQ_API_KEY", "gsk_live", env)
+        assert os.environ["GROQ_API_KEY"] == "gsk_live"
+        # Troca de valor também aplica, não só a criação.
+        save_env_value("GROQ_API_KEY", "gsk_live_2", env)
+        assert os.environ["GROQ_API_KEY"] == "gsk_live_2"
+
     def test_read_value(self, tmp_path):
         env = tmp_path / ".env"
         env.write_text('FOO="quoted value"\nBAR=plain\n', encoding="utf-8")
@@ -146,6 +159,13 @@ class TestEnvFile:
         env = tmp_path / ".env"
         env.write_text("A=1\n", encoding="utf-8")
         assert remove_env_value("Z", env) is False
+
+    def test_remove_tambem_tira_do_processo_ao_vivo(self, tmp_path, monkeypatch):
+        env = tmp_path / ".env"
+        env.write_text("A=1\n", encoding="utf-8")
+        monkeypatch.setenv("A", "1")
+        assert remove_env_value("A", env) is True
+        assert "A" not in os.environ
 
 
 class TestSetConfigValue:

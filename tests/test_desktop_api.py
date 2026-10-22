@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -537,8 +538,9 @@ class TestConfigEndpoints:
     def test_put_missing_key_400(self, env):
         assert env["client"].put("/api/config", json={"value": "x"}).status_code == 400
 
-    def test_put_env_key_routes_to_dotenv(self, env):
+    def test_put_env_key_routes_to_dotenv(self, env, monkeypatch):
         """Chaves *_API_KEY vão pro .env ao lado do config.yaml (card 'Segredos' da tela Config)."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)  # isola do os.environ real
         r = env["client"].put(
             "/api/config",
             json={"key": "OPENROUTER_API_KEY", "value": "sk-or-teste-nao-real"},
@@ -551,6 +553,24 @@ class TestConfigEndpoints:
         # E não vazou pro config.yaml (que é versionado).
         assert "sk-or-teste-nao-real" not in env["config_path"].read_text(encoding="utf-8")
 
+    def test_put_env_key_applies_live_without_restart(self, env, monkeypatch):
+        """Troca de chave vale no processo já rodando — sem isso, load_dotenv()
+        nunca sobrescreve um os.environ já setado e a chave nova só é lida
+        depois de reiniciar o serve."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        r = env["client"].put(
+            "/api/config",
+            json={"key": "OPENROUTER_API_KEY", "value": "sk-or-teste-nao-real"},
+        )
+        assert r.status_code == 200
+        assert os.environ["OPENROUTER_API_KEY"] == "sk-or-teste-nao-real"
+        r2 = env["client"].put(
+            "/api/config",
+            json={"key": "OPENROUTER_API_KEY", "value": "sk-or-teste-nao-real-2"},
+        )
+        assert r2.status_code == 200
+        assert os.environ["OPENROUTER_API_KEY"] == "sk-or-teste-nao-real-2"
+
     def test_put_env_key_ignores_process_cwd(self, env, monkeypatch, tmp_path):
         """Grava ao lado do config.yaml efetivamente usado, não do cwd do processo.
 
@@ -558,6 +578,7 @@ class TestConfigEndpoints:
         config.yaml por coincidência — fora disso (ou se o WORKDIR mudar)
         a chave sumia num ".env" errado, nunca visível no projeto real.
         """
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         decoy_cwd = tmp_path / "decoy-cwd"
         decoy_cwd.mkdir()
         monkeypatch.chdir(decoy_cwd)

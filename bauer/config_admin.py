@@ -291,6 +291,10 @@ def save_env_value(key: str, value: str, env_path: str | Path = ".env") -> Path:
         lines.append(new_line)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # load_dotenv() só injeta no os.environ se a chave ainda não existir —
+    # sem isto, uma chave trocada pela UI fica "presa" no valor antigo até
+    # o processo reiniciar, mesmo com load_config() recarregando a cada turno.
+    os.environ[key] = value
     return path
 
 
@@ -306,6 +310,7 @@ def remove_env_value(key: str, env_path: str | Path = ".env") -> bool:
     if len(kept) == len(lines):
         return False
     path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    os.environ.pop(key, None)
     return True
 
 
