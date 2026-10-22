@@ -15,6 +15,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from bauer import desktop_api as da  # noqa: E402
+from bauer.desktop_api import _validate_live_secret as _real_validate_live_secret  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +522,69 @@ class TestObsEndpoints:
         assert data["spans"][0]["name"] == "a"
 
 
+class TestValidateLiveSecret:
+    """Checagem melhor-esforço de credenciais ao salvar — sempre com http_get
+    falso, nunca toca rede real (suíte hermética)."""
+
+    def _resp(self, status_code, data=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(status_code=status_code, json=lambda: data or {})
+
+    def test_telegram_token_valido_nao_bloqueia(self):
+        get = lambda url, **kw: self._resp(200, {"ok": True})
+        assert _real_validate_live_secret("TELEGRAM_BOT_TOKEN", "123:abc", http_get=get) is None
+
+    def test_telegram_token_invalido_401(self):
+        get = lambda url, **kw: self._resp(401)
+        msg = _real_validate_live_secret("TELEGRAM_BOT_TOKEN", "123:abc", http_get=get)
+        assert msg and "inválido" in msg
+
+    def test_telegram_aceita_chave_dotted_do_config_yaml(self):
+        """O outro agente dentro do container gravou em telegram.bot_token
+        (fallback do schema) em vez do TELEGRAM_BOT_TOKEN preferido — a
+        checagem tem que reconhecer os dois jeitos de chamar a mesma coisa."""
+        get = lambda url, **kw: self._resp(401)
+        msg = _real_validate_live_secret("telegram.bot_token", "123:abc", http_get=get)
+        assert msg and "inválido" in msg
+
+    def test_openrouter_chave_normal_nao_bloqueia(self):
+        get = lambda url, **kw: self._resp(200, {"data": {"is_provisioning_key": False}})
+        assert _real_validate_live_secret("OPENROUTER_API_KEY", "sk-or-v1-x", http_get=get) is None
+
+    def test_openrouter_chave_provisioning_bloqueia(self):
+        """Mesmo erro de hoje: chave de management aceita como se fosse de
+        inferência, só quebra horas depois com 401 'User not found'."""
+        get = lambda url, **kw: self._resp(200, {"data": {"is_provisioning_key": True}})
+        msg = _real_validate_live_secret("OPENROUTER_API_KEY", "sk-or-v1-x", http_get=get)
+        assert msg and "provisioning" in msg.lower()
+
+    def test_openrouter_chave_invalida_401(self):
+        get = lambda url, **kw: self._resp(401)
+        msg = _real_validate_live_secret("OPENROUTER_API_KEY", "sk-or-v1-x", http_get=get)
+        assert msg and "inválida" in msg
+
+    def test_rede_indisponivel_nao_bloqueia(self):
+        """Falso positivo aqui é pior que não validar — nunca derruba o save."""
+        def get(url, **kw):
+            raise ConnectionError("rede fora")
+        assert _real_validate_live_secret("OPENROUTER_API_KEY", "sk-or-v1-x", http_get=get) is None
+
+    def test_chave_sem_checagem_conhecida_nao_bloqueia(self):
+        def get(url, **kw):
+            raise AssertionError("não deveria chamar rede para chave desconhecida")
+        assert _real_validate_live_secret("GROQ_API_KEY", "gsk_x", http_get=get) is None
+
+
 class TestConfigEndpoints:
+    @pytest.fixture(autouse=True)
+    def _no_live_secret_validation(self, monkeypatch):
+        """Suíte hermética — nunca chama provider real a partir de PUT /config.
+
+        Testes que exercitam a validação substituem isto de volta por um
+        http_get falso, explicitamente.
+        """
+        monkeypatch.setattr(da, "_validate_live_secret", lambda key, value, **kw: None)
+
     def test_get_masks_secret(self, env):
         r = env["client"].get("/api/config")
         cfg = r.json()["config"]
@@ -590,6 +653,29 @@ class TestConfigEndpoints:
         assert not (decoy_cwd / ".env").exists()
         dotenv = (env["tmp"] / ".env").read_text(encoding="utf-8")
         assert "OPENROUTER_API_KEY=sk-or-teste-nao-real" in dotenv
+
+    def test_put_invalid_telegram_token_still_saves_but_warns(self, env, monkeypatch):
+        """Token do Telegram inválido é salvo (não se perde o que o usuário
+        colou) mas a resposta vira erro — é o único canal que o frontend
+        atual exibe (ele só renderiza mensagem no catch() do fetch)."""
+        def fake_get(url, timeout=None, **kw):
+            from types import SimpleNamespace
+            assert "api.telegram.org" in url
+            return SimpleNamespace(status_code=401, json=lambda: {})
+        # Sobrescreve o no-op da fixture pela função real, com http_get falso.
+        monkeypatch.setattr(
+            da, "_validate_live_secret",
+            lambda key, value, **kw: _real_validate_live_secret(key, value, http_get=fake_get),
+        )
+        r = env["client"].put(
+            "/api/config",
+            json={"key": "TELEGRAM_BOT_TOKEN", "value": "123:fake-token"},
+        )
+        assert r.status_code == 422
+        assert "inválido" in r.json()["detail"]
+        # Mesmo com erro na resposta, o valor foi persistido — nada se perde.
+        dotenv = (env["tmp"] / ".env").read_text(encoding="utf-8")
+        assert "TELEGRAM_BOT_TOKEN=123:fake-token" in dotenv
 
     def test_profiles_list(self, env):
         # cria um profile config.dev.yaml ao lado do config.yaml

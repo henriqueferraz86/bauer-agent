@@ -223,6 +223,43 @@ def _http_ok(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def _validate_live_secret(
+    key: str, value: str, *, http_get: Optional[Callable[..., Any]] = None,
+) -> Optional[str]:
+    """Checagem melhor-esforço contra o provedor real do token/chave salvo.
+
+    Devolve uma mensagem só quando a credencial está CONFIRMADAMENTE errada
+    (resposta explícita do provedor) — nunca por rede instável/timeout, pois
+    um falso positivo aqui bloquearia um salvamento legítimo. Existe porque
+    um token do Telegram ou uma chave da OpenRouter inválidos hoje são
+    aceitos em silêncio e só aparecem como erro bem depois, no meio de outra
+    tarefa (um bot que nunca responde, um 401 confuso de outro provider).
+    """
+    get = http_get or __import__("httpx").get
+    k = key.strip().upper()
+    try:
+        if k == "TELEGRAM_BOT_TOKEN" or key.strip().lower() == "telegram.bot_token":
+            r = get(f"https://api.telegram.org/bot{value}/getMe", timeout=5.0)
+            if r.status_code == 401:
+                return "token do Telegram inválido (API respondeu 401) — confira em @BotFather"
+        elif k == "OPENROUTER_API_KEY":
+            r = get(
+                "https://openrouter.ai/api/v1/auth/key",
+                headers={"Authorization": f"Bearer {value}"}, timeout=5.0,
+            )
+            if r.status_code == 401:
+                return "chave da OpenRouter inválida (API respondeu 401)"
+            if r.status_code == 200 and r.json().get("data", {}).get("is_provisioning_key"):
+                return (
+                    "essa é uma chave de PROVISIONING da OpenRouter (só gerencia outras "
+                    "chaves, não serve para chat) — gere uma chave normal em "
+                    "openrouter.ai/settings/keys"
+                )
+    except Exception:  # noqa: BLE001 — rede indisponível não bloqueia o salvamento
+        return None
+    return None
+
+
 def wait_for_health(
     url: str,
     *,
@@ -1645,6 +1682,16 @@ def build_desktop_router(
             )
         except KeyError as exc:
             raise HTTPException(status_code=400, detail=f"Chave inválida: {exc}")
+        # Já está salvo nesse ponto — a checagem abaixo só avisa, nunca desfaz
+        # a escrita. O frontend hoje só renderiza mensagem de erro no catch()
+        # do fetch, então um alerta "salvou mas está errado" tem que vir como
+        # HTTP de erro para aparecer na tela — não existe canal de "warning".
+        problem = _validate_live_secret(key, str(value))
+        if problem:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{key} salvo, mas {problem}.",
+            )
         return {"saved": key, "dest": dest, "path": str(path)}
 
     @router.get("/config/profiles")
