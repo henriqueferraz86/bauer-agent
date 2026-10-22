@@ -219,19 +219,26 @@ git clone https://github.com/henriqueferraz86/bauer-agent.git
 cd bauer-agent
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[gateway]"
+pip install -e .
+./scripts/install-browser.sh      # Windows: .\scripts\install-browser.ps1
 bauer doctor
 ```
+
+O conjunto base inclui agora as dependências Python do servidor HTTP, gateway,
+busca web e automação de browser. Playwright instala a biblioteca; o comando
+acima baixa a versão compatível do Chromium. Em Linux, se faltarem bibliotecas
+do sistema, execute `python -m playwright install-deps chromium` com
+privilégios administrativos. Em hosts sem desktop, o browser funciona headless.
 
 **Extras opcionais:**
 
 | Extra | Instala | Para quê |
 |-------|---------|----------|
 | `[web]` | (mantido por compatibilidade; já vem na instalação base) | busca web geral (DuckDuckGo) + extração de conteúdo |
-| `[server]` | `fastapi`, `uvicorn` | `bauer serve` (API HTTP) |
-| `[gateway]` | + `websockets` | canais Telegram/Discord + `bauer shell` |
-| `[keychain]` | `keyring` | guardar credenciais no keychain do SO |
-| `[all]` | tudo acima | — |
+| `[server]`, `[gateway]`, `[keychain]` | já incluídos na base; mantidos por compatibilidade | `bauer serve`, canais e keychain do SO |
+| `[all]` | base + `[voice]` | inclui captura e STT local; não inclui os extras Kokoro/XTTS |
+| `[voice]` | captura de microfone, NumPy, SoundFile e faster-whisper | STT local; requer dispositivo de áudio e baixa modelo na primeira execução |
+| `[voice-kokoro]`, `[voice-tts]` | runtimes Kokoro/XTTS | síntese de voz; XTTS tem dependências grandes e licença própria |
 
 > A busca web geral via DuckDuckGo já vem instalada e habilitada por padrão.
 > O backend Wikipedia continua como fallback automático se o DuckDuckGo estiver
@@ -1445,6 +1452,7 @@ integração.
 ```bash
 pip install uv                                  # instala o gerenciador de pacotes
 uv sync --frozen --extra dev                    # usa exatamente o uv.lock do CI
+uv run playwright install chromium              # instala o browser compatível
 uv run pytest tests/ -q --tb=short              # roda a suite
 ```
 

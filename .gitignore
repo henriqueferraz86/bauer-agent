@@ -40,6 +40,8 @@ logs/
 /workspace/
 memory/
 specs/*
+!specs/default-runtime-tools/
+!specs/default-runtime-tools/**
 !specs/sprint-25-p3-tool-error-paths/
 !specs/sprint-25-p3-tool-error-paths/**
 !specs/sprint-26-p4-guarded-autonomy/
