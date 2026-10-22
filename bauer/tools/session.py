@@ -95,6 +95,25 @@ class SessionToolsMixin:
         Tenta SqliteSessionStore primeiro (FTS5 semântico).
         Se o banco não existir, cai para busca linear em .jsonl.
         """
+        # Remote project conversations may only recall their own history.
+        # Do not fall through to sibling databases/files when a scoped store
+        # has no match or no active session was propagated to this thread.
+        scoped_store = getattr(self, "_channel_session_store", None)
+        if scoped_store is not None:
+            from ..runtime_ids import get_runtime_ids
+            active = get_runtime_ids()
+            if active is None or not active[0]:
+                return []
+            messages = scoped_store.load(active[0])
+            hits = []
+            for message in messages:
+                content = message.get("content")
+                if isinstance(content, str) and query.casefold() in content.casefold():
+                    hits.append(f"  [{message.get('role', 'unknown')}] {content[:200]}")
+                    if len(hits) >= top_k:
+                        break
+            return hits
+
         # ── Caminho 1: SqliteSessionStore (FTS5) ──────────────────────────
         sessions_db_candidates = [
             self.workspace.parent / "memory" / "sessions" / "sessions.db",

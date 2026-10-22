@@ -71,6 +71,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [058](058-p3-tool-error-paths.md) | Cobrir e normalizar falhas de permissão/I/O nas filesystem tools | P3 | P3 | M | — | DONE |
 | [059](059-p4-guarded-autonomy.md) | Fechar gates, orçamento e dependências no caminho de autonomia persistente | P4 | P4 | L | 056 | DONE |
 | [060](060-auditoria-profunda-browser-2026-10-12.md) | Auditoria profunda com equipe, baseline CI e jornadas Chromium | Auditoria/qualidade | P1 | L | — | DONE auditoria; Sprint 27 concluiu 17 correções funcionais; segurança excluída/pendente (docs/audits/2026-10-12/CORRECTIONS.md) |
+| [061](061-telegram-project-control.md) | Telegram com projeto ativo, atividade dos agentes, cancelamento e aprovação remota | Gateway/execução governada | P1 | L (sprints sequenciais) | Gateway e contratos existentes; 056 como contexto | IN PROGRESS (sprint 33: contexto de projeto) |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 

@@ -30,9 +30,12 @@ import html as _html
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 
 import httpx
@@ -55,6 +58,8 @@ POLL_TIMEOUT_S = 30          # long-polling do getUpdates
 TYPING_INTERVAL_S = 4.5      # sendChatAction expira em ~5s
 STREAM_EDIT_INTERVAL_S = 2.5  # rate limit de editMessageText
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # limite da Bot API p/ getFile
+PROJECT_PICKER_TTL_S = 600.0
+_MEDIA_CONTEXT: ContextVar[tuple[Path, str] | None] = ContextVar("telegram_media_context", default=None)
 MAX_TURN_WORKERS = 4         # turnos concorrentes (chats diferentes)
 
 # Menu "/" do Telegram (setMyCommands) — igual Hermes/OpenClaw: ao digitar /
@@ -63,6 +68,9 @@ MAX_TURN_WORKERS = 4         # turnos concorrentes (chats diferentes)
 BOT_COMMANDS = [
     {"command": "start", "description": "Menu inicial"},
     {"command": "help", "description": "Ajuda e comandos disponíveis"},
+    {"command": "projetos", "description": "Escolher o projeto desta conversa"},
+    {"command": "projeto", "description": "Consultar projeto desta conversa"},
+    {"command": "tarefas", "description": "Tarefas do projeto"},
     {"command": "status", "description": "Modelo, contexto e sessão atual"},
     {"command": "model", "description": "Trocar provider/modelo (botões)"},
     {"command": "tasks", "description": "Tarefas do kanban do workspace"},
@@ -130,7 +138,8 @@ def chunk_text_fenced(text: str, limit: int) -> list[str]:
     return result
 
 
-def extract_outbound_media(text: str, workspace: Path | None = None) -> tuple[list[Path], str]:
+def extract_outbound_media(text: str, workspace: Path | None = None, *,
+                           allowed_root: Path | None = None) -> tuple[list[Path], str]:
     """Extrai arquivos que o agente quer mandar no chat.
 
     Reconhece marcadores ``[media: path]`` e linhas que são apenas um path
@@ -145,13 +154,14 @@ def extract_outbound_media(text: str, workspace: Path | None = None) -> tuple[li
         if not raw:
             return None
         p = Path(raw)
-        candidates = [p]
-        if not p.is_absolute() and workspace is not None:
-            candidates.append(workspace / p)
+        candidates = [workspace / p] if not p.is_absolute() and workspace is not None else [p]
         for cand in candidates:
             try:
-                if cand.is_file():
-                    return cand.resolve()
+                resolved = cand.resolve()
+                if allowed_root is not None and not resolved.is_relative_to(allowed_root.resolve()):
+                    continue
+                if resolved.is_file():
+                    return resolved
             except OSError:
                 continue
         return None
@@ -408,6 +418,8 @@ class TelegramBridge(BaseBridge):
         )
         # Estado do model picker por chat: {"providers": [...], "models": {...}}
         self._picker_state: dict[str, dict] = {}
+        self._project_callbacks: dict[str, dict] = {}
+        self._project_callback_lock = threading.Lock()
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
 
@@ -549,11 +561,23 @@ class TelegramBridge(BaseBridge):
             url = f"{TELEGRAM_API}/file/bot{self.token}/{remote_path}"
             resp = self._http.get(url, timeout=120)
             resp.raise_for_status()
-            self.media_dir.mkdir(parents=True, exist_ok=True)
+            media_context = _MEDIA_CONTEXT.get()
+            media_dir = self.media_dir
+            if media_context is not None:
+                root, session_key = media_context
+                import hashlib
+                owner = hashlib.sha256(session_key.encode()).hexdigest()[:24]
+                media_dir = root / ".bauer_gateway" / "media" / owner
+                if not media_dir.resolve().is_relative_to(root.resolve()):
+                    return None
+            media_dir.mkdir(parents=True, exist_ok=True)
             ext = Path(remote_path).suffix or Path(suggested_name).suffix or ".bin"
             base = re.sub(r"[^\w.\-]", "_", Path(suggested_name).stem) or "file"
-            dest = self.media_dir / f"{base}_{int(time.time())}{ext}"
-            dest.write_bytes(resp.content)
+            if len(resp.content) > MAX_DOWNLOAD_BYTES:
+                return None
+            dest = media_dir / f"{base}_{secrets.token_hex(16)}{ext}"
+            with dest.open("xb") as target:
+                target.write(resp.content)
             return dest
         except Exception as exc:  # noqa: BLE001
             logger.warning("Download de mídia falhou: %s", exc)
@@ -700,7 +724,7 @@ class TelegramBridge(BaseBridge):
 
         active_provider, active_model = "", ""
         # chat_id == session key suffix: tg:<chat_id>
-        active_provider, active_model = self._active_pair(f"tg:{chat_id}")
+        active_provider, active_model = self._active_pair(state.get("session_key", f"tg:{chat_id}"))
 
         # Build models_dev metadata index for this provider (ctx window + cost)
         _mdev_index: dict = {}
@@ -756,16 +780,83 @@ class TelegramBridge(BaseBridge):
             text = f"📦 {provider} — escolha o modelo:{free_note}"
         return text, {"inline_keyboard": rows}
 
-    def _send_model_picker(self, chat_id: str, session_key: str) -> None:
+    def _send_model_picker(self, chat_id: str, session_key: str, msg: ChannelMessage | None = None) -> None:
+        if not self.backend.is_ready:
+            self.backend.initialize()
+        if msg is not None:
+            with self.backend.project_scope(msg):
+                self.backend._restore_project_model(session_key)
         providers = self.backend._configured_providers()
         active_provider, active_model = self._active_pair(session_key)
-        self._picker_state[chat_id] = {"providers": providers, "models": {}}
-        self._api(
+        state = {"providers": providers, "models": {}, "session_key": session_key,
+                 "msg": msg, "expires_at": time.monotonic() + PROJECT_PICKER_TTL_S}
+        self._picker_state[chat_id] = state
+        result = self._api(
             "sendMessage", chat_id=chat_id,
             text=(f"⚙️ Modelo ativo: {active_model} ({active_provider})\n\n"
                   f"Escolha o provider:"),
             reply_markup=self._provider_keyboard(providers, active_provider),
         )
+        state["message_id"] = result.get("message_id")
+
+    def _send_project_picker(self, msg: ChannelMessage) -> None:
+        projects = self.backend.list_channel_projects(msg)
+        rows = []
+        now = time.monotonic()
+        with self._project_callback_lock:
+            self._project_callbacks = {
+                key: value for key, value in self._project_callbacks.items()
+                if value["expires_at"] > now and value["chat_id"] != msg.chat_id
+            }
+            for project in projects[:100]:
+                token = secrets.token_urlsafe(18)
+                self._project_callbacks[token] = {
+                    "owner": msg.user_id, "chat_id": msg.chat_id,
+                    "project_id": project["id"], "expires_at": now + PROJECT_PICKER_TTL_S,
+                    "message_id": None,
+                }
+                rows.append([{"text": str(project["name"])[:60], "callback_data": f"proj:{token}"}])
+            # Bound volatile state; a forgotten menu can always be reopened.
+            while len(self._project_callbacks) > 500:
+                self._project_callbacks.pop(next(iter(self._project_callbacks)))
+            result = self._api("sendMessage", chat_id=msg.chat_id,
+                               text="Escolha o projeto desta conversa:" if rows else "Nenhum projeto disponível.",
+                               reply_markup={"inline_keyboard": rows})
+            message_id = result.get("message_id")
+            for value in self._project_callbacks.values():
+                if value["chat_id"] == msg.chat_id and value["owner"] == msg.user_id:
+                    value["message_id"] = message_id
+
+    def _project_callback(self, cq: dict) -> None:
+        message = cq.get("message") or {}
+        chat = message.get("chat") or {}
+        if chat.get("type") != "private":
+            return
+        owner = str((cq.get("from") or {}).get("id", ""))
+        chat_id = str(chat.get("id", ""))
+        token = str(cq.get("data", ""))[5:]
+        with self._project_callback_lock:
+            record = self._project_callbacks.get(token)
+            if (record is None or record["expires_at"] <= time.monotonic()
+                    or record["owner"] != owner or record["chat_id"] != chat_id
+                    or record["message_id"] is None
+                    or record["message_id"] != message.get("message_id")):
+                return
+            msg = ChannelMessage(channel="telegram", user_id=owner, chat_id=chat_id,
+                                 text="/projeto", raw={"message": message})
+            try:
+                context = self.backend.select_channel_project(msg, record["project_id"])
+                text = f"Projeto desta conversa: {context.name}"
+            except ValueError:
+                text = "Projeto indisponível. Abra /projetos para escolher novamente."
+            # Consume the whole menu, including sibling buttons, atomically.
+            self._project_callbacks = {
+                key: value for key, value in self._project_callbacks.items()
+                if (value["chat_id"], value["message_id"]) != (chat_id, record["message_id"])
+            }
+        self._picker_state.pop(chat_id, None)
+        self._api("editMessageText", chat_id=chat_id, message_id=message["message_id"],
+                  text=text, reply_markup={"inline_keyboard": []})
 
     def _handle_callback(self, cq: dict) -> None:
         cq_id = cq.get("id", "")
@@ -780,10 +871,31 @@ class TelegramBridge(BaseBridge):
             pass
         if not self._user_id_authorized(from_user.get("id")):
             return
+        if data.startswith("proj:"):
+            self._project_callback(cq)
+            return
         if not data.startswith("mp:") or not chat_id or msg_id is None:
             return
 
         state = self._picker_state.get(chat_id)
+        if state is not None:
+            original = state.get("msg")
+            if state.get("message_id") is not None and state["message_id"] != msg_id:
+                return
+            if time.monotonic() >= state.get("expires_at", float("inf")):
+                return
+            if original is not None:
+                if original.user_id != str(from_user.get("id", "")):
+                    return
+                try:
+                    current = self.backend.project_context(ChannelMessage(
+                        channel="telegram", user_id=original.user_id, chat_id=chat_id,
+                        text="", raw={"message": message}))
+                    captured = original.project_snapshot
+                    if getattr(current, "session_key", None) != getattr(captured, "session_key", None):
+                        return
+                except ValueError:
+                    return
         parts = data.split(":")
         action = parts[1] if len(parts) > 1 else ""
 
@@ -804,7 +916,7 @@ class TelegramBridge(BaseBridge):
             return
         if action == "back":
             providers = state.get("providers") or []
-            active_provider, active_model = self._active_pair(f"tg:{chat_id}")
+            active_provider, active_model = self._active_pair(state.get("session_key", f"tg:{chat_id}"))
             _edit(
                 f"⚙️ Modelo ativo: {active_model} ({active_provider})\n\nEscolha o provider:",
                 self._provider_keyboard(providers, active_provider),
@@ -836,11 +948,13 @@ class TelegramBridge(BaseBridge):
             except (IndexError, KeyError, ValueError):
                 _edit("⚠️ Seleção inválida — abra o /model de novo.")
                 return
-            fake = ChannelMessage(
+            fake = state.get("msg") or ChannelMessage(
                 channel="telegram", user_id=str(from_user.get("id", "")),
-                chat_id=chat_id, text="",
+                chat_id=chat_id, text="", raw={"message": message},
             )
-            result = self.backend._cmd_model(fake, f"{prov} {model}")
+            scope = self.backend.project_scope(fake) if hasattr(self.backend, "project_scope") else nullcontext()
+            with scope:
+                result = self.backend._cmd_model(fake, f"{prov} {model}")
             self._picker_state.pop(chat_id, None)
             _edit(re.sub(r"[*_`]", "", result))  # resposta usa *bold* de texto
             return
@@ -922,12 +1036,26 @@ class TelegramBridge(BaseBridge):
                         msg.user_id)
             return
 
+        command = text.split(None, 1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if command == "/projetos":
+            try:
+                self._send_project_picker(msg)
+            except ValueError:
+                self.send_text(chat_id, "Escolha projetos em uma conversa privada autorizada.")
+            return
+        try:
+            # Snapshot before the executor queue and before any media download.
+            self.backend.capture_project_context(msg)
+        except ValueError:
+            self.send_text(chat_id, "Projeto indisponível. Use /projetos para escolher novamente.")
+            return
+
         # /model sem argumentos → picker com botões (UX Hermes)
         if text.startswith("/"):
             head, *rest = text.split(None, 1)
             if head.split("@")[0].lower() == "/model" and not rest:
                 try:
-                    self._send_model_picker(chat_id, msg.session_key)
+                    self._send_model_picker(chat_id, self.backend.session_key(msg), msg)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Model picker falhou (%s) — fallback texto", exc)
                     response = self.handle_message(msg)
@@ -946,28 +1074,42 @@ class TelegramBridge(BaseBridge):
     def _safe_process(self, msg: ChannelMessage, message: dict) -> None:
         try:
             self._process_message(msg, message)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("Erro processando mensagem de %s", msg.chat_id)
             try:
-                self.send_text(msg.chat_id, f"❌ Erro interno: {exc}")
+                self.send_text(msg.chat_id, "❌ Não consegui concluir esta mensagem. Tente novamente ou consulte os logs do gateway.")
             except Exception:  # noqa: BLE001
                 pass
 
     def _process_message(self, msg: ChannelMessage, message: dict) -> None:
         """Turno completo: mídia inbound → agente (com typing) → mídia outbound."""
+        context = self.backend.project_context(msg)
+        scope = self.backend.project_scope(msg)
+        media_token = None
+        if context is not None:
+            media_token = _MEDIA_CONTEXT.set((context.workspace, context.session_key))
+        try:
+            with scope:
+                self._process_scoped_message(msg, message, context)
+        finally:
+            if media_token is not None:
+                _MEDIA_CONTEXT.reset(media_token)
+
+    def _process_scoped_message(self, msg: ChannelMessage, message: dict, context) -> None:
         media_text = self._ingest_media(message, msg.chat_id)
         if media_text is not None:
             msg.text = f"{msg.text}\n{media_text}".strip() if msg.text else media_text
         elif not msg.text:
-            return  # mídia não suportada (sticker etc.) e sem texto
+            return
 
         streamer = _StreamingDraft(self, msg.chat_id)
         with _TypingHeartbeat(self, msg.chat_id):
             response = self.handle_message(msg, on_delta=streamer)
         if not response:
             return
+        workspace = context.workspace if context is not None else Path(self.backend.config_path).resolve().parent
         media_files, clean = extract_outbound_media(
-            response, workspace=Path(self.backend.config_path).resolve().parent
+            response, workspace=workspace, allowed_root=workspace if context is not None else None,
         )
         delivered = streamer.finish(clean)
         if clean and not delivered:

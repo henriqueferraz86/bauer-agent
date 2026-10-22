@@ -15,7 +15,10 @@ class MemoryToolsMixin:
     _MAX_KEYS = 500
 
     def _memory_path(self) -> Path:
-        return self.workspace / self._MEMORY_FILE
+        path = self.workspace / self._MEMORY_FILE
+        if not path.resolve().is_relative_to(self.workspace.resolve()):
+            raise ToolError("A memória deve permanecer dentro do workspace.")
+        return path
 
     def _memory_load(self) -> dict:
         p = self._memory_path()

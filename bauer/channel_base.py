@@ -24,11 +24,22 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from abc import ABC, abstractmethod
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .channel_projects import (
+    ChannelProjectContext, ChannelProjectError, ChannelProjectStore,
+    context_key, operator_key, private_telegram,
+)
+
+_project_scope: ContextVar[tuple[int, ChannelProjectContext | None] | None] = ContextVar(
+    "bauer_channel_project", default=None,
+)
 
 logger = logging.getLogger("bauer.channels")
 
@@ -107,6 +118,8 @@ class ChannelMessage:
     text: str
     user_name: str = ""
     raw: dict = field(default_factory=dict)
+    project_snapshot: Any = field(default=None, repr=False)
+    project_snapshot_captured: bool = False
 
     @property
     def session_key(self) -> str:
@@ -166,6 +179,9 @@ class AgentBackend:
         # Kernel do canal (lazy, invalidado no hot-reload junto com o client).
         self._kernel: Any = None
         self._kernel_resolvido = False
+        self._kernel_workspace: Path | None = None
+        self._kernel_lock = threading.Lock()
+        self._workspace_kernels: OrderedDict[Path, Any] = OrderedDict()
         # Injetável (testes / embedding): callable(cfg) -> client.
         # Default None → usa bauer.cli._build_client (import tardio).
         self._client_builder: Any = None
@@ -192,6 +208,170 @@ class AgentBackend:
         self._turn_ts_lock = threading.Lock()
         self.msgs_processed = 0
         self.errors = 0
+        self._project_store = ChannelProjectStore(self.sessions_dir / "channel_projects.sqlite3")
+        self._project_routers: Any = None
+        self._project_router_builder: Any = None
+        self._project_model_loaded: set[str] = set()
+
+    def _channel_project_router(self, workspace: Path) -> Any:
+        if self._project_router_builder is not None:
+            return self._project_router_builder(workspace)
+        from .commands._runtime import _build_router
+        from .config_loader import load_config
+        return _build_router(load_config(self.config_path), workspace,
+                             llm_client=self._client, session_id="gateway")
+
+    def list_channel_projects(self, msg: ChannelMessage) -> list[dict[str, str]]:
+        if not private_telegram(msg):
+            raise ChannelProjectError("Selecione o projeto em uma conversa privada com o bot.")
+        if not self.is_ready:
+            self.initialize()
+        from . import projects_registry as registry
+        entries = []
+        for row in registry.load_registry().get("projects", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                path = Path(row["path"]).expanduser().resolve()
+                pid = str(row["id"])
+                if (path.is_dir() and not registry.is_sensitive_dir(path)
+                        and pid == registry.project_id(path)):
+                    entries.append({"id": pid, "name": str(row.get("name") or path.name)})
+            except (KeyError, TypeError, ValueError, OSError):
+                continue
+        if not entries:
+            path = Path(self._router.workspace).resolve()
+            if path.is_dir() and not registry.is_sensitive_dir(path):
+                entries.append({"id": "__default__", "name": f"Workspace configurado ({path.name})"})
+        return entries
+
+    def _resolve_project(self, msg: ChannelMessage, pid: str, pinned: str | None = None
+                         ) -> ChannelProjectContext:
+        from . import projects_registry as registry
+        if pid == "__default__":
+            path = Path(self._router.workspace).resolve()
+            name = f"Workspace configurado ({path.name})"
+            router = self._router
+        else:
+            row = registry.get_project(pid)
+            if not row or not isinstance(row.get("path"), str):
+                raise ChannelProjectError("Projeto removido ou indisponível. Use /projetos.")
+            path = Path(row["path"]).expanduser().resolve()
+            name = str(row.get("name") or path.name)
+            if pid != registry.project_id(path):
+                raise ChannelProjectError("O caminho do projeto mudou. Selecione novamente em /projetos.")
+            router = None
+        if (not path.is_dir() or registry.is_sensitive_dir(path)
+                or (pinned is not None and str(path) != pinned)):
+            raise ChannelProjectError("Projeto indisponível ou com caminho alterado. Use /projetos.")
+        if router is None:
+            from .project_routers import ProjectRouterCache
+            if self._project_routers is None:
+                self._project_routers = ProjectRouterCache(self._router, self._channel_project_router)
+            router = self._project_routers.get(pid)
+            if router is self._router or Path(router.workspace).resolve() != path:
+                raise ChannelProjectError("Não consegui preparar o projeto. Nenhuma ação foi iniciada.")
+        from .agent import _build_system_prompt
+        router._channel_session_store = self._store
+        prompt = _build_system_prompt(router, client=self._client)
+        prompt += f"\n\nPROJETO DESTA CONVERSA: {name}\nWORKSPACE EFETIVO: {path}\n"
+        return ChannelProjectContext(pid, name, path, context_key(msg, pid), router, prompt)
+
+    def select_channel_project(self, msg: ChannelMessage, pid: str) -> ChannelProjectContext:
+        offered = self.list_channel_projects(msg)
+        if pid not in {entry["id"] for entry in offered}:
+            raise ChannelProjectError("Projeto indisponível. Abra /projetos novamente.")
+        context = self._resolve_project(msg, pid)
+        self._project_store.bind(operator_key(msg), pid, context.workspace)
+        return context
+
+    def project_context(self, msg: ChannelMessage) -> ChannelProjectContext | None:
+        if msg.project_snapshot_captured:
+            return msg.project_snapshot
+        if not private_telegram(msg):
+            return None
+        binding = self._project_store.binding(operator_key(msg))
+        if binding is None:
+            return None
+        if not self.is_ready:
+            self.initialize()
+        return self._resolve_project(msg, binding[0], binding[1])
+
+    def capture_project_context(self, msg: ChannelMessage) -> ChannelProjectContext | None:
+        if not msg.project_snapshot_captured:
+            msg.project_snapshot = self.project_context(msg)
+            msg.project_snapshot_captured = True
+        return msg.project_snapshot
+
+    def validate_project_snapshot(self, context: ChannelProjectContext | None) -> None:
+        """Revalidate a queued request without following a changed selection."""
+        if context is None:
+            return
+        from . import projects_registry as registry
+        if context.project_id == "__default__":
+            path = Path(self._router.workspace).resolve()
+        else:
+            row = registry.get_project(context.project_id)
+            if not row or not isinstance(row.get("path"), str):
+                raise ChannelProjectError("Projeto removido ou indisponível. Use /projetos.")
+            path = Path(row["path"]).expanduser().resolve()
+            if registry.project_id(path) != context.project_id:
+                raise ChannelProjectError("O caminho do projeto mudou. Use /projetos.")
+        if (path != context.workspace or not path.is_dir() or registry.is_sensitive_dir(path)
+                or Path(context.router.workspace).resolve() != context.workspace):
+            raise ChannelProjectError("Projeto indisponível ou com caminho alterado. Use /projetos.")
+
+    @contextmanager
+    def project_scope(self, msg: ChannelMessage):
+        context = self.capture_project_context(msg)
+        self.validate_project_snapshot(context)
+        token = _project_scope.set((id(self), context))
+        try:
+            yield context
+        finally:
+            _project_scope.reset(token)
+
+    def _active_project(self) -> ChannelProjectContext | None:
+        active = _project_scope.get()
+        return active[1] if active is not None and active[0] == id(self) else None
+
+    def session_key(self, msg: ChannelMessage) -> str:
+        context = self.project_context(msg)
+        return context.session_key if context is not None else msg.session_key
+
+    def _effective_router(self) -> Any:
+        context = self._active_project()
+        return context.router if context is not None else self._router
+
+    def _restore_project_model(self, key: str) -> None:
+        context = self._active_project()
+        if context is None or key in self._project_model_loaded:
+            return
+        saved = self._project_store.model(key)
+        if saved is not None:
+            provider, model = saved
+            if provider == self._provider:
+                self._model_overrides[key] = model
+                client = self._client
+            else:
+                client = self._build_client_for_provider(provider, model)
+                self._session_overrides[key] = (client, model, provider)
+            with self._sessions_lock:
+                entry = self._sessions.get(key)
+            if entry is not None:
+                entry[0].set_llm(client, model)
+        self._project_model_loaded.add(key)
+
+    def _persist_project_model(self, key: str) -> None:
+        context = self._active_project()
+        if context is None:
+            return
+        if key in self._session_overrides:
+            _, model, provider = self._session_overrides[key]
+        else:
+            model = self._model_overrides.get(key, "")
+            provider = self._provider
+        self._project_store.save_model(key, provider, model)
 
     def _build_client_fn(self):
         if self._client_builder is not None:
@@ -317,6 +497,15 @@ class AgentBackend:
                 # evaluator, flag) — invalida junto com o client
                 self._kernel_resolvido = False
                 self._kernel = None
+                with self._kernel_lock:
+                    self._workspace_kernels.clear()
+                self._project_routers = None
+                # A persisted model belongs to its provider, even when the
+                # global config switches providers. Restore those pairs lazily.
+                for project_key in tuple(self._project_model_loaded):
+                    self._model_overrides.pop(project_key, None)
+                    self._session_overrides.pop(project_key, None)
+                self._project_model_loaded.clear()
                 logger.info(
                     "config.yaml mudou — gateway agora usa %s/%s",
                     self._provider, self._model_name,
@@ -336,11 +525,19 @@ class AgentBackend:
                 return self._sessions[key]
             from .core.context import ContextBuilder
 
+            project = self._active_project()
+            prompt = project.system_prompt if project is not None else self._system_prompt
+            if key in self._session_overrides:
+                session_client, session_model, _ = self._session_overrides[key]
+            else:
+                session_client = self._client
+                session_model = self._model_overrides.get(key, self._model_name)
+
             ctx, _ = (
                 ContextBuilder(applied_context=self._applied_context,
                                provider=self._provider)
-                .instrucao("seguranca", self._system_prompt)
-                .montar(llm_client=self._client, llm_model=self._model_name))
+                .instrucao("seguranca", prompt)
+                .montar(llm_client=session_client, llm_model=session_model))
             saved = self._store.load(key)
             if saved:
                 ctx.messages = saved
@@ -357,6 +554,7 @@ class AgentBackend:
             self._sessions.pop(key, None)
         self._model_overrides.pop(key, None)
         self._session_overrides.pop(key, None)
+        self._persist_project_model(key)
         with self._pending_lock:
             self._pending.pop(key, None)
         try:
@@ -399,6 +597,19 @@ class AgentBackend:
 
         self._maybe_reload()  # `bauer model` no servidor vale na próxima msg
 
+        try:
+            with self.project_scope(msg):
+                self._restore_project_model(self.session_key(msg))
+                return self._process_ready(msg, on_delta, send_fn)
+        except ChannelProjectError as exc:
+            return f"⚠️ {exc}"
+        except Exception as exc:  # noqa: BLE001 — model restore/persistence failures
+            logger.error("Falha ao preparar contexto do canal: %s", type(exc).__name__)
+            return "⚠️ Não consegui preparar esta conversa. Nenhuma ação foi iniciada."
+
+    def _process_ready(self, msg: ChannelMessage, on_delta: Any = None,
+                       send_fn: Any = None) -> str:
+
         text = (msg.text or "").strip()
         if not text:
             return ""
@@ -413,10 +624,10 @@ class AgentBackend:
         if command == "/model":
             arg = text.split(maxsplit=1)[1].strip() if " " in text else ""
             return self._cmd_model(msg, arg)
-        if command == "/tasks":
+        if command in ("/tasks", "/tarefas"):
             return self._cmd_tasks()
         if command in ("/clear", "/new"):
-            self._clear_session(msg.session_key)
+            self._clear_session(self.session_key(msg))
             return "🧹 Conversa nova — histórico apagado."
 
         try:
@@ -477,13 +688,13 @@ class AgentBackend:
                   send_fn: Any = None) -> str:
         # Provider+model override de sessão (/model <provider> <modelo>) tem
         # prioridade; senão, usa model-only override ou o global.
-        if msg.session_key in self._session_overrides:
-            client, model, _provider = self._session_overrides[msg.session_key]
+        key = self.session_key(msg)
+        if key in self._session_overrides:
+            client, model, _provider = self._session_overrides[key]
         else:
             client = self._client
-            model = self._model_overrides.get(msg.session_key, self._model_name)
+            model = self._model_overrides.get(key, self._model_name)
 
-        key = msg.session_key
         ctx, lock = self._get_session(key)
 
         # Sessão ocupada: enfileira e dá feedback imediato — a thread ativa
@@ -546,23 +757,30 @@ class AgentBackend:
         onde a policy mais importa, e era um dos que executavam turno sem Run,
         sem policy_check e sem gates.
         """
-        if self._kernel_resolvido:
-            return self._kernel
-        self._kernel_resolvido = True
-        from .config_loader import ConfigError, load_config
-        try:
-            cfg = load_config(self.config_path)
-        except (ConfigError, OSError):
-            # Sem config legível não há flag para ler — segue como antes.
-            # NÃO envolve o require_kernel: falha de WIRING com a flag ligada
-            # tem de estourar (KernelWiringError), não virar canal ingovernado.
-            self._kernel = None
-            return None
-        from .core.kernel import build_kernel, require_kernel
-        self._kernel = require_kernel(
-            cfg, lambda: build_kernel(cfg), label=f"canal:{getattr(self, 'name', None) or type(self).__name__}",
-        )
-        return self._kernel
+        workspace = Path(self._effective_router().workspace).resolve()
+        with self._kernel_lock:
+            if workspace in self._workspace_kernels:
+                self._workspace_kernels.move_to_end(workspace)
+                return self._workspace_kernels[workspace]
+            from .config_loader import ConfigError, load_config
+            try:
+                cfg = load_config(self.config_path)
+            except (ConfigError, OSError) as exc:
+                if self._config_mtime > 0:
+                    from .core.kernel import KernelWiringError
+                    raise KernelWiringError("A configuração do gateway está indisponível; execução bloqueada.") from exc
+                # Config missing preserves the injected/legacy backend contract.
+                return None
+            from .channel_governance import build_channel_kernel
+            kernel = build_channel_kernel(cfg, workspace=workspace,
+                                          sessions_dir=self.sessions_dir)
+            self._workspace_kernels[workspace] = kernel
+            while len(self._workspace_kernels) > 8:
+                self._workspace_kernels.popitem(last=False)
+            self._kernel = kernel
+            self._kernel_workspace = workspace
+            self._kernel_resolvido = True
+            return kernel
 
     def _execute_turn(self, ctx: Any, key: str, client: Any, model: str,
                       text: str, on_delta: Any = None) -> str:
@@ -580,13 +798,20 @@ class AgentBackend:
         a órfã ainda esteja viva.
         """
         from .core.kernel import run_governed
+        from .channel_governance import TurnMetrics, configure_router
+
+        configure_router(self._effective_router(), sessions_dir=self.sessions_dir)
 
         canal = getattr(self, "name", None) or type(self).__name__.lower()
         falha: list[BaseException] = []
 
         def _executar(_payload):
+            metrics = TurnMetrics()
             try:
-                return {"output": self._turno_cru(ctx, key, client, model, text, on_delta)}
+                with metrics.context(key, _payload.get("run_id")):
+                    output = self._turno_cru(ctx, key, client, model, text, on_delta,
+                                             metrics=metrics)
+                return metrics.result(output=output)
             except BaseException as exc:  # noqa: BLE001
                 # A exceção precisa fechar o Run como failed E chegar ao
                 # process(), que é onde vive a tradução amigável de erro de
@@ -594,7 +819,8 @@ class AgentBackend:
                 # sessão no TurnTimeout. Engolir aqui trocaria mensagem útil por
                 # erro genérico.
                 falha.append(exc)
-                return {"status": "failed", "error": str(exc)}
+                return metrics.result(status="failed", error=str(exc),
+                                      tool_log=getattr(exc, "partial_tool_log", []))
 
         gov = run_governed(
             self._resolver_kernel(), _executar,
@@ -614,7 +840,7 @@ class AgentBackend:
         return texto
 
     def _turno_cru(self, ctx: Any, key: str, client: Any, model: str,
-                   text: str, on_delta: Any = None) -> str:
+                   text: str, on_delta: Any = None, *, metrics: Any = None) -> str:
         """O turno em si (era o corpo de ``_execute_turn``)."""
         from .agent import run_one_turn_with_fallback
 
@@ -631,8 +857,10 @@ class AgentBackend:
             try:
                 ctx.add_user(text)
                 resp, _tool_log = run_one_turn_with_fallback(
-                    ctx, self._router, client, model, self._fallback_clients,
+                    ctx, self._effective_router(), client, model, self._fallback_clients,
                 )
+                if metrics is not None:
+                    metrics.record_tools(_tool_log)
                 result["response"] = resp
             except BaseException as exc:  # noqa: BLE001 — repassa à thread chamadora
                 result["error"] = exc
@@ -644,7 +872,9 @@ class AgentBackend:
                     except Exception:  # noqa: BLE001
                         pass
 
-        worker = threading.Thread(target=_do, name=f"bauer-turn:{key}", daemon=True)
+        inherited = copy_context()
+        worker = threading.Thread(target=lambda: inherited.run(_do),
+                                  name=f"bauer-turn:{key}", daemon=True)
         worker.start()
         worker.join(timeout=_TURN_TIMEOUT_SECONDS)
         if worker.is_alive():
@@ -734,7 +964,8 @@ class AgentBackend:
         /model <p> <m>       → troca para provider p, modelo m
         /model reset         → volta ao global
         """
-        key = msg.session_key
+        key = self.session_key(msg)
+        self._restore_project_model(key)
         # Determina o par (provider, model) ativo nesta sessão
         if key in self._session_overrides:
             _, active_model, active_provider = self._session_overrides[key]
@@ -745,6 +976,7 @@ class AgentBackend:
         if arg.lower() in ("reset", "padrao", "padrão", "default"):
             self._model_overrides.pop(key, None)
             self._session_overrides.pop(key, None)
+            self._persist_project_model(key)
             with self._sessions_lock:
                 entry = self._sessions.get(key)
             if entry is not None:
@@ -849,6 +1081,7 @@ class AgentBackend:
             if entry is not None:
                 entry[0].set_llm(new_client, chosen_model)
 
+        self._persist_project_model(key)
         return f"✅ Esta conversa agora usa *{chosen_provider}* / *{chosen_model}*.{warning}"
 
     @staticmethod
@@ -890,6 +1123,7 @@ class AgentBackend:
 
         self._session_overrides.pop(key, None)
         self._model_overrides[key] = chosen
+        self._persist_project_model(key)
         with self._sessions_lock:
             entry = self._sessions.get(key)
         if entry is not None:
@@ -900,7 +1134,7 @@ class AgentBackend:
         """Lista read-only do kanban do workspace (TASKS.md)."""
         try:
             from .workspace_manager_factory import get_workspace_manager
-            wm = get_workspace_manager(self._router.workspace)
+            wm = get_workspace_manager(self._effective_router().workspace)
             tasks = wm.list_tasks()
         except Exception as exc:  # noqa: BLE001
             return f"⚠️ Não consegui ler as tasks: {exc}"
@@ -919,22 +1153,26 @@ class AgentBackend:
         return "\n".join(lines)
 
     def _cmd_status(self, msg: ChannelMessage) -> str:
-        ctx, _lock = self._get_session(msg.session_key)
+        key = self.session_key(msg)
+        ctx, _lock = self._get_session(key)
         n_msgs = len(ctx.messages)
         pct = int(ctx.usage_pct * 100)
-        if msg.session_key in self._session_overrides:
-            _, active, active_prov = self._session_overrides[msg.session_key]
+        if key in self._session_overrides:
+            _, active, active_prov = self._session_overrides[key]
         else:
-            active = self._model_overrides.get(msg.session_key, self._model_name)
+            active = self._model_overrides.get(key, self._model_name)
             active_prov = self._provider
         model_line = f"Modelo: {active} ({active_prov})"
-        if msg.session_key in self._session_overrides or msg.session_key in self._model_overrides:
+        if key in self._session_overrides or key in self._model_overrides:
             model_line += f" — desta conversa (global: {self._model_name} via {self._provider})"
+        project = self._active_project()
+        project_line = f"Projeto: {project.name}\n" if project is not None else ""
         return (
             f"📊 Bauer Agent\n"
+            f"{project_line}"
             f"{model_line}\n"
             f"Contexto: {ctx.used_tokens}/{ctx.budget} tokens ({pct}%)\n"
-            f"Sessão: {msg.session_key} — {n_msgs} mensagens\n"
+            f"Sessão: {key} — {n_msgs} mensagens\n"
             f"Processadas neste uptime: {self.msgs_processed}"
         )
 

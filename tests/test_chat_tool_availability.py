@@ -196,7 +196,9 @@ def test_stream_timeout_does_not_make_hidden_worker_question_approvable(tmp_path
     with TestClient(app) as client:
         try:
             response = client.get('/stream', params={'message': 'rode hidden-customtool --version', 'session_id': 'same'})
-            assert entered.is_set()
+            # A 20ms stream timeout can win before a worker is scheduled on
+            # loaded CI machines. Synchronize with the hidden worker itself.
+            assert entered.wait(2)
             assert 'conexão foi' in response.text
             assert 'Você autoriza' not in response.text
         finally:

@@ -453,7 +453,7 @@ class TestHotReload:
         assert backend._model_name == "modelo-novo"
         assert backend._client is new_client
 
-    def test_reload_com_config_quebrado_mantem_atual(self, tmp_path):
+    def test_reload_com_config_quebrado_mantem_client_mas_bloqueia_execucao(self, tmp_path):
         import os as _os
 
         cfg_file = tmp_path / "config.yaml"
@@ -470,7 +470,8 @@ class TestHotReload:
         _os.utime(cfg_file, (cfg_file.stat().st_atime, cfg_file.stat().st_mtime + 5))
 
         resp = backend.process(_msg("ainda funciona?"))
-        assert "eco:" in resp  # client antigo continua respondendo
+        assert "execução bloqueada" in resp
+        assert "eco:" not in resp  # retaining a client cannot bypass governance
         assert backend._model_name == "fake-model"
 
 
