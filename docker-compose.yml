@@ -72,6 +72,15 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Sem isto, o form "Segredos de provider" do painel web grava a chave
+      # só na camada gravável do container — some em qualquer rebuild/recreate
+      # e nunca aparece no .env real do host, mesmo a UI dizendo que gravou lá.
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: false
+        bind:
+          create_host_path: false
       # A autonomia usa apenas a CLI para sondar/iniciar/reiniciar alvos.
       - type: bind
         source: /var/run/docker.sock
@@ -116,6 +125,13 @@ services:
       - type: bind
         source: ./models.yaml
         target: /app/models.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      # Mesmo .env do serviço bauer — vê as chaves gravadas pelo painel web.
+      - type: bind
+        source: ./.env
+        target: /app/.env
         read_only: true
         bind:
           create_host_path: false

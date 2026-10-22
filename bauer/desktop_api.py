@@ -1635,8 +1635,13 @@ def build_desktop_router(
             raise HTTPException(status_code=400, detail="Campo 'key' obrigatório.")
         value = body.get("value", "")
         try:
+            # env_path explícito: sem isso, set_config_value grava segredos
+            # num ".env" relativo ao cwd do processo em vez do .env ao lado
+            # do config.yaml realmente em uso — divergem quando o servidor
+            # não foi iniciado a partir do diretório do config.
             dest, path = ca.set_config_value(
-                key, str(value), config_path=str(get_config_path())
+                key, str(value), config_path=str(get_config_path()),
+                env_path=str(get_config_path().parent / ".env"),
             )
         except KeyError as exc:
             raise HTTPException(status_code=400, detail=f"Chave inválida: {exc}")

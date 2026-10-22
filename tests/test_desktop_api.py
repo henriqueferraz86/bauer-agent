@@ -537,11 +537,8 @@ class TestConfigEndpoints:
     def test_put_missing_key_400(self, env):
         assert env["client"].put("/api/config", json={"value": "x"}).status_code == 400
 
-    def test_put_env_key_routes_to_dotenv(self, env, monkeypatch):
-        """Chaves *_API_KEY vão pro .env (card 'Segredos' da tela Config)."""
-        # set_config_value usa env_path relativo ao CWD — isola no tmp para
-        # jamais tocar o .env real do repositório durante os testes.
-        monkeypatch.chdir(env["tmp"])
+    def test_put_env_key_routes_to_dotenv(self, env):
+        """Chaves *_API_KEY vão pro .env ao lado do config.yaml (card 'Segredos' da tela Config)."""
         r = env["client"].put(
             "/api/config",
             json={"key": "OPENROUTER_API_KEY", "value": "sk-or-teste-nao-real"},
@@ -553,6 +550,25 @@ class TestConfigEndpoints:
         assert "OPENROUTER_API_KEY=sk-or-teste-nao-real" in dotenv
         # E não vazou pro config.yaml (que é versionado).
         assert "sk-or-teste-nao-real" not in env["config_path"].read_text(encoding="utf-8")
+
+    def test_put_env_key_ignores_process_cwd(self, env, monkeypatch, tmp_path):
+        """Grava ao lado do config.yaml efetivamente usado, não do cwd do processo.
+
+        Regressão: o servidor em Docker roda com cwd == diretório do
+        config.yaml por coincidência — fora disso (ou se o WORKDIR mudar)
+        a chave sumia num ".env" errado, nunca visível no projeto real.
+        """
+        decoy_cwd = tmp_path / "decoy-cwd"
+        decoy_cwd.mkdir()
+        monkeypatch.chdir(decoy_cwd)
+        r = env["client"].put(
+            "/api/config",
+            json={"key": "OPENROUTER_API_KEY", "value": "sk-or-teste-nao-real"},
+        )
+        assert r.status_code == 200
+        assert not (decoy_cwd / ".env").exists()
+        dotenv = (env["tmp"] / ".env").read_text(encoding="utf-8")
+        assert "OPENROUTER_API_KEY=sk-or-teste-nao-real" in dotenv
 
     def test_profiles_list(self, env):
         # cria um profile config.dev.yaml ao lado do config.yaml
