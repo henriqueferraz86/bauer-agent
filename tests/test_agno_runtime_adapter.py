@@ -354,6 +354,234 @@ def test_agno_adapter_streams_chunks(tmp_path):
     assert any(event["event"] == "message.delta" for event in events)
 
 
+def test_agno_sync_tool_call_keeps_execution_context(tmp_path):
+    """Spike: a mapped Bauer tool sees both contexts during real Agent.run."""
+    from bauer.core.runtime.adapters.agno_adapter import _ACTIVE_AGNO_SESSION_ID
+    from bauer.execution_control import ExecutionControl, current_control
+
+    observed: dict[str, Any] = {}
+
+    class CapturingRouter:
+        def get_tool_schemas(self):
+            return [{"function": {"name": "datetime_now", "parameters": {"type": "object", "properties": {}}}}]
+
+        def execute_native_call(self, name: str, arguments: dict[str, Any]) -> str:
+            observed["control"] = current_control()
+            observed["session_id"] = _ACTIVE_AGNO_SESSION_ID.get()
+            return "captured"
+
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "context-spike.db")},
+        tool_router=CapturingRouter(),
+    )
+    control = ExecutionControl(run_id="spike-run", session_id="spike-session")
+    with control.activate():
+        result = adapter.run_agent({
+            "run_id": "spike-run",
+            "session_id": "spike-session",
+            "task": "call the capture tool",
+            "agent_spec": {
+                "id": "context-spike-agent",
+                "tools": ["datetime_now"],
+                "agno_model": NamedToolCallingModel(
+                    id="context-spike-model",
+                    tool_name="datetime_now",
+                    tool_args={},
+                ),
+            },
+        })
+
+    assert result["status"] == "completed"
+    assert observed == {"control": control, "session_id": "spike-session"}
+
+
+def test_agno_stream_checks_cancellation_before_advancing_sdk(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from bauer.execution_control import ExecutionControl
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "cancel-stream.db")})
+    advanced = []
+
+    class ControlledAgent:
+        def run(self, *args: Any, **kwargs: Any):
+            advanced.append("first")
+            yield SimpleNamespace(event="RunContent", content="first")
+            advanced.append("second")
+            yield SimpleNamespace(event="RunContent", content="second")
+
+    monkeypatch.setattr(adapter, "_runtime_for_request", lambda *args, **kwargs: ControlledAgent())
+    control = ExecutionControl(run_id="cancel-stream", session_id="cancel-stream")
+    with control.activate():
+        stream = adapter.stream_agent({"run_id": "cancel-stream", "task": "stream"})
+        assert next(stream)["event"] == "run.started"
+        assert next(stream)["content"] == "first"
+        control.request_cancel()
+        remaining = list(stream)
+
+    assert advanced == ["first"]
+    assert remaining[-1]["event"] == "run.cancelled"
+    assert remaining[-1]["status"] == "cancelled"
+
+
+def test_agno_team_stream_stops_before_second_event(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from bauer.execution_control import ExecutionControl
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "team-cancel.db")})
+    control = ExecutionControl(run_id="team-cancel", session_id="team-cancel")
+    advanced = []
+
+    class ControlledTeam:
+        def run(self, *args: Any, **kwargs: Any):
+            advanced.append("first")
+            yield SimpleNamespace(event="TeamRunContent", content="first")
+            advanced.append("second")
+            yield SimpleNamespace(event="TeamRunContent", content="must not escape")
+
+    monkeypatch.setattr(adapter, "_legacy_team_for_request", lambda *args, **kwargs: ControlledTeam())
+    with control.activate():
+        stream = adapter.stream_team({"run_id": "team-cancel", "session_id": "team-cancel", "task": "stream"})
+        assert next(stream)["event"] == "run.started"
+        assert next(stream)["content"] == "first"
+        control.request_cancel()
+        remaining = list(stream)
+
+    assert advanced == ["first"]
+    assert remaining[-1]["event"] == "run.cancelled"
+
+
+def test_agno_run_team_returns_cancelled_outcome(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "team-result.db")})
+
+    class CancelledTeam:
+        def run(self, *args: Any, **kwargs: Any):
+            yield SimpleNamespace(event="TeamRunCancelled", content="cancelled")
+
+    monkeypatch.setattr(adapter, "_legacy_team_for_request", lambda *args, **kwargs: CancelledTeam())
+    result = adapter.run_team({"run_id": "team-result", "session_id": "team-result", "task": "stream"})
+
+    assert result["status"] == "cancelled"
+    assert result["event"] == "run.cancelled"
+
+
+def test_agno_bauer_tool_cancellation_stops_the_run(tmp_path):
+    import threading
+
+    from bauer.execution_control import ExecutionControl, checkpoint_execution, current_control
+
+    class CancellingRouter:
+        def __init__(self):
+            self.approval_started = threading.Event()
+            self.approval_released = threading.Event()
+            self.calls = 0
+            self.active_controls = []
+
+        def get_tool_schemas(self):
+            return [{"function": {"name": "datetime_now", "parameters": {"type": "object", "properties": {}}}}]
+
+        def execute_native_call(self, name: str, arguments: dict[str, Any]) -> str:
+            self.calls += 1
+            self.active_controls.append(current_control())
+            self.approval_started.set()
+            assert self.approval_released.wait(timeout=5)
+            checkpoint_execution()
+            raise AssertionError("checkpoint must interrupt before tool dispatch")
+
+    class CountingModel(NamedToolCallingModel):
+        calls = 0
+
+        def invoke(self, *args: Any, **kwargs: Any) -> ModelResponse:
+            self.calls += 1
+            return super().invoke(*args, **kwargs)
+
+    model = CountingModel(id="cancelled-tool-model", tool_name="datetime_now", tool_args={})
+    control = ExecutionControl(run_id="cancel-tool", session_id="cancel-tool")
+    router = CancellingRouter()
+
+    def cancel_after_approval_wait_starts():
+        assert router.approval_started.wait(timeout=5)
+        control.request_cancel()
+        router.approval_released.set()
+
+    canceller = threading.Thread(target=cancel_after_approval_wait_starts)
+    canceller.start()
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "cancel-tool.db")},
+        tool_router=router,
+    )
+    with control.activate():
+        result = adapter.run_agent({
+            "run_id": "cancel-tool",
+            "session_id": "cancel-tool",
+            "task": "call datetime",
+            "agent_spec": {"id": "cancelled-tool-agent", "tools": ["datetime_now"], "agno_model": model},
+        })
+    canceller.join(timeout=5)
+    assert not canceller.is_alive()
+
+    assert result["status"] == "cancelled"
+    assert result["event"] == "run.cancelled"
+    assert model.calls == 1
+    assert router.calls == 1
+    assert router.active_controls == [control]
+
+
+def test_agno_tool_entry_checkpoint_uses_terminal_cancel_signal(tmp_path):
+    from bauer.execution_control import ExecutionControl
+
+    class NeverDispatchRouter:
+        def __init__(self):
+            self.calls = 0
+
+        def get_tool_schemas(self):
+            return [{"function": {"name": "datetime_now", "parameters": {"type": "object", "properties": {}}}}]
+
+        def execute_native_call(self, name: str, arguments: dict[str, Any]) -> str:
+            self.calls += 1
+            return "must not execute"
+
+    class CancellingModel(NamedToolCallingModel):
+        def __init__(self, control: ExecutionControl, **kwargs: Any):
+            super().__init__(**kwargs)
+            self.control = control
+            self.calls = 0
+
+        def invoke(self, *args: Any, **kwargs: Any) -> ModelResponse:
+            self.calls += 1
+            response = super().invoke(*args, **kwargs)
+            self.control.request_cancel()
+            return response
+
+    control = ExecutionControl(run_id="entry-cancel", session_id="entry-cancel")
+    router = NeverDispatchRouter()
+    model = CancellingModel(
+        control,
+        id="entry-cancel-model",
+        tool_name="datetime_now",
+        tool_args={},
+    )
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"db_file": str(tmp_path / "entry-cancel.db")},
+        tool_router=router,
+    )
+    with control.activate():
+        result = adapter.run_agent({
+            "run_id": "entry-cancel",
+            "session_id": "entry-cancel",
+            "task": "cancel before tool entry",
+            "agent_spec": {"id": "entry-cancel-agent", "tools": ["datetime_now"], "agno_model": model},
+        })
+
+    assert result["status"] == "cancelled"
+    assert result["event"] == "run.cancelled"
+    assert model.calls == 1
+    assert router.calls == 0
+
+
 def test_agno_adapter_loads_formal_team_specs_from_package_data(tmp_path, monkeypatch):
     adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "agno.db")})
 
