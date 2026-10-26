@@ -209,8 +209,12 @@ Cada sprint segue o skill `spec-driven-project-setup`: `SPEC.md`,
   tool call Agno-para-ToolRouter, e durante espera de aprovação.
 
 **Aceite:** cancelar um run Agno em qualquer um dos três pontos acima produz
-o mesmo resultado observável (nenhum novo LLM/tool após o sinal, custo
-parcial preservado) que `bauer_native` já garante.
+o mesmo resultado observável de controle que `bauer_native` já garante:
+nenhum novo LLM/tool após o sinal e estado terminal `cancelled` preservado.
+O Kernel continua acumulando métricas que o executor reportar, mas o Agno
+ainda não conecta seu uso/custo ao contrato `TurnMetrics` nesta sprint; essa
+paridade é critério obrigatório da sprint 36, antes de migrar qualquer canal.
+Sprint 35 não autoriza migração de canal por si só.
 
 **STOP:** parar se o SDK do Agno não expuser um ponto de interrupção seguro
 entre eventos do generator, ou se a propagação do `ExecutionControl` exigir

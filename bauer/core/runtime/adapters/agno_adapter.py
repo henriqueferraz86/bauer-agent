@@ -6,12 +6,15 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ..agent_spec import AgentSpec, agent_spec_from_mapping, agno_agent_spec_from_bauer
 from .base import RuntimeAdapterError
+from ....execution_control import checkpoint_execution
+from ....provider_retry import ProviderRetryInterrupted
 
 
 _ACTIVE_AGNO_SESSION_ID: ContextVar[str] = ContextVar("bauer_agno_session_id", default="")
@@ -23,6 +26,56 @@ def _in_agno_session(session_id: str, events: Iterator[Any]) -> Iterator[Any]:
         yield from events
     finally:
         _ACTIVE_AGNO_SESSION_ID.reset(token)
+
+
+def _checkpointed_events(events: Iterator[Any]) -> Iterator[Any]:
+    """Check governance before asking the SDK stream to advance again."""
+    iterator = iter(events)
+    while True:
+        checkpoint_execution()
+        try:
+            event = next(iterator)
+        except StopIteration:
+            # A tool may cancel while Agno is advancing internally and the SDK
+            # may close its generator without a final event. Re-check before
+            # treating that exhaustion as successful completion.
+            checkpoint_execution()
+            return
+        # The SDK may have run a tool or advanced an LLM call while producing
+        # this event. Do not let a terminal event mask cancellation raised
+        # inside that same advancement.
+        checkpoint_execution()
+        yield event
+
+
+def _agno_cancelled_exception(exc: Exception | None = None) -> Exception:
+    """Use Agno's cancellation signal so a tool stop cannot become tool output."""
+    try:
+        from agno.exceptions import RunCancelledException
+    except (ImportError, ModuleNotFoundError):
+        return RuntimeAdapterError("Agno execution was cancelled.")
+    return RunCancelledException(str(exc or "Bauer execution cancelled"))
+
+
+def _guard_bauer_tool(tool: Callable[..., Any]) -> Callable[..., Any]:
+    """Keep Bauer cancellation typed across Agno's tool execution boundary."""
+    @wraps(tool)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            checkpoint_execution()
+            return tool(*args, **kwargs)
+        except ProviderRetryInterrupted as exc:
+            raise _agno_cancelled_exception(exc) from exc
+
+    return guarded
+
+
+def _is_agno_cancellation(exc: Exception) -> bool:
+    try:
+        from agno.exceptions import RunCancelledException
+    except (ImportError, ModuleNotFoundError):
+        return False
+    return isinstance(exc, RunCancelledException)
 
 
 class AgnoRuntimeAdapter:
@@ -124,7 +177,7 @@ class AgnoRuntimeAdapter:
                     logging.getLogger("bauer.agno_adapter").debug("activity sink failed", exc_info=True)
             if event.get("event") == "message.delta":
                 chunks.append(str(event.get("content", "")))
-            elif event.get("event") == "run.failed":
+            elif event.get("event") in {"run.failed", "run.cancelled"}:
                 self._runs[run_id] = event
                 return event
 
@@ -167,7 +220,7 @@ class AgnoRuntimeAdapter:
             last_event = event
             if event.get("event") == "message.delta":
                 chunks.append(str(event.get("content", "")))
-            elif event.get("event") == "run.failed":
+            elif event.get("event") in {"run.failed", "run.cancelled"}:
                 self._runs[run_id] = event
                 return event
         result = {
@@ -199,13 +252,13 @@ class AgnoRuntimeAdapter:
             final_content = ""
             agno_run_id = None
             member_events: list[dict[str, Any]] = []
-            for event in _in_agno_session(session_id, team.run(
+            for event in _checkpointed_events(_in_agno_session(session_id, team.run(
                 prompt,
                 stream=True,
                 run_id=run_id,
                 session_id=session_id,
                 user_id=user_id,
-            )):
+            ))):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
                 event_name = str(getattr(event, "event", "") or "").lower()
                 if "error" in event_name or "cancel" in event_name:
@@ -234,10 +287,11 @@ class AgnoRuntimeAdapter:
                 member_responses = getattr(event, "member_responses", None)
                 if member_responses:
                     member_events.append({"count": len(member_responses)})
-        except Exception as exc:  # noqa: BLE001 — adapter boundary returns a run failure
+        except Exception as exc:  # noqa: BLE001 — normalize SDK boundary outcomes
+            cancelled = isinstance(exc, ProviderRetryInterrupted) or _is_agno_cancellation(exc)
             failed = {
-                "event": "run.failed",
-                "status": "failed",
+                "event": "run.cancelled" if cancelled else "run.failed",
+                "status": "cancelled" if cancelled else "failed",
                 "run_id": run_id,
                 "session_id": session_id,
                 "runtime_adapter": self.name,
@@ -302,10 +356,10 @@ class AgnoRuntimeAdapter:
             agno_run_id = None
             team_request = self._is_team_request(request)
             observed_member_messages: set[str] = set()
-            for event in _in_agno_session(session_id, agent.run(
+            for event in _checkpointed_events(_in_agno_session(session_id, agent.run(
                 prompt, stream=True, stream_events=True,
                 run_id=run_id, session_id=session_id, user_id=user_id,
-            )):
+            ))):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
                 agno_event = self._agno_event_name(event)
                 singular_tool = getattr(event, "tool", None)
@@ -342,7 +396,9 @@ class AgnoRuntimeAdapter:
                     "RunError", "TeamRunError", "RunCancelled", "TeamRunCancelled",
                 }:
                     outcome = "cancelled" if agno_event.endswith("Cancelled") else "failed"
-                    raise RuntimeAdapterError(f"Agno reported run {outcome}.")
+                    if outcome == "cancelled":
+                        raise _agno_cancelled_exception()
+                    raise RuntimeAdapterError("Agno reported run failed.")
 
                 content = getattr(event, "content", None)
                 is_team_content = agno_event == "TeamRunContent"
@@ -357,10 +413,11 @@ class AgnoRuntimeAdapter:
                         "runtime_adapter": self.name,
                         "content": str(content),
                     }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — normalize cancellation at the adapter boundary
+            cancelled = isinstance(exc, ProviderRetryInterrupted) or _is_agno_cancellation(exc)
             failed = {
-                "event": "run.failed",
-                "status": "failed",
+                "event": "run.cancelled" if cancelled else "run.failed",
+                "status": "cancelled" if cancelled else "failed",
                 "run_id": run_id,
                 "session_id": session_id,
                 "runtime_adapter": self.name,
@@ -936,7 +993,7 @@ class AgnoRuntimeAdapter:
                     raise RuntimeAdapterError(
                         f"Agno capability '{capability.id}' is not authorized by the Bauer ToolRouter."
                     )
-                mapped.append(mapped_tool)
+                mapped.append(_guard_bauer_tool(mapped_tool) if callable(mapped_tool) else mapped_tool)
             else:
                 raise RuntimeAdapterError("Agno tools must be registered names or trusted callables.")
         return mapped
@@ -1050,7 +1107,7 @@ class AgnoRuntimeAdapter:
             name=normalized,
             description=str(schema.get("description") or ""),
             parameters=deepcopy(schema.get("parameters") or {"type": "object", "properties": {}}),
-            entrypoint=execute_bauer_tool,
+            entrypoint=_guard_bauer_tool(execute_bauer_tool),
             skip_entrypoint_processing=True,
         )
 
