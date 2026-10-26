@@ -146,6 +146,12 @@ Cada sprint segue o skill `spec-driven-project-setup`: `SPEC.md`,
 
 **Esforço:** L. **Dependência:** nenhuma.
 
+- **Spike primeiro (1 dia, custo baixo antes de comprometer a sprint
+  inteira):** confirmar isoladamente se `copy_context()`/`ContextVar`
+  atravessa a fronteira de thread/task onde `agent.run()`/`team.run()` do
+  Agno realmente executa. Esta é a incerteza que já aparece como STOP desta
+  sprint — vale confirmar com um teste mínimo antes de investir o resto do
+  esforço L, não só ao final.
 - Instrumentar `stream_agent`/`stream_team` para chamar
   `checkpoint_execution()` a cada evento emitido pelo generator do Agno,
   antes de processar/propagar o próximo — não interrompe uma chamada de
@@ -172,6 +178,20 @@ entre eventos do generator, ou se a propagação do `ExecutionControl` exigir
 monkeypatch do código interno do pacote `agno` em vez de uma extensão
 suportada pela API pública dele.
 
+**Se o STOP disparar (risco existencial do plano):** este STOP não é um
+detalhe de uma sprint isolada — é o teste da premissa de todo o plano 062
+("Agno sempre"). Se disparar, as opções são, nesta ordem de preferência:
+(a) contribuir o ponto de extensão faltante ao projeto `agno` upstream
+antes de prosseguir; (b) restringir o escopo deste plano aos canais onde
+cancelamento cooperativo não é crítico (nenhum identificado até agora — CLI,
+web, OpenAI-compat e Telegram todos dependem dele) e declarar os demais como
+não migráveis até o upstream evoluir; (c) voltar ao operador com a
+constatação concreta e a decisão explícita de manter `bauer_native` como
+único executor para canais de chat, revertendo a leitura de "Agno sempre"
+para "Agno onde o SDK permitir paridade de cancelamento". Não decidir isso
+silenciosamente dentro da sprint — é decisão do operador, registrada aqui
+quando (se) ocorrer.
+
 ### Sprint 36 — Paridade de streaming, custo e contexto
 
 **Esforço:** M-L. **Dependência:** sprint 35.
@@ -188,9 +208,17 @@ suportada pela API pública dele.
 - Harness de comparação: mesmo prompt/mesma tarefa rodando em
   `bauer_native` e em Agno, comparando custo, latência e qualidade de
   resposta — registrar baseline antes de migrar qualquer canal real.
+  "Qualidade" precisa de critério concreto antes de começar, não ao
+  avaliar os resultados: tokens, custo e latência são métricas duras
+  (comparação direta); qualidade de resposta, sem um harness de avaliação
+  automatizado já existente no repositório, é **revisão manual pareada**
+  (mesma tarefa, duas respostas, humano decide "equivalente/pior/melhor")
+  sobre um conjunto fixo e pequeno de tarefas representativas — não um
+  score numérico inventado ad-hoc.
 
 **Aceite:** harness de comparação roda para um conjunto de tarefas
-representativas e produz métricas lado a lado; divergência de custo não
+representativas e produz métricas lado a lado (tokens/custo/latência
+duros; qualidade por revisão manual pareada); divergência de custo não
 explicada bloqueia a sprint seguinte.
 
 ### Sprint 37 — Migrar o caminho CLI

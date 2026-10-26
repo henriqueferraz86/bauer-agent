@@ -149,6 +149,16 @@ MESMA sessão/chat que disparou a tarefa, sem precisar resolver canal "home"):
 5. **Reaproveitar para o futuro `/loop`.** O ponto único de entrega do item 2
    deve ser escrito de forma que a etapa 5 do plano 061 (autonomia/`/loop`)
    possa chamá-lo também, em vez de inventar um segundo caminho de entrega.
+6. **Independente de executor (coordenação com o plano 062).** O registro
+   `self._processes` de `run_command(background=true)` vive em
+   `ExecToolsMixin`, chamado pelo `ToolRouter` — o mesmo caminho que o
+   adapter Agno usa via `_bauer_tool_callable` (plano 062). O watcher e o
+   ponto único de entrega deste plano não devem assumir `bauer_native`
+   implicitamente: capturar `chat_id`/callback de entrega a partir do
+   contexto da chamada de tool (que já é comum aos dois executores), não a
+   partir de algo exclusivo do loop `_turno_cru`. Assim, se o plano 062
+   migrar o Telegram para Agno (sprint 40) depois deste plano, a entrega de
+   background continua funcionando sem reescrever.
 
 ## Sprints propostos
 
