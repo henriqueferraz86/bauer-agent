@@ -34,7 +34,7 @@ if [ -n "$OLLAMA_HOST" ]; then
     fi
     _maybe_start_gateway
     echo "[bauer] Iniciando servidor..."
-    exec bauer serve --host 0.0.0.0 --port 8000
+    exec bauer serve --workspace /app/workspace --host 0.0.0.0 --port 8000
 else
     # ── Modo standalone: sobe Ollama localmente ────────────────────────────────
     echo "[bauer] Modo standalone — iniciando Ollama em background..."
@@ -59,5 +59,5 @@ except Exception:
 
     _maybe_start_gateway
     echo "[bauer] Iniciando servidor..."
-    exec bauer serve --host 0.0.0.0 --port 8000
+    exec bauer serve --workspace /app/workspace --host 0.0.0.0 --port 8000
 fi
