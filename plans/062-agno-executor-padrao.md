@@ -1,6 +1,9 @@
 # Plano 062 — Agno como motor de execução padrão do turno
 
-**Status:** TODO
+**Status:** IN PROGRESS — sprint 35 (checkpoints de cancelamento no
+AgnoRuntimeAdapter) entregue e validado em 2026-10-29: backlog completo,
+suíte hermética e Ruff bloqueante verdes; sprints 36-40 ainda não
+iniciadas.
 
 **Prioridade:** P1
 
@@ -181,9 +184,20 @@ Cada sprint segue o skill `spec-driven-project-setup`: `SPEC.md`,
 `ARCHITECTURE.md` e `BACKLOG.md` em `specs/sprint-XX-*/`, branch
 `codex/sprint-XX-*`, gates completos do `AGENTS.md` antes de avançar.
 
-### Sprint 35 — Checkpoints de cancelamento no AgnoRuntimeAdapter
+### Sprint 35 — Checkpoints de cancelamento no AgnoRuntimeAdapter — DONE (2026-10-29)
 
 **Esforço:** L. **Dependência:** nenhuma.
+
+**Entregue:** `specs/sprint-35-agno-cancellation/` (SPEC/ARCHITECTURE/BACKLOG
+completos); checkpoints adicionados em `stream_agent`/`stream_team`;
+cancelamento mapeado para `RunCancelledException` preservando `run.cancelled`
+em Agent e Team; `tests/test_agno_runtime_adapter.py` (34 testes) cobre
+cancelamento entre events, durante tool call e durante espera de aprovação
+simulada. Suíte hermética completa e Ruff bloqueante verdes. `arun()` e
+execução concorrente de membros ficam explicitamente fora da garantia
+(fronteira síncrona é a única inspecionada/coberta). Paridade de custo/uso
+(`TurnMetrics`) fica para a sprint 36, conforme já previsto no critério de
+aceite abaixo.
 
 - **Spike primeiro (1 dia, custo baixo antes de comprometer a sprint
   inteira):** confirmar isoladamente se `copy_context()`/`ContextVar`
