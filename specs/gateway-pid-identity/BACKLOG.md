@@ -20,8 +20,12 @@ Critérios:
 
 ### 3. Validar inicialização após restart
 
-Status: em andamento
+Status: concluído
 
 Critérios:
 - Testes unitários passam.
-- Gateway e Telegram ativos depois de reiniciar o container.
+- 31 testes focados passaram; Ruff crítico e `git diff --check` passaram.
+- Após reconstruir/reiniciar o container `bauer-agent`, o runtime iniciou
+  automaticamente e o Telegram apareceu online.
+- UI e API responderam HTTP 200.
+- Tokens Telegram foram removidos dos logs existentes e URLs HTTPX suprimidas.
