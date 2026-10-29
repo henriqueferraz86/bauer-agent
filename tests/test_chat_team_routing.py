@@ -4,7 +4,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from bauer.chat_team_routing import TeamRoutingDecision, resolve_team_intent
+from bauer.chat_team_routing import (
+    TeamRoutingDecision,
+    project_scoped_team_task,
+    resolve_team_intent,
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,18 @@ class FakeTeamRegistry:
 SOFTWARE_TEAM = FakeTeam("bauer.software_team", "Bauer Software Team")
 
 
+def test_project_task_includes_existing_project_context_and_blocks_app_factory():
+    task = project_scoped_team_task(
+        "inicie a fase 11", "Investimentos OS", "/workspace/investimentosOS",
+    )
+
+    assert "PROJETO SELECIONADO: Investimentos OS" in task
+    assert "WORKSPACE RAIZ: /workspace/investimentosOS" in task
+    assert "docs/PROGRESS.md" in task
+    assert "Não chame app_factory_init" in task
+    assert "inicie a fase 11" in task
+
+
 @pytest.mark.parametrize(
     ("message", "requested_agents"),
     [
@@ -31,6 +47,7 @@ SOFTWARE_TEAM = FakeTeam("bauer.software_team", "Bauer Software Team")
         ("Use três agentes para revisar isto.", 3),
         ("Use múltiplos agentes para investigar.", None),
         ("Use o time para resolver esta tarefa.", None),
+        ("Inicie a fase 11 com um time de agentes.", None),
         ("Trabalhe em equipe e entregue uma conclusão.", None),
         ("Use 4 agents to review this project.", 4),
         ("Use multiple agents for this investigation.", None),

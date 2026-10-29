@@ -33,6 +33,23 @@ class TeamRoutingDecision:
     requested_agents: int | None = None
 
 
+def project_scoped_team_task(task: str, project_name: str, workspace: str) -> str:
+    """Add the selected project's identity and phase-discovery rules to a team task."""
+    return (
+        f"PROJETO SELECIONADO: {project_name}\n"
+        f"WORKSPACE RAIZ: {workspace}\n\n"
+        "Esta solicitação continua um projeto existente neste workspace; não é a criação de um app novo. "
+        "Antes de agir, encontre e leia os arquivos de contexto do projeto (AGENTS.md, README, TASKS.md, "
+        "docs/TASKS.md, docs/PROGRESS.md, docs/DECISIONS.md e os specs/planos aplicáveis; use os que existirem). "
+        "Resolva a fase pelo conteúdo desses arquivos e pelo código existente. Não chame app_factory_init nem "
+        "proponha criar um AppFactory para uma fase deste projeto. Se o estado da fase estiver contraditório "
+        "entre os registros, não altere arquivos: mostre a contradição com caminhos e evidências e peça decisão. "
+        "Se estiver pendente de forma consistente, execute a fase no workspace selecionado e reporte os arquivos "
+        "alterados e validações.\n\n"
+        f"PEDIDO DO USUÁRIO:\n{task}"
+    )
+
+
 # Compatibility-friendly descriptive alias for callers that prefer the module
 # context in the type name.
 ChatTeamRoutingDecision = TeamRoutingDecision
@@ -42,6 +59,7 @@ _AGENT_WORDS = r"(?:agente|agentes|agent|agents)"
 _TEAM_WORDS = r"(?:time|equipe|team)"
 _REQUEST_VERBS = (
     r"use|utilize|empregue|chame|convoque|coordene|orquestre|delegue|"
+    r"inicie|iniciar|comece|comecar|execute|executar|"
     r"work\s+(?:with|as)|collaborate\s+with|employ|assemble|coordinate|"
     r"orchestrate|delegate\s+to"
 )
@@ -181,5 +199,6 @@ __all__ = [
     "ChatTeamRoutingDecision",
     "TeamRegistryLike",
     "TeamRoutingDecision",
+    "project_scoped_team_task",
     "resolve_team_intent",
 ]

@@ -1034,6 +1034,7 @@ class AgentBackend:
 
     def _run_chat_team(self, team_id: str, task: str, session_id: str) -> str:
         """Run a formal team inside the channel's already-governed Kernel run."""
+        from .chat_team_routing import project_scoped_team_task
         from .config_loader import load_config
         from .core.runtime import AgnoTeamOrchestrator
         from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
@@ -1063,8 +1064,13 @@ class AgentBackend:
         orchestrator._authorize(team, orchestrator._supervisor(team), 0.0)
         runtime = get_runtime_ids()
         run_id = runtime[1] if runtime else None
+        project = self._active_project()
+        project_name = project.name if project is not None else self._effective_router().workspace.name
+        scoped_task = project_scoped_team_task(
+            task, project_name, str(self._effective_router().workspace),
+        )
         result = orchestrator._execute(
-            team, {"run_id": run_id, "task": task, "session_id": session_id},
+            team, {"run_id": run_id, "task": scoped_task, "session_id": session_id},
             user_id=f"telegram:{session_id}",
         )
         if result.get("status") == "failed" or result.get("event") == "run.failed":

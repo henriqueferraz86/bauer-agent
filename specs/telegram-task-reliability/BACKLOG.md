@@ -4,6 +4,8 @@
 - [x] Impedir resposta silenciosa no transporte Telegram.
 - [x] Roteamento de pedidos explícitos de equipe ao AgnoTeamOrchestrator sob
   Kernel e contexto de projeto existentes.
+- [ ] Incluir contexto documental do projeto no prompt da equipe e bloquear
+  criação AppFactory para fases de projetos já selecionados.
 - [x] Adicionar testes unitários herméticos e revisar validações do repositório.
 - [x] Executar testes focados e gates frozen no Windows. Na suíte completa
   paralela, 10 casos alheios a esta mudança falharam por concorrência; os casos

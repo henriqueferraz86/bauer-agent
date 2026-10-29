@@ -29,4 +29,7 @@ credenciais/configuração de modelos.
 - Uma mensagem inbound válida sempre recebe resposta final ou aviso explícito.
 - Pedido explícito para usar time não cai no agente individual sem indicação.
 - Execução da equipe mantém Kernel, projeto/workspace, session id e identidade.
+- O prompt de equipe recebe projeto/workspace selecionado e orienta consultar
+  os documentos do projeto antes de classificar uma fase; nunca inicia AppFactory
+  para uma fase do projeto existente.
 - Falhas e conclusão são observáveis sem registrar tokens ou credenciais.
