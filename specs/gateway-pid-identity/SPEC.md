@@ -19,6 +19,7 @@ não existir, limpar o estado obsoleto e iniciar o Gateway.
   `GatewayServiceManager`.
 - Cobrir a decisão com testes de linha de comando.
 - Manter o início automático dos canais habilitados no `start.sh`.
+- Impedir que logs HTTP incluam URLs com tokens de bot Telegram.
 
 ## Fora de escopo
 
@@ -30,6 +31,7 @@ não existir, limpar o estado obsoleto e iniciar o Gateway.
 - Um PID reutilizado por processo não Gateway não impede o início.
 - Um processo Gateway real continua evitando inicialização duplicada.
 - Gateway habilitado volta a iniciar no boot do container.
+- Logs de requests HTTP não registram URLs/token Telegram.
 
 ## Skills obrigatórias
 

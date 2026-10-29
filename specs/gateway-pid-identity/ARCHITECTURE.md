@@ -19,6 +19,7 @@ PID file existe → comando é Gateway? → sim: não duplica
 - `bauer/commands/gateway_cmd.py`: início em background.
 - `bauer/gateway_service.py`: início pelo gerenciador de serviço.
 - `start.sh`: inicialização dos canais habilitados no boot Docker.
+- Logger `httpx` em WARNING: evita registrar URLs do Telegram com token.
 
 ## Risco
 

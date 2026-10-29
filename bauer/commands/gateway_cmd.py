@@ -37,6 +37,14 @@ def _gateway_workspace(config: Path) -> Path:
         return Path("workspace")
 
 
+def _configure_gateway_logging() -> None:
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    # httpx logs full request URLs at INFO; Telegram URLs contain the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 def _gateway_start_background(config: Path) -> None:
     """Sobe o gateway destacado (detach) e libera o terminal. Log em arquivo."""
     import os as _os
@@ -156,12 +164,11 @@ def gateway_start(
         _gateway_start_background(config)
         return
 
-    import logging
     import os
 
     from bauer.gateway_runtime import BauerGatewayRuntime
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    _configure_gateway_logging()
     runtime = BauerGatewayRuntime.from_config(config)
     if not runtime.bridges:
         console.print(
