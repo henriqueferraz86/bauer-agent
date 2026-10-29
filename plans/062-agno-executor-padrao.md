@@ -56,6 +56,45 @@ Verificado em 2026-10-22, checkout no commit `3d4d1c7` (branch `master`):
     `bauer/core/runtime/scheduler.py:407` (tarefas autônomas/agendadas) e o
     `bauer/agentos_app.py` (serviço AgentOS separado, porta 7777, que não
     passa pelo `kernel.execute()` dos canais de chat).
+
+  **Correção de 2026-10-29 (achado ao vivo na Beelink, verificado dentro do
+  container `bauer-agent` em produção — isto desatualiza a frase anterior
+  "nenhum caminho de chat real o consulta" para o caso específico abaixo):**
+  existe um **segundo e independente** mecanismo de seleção de executor,
+  `_runtime_mode()` (`bauer/server.py:773`), que **não** é
+  `runtime.default_adapter` — é um toggle próprio persistido em
+  `{runtime_root}/runtime/serve-runtime-mode.json` e exposto por
+  `GET/POST /api/runtime/mode` (`bauer/desktop_api.py:1556-1564`), editável
+  pelo dropdown "EXECUTOR GLOBAL DO SERVER" do painel Runtime
+  (`desktop/src/screens/Runtime.tsx`). O endpoint `/stream` em
+  `bauer/server.py` — que é o endpoint que o **chat web do Desktop de fato
+  chama** em todo turno (`desktop/src/chatStream.ts:94`, não
+  `server_chat.py`'s `/chat`) — consulta esse toggle diretamente no worker
+  da run: `if _runtime_mode() == "agno": _run_agno_turn(...) else:
+  run_one_turn_with_fallback(...)` (`bauer/server.py:1864`). `_run_agno_turn`
+  (`bauer/server.py:799`) instancia o mesmo `AgnoRuntimeAdapter` citado
+  abaixo diretamente, fora do `kernel.execute(executor=...)` que o resto
+  desta seção analisa.
+
+  Na Beelink, em 2026-10-29, este toggle estava em `"agno"` (confirmado via
+  `docker exec bauer-agent cat /app/memory/runtime/serve-runtime-mode.json`)
+  enquanto `config.yaml`'s `runtime.default_adapter` estava `bauer_native`
+  — os dois valores divergiam, e o painel mostra os dois lado a lado como
+  se fossem a mesma coisa (card "adapter ativo" = `default_adapter`;
+  dropdown = `runtime_mode`), o que é enganoso. **Consequência prática: o
+  chat web real já roda no Agno hoje, em produção, sem a paridade de
+  cancelamento que o sprint 35 abaixo ainda vai entregar** — o risco que
+  este plano foi escrito para evitar já está acontecendo no caminho mais
+  usado. O operador foi consultado em 2026-10-29 e optou por manter o
+  Agno ativo nesse toggle, aceitando o risco conscientemente até o sprint
+  35 fechar a lacuna — não revertido.
+  Implicação para a sequência de sprints: o sprint 35 (checkpoints de
+  cancelamento no `AgnoRuntimeAdapter`) deve ser tratado como prioridade
+  imediata, não como item de fila — ele fecha uma exposição já ativa, não
+  um risco futuro. O sprint 38 ("migrar o caminho web") também precisa
+  revisitar `_run_agno_turn`/`/stream` especificamente, não só
+  `server_chat.py`, já que é esse código (não o padrão `executor=None` via
+  Kernel) que de fato atende o chat web hoje.
 - `bauer/core/runtime/adapters/agno_adapter.py` (1193 linhas): zero
   ocorrências de `checkpoint_execution`, `ExecutionControl`,
   `current_control` ou `ProviderRetryInterrupted`. O laço real de
