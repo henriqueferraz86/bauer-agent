@@ -1123,6 +1123,8 @@ class TelegramBridge(BaseBridge):
         with _TypingHeartbeat(self, msg.chat_id):
             response = self.handle_message(msg, on_delta=streamer)
         if not response:
+            logger.warning("Telegram recebeu resposta vazia do backend para sessão %s", msg.session_key)
+            self.send_text(msg.chat_id, "⚠️ Não consegui gerar uma resposta para esta solicitação. Tente novamente ou consulte /status.")
             return
         workspace = context.workspace if context is not None else Path(self.backend.config_path).resolve().parent
         media_files, clean = extract_outbound_media(

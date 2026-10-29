@@ -1000,9 +1000,17 @@ class AgentBackend:
         recorded_tools = False
         try:
             ctx.add_user(text)
-            response, tool_log = run_one_turn_with_fallback(
-                ctx, self._effective_router(), client, model, self._fallback_clients,
-            )
+            from .chat_team_routing import resolve_team_intent
+            from .core.runtime.team_registry import TeamRegistry
+            team_choice = resolve_team_intent(text, TeamRegistry())
+            if team_choice is None:
+                response, tool_log = run_one_turn_with_fallback(
+                    ctx, self._effective_router(), client, model, self._fallback_clients,
+                )
+            else:
+                response = self._run_chat_team(team_choice.team_id, text, key)
+                ctx.add_assistant(response)
+                tool_log = []
             if metrics is not None:
                 metrics.record_tools(tool_log)
                 recorded_tools = True
@@ -1023,6 +1031,49 @@ class AgentBackend:
                 reset_sink(token)
         self.msgs_processed += 1
         return (response or "").strip() or "🤔 O modelo não retornou resposta. Tente reformular."
+
+    def _run_chat_team(self, team_id: str, task: str, session_id: str) -> str:
+        """Run a formal team inside the channel's already-governed Kernel run."""
+        from .config_loader import load_config
+        from .core.runtime import AgnoTeamOrchestrator
+        from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+        from .core.runtime.agent_registry import RuntimeAgentRegistry
+        from .core.runtime.team_registry import TeamRegistry
+        from .runtime_ids import get_runtime_ids
+
+        kernel = self._resolver_kernel()
+        if kernel is None:
+            raise RuntimeError("Não consegui iniciar o time: o Kernel governado não está disponível.")
+        cfg = load_config(self.config_path)
+        adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
+        adapter_cfg.setdefault("tool_context", "chat")
+        adapter_cfg["workspace"] = str(self._effective_router().workspace)
+        run_store = getattr(getattr(kernel, "runs", None), "store", None)
+        runtime_root = getattr(run_store, "root", self.sessions_dir.parent / "runtime")
+        adapter = AgnoRuntimeAdapter(
+            config=cfg, adapter_config=adapter_cfg,
+            runtime_event_bus=kernel.bus, runtime_policy_root=runtime_root,
+        )
+        orchestrator = AgnoTeamOrchestrator(
+            kernel=kernel, config=cfg, root=runtime_root,
+            team_registry=TeamRegistry(), agent_registry=RuntimeAgentRegistry(),
+            adapter=adapter, event_bus=kernel.bus,
+        )
+        team = orchestrator._require_team(team_id)
+        orchestrator._authorize(team, orchestrator._supervisor(team), 0.0)
+        runtime = get_runtime_ids()
+        run_id = runtime[1] if runtime else None
+        result = orchestrator._execute(
+            team, {"run_id": run_id, "task": task, "session_id": session_id},
+            user_id=f"telegram:{session_id}",
+        )
+        if result.get("status") == "failed" or result.get("event") == "run.failed":
+            detail = result.get("error") or result.get("message") or "falha sem detalhes"
+            raise RuntimeError(f"O time {team_id} não concluiu. {detail}")
+        output = str(result.get("output") or "").strip()
+        if not output:
+            raise RuntimeError(f"O time {team_id} terminou sem produzir uma resposta final.")
+        return output
 
     # ── /model — listar providers + modelos e trocar por conversa ─────────────
 

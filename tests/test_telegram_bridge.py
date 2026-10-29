@@ -98,6 +98,27 @@ class TestSendText:
 
 
 class TestHandleUpdate:
+    def test_backend_vazio_envia_aviso_ao_usuario(self, tmp_path):
+        sent: list[str] = []
+
+        def handler(request):
+            if "sendMessage" in str(request.url):
+                sent.append(json.loads(request.content)["text"])
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+        class EmptyBackend(_EchoBackend):
+            def process(self, msg, on_delta=None, send_fn=None):
+                return ""
+
+        bridge = _make_bridge(tmp_path, handler)
+        bridge.backend = EmptyBackend()
+        bridge._process_scoped_message(
+            ChannelMessage("telegram", "42", "42", "faça a tarefa"),
+            _update(1, user_id=42, chat_id=42, text="faça a tarefa")["message"],
+            None,
+        )
+        assert any("Não consegui gerar uma resposta" in text for text in sent)
+
     def test_autorizado_recebe_resposta(self, tmp_path):
         sent: list[dict] = []
 

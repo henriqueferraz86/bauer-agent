@@ -84,6 +84,17 @@ def run_native_turn(
     calls = message.get("tool_calls") or []
     content = message.get("content") or ""
     if not calls:
+        # Some providers serialize a native call in the text body. Recover it
+        # only for a tool currently exposed by this router, then use the same
+        # governed dispatch path as a structured provider tool_call.
+        from .agent_tool_protocol import normalize_native_pseudo_call
+        available = {str(schema.get("function", {}).get("name"))
+                     for schema in schemas if isinstance(schema, dict)}
+        pseudo_call = normalize_native_pseudo_call(content, available)
+        if pseudo_call is not None:
+            calls = [pseudo_call]
+            content = ""
+    if not calls:
         if content.strip():
             ctx.add_assistant(content)
         return content

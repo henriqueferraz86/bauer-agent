@@ -52,6 +52,36 @@ def normalize_tool_object(obj: object, available: set[str]) -> dict | None:
     return None
 
 
+def normalize_native_pseudo_call(text: str, available: set[str]) -> dict | None:
+    """Recover an OpenAI-shaped tool call accidentally emitted as message text."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    decoder = json.JSONDecoder()
+    index = text.find("{")
+    while index >= 0:
+        try:
+            obj, _ = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index = text.find("{", index + 1)
+            continue
+        if isinstance(obj, dict):
+            function = obj.get("function") if isinstance(obj.get("function"), dict) else obj
+            name = function.get("name")
+            raw_args = function.get("arguments", function.get("args", {}))
+            if isinstance(name, str) and name in available:
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except json.JSONDecodeError:
+                    args = None
+                if isinstance(args, dict):
+                    return {"id": str(obj.get("id") or "text_call_0"),
+                            "type": "function",
+                            "function": {"name": name,
+                                         "arguments": json.dumps(args, ensure_ascii=False)}}
+        index = text.find("{", index + 1)
+    return None
+
+
 def extract_embedded_json_action(text: str, available: set[str]) -> dict | None:
     """Encontra o primeiro objeto bridge válido, inclusive após texto narrativo."""
     decoder = json.JSONDecoder()
