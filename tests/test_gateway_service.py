@@ -226,7 +226,7 @@ class TestManagerBackground:
         assert calls and "gateway" in calls[0] and "start" in calls[0]
         assert "--config" in calls[0]
 
-    def test_start_nao_duplica_se_ja_rodando(self, tmp_path):
+    def test_start_nao_duplica_se_ja_rodando(self, tmp_path, monkeypatch):
         import os
 
         from types import SimpleNamespace
@@ -234,6 +234,9 @@ class TestManagerBackground:
         pid_dir = tmp_path / "workspace" / ".bauer_gateway"
         pid_dir.mkdir(parents=True)
         (pid_dir / "gateway.pid").write_text(str(os.getpid()), encoding="utf-8")
+        monkeypatch.setattr(
+            "bauer.gateway_service.is_gateway_runtime_process", lambda pid: True,
+        )
         calls: list[int] = []
         mgr = self._mgr(
             tmp_path, popen_fn=lambda *a, **k: calls.append(1) or SimpleNamespace(pid=1),

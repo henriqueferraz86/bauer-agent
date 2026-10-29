@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .gateway_process import is_gateway_runtime_process
+
 logger = logging.getLogger("bauer.gateway_service")
 
 SERVICE_NAME = "bauer-gateway"          # systemd unit
@@ -349,9 +351,8 @@ class GatewayServiceManager:
         pid_file = _pid_file(self.project_dir)
         if pid_file.exists():
             try:
-                import psutil
                 pid = int(pid_file.read_text(encoding="utf-8").strip())
-                if psutil.pid_exists(pid):
+                if is_gateway_runtime_process(pid):
                     return f"Gateway já rodando (pid={pid})."
             except Exception:  # noqa: BLE001 — PID file obsoleto, sobe um novo
                 logger.debug("gateway background: pid file obsoleto", exc_info=True)

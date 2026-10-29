@@ -40,6 +40,8 @@ logs/
 /workspace/
 memory/
 specs/*
+!specs/gateway-pid-identity/
+!specs/gateway-pid-identity/**
 !specs/default-runtime-tools/
 !specs/default-runtime-tools/**
 !specs/sprint-25-p3-tool-error-paths/

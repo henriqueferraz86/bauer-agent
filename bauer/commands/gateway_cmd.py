@@ -10,6 +10,7 @@ import typer
 
 from ._common import console
 from ._runtime import _kill_bridge_processes
+from bauer.gateway_process import is_gateway_runtime_process
 from .telegram_cmd import telegram_app
 from .discord_cmd import discord_app
 
@@ -47,9 +48,8 @@ def _gateway_start_background(config: Path) -> None:
     # Já rodando? Não sobe outro.
     if pid_file.exists():
         try:
-            import psutil
             pid = int(pid_file.read_text(encoding="utf-8").strip())
-            if psutil.pid_exists(pid):
+            if is_gateway_runtime_process(pid):
                 console.print(
                     f"[yellow]Gateway já rodando[/yellow] pid={pid}. "
                     f"Use [bold]bauer gateway status[/bold] ou [bold]bauer gateway stop[/bold]."
@@ -57,6 +57,7 @@ def _gateway_start_background(config: Path) -> None:
                 return
         except Exception:
             pass  # PID stale — segue e sobe um novo
+        pid_file.unlink(missing_ok=True)
 
     log_path = workspace / ".bauer_gateway" / "gateway.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
