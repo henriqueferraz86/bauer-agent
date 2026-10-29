@@ -142,6 +142,22 @@ class TestAgentBackendProcess:
         resp = backend.process(_msg("qual a capital do brasil?"))
         assert "eco:" in resp
 
+    def test_pedido_explicito_de_time_nao_cai_no_agente_individual(self, tmp_path):
+        backend = _make_backend(tmp_path)
+        calls = []
+        backend._run_chat_team = lambda team_id, task, session_id: (
+            calls.append((team_id, task, session_id)) or "resultado do time"
+        )
+
+        response = backend.process(_msg("Use um time de agente e inicie a fase 11."))
+
+        assert response == "resultado do time"
+        assert calls == [(
+            "bauer.software_team",
+            "Use um time de agente e inicie a fase 11.",
+            "tg:42",
+        )]
+
     def test_help_e_start_retornam_ajuda(self, tmp_path):
         backend = _make_backend(tmp_path)
         assert "Comandos" in backend.process(_msg("/help"))

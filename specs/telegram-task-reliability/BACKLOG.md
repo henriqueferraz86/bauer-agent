@@ -5,5 +5,8 @@
 - [x] Roteamento de pedidos explícitos de equipe ao AgnoTeamOrchestrator sob
   Kernel e contexto de projeto existentes.
 - [x] Adicionar testes unitários herméticos e revisar validações do repositório.
-- [ ] Executar testes e gates frozen no Windows antes de publicar.
-- [ ] Publicar na master, aplicar na Beelink e confirmar resposta pelo Telegram.
+- [x] Executar testes focados e gates frozen no Windows. Na suíte completa
+  paralela, 10 casos alheios a esta mudança falharam por concorrência; os casos
+  falhos passaram quando reexecutados serialmente.
+- [x] Publicar na master, aplicar a imagem do commit na Beelink e confirmar
+  health, Gateway Telegram ativo e persistência dos volumes.
