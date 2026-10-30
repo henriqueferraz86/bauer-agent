@@ -32,8 +32,11 @@
   usa o mecanismo nativo do Agno (`num_history_runs=3` fixo, sem orçamento
   de tokens, sem compressão semântica). Registrado como decisão de produto,
   não como bug — ver SPEC.md "Decisão necessária".
-- [ ] Confirmação do operador sobre a recomendação de contexto (manter o
-  mecanismo nativo do Agno por enquanto, revisitar com dado do harness).
+- [x] Confirmação do operador sobre a recomendação de contexto: "manter Agno
+  como padrão" (2026-10-30), após ver o resultado real do harness. Risco de
+  sessão longa (histórico fixo `num_history_runs=3` vs. compressão dinâmica
+  do `bauer_native`) segue sem dado — nenhuma das 4 tarefas testou isso —
+  mas foi aceito conscientemente, não decidido às cegas.
 - [x] Harness de comparação implementado em `evals/compare_executors/`:
   roda um conjunto fixo de 4 tarefas representativas (Q&A simples, leitura de
   arquivo via tool, raciocínio curto, código curto) nos dois executores,
@@ -47,7 +50,14 @@
   não bate em provider real). Rodar de verdade exige `python -m
   evals.compare_executors --config config.yaml` com credenciais reais; isso
   **não roda na suíte padrão nem em CI**.
-- [ ] Rodar o harness de verdade contra um provider real e preencher os
-  vereditos de qualidade — ação do operador, não deste commit; os números
-  que saírem dessa rodada devem alimentar a decisão de contexto acima antes
-  de fechar o sprint 36.
+- [x] Rodado de verdade contra o provider real da Beelink (deepseek/deepseek-chat
+  via openrouter) em 2026-10-30. Primeira rodada expôs um bug do harness —
+  `agent_spec` do Agno não levava `tools`, então ele rodava sem nenhuma
+  ferramenta (custo artificialmente ~65x menor, e a tarefa de leitura de
+  arquivo falhava porque não tinha `read_file`). Corrigido (mesmo catálogo
+  de tools e mesmo system prompt nos dois lados) e re-rodado: custo/tokens
+  praticamente empatados em 3 das 4 tarefas (~2% de diferença), gap maior
+  só na tarefa de código (+53% no Agno, não investigado a fundo). Qualidade
+  revisada manualmente par a par (ver `SPEC.md`) — equivalente nas 4
+  tarefas. JSON completo em `/tmp/comparacao_agno_vs_native.json` (fora do
+  repo, não commitado).

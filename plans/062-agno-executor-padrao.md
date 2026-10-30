@@ -1,10 +1,12 @@
 # Plano 062 — Agno como motor de execução padrão do turno
 
-**Status:** IN PROGRESS — sprint 35 (checkpoints de cancelamento) e a
-implementação de código do sprint 36 (streaming/custo/contexto) foram
-validados em 2026-10-30 com suíte hermética e Ruff verdes. O sprint 36 segue
-aberto até o operador decidir a estratégia de contexto e o harness comparativo
-registrar custo/latência/qualidade. Sprints 37-40 não iniciadas.
+**Status:** IN PROGRESS — sprints 35 (checkpoints de cancelamento) e 36
+(streaming/custo/contexto) entregues e fechados em 2026-10-30: suíte
+hermética e Ruff verdes, harness de comparação rodado contra o provider real
+da Beelink (custo/tokens praticamente empatados em 3 de 4 tarefas, qualidade
+equivalente por revisão manual), e o operador confirmou manter o mecanismo
+nativo de histórico do Agno por enquanto ("manter Agno como padrão").
+Sprints 37-40 não iniciadas.
 
 **Prioridade:** P1
 
@@ -279,15 +281,22 @@ representativas e produz métricas lado a lado (tokens/custo/latência
 duros; qualidade por revisão manual pareada); divergência de custo não
 explicada bloqueia a sprint seguinte.
 
-**Harness entregue em 2026-10-30:** `evals/compare_executors/` (4 tarefas
-fixas, reaproveita os mesmos pontos de entrada do CLI/serve para os dois
-executores, mede custo/tokens/latência pelo `cost_sink` desta sprint,
-`quality_verdict` em branco para revisão manual pareada). Testado
-hermeticamente; **não roda na suíte padrão/CI** — exige `python -m
-evals.compare_executors --config config.yaml` contra um provider real.
-Ainda falta: o operador rodar de verdade, preencher os vereditos de
-qualidade, e então usar esse dado para decidir a estratégia de contexto
-(seção anterior) antes de considerar o sprint 36 fechado.
+**Sprint 36 fechada em 2026-10-30.** Harness entregue
+(`evals/compare_executors/`, 4 tarefas fixas, reaproveita os mesmos pontos
+de entrada do CLI/serve para os dois executores, testado hermeticamente,
+não roda na suíte padrão/CI). Rodado de verdade contra o provider real da
+Beelink: a primeira rodada expôs um bug do próprio harness (Agno sem
+`tools` no `agent_spec`, rodando sem nenhuma ferramenta — por isso a
+comparação inicial de custo era inválida, ~65x a favor do Agno só porque
+ele não fazia o trabalho); corrigido e re-rodado, o resultado real ficou
+com custo/tokens praticamente empatados em 3 das 4 tarefas (~2% de
+diferença) e qualidade equivalente por revisão manual pareada — só a
+tarefa de geração de código mostrou um gap maior (+53% no Agno), não
+investigado a fundo. O operador confirmou "manter Agno como padrão" para a
+estratégia de contexto (histórico nativo `num_history_runs=3` do Agno, não
+o compressor do `bauer_native`), aceitando que nenhuma das 4 tarefas
+testou sessão longa o bastante para medir essa diferença especificamente —
+risco residual conhecido, não decidido às cegas.
 
 ### Sprint 37 — Migrar o caminho CLI
 

@@ -109,6 +109,16 @@ na prática — decidir às cegas, sem medição, seria pior que esperar o dado.
 Esta recomendação precisa de confirmação do operador antes de fechar a
 sprint como concluída; não é um STOP que bloqueia os outros dois itens.
 
+**Confirmado pelo operador em 2026-10-30**, após o harness (item 4) rodar
+contra o provider real configurado na Beelink: "manter Agno como padrão".
+O harness mostrou custo/tokens praticamente empatados em 3 das 4 tarefas
+(~2% de diferença) e qualidade equivalente nas respostas revisadas
+manualmente — nenhuma das 4 tarefas testou uma conversa longa o bastante
+para expor diferença real entre `num_history_runs=3` fixo e a compressão
+dinâmica do `bauer_native`, então essa comparação específica (sessão longa)
+segue sem dado; a decisão foi tomada aceitando esse risco residual conhecido,
+não às cegas sobre o resto.
+
 ## Critérios de aceite
 
 - Um teste hermético comprova que texto chega a um sink de `delta_stream`
