@@ -149,3 +149,15 @@ def test_formatar_shows_error_when_execution_failed():
     text = formatar(Report(rows=[row]))
     assert "ERRO" in text
     assert "falhou" in text
+
+
+def test_formatar_includes_response_text_for_manual_quality_review():
+    """Sem o texto aqui, revisão pareada exigiria abrir o JSON à parte."""
+    row = ComparisonRow(
+        task_name="t1",
+        bauer_native=ExecutionResult(executor="bauer_native", task_name="t1", output="resposta nativa"),
+        agno=ExecutionResult(executor="agno", task_name="t1", output="resposta do agno"),
+    )
+    text = formatar(Report(rows=[row]))
+    assert "resposta nativa" in text
+    assert "resposta do agno" in text

@@ -161,6 +161,8 @@ def run_comparison(cfg: Any, *, tasks: tuple[Task, ...] = TASKS) -> Report:
 
 
 def formatar(report: Report) -> str:
+    """Inclui o texto de cada resposta — sem isto a revisão manual pareada
+    exigiria abrir o JSON à parte; o objetivo é decidir lendo só este texto."""
     linhas = ["Comparação bauer_native vs Agno — métricas duras (qualidade: revisão manual)", ""]
     for row in report.rows:
         linhas.append(f"## {row.task_name}")
@@ -173,6 +175,9 @@ def formatar(report: Report) -> str:
             )
             if res.error:
                 linhas.append(f"               erro: {res.error.splitlines()[0][:100]}")
+            elif res.output:
+                for linha in res.output.rstrip().splitlines() or [""]:
+                    linhas.append(f"               | {linha}")
         linhas.append(f"  veredito de qualidade: {row.quality_verdict or '(pendente — revisão manual)'}")
         linhas.append("")
     return "\n".join(linhas)
