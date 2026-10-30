@@ -98,6 +98,22 @@ def test_run_agno_reports_cost_and_latency(monkeypatch, tmp_path):
     monkeypatch.setattr(
         AgnoRuntimeAdapter, "_runtime_for_request", lambda *a, **k: ControlledAgent()
     )
+    captured_requests: list[dict] = []
+    real_run_agent = AgnoRuntimeAdapter.run_agent
+
+    def spying_run_agent(self, request):
+        captured_requests.append(request)
+        return real_run_agent(self, request)
+
+    monkeypatch.setattr(AgnoRuntimeAdapter, "run_agent", spying_run_agent)
+
+    class FakeRouter:
+        def available_tools(self):
+            return ["read_file", "write_file"]
+
+    monkeypatch.setattr(
+        "evals.compare_executors.runner._build_router", lambda cfg, workspace: FakeRouter()
+    )
 
     task = Task(name="t1", prompt="oi")
     result = _run_agno(task, _fake_cfg(), tmp_path)
@@ -108,6 +124,7 @@ def test_run_agno_reports_cost_and_latency(monkeypatch, tmp_path):
     assert result.completion_tokens == 15
     assert result.cost_usd >= 0.0
     assert result.error == ""
+    assert captured_requests[0]["agent_spec"]["tools"] == ["read_file", "write_file"]
 
 
 def test_run_comparison_builds_one_row_per_task(monkeypatch):

@@ -20,6 +20,10 @@ from .tasks import TASKS, Task
 
 from bauer.commands._runtime import _build_client, _build_router
 
+#: mesma instrução nos dois executores — qualquer assimetria de prompt
+#: contamina a comparação de custo/qualidade tanto quanto a de tools.
+_SYSTEM_PROMPT = "Você é o Bauer, um assistente de IA útil e direto."
+
 
 @dataclass
 class ExecutionResult:
@@ -89,7 +93,7 @@ def _run_bauer_native(task: Task, cfg: Any, workspace: Path) -> ExecutionResult:
         router = _build_router(cfg, workspace, llm_client=client)
         ctx, _ = (
             ContextBuilder(applied_context=8192, provider=cfg.model.provider)
-            .instrucao("seguranca", "Você é o Bauer, um assistente de IA útil e direto.")
+            .instrucao("seguranca", _SYSTEM_PROMPT)
             .montar()
         )
         ctx.add_user(task.prompt)
@@ -126,12 +130,20 @@ def _run_agno(task: Task, cfg: Any, workspace: Path) -> ExecutionResult:
                 "db_file": str(workspace / ".agno_compare_executors.db"),
             },
         )
+        # Mesmo catálogo de ferramentas que bauer_native recebe de _build_router
+        # — sem isto o Agno roda sem nenhuma tool (ex.: não consegue ler
+        # arquivos) e a comparação de custo/qualidade fica inválida: barato
+        # porque não fez o trabalho, não porque é mais eficiente.
+        available_tools = _build_router(cfg, workspace).available_tools()
         start = time.monotonic()
         run_result = adapter.run_agent({
             "task": task.prompt,
             "session_id": f"compare-executors-{task.name}",
             "user_id": "compare-executors",
-            "agent_spec": {"provider": cfg.model.provider, "model": cfg.model.name},
+            "agent_spec": {
+                "provider": cfg.model.provider, "model": cfg.model.name,
+                "tools": available_tools, "system": _SYSTEM_PROMPT,
+            },
         })
         result.latency_s = time.monotonic() - start
         if run_result.get("status") != "completed":
