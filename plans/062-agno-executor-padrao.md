@@ -5,8 +5,16 @@
 hermética e Ruff verdes, harness de comparação rodado contra o provider real
 da Beelink (custo/tokens praticamente empatados em 3 de 4 tarefas, qualidade
 equivalente por revisão manual), e o operador confirmou manter o mecanismo
-nativo de histórico do Agno por enquanto ("manter Agno como padrão").
-Sprints 37-40 não iniciadas.
+nativo de histórico do Agno por enquanto ("manter Agno como padrão"). Sprint
+37 (migrar CLI) implementado e corrigido em 2026-10-30 via time de agentes
+(implementação → revisão independente → correção dos dois achados
+bloqueantes que a revisão encontrou: chave de ativação própria da CLI,
+`runtime.cli_default_adapter`, default `bauer_native`, independente de
+`runtime.default_adapter`; e Ctrl-C que matava a sessão inteira em vez de só
+cancelar o turno). Suíte hermética completa verde (8500 testes). Validação
+manual (Ctrl-C real, aprovação inline, tool call via Agno real na CLI) ainda
+pendente — ação do operador, fora do que suíte hermética cobre. Sprints
+38-40 não iniciadas.
 
 **Prioridade:** P1
 
@@ -303,8 +311,11 @@ risco residual conhecido, não decidido às cegas.
 **Esforço:** M. **Dependência:** sprints 35–36.
 
 - `bauer/agent.py` (REPL): parar de passar `executor=_turn_executor`
-  incondicionalmente; com `runtime.default_adapter: agno` (ou uma flag
-  explícita `--runtime agno`), deixar `executor=None` e permitir que o
+  incondicionalmente; com `runtime.cli_default_adapter: agno` (chave própria
+  da CLI, independente de `runtime.default_adapter` — correção da revisão
+  independente, achado bloqueante nº1: `default_adapter` já tem default
+  `"agno"` e é o contrato de outros consumidores; reaproveitá-la ligaria
+  Agno na CLI sem opt-in explícito), deixar `executor=None` e permitir que o
   Kernel dispache via `adapter_factory`.
 - Manter `_turn_executor`/`bauer_native` como caminho padrão até este
   sprint concluir com testes reais em ambiente de desenvolvimento
@@ -314,7 +325,7 @@ risco residual conhecido, não decidido às cegas.
   (`executor=None` vs explícito) sem exercitar o Agno real na suíte
   padrão — usar fake/stub do adapter para o teste automatizado.
 
-**Aceite:** `bauer` CLI com `runtime.default_adapter: agno` funciona de
+**Aceite:** `bauer` CLI com `runtime.cli_default_adapter: agno` funciona de
 ponta a ponta (pergunta, tool call, cancelamento, aprovação) em teste manual
 registrado; suíte hermética cobre o roteamento sem chamar Agno real;
 `bauer_native` continua sendo o default até decisão explícita de trocar.

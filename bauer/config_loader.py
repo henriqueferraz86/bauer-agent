@@ -725,6 +725,13 @@ class RuntimeSection(_StrictSection):
     # Agno is the governed default for both individual agents and formal teams.
     # Bauer native remains registered as an explicit compatibility adapter.
     default_adapter: str = "agno"
+    # Chave independente de `default_adapter`: controla SÓ o caminho
+    # interativo da CLI (sprint 37, plano 062). `default_adapter` já tem seu
+    # próprio default ("agno") e outros consumidores (scheduler, painel,
+    # `bauer runtime`/`bauer kernel`) esperam esse valor — não é alterado
+    # aqui. A CLI continua em `bauer_native` por padrão até o operador optar
+    # explicitamente por `agno` nesta chave específica.
+    cli_default_adapter: str = "bauer_native"
     adapters: dict[str, dict[str, Any]] = Field(default_factory=_adapters_padrao)
 
 

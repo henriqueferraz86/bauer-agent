@@ -2722,6 +2722,29 @@ def _handle_loop_skill_cmd(
     )
 
 
+def _resolve_cli_runtime_adapter() -> str:
+    """Lê `runtime.cli_default_adapter` do config carregado pela CLI (sprint 37).
+
+    Chave PRÓPRIA da CLI, independente de `runtime.default_adapter` (que já
+    tem default `"agno"` no schema e é lido por outros consumidores —
+    scheduler, painel, `bauer runtime`/`bauer kernel`). Usar `default_adapter`
+    aqui faria qualquer instalação sem override explícito no `config.yaml`
+    rodar a CLI inteira via Agno sem o operador pedir — não é o opt-in que a
+    SPEC promete. `cli_default_adapter` tem default `"bauer_native"`.
+
+    Relido A CADA TURNO, não cacheado na entrada da sessão: o operador pode
+    editar `config.yaml` no meio do mesmo processo REPL (mesmo padrão que
+    `rebuild_client_fn` já usa neste arquivo para live model switch). Sem
+    config legível ou chave ausente, devolve "" — o chamador trata isso como
+    `bauer_native`, nunca quebra o turno por causa de uma leitura de config.
+    """
+    try:
+        from .config_loader import load_config
+        return str(getattr(load_config().runtime, "cli_default_adapter", "") or "").strip().lower()
+    except Exception:  # noqa: BLE001 — config é best-effort; turno segue de qualquer jeito
+        return ""
+
+
 def run_agent_session(
     client: OllamaClient,
     model_name: str,
@@ -3880,8 +3903,99 @@ def run_agent_session(
             # Ganhos: cada turno interativo vira um Run auditável com estados
             # completos; kill-switch/policy/budget barram ANTES da chamada LLM.
             from .core.kernel import KernelRequest as _KReq
-            _captured: dict = {}
             _base_msgs = len(ctx.messages)  # snapshot p/ replan (ver /chat)
+            # Sprint 37 (plano 062): relido a CADA turno, não cacheado na
+            # entrada da sessão — o operador pode editar config.yaml entre
+            # turnos do mesmo processo REPL (mesmo padrão de rebuild_client_fn).
+            _use_agno_executor = _resolve_cli_runtime_adapter() == "agno"
+
+            if _use_agno_executor:
+                # Caminho Agno: `executor=None` faz o Kernel despachar direto
+                # pro AgnoRuntimeAdapter via adapter_factory — não há
+                # _turn_executor/_invoke_turn aqui, então _captured/outcome (do
+                # branch bauer_native abaixo) não existem; o `_kout` do Kernel
+                # É o desfecho. _make_streamer() só roda dentro de
+                # _invoke_turn(), que este branch nunca chama — por isso um
+                # streamer LOCAL, instalado em delta_stream.set_sink no mesmo
+                # protocolo (on_round/on_delta/on_tool) que ConsoleStreamRenderer
+                # já implementa e que AgnoRuntimeAdapter.stream_agent já emite
+                # desde o sprint 36.
+                _streamer = _make_streamer(console)
+                _hud_kernel_estado = None
+                _kout = None
+                _agno_interrupted = False
+                with _quadro_do_turno(console) as _frame:
+                    if _frame is not None:
+                        _frame.set_hud(_hud_state_atual())
+                    from .delta_stream import reset_sink, set_sink
+                    _sink_token = set_sink(_streamer) if _streamer is not None else None
+                    try:
+                        _kout = kernel.execute(_KReq(
+                            task=user_input, session_id=session_id or "",
+                            agent_id="cli.agent", input={"endpoint": "cli.agent"},
+                        ), executor=None)
+                    except KeyboardInterrupt:
+                        # Mesma UX do branch bauer_native (agent.py, except
+                        # KeyboardInterrupt do corpo do turno): cancela SÓ este
+                        # turno e volta ao prompt — sem isto, o Ctrl-C (que é
+                        # BaseException, não Exception) atravessa o Kernel e o
+                        # TurnFrame sem ser interceptado e mata o processo
+                        # `bauer agent` inteiro no handler de agent_cmd.py.
+                        console.print("\n[dim][interrompido][/dim]")
+                        if ctx.messages and ctx.messages[-1]["role"] == "user":
+                            ctx.messages.pop()
+                        _agno_interrupted = True
+                    finally:
+                        if _sink_token is not None:
+                            reset_sink(_sink_token)
+                if _agno_interrupted:
+                    continue
+                if not _kout.ok:
+                    # Mesmo tratamento de bloqueio do branch bauer_native —
+                    # sem _captured/outcome, o status do `_kout` já diz tudo:
+                    # kill-switch/policy/budget ANTES do turno, ou falha real
+                    # dentro do adapter (o texto de `_kout.error` distingue).
+                    del ctx.messages[_base_msgs - 1:]
+                    _blocked = _kout.error or _kout.policy_reason or _kout.status
+                    from .ui import notice as _notice
+                    _hint = ""
+                    if _kout.status == "waiting_approval" and _kout.approval_id:
+                        _hint = f"Aprove com: bauer kernel approve {_kout.approval_id}"
+                    console.print(_notice(
+                        "Turno bloqueado pela governança",
+                        str(_blocked),
+                        kind="blocked",
+                        hint=_hint,
+                    ))
+                    continue
+                _resposta = str(_kout.output or "")
+                ctx.add_assistant(_resposta)
+                if session_store is not None and session_id:
+                    try:
+                        session_store.save(session_id, ctx.messages)
+                    except Exception:
+                        pass  # nao interrompe o agente por falha de persistencia
+                stats.end_turn(len(_resposta))
+                if _ja_exibido(_streamer, _resposta):
+                    console.print()
+                else:
+                    _print_assistant_response(console, _resposta)
+                # Correção pós-revisão (sprint 37): o branch Agno nunca passa
+                # por `_invoke_turn`/`_run_tool_loop_body`, então a chamada de
+                # `_speak_voice_reply` da cauda comum pós-turno (bauer_native,
+                # mais abaixo) nunca rodava aqui — com /listen ativo o texto
+                # aparecia mas nunca era falado. `_state`/`_stream_holder` já
+                # existem neste escopo (definidos antes do `if kernel is not
+                # None:`, fora de `_invoke_turn`), então o mesmo padrão se
+                # aplica sem precisar de streaming de voz ao vivo: fala a
+                # resposta final já obtida, igual ao fallback que o
+                # bauer_native usa quando o streamer de voz combinado não foi
+                # usado neste turno.
+                if _voice_turn_active and _stream_holder.get("voice") is None:
+                    _speak_voice_reply(console, _resposta, _state.client)
+                continue
+
+            _captured: dict = {}
 
             def _turn_executor(payload):
                 if payload.get("replan_attempt"):
