@@ -279,6 +279,16 @@ representativas e produz métricas lado a lado (tokens/custo/latência
 duros; qualidade por revisão manual pareada); divergência de custo não
 explicada bloqueia a sprint seguinte.
 
+**Harness entregue em 2026-10-30:** `evals/compare_executors/` (4 tarefas
+fixas, reaproveita os mesmos pontos de entrada do CLI/serve para os dois
+executores, mede custo/tokens/latência pelo `cost_sink` desta sprint,
+`quality_verdict` em branco para revisão manual pareada). Testado
+hermeticamente; **não roda na suíte padrão/CI** — exige `python -m
+evals.compare_executors --config config.yaml` contra um provider real.
+Ainda falta: o operador rodar de verdade, preencher os vereditos de
+qualidade, e então usar esse dado para decidir a estratégia de contexto
+(seção anterior) antes de considerar o sprint 36 fechado.
+
 ### Sprint 37 — Migrar o caminho CLI
 
 **Esforço:** M. **Dependência:** sprints 35–36.

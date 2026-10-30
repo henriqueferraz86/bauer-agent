@@ -34,6 +34,20 @@
   não como bug — ver SPEC.md "Decisão necessária".
 - [ ] Confirmação do operador sobre a recomendação de contexto (manter o
   mecanismo nativo do Agno por enquanto, revisitar com dado do harness).
-- [ ] Harness de comparação (bauer_native vs Agno: custo/latência/qualidade
-  pareada) — depende da decisão de contexto acima para não refazer a
-  baseline; não implementado nesta sprint.
+- [x] Harness de comparação implementado em `evals/compare_executors/`:
+  roda um conjunto fixo de 4 tarefas representativas (Q&A simples, leitura de
+  arquivo via tool, raciocínio curto, código curto) nos dois executores,
+  reaproveitando `_build_client`/`_build_router`/`run_one_turn_with_fallback`
+  (bauer_native) e `AgnoRuntimeAdapter.run_agent` (Agno) — os mesmos pontos
+  de entrada que o CLI/serve usam de verdade, não uma reimplementação
+  paralela. Mede custo/tokens/latência via o mesmo `cost_sink` desta sprint;
+  qualidade fica como campo `quality_verdict` em branco para revisão manual
+  pareada, conforme a metodologia já definida. Testado hermeticamente
+  (`tests/test_compare_executors.py`, 7 testes, mocka os clientes/adapter —
+  não bate em provider real). Rodar de verdade exige `python -m
+  evals.compare_executors --config config.yaml` com credenciais reais; isso
+  **não roda na suíte padrão nem em CI**.
+- [ ] Rodar o harness de verdade contra um provider real e preencher os
+  vereditos de qualidade — ação do operador, não deste commit; os números
+  que saírem dessa rodada devem alimentar a decisão de contexto acima antes
+  de fechar o sprint 36.
