@@ -1802,7 +1802,10 @@ def create_app(
                 """Projeta eventos Agno para runtime + SSE sem payload sensível."""
                 event_type = _safe_event_value(event.get("event"), limit=64)
                 if event_type == "message.delta":
-                    events.put(("delta", str(event.get("content") or "")))
+                    # O AgnoRuntimeAdapter também encaminha o mesmo chunk pelo
+                    # delta_stream instalado nesta thread. O sink é a única
+                    # fonte de texto SSE; manter os eventos aqui duplicaria
+                    # cada trecho no cliente.
                     return
 
                 data = event.get("data") if isinstance(event.get("data"), dict) else {}

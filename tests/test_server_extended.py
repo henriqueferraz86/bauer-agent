@@ -981,6 +981,41 @@ def test_stream_delivers_final_response_without_deltas(tmp_path: Path):
     assert _has_tool_event(events, "calculate")
 
 
+def test_stream_agno_delta_is_not_enqueued_twice(tmp_path: Path, monkeypatch):
+    """Agno text reaches SSE through delta_stream and its adapter event callback."""
+    from bauer.delta_stream import emit_delta
+    from bauer.tool_router import ToolRouter
+
+    from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "model:\n  provider: openrouter\n  name: deepseek/deepseek-v4-flash\n"
+        "kernel:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+    runtime_mode = tmp_path / "runtime" / "serve-runtime-mode.json"
+    runtime_mode.parent.mkdir(parents=True)
+    runtime_mode.write_text('{"mode":"agno"}', encoding="utf-8")
+
+    def fake_run_agent(self, _request):
+        emit_delta("único")
+        self._event_sink({"event": "message.delta", "content": "único"})
+        return {"status": "completed", "output": "único", "metadata": {"tools": []}}
+
+    monkeypatch.setattr(AgnoRuntimeAdapter, "run_agent", fake_run_agent)
+    app = create_app(
+        model_name="deepseek/deepseek-v4-flash", applied_context=4096,
+        router=ToolRouter(workspace=tmp_path), client=MagicMock(),
+        system_prompt="s", sessions_dir=tmp_path / "sessions",
+        api_key="", rate_limit_requests=0, config_path=config_path,
+    )
+    response = TestClient(app).get("/stream?message=oi")
+
+    assert response.status_code == 200
+    assert _stream_text(response.text) == "único"
+
+
 def test_stream_records_cost_tokens_and_budget(tmp_path: Path):
     """Regressão: o serve nunca registrava custo/tokens — a Observabilidade
     ('tokens hoje') e o budget do painel ('budget usado') ficavam em zero para

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from functools import wraps
@@ -13,6 +14,8 @@ from uuid import uuid4
 
 from ..agent_spec import AgentSpec, agent_spec_from_mapping, agno_agent_spec_from_bauer
 from .base import RuntimeAdapterError
+from ....cost_meter import report_llm_cost
+from ....delta_stream import emit_delta
 from ....execution_control import checkpoint_execution
 from ....provider_retry import ProviderRetryInterrupted
 
@@ -255,13 +258,18 @@ class AgnoRuntimeAdapter:
             for event in _checkpointed_events(_in_agno_session(session_id, team.run(
                 prompt,
                 stream=True,
+                stream_events=True,
                 run_id=run_id,
                 session_id=session_id,
                 user_id=user_id,
             ))):
                 agno_run_id = getattr(event, "run_id", agno_run_id)
-                event_name = str(getattr(event, "event", "") or "").lower()
-                if "error" in event_name or "cancel" in event_name:
+                agno_event = self._agno_event_name(event)
+                event_name = agno_event.lower()
+                event_run_id = getattr(event, "run_id", None)
+                root_event = (str(event_run_id) == run_id if event_run_id
+                              else not getattr(event, "parent_run_id", None))
+                if root_event and ("error" in event_name or "cancel" in event_name):
                     failed = {
                         "event": "run.failed" if "error" in event_name else "run.cancelled",
                         "status": "failed" if "error" in event_name else "cancelled",
@@ -274,8 +282,9 @@ class AgnoRuntimeAdapter:
                     yield failed
                     return
                 content = getattr(event, "content", None)
-                if content:
+                if content and root_event and agno_event == "TeamRunContent":
                     final_content += str(content)
+                    emit_delta(str(content))
                     yield {
                         "event": "message.delta",
                         "status": "running",
@@ -284,6 +293,11 @@ class AgnoRuntimeAdapter:
                         "runtime_adapter": self.name,
                         "content": str(content),
                     }
+                if root_event and agno_event == "TeamRunCompleted":
+                    team_spec = request.get("team_spec") or {}
+                    supervisor: dict[str, Any] = (team_spec.get("supervisor") or request.get("supervisor_spec")
+                                  or next(iter(request.get("agent_specs") or []), {}))
+                    self._report_run_cost(event, {**request, "agent_spec": supervisor})
                 member_responses = getattr(event, "member_responses", None)
                 if member_responses:
                     member_events.append({"count": len(member_responses)})
@@ -405,6 +419,7 @@ class AgnoRuntimeAdapter:
                 is_final_content = is_team_content if team_request else agno_event == "RunContent"
                 if content and (not is_member_event) and is_final_content:
                     final_content += str(content)
+                    emit_delta(str(content))
                     yield {
                         "event": "message.delta",
                         "status": "running",
@@ -413,6 +428,10 @@ class AgnoRuntimeAdapter:
                         "runtime_adapter": self.name,
                         "content": str(content),
                     }
+
+                if (not is_member_event and agno_event in {"RunCompleted", "TeamRunCompleted"}
+                        and str(getattr(event, "run_id", None) or run_id) == run_id):
+                    self._report_run_cost(event, request)
         except Exception as exc:  # noqa: BLE001 — normalize cancellation at the adapter boundary
             cancelled = isinstance(exc, ProviderRetryInterrupted) or _is_agno_cancellation(exc)
             failed = {
@@ -674,6 +693,53 @@ class AgnoRuntimeAdapter:
             "teamtoolcallerror": "ToolCallError",
         }
         return aliases.get(raw.lower(), raw)
+
+    def _report_run_cost(self, event: Any, request: dict[str, Any]) -> None:
+        """Feed Agno's RunMetrics to the active cost_sink, same accounting as bauer_native.
+
+        Field names differ between the two: Agno's RunMetrics uses
+        cache_read_tokens/cache_write_tokens, while normalize_usage expects
+        the Anthropic-style cache_read_input_tokens/cache_creation_input_tokens.
+        """
+        provider, model_name = self._effective_model_spec(request.get("agent_spec") or {})
+        try:
+            metrics = getattr(event, "metrics", None)
+            usage: dict[str, Any] | None = None
+            if metrics is not None:
+                def tokens(field: str) -> int:
+                    try:
+                        return max(0, int(getattr(metrics, field, 0) or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        return 0
+
+                input_tokens = tokens("input_tokens")
+                cache_read = tokens("cache_read_tokens")
+                cache_write = tokens("cache_write_tokens")
+                # Agno's OpenAI metrics contain the full prompt count, including
+                # cached input. Claude metrics retain Anthropic's *regular*
+                # input count instead. Use canonical prompt_tokens so the
+                # shared normalizer never interprets OpenAI usage as Claude.
+                prompt_tokens = input_tokens
+                if provider == "anthropic":
+                    prompt_tokens += cache_read + cache_write
+                raw_usage: dict[str, Any] = {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": tokens("output_tokens"),
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_write,
+                }
+                reported_cost = getattr(metrics, "cost", None)
+                valid_cost = (isinstance(reported_cost, (int, float))
+                              and not isinstance(reported_cost, bool)
+                              and math.isfinite(reported_cost) and reported_cost > 0)
+                # The shared pricing contract treats explicit zero as absent:
+                # keep token estimation, and never change that global policy.
+                if valid_cost:
+                    raw_usage["cost"] = reported_cost
+                usage = raw_usage if valid_cost or any(raw_usage.values()) else None
+            report_llm_cost(provider, model_name, usage)
+        except Exception:  # noqa: BLE001 — accounting never breaks the turn
+            logging.getLogger("bauer.agno_adapter").debug("cost report failed", exc_info=True)
 
     @classmethod
     def _normalize_agent_event(

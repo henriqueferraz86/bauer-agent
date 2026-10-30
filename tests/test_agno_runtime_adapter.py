@@ -1030,3 +1030,257 @@ def test_tool_event_log_deduplicates_aggregates_and_preserves_partial_failure(tm
     assert len(log) == 2
     assert [item["tool_call_id"] for item in log] == ["call-1", "call-2"]
     assert log[1]["status"] == "failed" and log[1]["result"] == "blocked"
+
+
+def test_agno_stream_emits_through_delta_stream_sink(tmp_path):
+    """Sprint 36: streaming must not depend on server.py's bespoke event bridge."""
+    from bauer.delta_stream import reset_sink, set_sink
+
+    received: list[str] = []
+
+    class Sink:
+        def on_delta(self, chunk: str) -> None:
+            received.append(chunk)
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "agno.db")})
+    token = set_sink(Sink())
+    try:
+        result = adapter.run_agent({
+            "session_id": "session-1", "user_id": "user-1", "task": "stream from bauer",
+        })
+    finally:
+        reset_sink(token)
+
+    assert result["status"] == "completed"
+    assert received, "emit_delta was never called during stream_agent"
+    assert "".join(received) == result["output"]
+
+
+def test_agno_run_completed_reports_cost_to_sink(tmp_path, monkeypatch):
+    """Sprint 36: Agno RunMetrics must feed the same cost_sink as bauer_native."""
+    from agno.metrics import RunMetrics
+    from agno.run.agent import RunCompletedEvent, RunContentEvent
+
+    from bauer.cost_meter import cost_sink
+
+    class ControlledAgent:
+        def run(self, *args, **kwargs):
+            yield RunContentEvent(content="hi")
+            yield RunCompletedEvent(
+                content="hi",
+                metrics=RunMetrics(
+                    input_tokens=100, output_tokens=20,
+                    cache_read_tokens=5, cache_write_tokens=3,
+                ),
+            )
+
+    calls: list[tuple[str, str, dict, float]] = []
+
+    def fake_sink(provider: str, model: str, usage: dict, cost_usd: float) -> None:
+        calls.append((provider, model, usage, cost_usd))
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "cost.db")})
+    monkeypatch.setattr(adapter, "_runtime_for_request", lambda *args, **kwargs: ControlledAgent())
+    token = cost_sink.set(fake_sink)
+    try:
+        result = adapter.run_agent({
+            "task": "cost test", "agent_spec": {"provider": "openrouter", "model": "deepseek/deepseek-chat"},
+        })
+    finally:
+        cost_sink.reset(token)
+
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    provider, model, usage, _cost_usd = calls[0]
+    assert provider == "openrouter"
+    assert model == "deepseek/deepseek-chat"
+    assert usage["prompt_tokens"] >= 100
+    assert usage["completion_tokens"] == 20
+    assert usage["cache_read_input_tokens"] == 5
+    assert usage["cache_creation_input_tokens"] == 3
+
+
+def test_agno_run_completed_without_metrics_reports_zero_cost(tmp_path, monkeypatch):
+    """Missing RunMetrics must not crash the run nor invent cost."""
+    from agno.run.agent import RunCompletedEvent, RunContentEvent
+
+    from bauer.cost_meter import cost_sink
+
+    class ControlledAgent:
+        def run(self, *args, **kwargs):
+            yield RunContentEvent(content="hi")
+            yield RunCompletedEvent(content="hi", metrics=None)
+
+    calls: list[tuple[str, str, dict, float]] = []
+
+    def fake_sink(provider: str, model: str, usage: dict, cost_usd: float) -> None:
+        calls.append((provider, model, usage, cost_usd))
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "cost2.db")})
+    monkeypatch.setattr(adapter, "_runtime_for_request", lambda *args, **kwargs: ControlledAgent())
+    token = cost_sink.set(fake_sink)
+    try:
+        result = adapter.run_agent({"task": "no metrics"})
+    finally:
+        cost_sink.reset(token)
+
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    _provider, _model, usage, cost_usd = calls[0]
+    assert cost_usd == 0.0
+    assert usage == {}
+
+
+@pytest.mark.parametrize("input_tokens,output_tokens", [(0, 0), (100, 20)])
+def test_agno_prefers_provider_reported_cost_even_without_token_usage(tmp_path, monkeypatch, input_tokens, output_tokens):
+    from agno.metrics import RunMetrics
+    from agno.run.agent import RunCompletedEvent, RunContentEvent
+    from bauer.cost_meter import cost_sink
+
+    class ControlledAgent:
+        def run(self, *args, **kwargs):
+            yield RunContentEvent(content="answer")
+            yield RunCompletedEvent(metrics=RunMetrics(input_tokens=input_tokens, output_tokens=output_tokens, cost=1.23))
+
+    calls = []
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "cost.db")})
+    monkeypatch.setattr(adapter, "_runtime_for_request", lambda *args, **kwargs: ControlledAgent())
+    token = cost_sink.set(lambda *args: calls.append(args))
+    try:
+        result = adapter.run_agent({"task": "controlled", "agent_spec": {"provider": "openrouter", "model": "unknown-model"}})
+    finally:
+        cost_sink.reset(token)
+
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    assert calls[0][2]["cost"] == 1.23
+    assert calls[0][3] == 1.23
+
+
+@pytest.mark.parametrize("provider,model,prompt_tokens,expected_cost", [
+    ("openai", "gpt-4o", 100, 0.00045),
+    ("openrouter", "unknown-model", 100, 0.00018),
+    ("anthropic", "claude-3-5-sonnet-20241022", 150, 0.0006495),
+])
+def test_agno_cache_tokens_use_provider_correct_prompt_totals(tmp_path, monkeypatch, provider, model, prompt_tokens, expected_cost):
+    from agno.metrics import RunMetrics
+    from agno.run.agent import RunCompletedEvent, RunContentEvent
+    from bauer.cost_meter import cost_sink
+
+    class ControlledAgent:
+        def run(self, *args, **kwargs):
+            yield RunContentEvent(content="answer")
+            yield RunCompletedEvent(metrics=RunMetrics(input_tokens=100, output_tokens=20, cache_read_tokens=40, cache_write_tokens=10))
+
+    calls = []
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "cache.db")})
+    monkeypatch.setattr(adapter, "_runtime_for_request", lambda *args, **kwargs: ControlledAgent())
+    token = cost_sink.set(lambda *args: calls.append(args))
+    try:
+        result = adapter.run_agent({"task": "controlled", "agent_spec": {"provider": provider, "model": model}})
+    finally:
+        cost_sink.reset(token)
+
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    assert calls[0][2]["prompt_tokens"] == prompt_tokens
+    assert calls[0][2]["cache_read_input_tokens"] == 40
+    assert calls[0][2]["cache_creation_input_tokens"] == 10
+    assert calls[0][3] == pytest.approx(expected_cost)
+
+
+@pytest.mark.parametrize("reported_cost", [-1, float("nan"), float("inf"), True, "1.23"])
+def test_agno_invalid_reported_cost_falls_back_to_token_estimate(tmp_path, reported_cost):
+    from types import SimpleNamespace
+    from bauer.cost_meter import cost_sink
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "invalid-cost.db")})
+    calls = []
+    token = cost_sink.set(lambda *args: calls.append(args))
+    try:
+        adapter._report_run_cost(SimpleNamespace(metrics=SimpleNamespace(input_tokens=100, output_tokens=20, cost=reported_cost)),
+                                 {"agent_spec": {"provider": "openai", "model": "gpt-4o"}})
+    finally:
+        cost_sink.reset(token)
+    assert len(calls) == 1
+    assert "cost" not in calls[0][2]
+    assert calls[0][3] == pytest.approx(0.00045)
+
+
+@pytest.mark.parametrize("input_tokens,expected_cost", [(0, 0.0), (100, 0.00025)])
+def test_agno_zero_reported_cost_keeps_shared_estimation_semantics(tmp_path, input_tokens, expected_cost):
+    from types import SimpleNamespace
+    from bauer.cost_meter import cost_sink
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "zero-cost.db")})
+    calls = []
+    token = cost_sink.set(lambda *args: calls.append(args))
+    try:
+        adapter._report_run_cost(SimpleNamespace(metrics=SimpleNamespace(input_tokens=input_tokens, cost=0)),
+                                 {"agent_spec": {"provider": "openai", "model": "gpt-4o"}})
+    finally:
+        cost_sink.reset(token)
+    assert len(calls) == 1
+    assert "cost" not in calls[0][2]
+    assert calls[0][3] == pytest.approx(expected_cost)
+
+
+def test_agno_public_team_stream_uses_delta_and_cost_sinks_once(tmp_path, monkeypatch):
+    from agno.metrics import RunMetrics
+    from agno.run.agent import RunCompletedEvent as MemberCompletedEvent
+    from agno.run.agent import RunContentEvent as MemberContentEvent
+    from agno.run.team import RunCompletedEvent, RunContentEvent
+    from bauer.cost_meter import cost_sink
+    from bauer.delta_stream import set_sink, reset_sink
+
+    class ControlledTeam:
+        def run(self, *args, **kwargs):
+            assert kwargs['stream_events'] is True
+            yield MemberContentEvent(run_id='member-run', parent_run_id='team-run', content='private member')
+            yield MemberCompletedEvent(run_id='member-run', parent_run_id='team-run', metrics=RunMetrics(cost=99))
+            yield RunContentEvent(run_id='team-run', content='hello')
+            yield RunContentEvent(run_id='team-run', content=' team')
+            yield RunCompletedEvent(run_id='team-run', content='hello team', metrics=RunMetrics(input_tokens=100, cost=1.23))
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "team-cost.db")})
+    monkeypatch.setattr(adapter, '_legacy_team_for_request', lambda *args, **kwargs: ControlledTeam())
+    calls, deltas = [], []
+    cost_token = cost_sink.set(lambda *args: calls.append(args))
+    delta_token = set_sink(deltas.append)
+    try:
+        result = adapter.run_team({'run_id': 'team-run', 'task': 'controlled',
+                                   'supervisor_spec': {'provider': 'openai', 'model': 'gpt-4o'}})
+    finally:
+        cost_sink.reset(cost_token)
+        reset_sink(delta_token)
+    assert result['status'] == 'completed'
+    assert result['output'] == 'hello team'
+    assert deltas == ['hello', ' team']
+    assert len(calls) == 1
+    assert calls[0][0:2] == ('openai', 'gpt-4o')
+    assert calls[0][3] == 1.23
+
+
+def test_agno_nested_team_completion_does_not_double_count_cost(tmp_path, monkeypatch):
+    from agno.metrics import RunMetrics
+    from agno.run.team import RunCompletedEvent, RunContentEvent
+    from bauer.cost_meter import cost_sink
+
+    class ControlledTeam:
+        def run(self, *args, **kwargs):
+            yield RunCompletedEvent(run_id='nested-run', parent_run_id='top-run', metrics=RunMetrics(cost=99))
+            yield RunContentEvent(run_id='top-run', content='answer')
+            yield RunCompletedEvent(run_id='top-run', metrics=RunMetrics(cost=1.23))
+
+    adapter = AgnoRuntimeAdapter(adapter_config={'db_file': str(tmp_path / 'nested-cost.db')})
+    monkeypatch.setattr(adapter, '_runtime_for_request', lambda *args, **kwargs: ControlledTeam())
+    calls = []
+    token = cost_sink.set(lambda *args: calls.append(args))
+    try:
+        result = adapter.run_agent({'run_id': 'top-run', 'team_id': 'team', 'task': 'controlled',
+                                    'agent_spec': {'provider': 'openai', 'model': 'gpt-4o'}})
+    finally:
+        cost_sink.reset(token)
+    assert result['status'] == 'completed'
+    assert len(calls) == 1
+    assert calls[0][3] == 1.23

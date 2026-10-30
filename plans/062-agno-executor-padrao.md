@@ -1,9 +1,10 @@
 # Plano 062 — Agno como motor de execução padrão do turno
 
-**Status:** IN PROGRESS — sprint 35 (checkpoints de cancelamento no
-AgnoRuntimeAdapter) entregue e validado em 2026-10-29: backlog completo,
-suíte hermética e Ruff bloqueante verdes; sprints 36-40 ainda não
-iniciadas.
+**Status:** IN PROGRESS — sprint 35 (checkpoints de cancelamento) e a
+implementação de código do sprint 36 (streaming/custo/contexto) foram
+validados em 2026-10-30 com suíte hermética e Ruff verdes. O sprint 36 segue
+aberto até o operador decidir a estratégia de contexto e o harness comparativo
+registrar custo/latência/qualidade. Sprints 37-40 não iniciadas.
 
 **Prioridade:** P1
 
