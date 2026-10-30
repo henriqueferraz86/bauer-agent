@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import math
 from typing import Any
 
 from .core.runtime.run_manager import RUN_STATUSES, TERMINAL_RUN_STATUSES, Run
@@ -60,6 +61,13 @@ def _project_run(run: Run, event_bus: Any) -> dict[str, Any]:
     if isinstance(spec, dict) and spec.get("id") == run.agent_id:
         name = _text(spec.get("name"), fallback=name)
     status = run.status if run.status in RUN_STATUSES else "unknown"
+    cost = run.cost_estimate
+    cost_known = (
+        run.usage_known is True
+        and isinstance(cost, (int, float))
+        and math.isfinite(float(cost))
+        and float(cost) >= 0
+    )
     parent = _card(parent_id, name, task, status, _text(run.updated_at))
     agents = {parent_id: parent}
     events = event_bus.list_events(run_id=run.id, limit=MAX_EVENTS_PER_RUN)
@@ -130,6 +138,15 @@ def _project_run(run: Run, event_bus: Any) -> dict[str, Any]:
         "run_id": _text(run.id), "task": task, "status": status,
         "agent_id": parent_id, "agent_name": parent["name"],
         "runtime": _text(run.runtime_adapter, fallback="unknown"),
+        "cost_known": cost_known,
+        "cost_estimate": round(float(cost), 6) if cost_known and cost is not None else None,
+        # Run.error is provider/runtime supplied and can contain prompts,
+        # tool arguments, results or tracebacks. Keep the public projection
+        # useful without exposing those internals.
+        "error_summary": (
+            "A execução falhou; consulte os logs locais."
+            if status == "failed" and run.error else None
+        ),
         "started_at": _text(run.started_at), "updated_at": latest_timestamp,
         "agents": list(agents.values()),
     }

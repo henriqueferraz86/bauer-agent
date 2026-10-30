@@ -48,6 +48,8 @@ from .channel_base import (
     chunk_text,
     resolve_token,
 )
+from .channel_projects import operator_key, private_telegram
+from .privacy import redact_text
 
 logger = logging.getLogger("bauer.telegram")
 
@@ -59,6 +61,10 @@ TYPING_INTERVAL_S = 4.5      # sendChatAction expira em ~5s
 STREAM_EDIT_INTERVAL_S = 2.5  # rate limit de editMessageText
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # limite da Bot API p/ getFile
 PROJECT_PICKER_TTL_S = 600.0
+ACTIVITY_CALLBACK_TTL_S = 600.0
+ACTIVITY_WATCH_TTL_S = 24 * 60 * 60
+ACTIVITY_CALLBACK_LIMIT = 500
+ACTIVITY_CARD_LIMIT = MAX_MESSAGE_CHARS - 64
 _MEDIA_CONTEXT: ContextVar[tuple[Path, str] | None] = ContextVar("telegram_media_context", default=None)
 MAX_TURN_WORKERS = 4         # turnos concorrentes (chats diferentes)
 
@@ -71,6 +77,7 @@ BOT_COMMANDS = [
     {"command": "projetos", "description": "Escolher o projeto desta conversa"},
     {"command": "projeto", "description": "Consultar projeto desta conversa"},
     {"command": "tarefas", "description": "Tarefas do projeto"},
+    {"command": "atividade", "description": "Atividade da execução atual"},
     {"command": "cancelar", "description": "Solicitar parada da tarefa atual"},
     {"command": "status", "description": "Modelo, contexto e sessão atual"},
     {"command": "model", "description": "Trocar provider/modelo (botões)"},
@@ -417,10 +424,17 @@ class TelegramBridge(BaseBridge):
         self._executor = ThreadPoolExecutor(
             max_workers=MAX_TURN_WORKERS, thread_name_prefix="tg-turn"
         )
+        self._executor_shutdown = False
         # Estado do model picker por chat: {"providers": [...], "models": {...}}
         self._picker_state: dict[str, dict] = {}
         self._project_callbacks: dict[str, dict] = {}
         self._project_callback_lock = threading.Lock()
+        self._activity_callbacks: dict[str, dict] = {}
+        self._activity_lock = threading.RLock()
+        self._activity_http_lock = threading.Lock()
+        self._activity_shutdown = False
+        self._activity_generation = 0
+        self._activity_buses: dict[int, object] = {}
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
 
@@ -859,6 +873,381 @@ class TelegramBridge(BaseBridge):
         self._api("editMessageText", chat_id=chat_id, message_id=message["message_id"],
                   text=text, reply_markup={"inline_keyboard": []})
 
+    @staticmethod
+    def _activity_keyboard(token: str) -> dict:
+        return {"inline_keyboard": [[{
+            "text": "🔄 Atualizar", "callback_data": f"act:{token}",
+        }]]}
+
+    @staticmethod
+    def _activity_text(project_name: str, run: dict | None) -> str:
+        safe_project = redact_text(str(project_name or "Projeto"))
+        safe_project = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", safe_project).split())[:80] or "Projeto"
+        if not run:
+            return f"📊 Atividade — {safe_project}\nNenhuma execução encontrada nesta conversa."
+        status_labels = {
+            "created": "Criada", "planning": "Planejando", "policy_check": "Verificando política",
+            "queued": "Na fila", "running": "Em andamento", "waiting_approval": "Aguardando aprovação",
+            "evaluating": "Validando resultado", "retrying": "Tentando novamente", "paused": "Pausada",
+            "completed": "Concluída", "failed": "Falhou", "cancelled": "Cancelada",
+        }
+        header = [
+            f"📊 Atividade — {safe_project}",
+            f"Tarefa: {run.get('task') or 'Tarefa não informada'}",
+            f"Execução: {str(run.get('run_id') or '')[:48]}",
+            f"Estado: {status_labels.get(run.get('status'), 'Estado não informado')}",
+        ]
+        agents = run.get("agents") if isinstance(run.get("agents"), list) else []
+        agent_lines = []
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            name = str(agent.get("name") or "Agente")[:80]
+            task = str(agent.get("task") or "Tarefa não informada")[:180]
+            activity = str(agent.get("activity") or "Estado não informado")[:80]
+            rendered = f"\n{name} — {activity}\nTarefa: {task}"
+            tool = agent.get("tool_name")
+            if isinstance(tool, str) and tool:
+                rendered += f"\nFerramenta: {tool[:80]}"
+            agent_lines.append(rendered)
+        if run.get("cost_known") is True and isinstance(run.get("cost_estimate"), (int, float)):
+            footer = [f"\nCusto: ${float(run['cost_estimate']):.6f}"]
+        else:
+            footer = ["\nCusto: desconhecido"]
+        summary = run.get("error_summary")
+        if run.get("status") == "failed":
+            footer.append(f"\n{summary if isinstance(summary, str) else 'A execução falhou; consulte os logs locais.'}")
+        selected = agent_lines[:12]
+        while True:
+            omitted = len(agent_lines) - len(selected)
+            middle = selected[:]
+            if omitted:
+                middle.append(f"\nMais {omitted} agente(s) omitido(s) para caber no cartão.")
+            text = "\n".join([*header, *middle, *footer])
+            if len(text) <= ACTIVITY_CARD_LIMIT or not selected:
+                break
+            selected.pop()
+        if len(text) > ACTIVITY_CARD_LIMIT:
+            text = text[:ACTIVITY_CARD_LIMIT - 1] + "…"
+        return text
+
+    def _activity_context(self, msg: ChannelMessage, *, run_id: str | None = None):
+        """Resolve a current binding on every initial render and refresh."""
+        source = getattr(self.backend, "channel_activity_source", None)
+        query = getattr(self.backend, "channel_activity", None)
+        if not callable(source) or not callable(query):
+            raise RuntimeError("activity runtime unavailable")
+        context, kernel = source(msg)
+        if kernel is None:
+            return context, {"session_id": context.session_key, "runs": []}, None
+        projection = query(msg, run_id=run_id)
+        # Re-read after the store query to reject a project selection/path race.
+        fresh_context, fresh_kernel = source(msg)
+        if (fresh_context.project_id != context.project_id
+                or fresh_context.session_key != context.session_key
+                or fresh_context.workspace != context.workspace
+                or fresh_kernel is not kernel):
+            raise ValueError("project binding changed during activity refresh")
+        return fresh_context, projection, kernel
+
+    def _activity_send_api(self, method: str, **params) -> dict | None:
+        """Serialize activity sends with stop so a closed client is never used."""
+        with self._activity_http_lock:
+            if self._activity_shutdown or self.stopped:
+                return None
+            return self._api(method, **params)
+
+    def _activity_send_text(self, chat_id: str, text: str) -> None:
+        with self._activity_http_lock:
+            if not self._activity_shutdown and not self.stopped:
+                self.send_text(chat_id, text)
+
+    def _send_activity_card(self, msg: ChannelMessage) -> None:
+        if not private_telegram(msg):
+            self._activity_send_text(
+                msg.chat_id,
+                "Consulte a atividade em uma conversa privada autorizada com o bot.",
+            )
+            return
+        try:
+            context, projection, kernel = self._activity_context(msg)
+            runs = projection.get("runs") if isinstance(projection, dict) else None
+            if not isinstance(runs, list) or not runs:
+                self._activity_send_api(
+                    "sendMessage", chat_id=msg.chat_id,
+                    text=self._activity_text(context.name, None),
+                )
+                return
+            if kernel is None:
+                for run in runs[:5]:
+                    if self._activity_send_api(
+                        "sendMessage", chat_id=msg.chat_id,
+                        text=self._activity_text(context.name, run if isinstance(run, dict) else None),
+                    ) is None:
+                        return
+                return
+            self._ensure_activity_subscriber(kernel.bus)
+            for run in runs[:5]:
+                if not isinstance(run, dict) or not run.get("run_id"):
+                    continue
+                token = None
+                active = run.get("status") not in {"completed", "failed", "cancelled"}
+                if active:
+                    token = secrets.token_urlsafe(18)
+                    record = {
+                        "owner": operator_key(msg), "user_id": msg.user_id,
+                        "chat_id": msg.chat_id, "message_id": None,
+                        "project_id": context.project_id, "session_key": context.session_key,
+                        "workspace": str(context.workspace), "run_id": str(run["run_id"]),
+                        "project_name": context.name,
+                        "callback_expires_at": time.monotonic() + ACTIVITY_CALLBACK_TTL_S,
+                        "watch_expires_at": time.monotonic() + ACTIVITY_WATCH_TTL_S,
+                        "generation": self._activity_generation,
+                        "bus": kernel.bus, "bus_id": id(kernel.bus), "ready": False,
+                        "last_edit": time.monotonic(), "timer": None, "edit_lock": threading.Lock(),
+                        "live": True, "dirty": False, "inflight": False,
+                    }
+                    with self._activity_lock:
+                        self._activity_callbacks = {
+                            key: value for key, value in self._activity_callbacks.items()
+                            if value["watch_expires_at"] > time.monotonic()
+                        }
+                        self._activity_callbacks[token] = record
+                        while len(self._activity_callbacks) > ACTIVITY_CALLBACK_LIMIT:
+                            oldest = next(iter(self._activity_callbacks))
+                            discarded = self._activity_callbacks.pop(oldest)
+                            timer = discarded.get("timer")
+                            if timer is not None:
+                                timer.cancel()
+                try:
+                    params = {"chat_id": msg.chat_id,
+                              "text": self._activity_text(context.name, run)}
+                    if token is not None:
+                        params["reply_markup"] = self._activity_keyboard(token)
+                    response = self._activity_send_api("sendMessage", **params)
+                except Exception:
+                    if token is not None:
+                        with self._activity_lock:
+                            self._activity_callbacks.pop(token, None)
+                    raise
+                if response is None:
+                    if token is not None:
+                        with self._activity_lock:
+                            self._activity_callbacks.pop(token, None)
+                    return
+                if token is not None:
+                    with self._activity_lock:
+                        current = self._activity_callbacks.get(token)
+                        if current is record:
+                            record["message_id"] = response.get("message_id")
+                            record["ready"] = record["message_id"] is not None
+                            record["last_edit"] = time.monotonic()
+                    if record["ready"]:
+                        latest = self.backend.channel_activity(msg, run_id=record["run_id"])
+                        current_runs = latest.get("runs") if isinstance(latest, dict) else None
+                        current = current_runs[0] if isinstance(current_runs, list) and current_runs else None
+                        if (isinstance(current, dict)
+                                and (current.get("updated_at") != run.get("updated_at")
+                                     or current.get("status") != run.get("status"))):
+                            self._schedule_activity_refresh(token)
+        except Exception as exc:  # noqa: BLE001 — presentation must not affect a run
+            logger.warning("Cartão de atividade indisponível (%s)", type(exc).__name__)
+            try:
+                self._activity_send_text(
+                    msg.chat_id,
+                    "Não consegui consultar a atividade agora. Tente /atividade novamente.",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ensure_activity_subscriber(self, event_bus) -> None:
+        bus_id = id(event_bus)
+        with self._activity_lock:
+            if self._activity_shutdown or self.stopped or bus_id in self._activity_buses:
+                return
+            self._activity_buses[bus_id] = event_bus
+
+            def on_event(event, *, expected_bus_id=bus_id):
+                self._activity_event(expected_bus_id, event)
+
+            event_bus.subscribe("*", on_event)
+
+    def _activity_event(self, bus_id: int, event) -> None:
+        if self._activity_shutdown or self.stopped:
+            return
+        run_id = getattr(event, "run_id", None)
+        session_id = getattr(event, "session_id", None)
+        event_type = getattr(event, "event_type", "")
+        if not run_id or not (event_type.startswith(("run.", "agent.", "tool.")) or event_type == "task.delegated"):
+            return
+        now = time.monotonic()
+        with self._activity_lock:
+            if self._activity_shutdown or self.stopped:
+                return
+            matching = [
+                (token, record) for token, record in self._activity_callbacks.items()
+                if record["bus_id"] == bus_id and record["run_id"] == run_id
+                and (not session_id or record["session_key"] == session_id)
+                and record["live"] and record["watch_expires_at"] > now
+            ]
+            for token, record in matching:
+                record["dirty"] = True
+                if record["ready"]:
+                    self._schedule_activity_refresh_locked(token, record, now)
+
+    def _schedule_activity_refresh_locked(self, token: str, record: dict, now: float) -> None:
+        if (self._activity_shutdown or self.stopped or not record.get("live")
+                or record["watch_expires_at"] <= now):
+            return
+        if record.get("inflight"):
+            record["dirty"] = True
+            return
+        if record.get("timer") is not None or not record.get("ready"):
+            return
+        delay = max(0.0, STREAM_EDIT_INTERVAL_S - (now - record["last_edit"]))
+        timer = threading.Timer(delay, self._refresh_activity, args=(token,))
+        timer.daemon = True
+        record["timer"] = timer
+        timer.start()
+
+    def _schedule_activity_refresh(self, token: str) -> None:
+        with self._activity_lock:
+            record = self._activity_callbacks.get(token)
+            if (not self._activity_shutdown and not self.stopped and record is not None
+                    and record["live"] and record["watch_expires_at"] > time.monotonic()):
+                record["dirty"] = True
+                self._schedule_activity_refresh_locked(token, record, time.monotonic())
+
+    def _refresh_activity(self, token: str) -> None:
+        with self._activity_lock:
+            record = self._activity_callbacks.get(token)
+            if (self._activity_shutdown or self.stopped or record is None
+                    or record["watch_expires_at"] <= time.monotonic() or not record["ready"]):
+                return
+            record["timer"] = None
+            if record.get("inflight"):
+                record["dirty"] = True
+                return
+            now = time.monotonic()
+            remaining = STREAM_EDIT_INTERVAL_S - (now - record["last_edit"])
+            if remaining > 0:
+                # Timers can wake early and Telegram may also issue repeated
+                # manual refresh callbacks. Enforce the interval at execution,
+                # not only when calculating the original timer delay.
+                self._schedule_activity_refresh_locked(token, record, now)
+                return
+            record["inflight"] = True
+            record["dirty"] = False
+            generation = record["generation"]
+            # Rate-limit all edits, including manual refreshes and failed API
+            # attempts, by their start time rather than the last success.
+            record["last_edit"] = time.monotonic()
+        lock = record["edit_lock"]
+        if not lock.acquire(blocking=False):
+            with self._activity_lock:
+                record["inflight"] = False
+                record["dirty"] = True
+                self._schedule_activity_refresh_locked(token, record, time.monotonic())
+            return
+        try:
+            message = {
+                "chat": {"id": int(record["chat_id"]), "type": "private"},
+                "message_id": record["message_id"],
+            }
+            msg = ChannelMessage(
+                channel="telegram", user_id=record["user_id"], chat_id=record["chat_id"],
+                text="/atividade", raw={"message": message},
+            )
+            if not self._user_id_authorized(record["user_id"]):
+                return
+            context, projection, kernel = self._activity_context(msg, run_id=record["run_id"])
+            if (context.project_id != record["project_id"]
+                    or context.session_key != record["session_key"]
+                    or str(context.workspace) != record["workspace"]
+                    or context.name != record["project_name"]
+                    or kernel is None or id(kernel.bus) != record["bus_id"]):
+                return
+            runs = projection.get("runs") if isinstance(projection, dict) else None
+            run = runs[0] if isinstance(runs, list) and runs else None
+            text = self._activity_text(context.name, run if isinstance(run, dict) else None)
+            terminal = not isinstance(run, dict) or run.get("status") in {"completed", "failed", "cancelled"}
+            keyboard = {"inline_keyboard": []} if terminal else self._activity_keyboard(token)
+            try:
+                with self._activity_http_lock:
+                    if (self._activity_shutdown or self.stopped
+                            or generation != self._activity_generation):
+                        return
+                    with self._activity_lock:
+                        if self._activity_callbacks.get(token) is not record:
+                            return
+                    self._api(
+                        "editMessageText", chat_id=record["chat_id"],
+                        message_id=record["message_id"], text=text, reply_markup=keyboard,
+                    )
+            except Exception as exc:  # noqa: BLE001 — keep watch alive; runtime is read-only
+                logger.debug("Atualização de atividade falhou (%s)", type(exc).__name__)
+                if isinstance(run, dict) and run.get("status") in {"completed", "failed", "cancelled"}:
+                    try:
+                        with self._activity_http_lock:
+                            if (not self._activity_shutdown and not self.stopped
+                                    and generation == self._activity_generation):
+                                with self._activity_lock:
+                                    if self._activity_callbacks.get(token) is not record:
+                                        return
+                                self.send_text(
+                                    record["chat_id"],
+                                    self._activity_text(context.name, run),
+                                )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    with self._activity_lock:
+                        current = self._activity_callbacks.get(token)
+                        if current is record:
+                            record["live"] = False
+                            record["refresh_enabled"] = False
+                            record["dirty"] = False
+                return
+            with self._activity_lock:
+                current = self._activity_callbacks.get(token)
+                if current is record:
+                    record["last_edit"] = time.monotonic()
+                    if not isinstance(run, dict) or run.get("status") in {"completed", "failed", "cancelled"}:
+                        record["live"] = False
+                        record["refresh_enabled"] = False
+                        record["dirty"] = False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Projeção de atividade falhou (%s)", type(exc).__name__)
+        finally:
+            lock.release()
+            with self._activity_lock:
+                current = self._activity_callbacks.get(token)
+                if current is record:
+                    record["inflight"] = False
+                    if (record["dirty"] and record["live"]
+                            and record["watch_expires_at"] > time.monotonic()
+                            and not self._activity_shutdown and not self.stopped):
+                        record["dirty"] = False
+                        self._schedule_activity_refresh_locked(token, record, time.monotonic())
+
+    def _activity_callback(self, cq: dict) -> None:
+        message = cq.get("message") or {}
+        chat = message.get("chat") or {}
+        owner_id = str((cq.get("from") or {}).get("id", ""))
+        chat_id = str(chat.get("id", ""))
+        message_id = message.get("message_id")
+        token = str(cq.get("data", ""))[4:]
+        if chat.get("type") != "private" or not token or message_id is None:
+            return
+        with self._activity_lock:
+            record = self._activity_callbacks.get(token)
+            if (record is None or record["callback_expires_at"] <= time.monotonic()
+                    or record["owner"] != f"telegram:{chat_id}:{owner_id}"
+                    or record["user_id"] != owner_id or record["chat_id"] != chat_id
+                    or record["message_id"] != message_id
+                    or record.get("refresh_enabled", True) is False):
+                return
+        self._schedule_activity_refresh(token)
+
     def _handle_callback(self, cq: dict) -> None:
         cq_id = cq.get("id", "")
         data = cq.get("data", "") or ""
@@ -874,6 +1263,9 @@ class TelegramBridge(BaseBridge):
             return
         if data.startswith("proj:"):
             self._project_callback(cq)
+            return
+        if data.startswith("act:"):
+            self._activity_callback(cq)
             return
         if not data.startswith("mp:") or not chat_id or msg_id is None:
             return
@@ -1054,6 +1446,15 @@ class TelegramBridge(BaseBridge):
                 response = "Não foi possível solicitar a parada. Consulte /status e tente novamente."
             self.send_text(chat_id, response)
             return
+        if command == "/atividade":
+            if not self._user_id_authorized(msg.user_id):
+                self.msgs_dropped += 1
+                return
+            if not private_telegram(msg):
+                self.send_text(chat_id, "Consulte a atividade em uma conversa privada autorizada com o bot.")
+                return
+            self._send_activity_card(msg)
+            return
         if command == "/projetos":
             try:
                 self._send_project_picker(msg)
@@ -1137,12 +1538,49 @@ class TelegramBridge(BaseBridge):
             self.send_media(msg.chat_id, path)
 
     def stop(self) -> None:
-        super().stop()
+        # Serialize shutdown with activity HTTP calls. Once stop() returns,
+        # no live-card edit or terminal fallback can use the closed client.
+        with self._activity_http_lock:
+            self._activity_shutdown = True
+            self._activity_generation += 1
+            super().stop()
+        with self._activity_lock:
+            for record in self._activity_callbacks.values():
+                timer = record.get("timer")
+                if timer is not None:
+                    timer.cancel()
+                record["timer"] = None
+                record["live"] = False
+                record["dirty"] = False
+            self._activity_callbacks.clear()
         self._executor.shutdown(wait=False)
+        self._executor_shutdown = True
         try:
             self._http.close()
         except Exception:  # noqa: BLE001
             pass
+
+    def reset(self) -> None:
+        """Reopen transport resources after the gateway's automatic restart."""
+        with self._activity_http_lock:
+            self._activity_shutdown = True
+            self._activity_generation += 1
+            if getattr(self._http, "is_closed", True):
+                self._http = httpx.Client(timeout=POLL_TIMEOUT_S + 10)
+            if self._executor_shutdown:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=MAX_TURN_WORKERS, thread_name_prefix="tg-turn"
+                )
+                self._executor_shutdown = False
+            super().reset()
+        with self._activity_lock:
+            for record in self._activity_callbacks.values():
+                timer = record.get("timer")
+                if timer is not None:
+                    timer.cancel()
+            self._activity_callbacks.clear()
+        with self._activity_http_lock:
+            self._activity_shutdown = False
 
 
 def build_bridge_from_config(cfg, backend: AgentBackend | None = None) -> TelegramBridge:

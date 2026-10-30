@@ -5,12 +5,16 @@ from __future__ import annotations
 import threading
 from contextvars import ContextVar
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from bauer import projects_registry as registry
 from bauer.channel_base import AgentBackend, ChannelMessage
-from bauer.channel_projects import ChannelProjectError
+from bauer.channel_governance import configure_router
+from bauer.channel_projects import ChannelProjectError, operator_key
+from bauer.core.events import EventBus
+from bauer.core.runtime.run_manager import RunManager
 
 
 def message(text="oi", *, user="42", chat="42", private=True):
@@ -269,3 +273,79 @@ def test_legacy_channel_and_rawless_fakes_preserve_session_keys(setup_projects):
     backend.select_channel_project(message(), entries[0]["id"])
     assert backend.session_key(ChannelMessage("telegram", "42", "42", "oi")) == "tg:42"
     assert backend.session_key(ChannelMessage("discord", "42", "42", "oi")) == "dc:42"
+
+
+def test_channel_activity_uses_fresh_project_binding_and_filters_session(setup_projects):
+    make, entries, _ = setup_projects
+    backend = make()
+    msg = message()
+    backend.select_channel_project(msg, entries[0]["id"])
+    bus = EventBus(root=Path(backend.sessions_dir).parent / "runtime")
+    runs = RunManager(store=bus.store, event_bus=bus)
+    backend._resolver_kernel = lambda: SimpleNamespace(runs=runs, bus=bus)
+    alpha = runs.create_run(session_id=backend.project_context(msg).session_key,
+                            agent_id="serve.chat", input={"message": "Alpha"}, status="running")
+    beta_context = backend._resolve_project(msg, entries[1]["id"])
+    beta = runs.create_run(session_id=beta_context.session_key,
+                           agent_id="serve.chat", input={"message": "Beta"}, status="running")
+
+    # Ignore an old snapshot and follow the current binding on every refresh.
+    backend.capture_project_context(msg)
+    backend._project_store.bind(operator_key(msg), entries[1]["id"], beta_context.workspace)
+    result = backend.channel_activity(msg)
+    assert result["session_id"] == beta_context.session_key
+    assert [item["run_id"] for item in result["runs"]] == [beta.id]
+    assert alpha.id not in [item["run_id"] for item in result["runs"]]
+
+
+def test_resolver_kernel_and_project_router_publish_on_same_event_bus(setup_projects, monkeypatch):
+    make, entries, _ = setup_projects
+    backend = make()
+    del backend._resolver_kernel
+    msg = message()
+    backend.select_channel_project(msg, entries[0]["id"])
+    cfg = SimpleNamespace(kernel=SimpleNamespace(
+        enabled=True, evaluator_enabled=False, max_replans=0, heartbeat_interval_s=0,
+    ))
+    monkeypatch.setattr("bauer.config_loader.load_config", lambda *args, **kwargs: cfg)
+
+    with backend.project_scope(msg) as context:
+        kernel = backend._resolver_kernel()
+    first_router = context.router
+    assert first_router._event_bus is kernel.bus
+
+    received = []
+    kernel.bus.subscribe("*", received.append)
+    first_router._event_bus.publish(
+        "agent.started", run_id="run-from-router", session_id=context.session_key,
+        agent_id="reviewer",
+    )
+    assert len(received) == 1
+    assert received[0].run_id == "run-from-router"
+
+    # Switching projects creates another router and Kernel, but they share the
+    # backend runtime bus so the bridge retains only one subscriber.
+    second_msg = message()
+    backend.select_channel_project(second_msg, entries[1]["id"])
+    with backend.project_scope(second_msg) as second_context:
+        second_kernel = backend._resolver_kernel()
+    assert second_context.router is not first_router
+    assert second_kernel is not kernel
+    assert second_kernel.bus is kernel.bus
+    assert second_context.router._event_bus is kernel.bus
+
+
+def test_resolver_uses_router_bus_for_kernel_creation(setup_projects, monkeypatch):
+    make, entries, _ = setup_projects
+    backend = make()
+    del backend._resolver_kernel
+    msg = message()
+    backend.select_channel_project(msg, entries[0]["id"])
+    cfg = SimpleNamespace(kernel=SimpleNamespace(
+        enabled=True, evaluator_enabled=False, max_replans=0, heartbeat_interval_s=0,
+    ))
+    monkeypatch.setattr("bauer.config_loader.load_config", lambda *args, **kwargs: cfg)
+    with backend.project_scope(msg) as context:
+        kernel = backend._resolver_kernel()
+    assert context.router._event_bus is kernel.bus
+    assert configure_router(context.router, sessions_dir=backend.sessions_dir) is kernel.bus

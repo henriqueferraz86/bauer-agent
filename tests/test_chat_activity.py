@@ -204,3 +204,30 @@ def test_same_agent_multiple_delegations_have_separate_task_instances(runtime):
     assert [member["name"] for member in members[1:]] == ["Revisor", "Revisor"]
     assert members[1]["status"] == "completed" and members[2]["status"] == "running"
     assert members[1]["task"] != members[2]["task"]
+
+
+def test_projection_marks_cost_unknown_and_never_exposes_runtime_error(runtime):
+    runs, bus = runtime
+    unknown = new_run(runs)
+    runs.update_run(unknown.id, status="failed", error="Traceback: PRIVATE_ARGS token=sk-secret")
+    projected = project(runtime)["runs"][0]
+    assert projected["cost_known"] is False
+    assert projected["cost_estimate"] is None
+    assert projected["error_summary"] == "A execução falhou; consulte os logs locais."
+    public = json.dumps(projected)
+    assert "Traceback" not in public and "PRIVATE_ARGS" not in public and "sk-secret" not in public
+
+    known = new_run(runs, task="Known cost", status="completed")
+    runs.update_run(known.id, cost_estimate=0.375, usage_known=True)
+    selected = project(runtime, run_id=known.id)["runs"][0]
+    assert selected["cost_known"] is True
+    assert selected["cost_estimate"] == 0.375
+
+
+def test_projection_does_not_claim_known_cost_without_an_amount(runtime):
+    runs, _ = runtime
+    run = new_run(runs)
+    runs.update_run(run.id, usage_known=True)
+    projected = project(runtime, run_id=run.id)["runs"][0]
+    assert projected["cost_known"] is False
+    assert projected["cost_estimate"] is None

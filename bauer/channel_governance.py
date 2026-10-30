@@ -37,6 +37,12 @@ def _runtime_bus(sessions_dir: str | Path, event_bus: EventBus | None) -> EventB
 def configure_router(router: Any, *, sessions_dir: str | Path,
                      event_bus: EventBus | None = None) -> EventBus:
     """Bind tool policy and events to the shared store without changing policy."""
+    if event_bus is None:
+        existing = getattr(router, "_event_bus", None)
+        existing_store = getattr(existing, "store", None)
+        existing_root = getattr(existing_store, "root", None)
+        if isinstance(existing_root, (str, Path)) and Path(existing_root).resolve() == runtime_root(sessions_dir):
+            event_bus = existing
     bus = _runtime_bus(sessions_dir, event_bus)
     router._policy_root = runtime_root(sessions_dir)
     router._event_bus = bus

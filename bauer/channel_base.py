@@ -67,6 +67,7 @@ HELP_TEXT = (
     "/status — modelo, contexto e sessão atual\n"
     "/model — lista modelos e troca o desta conversa\n"
     "/tasks — tarefas do kanban do workspace\n"
+    "/atividade — acompanha a execução deste projeto\n"
     "/new — começa uma conversa nova (apaga o histórico)\n"
     "/clear — o mesmo que /new\n"
     "/help — esta mensagem"
@@ -210,6 +211,21 @@ class AgentBackend:
         self._project_routers: Any = None
         self._project_router_builder: Any = None
         self._project_model_loaded: set[str] = set()
+        # Every project Kernel for this bridge uses the same runtime root.
+        # Keep one EventBus per backend so Telegram's subscriber lifetime is
+        # bounded even when users switch between many project workspaces.
+        self._channel_event_bus: Any = None
+        self._channel_event_bus_lock = threading.Lock()
+
+    def _configure_channel_router(self, router: Any) -> Any:
+        from .channel_governance import configure_router
+
+        with self._channel_event_bus_lock:
+            self._channel_event_bus = configure_router(
+                router, sessions_dir=self.sessions_dir,
+                event_bus=self._channel_event_bus,
+            )
+            return self._channel_event_bus
 
     def _channel_project_router(self, workspace: Path) -> Any:
         if self._project_router_builder is not None:
@@ -300,6 +316,35 @@ class AgentBackend:
             msg.project_snapshot = self.project_context(msg)
             msg.project_snapshot_captured = True
         return msg.project_snapshot
+
+    def channel_activity_source(self, msg: ChannelMessage) -> tuple[ChannelProjectContext, Any]:
+        """Resolve the current project binding and its governed runtime source."""
+        if not private_telegram(msg):
+            raise ChannelProjectError("A atividade está disponível somente em conversa privada.")
+        # Activity refreshes must follow the current persistent binding, never
+        # an old project snapshot retained by a Telegram update/callback.
+        current = ChannelMessage(
+            channel=msg.channel, user_id=msg.user_id, chat_id=msg.chat_id,
+            text=msg.text, user_name=msg.user_name, raw=msg.raw,
+        )
+        context = self.capture_project_context(current)
+        if context is None:
+            raise ChannelProjectError("Escolha um projeto com /projetos antes de consultar a atividade.")
+        with self.project_scope(current):
+            binding = self._project_store.binding(operator_key(current))
+            if binding != (context.project_id, str(context.workspace)):
+                raise ChannelProjectError("O projeto desta conversa mudou. Consulte /atividade novamente.")
+            kernel = self._resolver_kernel()
+        return context, kernel
+
+    def channel_activity(self, msg: ChannelMessage, *, run_id: str | None = None) -> dict[str, Any]:
+        """Return governed activity for the freshly bound private project session."""
+        context, kernel = self.channel_activity_source(msg)
+        if kernel is None or getattr(kernel, "runs", None) is None or getattr(kernel, "bus", None) is None:
+            return {"session_id": context.session_key, "runs": []}
+        from .server_activity import build_chat_activity
+
+        return build_chat_activity(kernel.runs, kernel.bus, context.session_key, run_id=run_id)
 
     def validate_project_snapshot(self, context: ChannelProjectContext | None) -> None:
         """Revalidate a queued request without following a changed selection."""
@@ -887,8 +932,10 @@ class AgentBackend:
                 # Config missing preserves the injected/legacy backend contract.
                 return None
             from .channel_governance import build_channel_kernel
+            event_bus = self._configure_channel_router(self._effective_router())
             kernel = build_channel_kernel(cfg, workspace=workspace,
-                                          sessions_dir=self.sessions_dir)
+                                          sessions_dir=self.sessions_dir,
+                                          event_bus=event_bus)
             self._workspace_kernels[workspace] = kernel
             while len(self._workspace_kernels) > 8:
                 self._workspace_kernels.popitem(last=False)
@@ -902,10 +949,10 @@ class AgentBackend:
                       execution: ChannelExecution | None = None) -> str:
         """Run synchronously inside the session's custody-owning worker."""
         from .core.kernel import run_governed
-        from .channel_governance import TurnMetrics, configure_router
+        from .channel_governance import TurnMetrics
         from .provider_retry import ProviderRetryInterrupted
 
-        configure_router(self._effective_router(), sessions_dir=self.sessions_dir)
+        self._configure_channel_router(self._effective_router())
         kernel = self._resolver_kernel()
         canal = execution.channel if execution is not None else (
             getattr(self, "name", None) or type(self).__name__.lower()
