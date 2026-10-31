@@ -12,9 +12,14 @@ bloqueantes que a revisão encontrou: chave de ativação própria da CLI,
 `runtime.cli_default_adapter`, default `bauer_native`, independente de
 `runtime.default_adapter`; e Ctrl-C que matava a sessão inteira em vez de só
 cancelar o turno). Suíte hermética completa verde (8500 testes). Validação
-manual (Ctrl-C real, aprovação inline, tool call via Agno real na CLI) ainda
-pendente — ação do operador, fora do que suíte hermética cobre. Sprints
-38-40 não iniciadas.
+manual rodada em 2026-10-31 contra provider real (sessão interativa de
+verdade, não simulada): pergunta simples, tool call e cancelamento por
+Ctrl-C confirmados funcionando — o processo sobrevive ao `SIGINT` e a sessão
+continua normal depois, resolvendo o risco que motivou o achado bloqueante
+nº2. Aprovação inline de tool sensível **não foi possível confirmar nem
+refutar** (duas tentativas executaram direto, sem prompt visível) — fica
+como item explicitamente não verificado para investigação futura, não como
+falha confirmada. Sprints 38-40 não iniciadas.
 
 **Prioridade:** P1
 

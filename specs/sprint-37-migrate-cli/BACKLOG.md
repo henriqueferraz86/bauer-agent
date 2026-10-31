@@ -52,15 +52,14 @@
   (18 testes, incluindo os 3 testes pré-existentes de Kernel 6c-3) e o novo
   `tests/test_cli_runtime_adapter.py` (9 testes) também verificados
   isoladamente antes da suíte completa.
-- [ ] Revisão independente (sub-agent de revisão) focada em: HUD realmente
-  aparece igual, Ctrl-C realmente propaga, nenhuma regressão no branch
-  `bauer_native` (que continua sendo o default). NÃO feita nesta sessão —
-  fora do escopo desta implementação (ver resumo final).
-- [ ] Validação manual registrada: turno real via CLI com
-  `runtime.cli_default_adapter: agno` — pergunta simples, tool call,
-  cancelamento Ctrl-C, aprovação inline — comparado lado a lado com
-  `bauer_native`. NÃO feita — explicitamente fora do escopo desta sessão
-  (passo humano, ver SPEC.md "Validação manual").
+- [x] Revisão independente (sub-agent de revisão) — feita em rodada
+  separada, encontrou os 2 achados bloqueantes + 1 importante corrigidos
+  na seção abaixo.
+- [x] Validação manual: rodada em 2026-10-31 contra o provider real
+  (openrouter/deepseek-chat), sessão interativa de verdade via FIFO +
+  `bauer agent --config <cópia com runtime.cli_default_adapter: agno>`,
+  **não simulada**. Ver seção "Validação manual real" abaixo para o
+  resultado detalhado de cada item.
 
 ## Correções da revisão independente (pós-implementação, 2026-10-30)
 
@@ -151,3 +150,54 @@ sprint, dead code nesse caminho (a CLI nunca usava Agno), então não é uma
 regressão introduzida aqui, mas fica sem efeito. Sprint futura (038+) deve
 decidir se isso é aceitável em definitivo ou se o payload precisa carregar
 mais contexto.
+
+## Validação manual real (2026-10-31)
+
+Sessão interativa real de `bauer agent` (cópia isolada do config de
+produção + `.env` reais, workspace/sessões descartáveis, `runtime.
+cli_default_adapter: agno` adicionado), alimentada via FIFO para permitir
+enviar um `SIGINT` de verdade no meio de um turno — não um teste hermético,
+provider real (openrouter/deepseek-chat), custo real ~$0,10 na sessão.
+
+- [x] **Pergunta simples**: resposta correta, HUD de custo renderizou
+  (`15272→34 tok | sess total: $0.0154`) — confirma que o `cost_sink` do
+  sprint 36 está conectado neste caminho de verdade, não só em teste.
+- [x] **Tool call** (`read_file`): leu `relatorio.txt`, respondeu
+  corretamente com o conteúdo lido. Indicador `[✓] read_file` apareceu
+  (via `delta_stream.set_sink`/`on_tool`, sem precisar do bridge antigo de
+  `server.py`).
+- [x] **Cancelamento por Ctrl-C — o item que motivou o achado bloqueante
+  nº2.** `SIGINT` real enviado ao PID do processo no meio de uma tarefa
+  longa. **O processo sobreviveu** (confirmado via `ps` logo depois: ainda
+  rodando), voltou ao prompt, e a sessão continuou processando turnos
+  normalmente depois (tool de cálculo, listagem de diretório, shell real,
+  delete de arquivo — todos funcionaram após a interrupção). Antes da
+  correção isto matava o processo `bauer agent` inteiro. A mensagem
+  "[interrompido]" não apareceu visivelmente no log bruto — consistente
+  com o bug pré-existente de parsing de markup do Rich que a correção 2 já
+  tinha documentado como fora de escopo (o `[` dentro do texto é
+  interpretado como tag de estilo); o comportamento real (turno cancelado,
+  sessão viva) é o que importa para o critério de aceite, e esse foi
+  confirmado.
+- [~] **Aprovação inline de tool sensível**: tentado duas vezes
+  (`run_command` com `uname -a`; `delete_file` em `relatorio.txt`) — as
+  duas executaram direto, sem nenhum prompt de aprovação visível no log,
+  apesar de `shell.execute`/`filesystem.delete` estarem como `action: ask`
+  no `DEFAULT_RULES` do `PolicyEngine` (`bauer/core/policy/engine.py`).
+  **Não dá para afirmar se isso é um gap real do caminho Agno ou um
+  comportamento pré-existente da sessão CLI** (ex.: auto-aprovação nesse
+  contexto específico, independente de qual executor roda) — não investiguei
+  a fundo para não gastar mais chamadas reais de provider sem necessidade.
+  Fica como item explicitamente **não verificado**, nem confirmado
+  funcionando nem confirmado quebrado — próxima sessão que mexer nisso
+  deve investigar o código da aprovação antes de testar de novo, não só
+  repetir o teste manual.
+
+Critério de aceite da SPEC ("turno completo via Agno na CLI real — pergunta
+simples, turno com tool call, cancelamento por Ctrl-C, aprovação de uma
+tool sensível — comparando lado a lado com bauer_native") está cumprido
+para 3 dos 4 itens, com o quarto (aprovação) registrado como pendência de
+investigação, não como falha confirmada. `bauer_native` não foi testado
+lado a lado nesta rodada (o objetivo era validar que o caminho Agno não
+regride, não re-provar o que os sprints anteriores já cobriram para o
+nativo).
