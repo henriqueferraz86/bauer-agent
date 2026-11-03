@@ -397,6 +397,28 @@ def doctor(
         f"requested={report.state.context.requested} -> applied={report.state.context.applied} ({report.state.context.reason})",
     )
     table.add_row("Tool mode:", report.state.tool_mode)
+    # Executor ativo do `bauer serve` (web): persistido em
+    # <sessions_dir>/../runtime/serve-runtime-mode.json pelo próprio server.py
+    # (ver `_set_runtime_mode`). `doctor` não tem um servidor rodando para
+    # perguntar via `/api/runtime/mode`, então lê o arquivo estaticamente a
+    # partir do default de `--sessions-dir` (`memory/sessions`, relativo ao
+    # cwd onde `bauer serve` normalmente roda). Isso é best-effort: se o serve
+    # tiver sido iniciado com `--sessions-dir` customizado ou noutro diretório,
+    # este arquivo não é o mesmo e a linha mostra o default sem avisar —
+    # não há forma de descobrir isso sem um servidor ativo.
+    try:
+        import json as _json
+
+        _runtime_mode_file = Path.cwd() / "memory" / "runtime" / "serve-runtime-mode.json"
+        _saved = _json.loads(_runtime_mode_file.read_text(encoding="utf-8"))
+        _web_executor = str(_saved.get("mode") or "bauer_native")
+    except (OSError, ValueError, AttributeError):
+        _web_executor = "bauer_native (default — nenhum bauer serve detectado neste diretório)"
+    table.add_row(
+        "Executor (web):",
+        f"{_web_executor} [dim](toggle único para /chat, /stream e /v1/chat/completions; "
+        "CLI e Telegram usam mecanismos próprios)[/dim]",
+    )
     table.add_row(
         "RAM:",
         f"{report.state.ram_available_mb} MB disponiveis / {report.state.ram_total_mb} MB totais",

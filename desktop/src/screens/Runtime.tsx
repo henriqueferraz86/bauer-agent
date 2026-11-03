@@ -82,6 +82,10 @@ export default function Runtime() {
                   A escolha é global e vale para os próximos turnos do Server.
                 </span>
               </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+                Aplica-se a /chat, /stream e /v1/chat/completions — os três endpoints HTTP do Server.
+                CLI e Telegram usam mecanismos próprios de execução, fora deste toggle; não é granular por canal.
+              </div>
               {message && <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>{message}</div>}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>

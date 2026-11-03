@@ -2724,6 +2724,8 @@ def create_app(
         turn_cost_recorder=_TurnCostRecorder,
         record_turn_budget=_record_turn_budget,
         run_one_turn_with_fallback=run_one_turn_with_fallback,
+        runtime_mode=_runtime_mode,
+        run_agno_turn=_run_agno_turn,
         logger=_log,
     )))
 

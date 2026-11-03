@@ -62,6 +62,8 @@ class OpenAIRouteDependencies:
     turn_cost_recorder: Callable[[str], Any]
     record_turn_budget: Callable[[Any, str, str], None]
     run_one_turn_with_fallback: Callable[..., tuple[str, list[Any]]]
+    runtime_mode: Callable[[], str]
+    run_agno_turn: Callable[..., dict[str, Any]]
     logger: logging.Logger
 
 
@@ -162,7 +164,12 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
             """One governed engine for batch and SSE, including tools/fallback/cost."""
             from .cost_meter import cost_sink
             from .core.kernel import continue_governed
-            from .tool_router import reset_runtime_ids, set_runtime_ids
+            from .tool_router import (
+                reset_policy_approval_wait,
+                reset_runtime_ids,
+                set_policy_approval_wait,
+                set_runtime_ids,
+            )
 
             ctx = deps.new_context()
             # OpenAI clients send a complete transcript by default. Hermes
@@ -180,6 +187,15 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
 
             cost = deps.turn_cost_recorder(sid)
             cost_token = cost_sink.set(cost)
+            # `/v1/chat/completions` bloqueia a própria requisição HTTP até o
+            # turno terminar (sem SSE para reabrir mais tarde), então a espera
+            # de aprovação precisa ficar ligada aqui — sem isso,
+            # `_evaluate_runtime_policy` (tool_router.py) levanta
+            # "waiting_approval" na hora em vez de bloquear até o operador
+            # decidir via POST /api/approvals/{id}/approve (mesmo bug que o
+            # sprint 38 corrigiu em `/chat`; aqui é pré-existente e
+            # independente do branch Agno criado nesta sprint).
+            wait_token = set_policy_approval_wait(True)
             ids_token = set_runtime_ids(sid, run.id)
             turn: dict[str, Any] = {}
 
@@ -191,9 +207,24 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
                 tool_log: list[dict[str, Any]] = []
                 outcome: dict[str, Any] = {}
                 try:
-                    answer, tool_log = deps.run_one_turn_with_fallback(
-                        ctx, deps.router, turn_client, active_model, deps.fallback_clients,
-                    )
+                    if deps.runtime_mode() == "agno":
+                        result = deps.run_agno_turn(
+                            last_user_message, sid, run.id, request_agent_id,
+                            deps.router, active_model, resolved,
+                        )
+                        answer, tool_log = result["response"], result["tool_log"]
+                        # O adapter Agno mantém seu próprio contexto interno e
+                        # nunca escreve em `ctx` — diferente do caminho nativo,
+                        # cujo `run_one_turn` já grava a resposta em
+                        # `ctx.messages` como parte do laço de tools. Sem isto,
+                        # `/v1/chat/completions` com Agno nunca persistia a
+                        # resposta do assistente na sessão (mesmo raciocínio
+                        # do fix do sprint 38 em `/chat`).
+                        ctx.add_assistant(deps.format_response(answer))
+                    else:
+                        answer, tool_log = deps.run_one_turn_with_fallback(
+                            ctx, deps.router, turn_client, active_model, deps.fallback_clients,
+                        )
                     turn["response"] = deps.format_response(answer)
                     outcome["output"] = turn["response"]
                 except Exception as exc:  # noqa: BLE001 - Kernel settles partial usage
@@ -242,6 +273,7 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
             finally:
                 cost_sink.reset(cost_token)
                 reset_runtime_ids(ids_token)
+                reset_policy_approval_wait(wait_token)
                 deps.record_turn_budget(cost, run.id, request_agent_id)
 
         if req.stream:
