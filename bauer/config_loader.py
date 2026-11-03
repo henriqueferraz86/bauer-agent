@@ -732,6 +732,14 @@ class RuntimeSection(_StrictSection):
     # aqui. A CLI continua em `bauer_native` por padrão até o operador optar
     # explicitamente por `agno` nesta chave específica.
     cli_default_adapter: str = "bauer_native"
+    # Chave independente de `default_adapter`/`cli_default_adapter` (sprint 40,
+    # plano 062): controla SÓ o caminho do canal Telegram (`ChannelBase`). O
+    # Telegram roda como processo de gateway próprio, nem sempre o mesmo
+    # processo do `bauer serve` — herdar silenciosamente o `runtime_mode()` do
+    # painel web (toggle de `/api/runtime/mode`) seria o mesmo erro que o
+    # sprint 37 corrigiu para a CLI. Default `bauer_native`: esta sprint só
+    # entrega a capacidade testada, atrás de opt-in explícito do operador.
+    telegram_default_adapter: str = "bauer_native"
     adapters: dict[str, dict[str, Any]] = Field(default_factory=_adapters_padrao)
 
 

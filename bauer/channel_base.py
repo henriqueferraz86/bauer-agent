@@ -911,6 +911,12 @@ class AgentBackend:
             getattr(self, "name", None) or type(self).__name__.lower()
         )
         falha: list[BaseException] = []
+        # Sprint 40 (plano 062): resolvido UMA VEZ por turno, relido do
+        # config.yaml a cada chamada (mesmo padrão de _resolve_cli_runtime_
+        # adapter, sprint 37) — não cacheado na vida do processo, pra o
+        # operador poder trocar `runtime.telegram_default_adapter` sem
+        # reiniciar o gateway.
+        turno = self._turno_agno if self._resolve_telegram_runtime_adapter() == "agno" else self._turno_cru
 
         def _executar(_payload):
             metrics = TurnMetrics()
@@ -939,14 +945,14 @@ class AgentBackend:
             try:
                 with metrics.context(key, _payload.get("run_id")):
                     if control is None:
-                        output = self._turno_cru(ctx, key, client, model, text, on_delta,
-                                                 metrics=metrics)
+                        output = turno(ctx, key, client, model, text, on_delta,
+                                       metrics=metrics)
                     else:
                         with control.activate():
                             try:
                                 control.checkpoint()
-                                output = self._turno_cru(ctx, key, client, model, text, on_delta,
-                                                         metrics=metrics)
+                                output = turno(ctx, key, client, model, text, on_delta,
+                                               metrics=metrics)
                             finally:
                                 control.close()
                             control.checkpoint()
@@ -1015,6 +1021,134 @@ class AgentBackend:
                 metrics.record_tools(tool_log)
                 recorded_tools = True
             control = current_control()
+            if control is not None:
+                control.checkpoint()
+        except BaseException as exc:
+            if metrics is not None and not recorded_tools:
+                metrics.record_tools(getattr(exc, "partial_tool_log", []))
+            raise
+        finally:
+            try:
+                self._store.save(key, ctx.messages)
+            except Exception:
+                logger.warning("Falha ao persistir sessão %s", key)
+            if token is not None:
+                from .delta_stream import reset_sink
+                reset_sink(token)
+        self.msgs_processed += 1
+        return (response or "").strip() or "🤔 O modelo não retornou resposta. Tente reformular."
+
+    def _resolve_telegram_runtime_adapter(self) -> str:
+        """Lê `runtime.telegram_default_adapter` do config (sprint 40, plano 062).
+
+        Chave independente de `runtime.default_adapter` (toggle do painel web,
+        `_runtime_mode()` em `server.py`) e de `runtime.cli_default_adapter`
+        (sprint 37) — o Telegram roda como processo de gateway próprio, nem
+        sempre o mesmo processo do `bauer serve`; herdar silenciosamente outro
+        toggle seria o mesmo erro que o sprint 37 corrigiu para a CLI.
+        Best-effort: qualquer falha de leitura nunca quebra o turno, só
+        mantém o default `bauer_native`.
+        """
+        try:
+            from .config_loader import load_config
+            cfg = load_config(self.config_path)
+            return str(getattr(cfg.runtime, "telegram_default_adapter", "") or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _turno_agno(self, ctx: Any, key: str, client: Any, model: str,
+                    text: str, on_delta: Any = None, *, metrics: Any = None) -> str:
+        """One turn via AgnoRuntimeAdapter — mesmo contrato de `_turno_cru`.
+
+        Constrói o adapter combinando `_run_chat_team` (resolução de
+        cfg/adapter_cfg/runtime_root) com `server.py::_run_agno_turn`
+        (`tool_router=` explícito, sem o qual as tools do canal não ficariam
+        disponíveis pro Agno). O SDK do Agno devolve cancelamento/kill-switch
+        como um resultado estruturado (`status: "cancelled"`), não como uma
+        exceção que atravessa `run_agent` — sem traduzir isso de volta pra
+        `ProviderRetryInterrupted` aqui, o `_executar` que envolve este método
+        nunca cairia no branch que marca o Run do Kernel como `cancelled`
+        (ver sprint 34/plano 061). Esta tradução é a única peça de lógica de
+        cancelamento desta sprint; nada em `AgnoRuntimeAdapter`/
+        `execution_control.py` foi alterado.
+        """
+        from .config_loader import load_config
+        from .core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+        from .execution_control import current_control
+        from .provider_retry import ProviderRetryInterrupted
+
+        token = None
+        if on_delta is not None:
+            from .delta_stream import set_sink
+            token = set_sink(on_delta)
+        recorded_tools = False
+        response = ""
+        try:
+            ctx.add_user(text)
+            kernel = self._resolver_kernel()
+            cfg = load_config(self.config_path)
+            adapter_cfg = AgnoRuntimeAdapter._adapter_config_from(cfg)
+            adapter_cfg.setdefault("tool_context", "chat")
+            adapter_cfg["workspace"] = str(self._effective_router().workspace)
+            run_store = getattr(getattr(kernel, "runs", None), "store", None) if kernel is not None else None
+            runtime_root = getattr(run_store, "root", self.sessions_dir.parent / "runtime")
+            control = current_control()
+            adapter = AgnoRuntimeAdapter(
+                config=cfg, adapter_config=adapter_cfg,
+                chatgpt_client=client,
+                tool_router=self._effective_router(),
+                runtime_event_bus=kernel.bus if kernel is not None else None,
+                runtime_policy_root=runtime_root,
+            )
+            instructions = "\n\n".join(
+                str(item.get("content") or "") for item in ctx.get_payload()
+                if item.get("role") == "system"
+            )
+            request: dict[str, Any] = {
+                "run_id": control.run_id if control is not None else None,
+                "session_id": key,
+                "user_id": f"telegram:{key}",
+                "task": text,
+                "agent_spec": {
+                    "id": f"channel.{key}",
+                    "name": "Bauer",
+                    "provider": self._provider,
+                    "model": model,
+                    "instructions": instructions,
+                    "tools": self._effective_router().available_tools(),
+                    "session_id": key,
+                    "user_id": f"telegram:{key}",
+                },
+            }
+            result = adapter.run_agent(request)
+            if result.get("status") == "cancelled":
+                error_text = str(result.get("error") or "")
+                reason = next(
+                    (candidate for candidate in ("kill_switch", "budget_exhausted", "cancelled")
+                     if candidate in error_text),
+                    "cancelled",
+                )
+                raise ProviderRetryInterrupted(reason)
+            if result.get("status") != "completed":
+                raise RuntimeError(str(result.get("error") or "Agno não concluiu o turno"))
+            metadata = result.get("metadata", {}) or {}
+            raw_tools = metadata.get("tools", []) or []
+            tool_log = [
+                {
+                    "tool": str(item.get("tool_name") or "agno.tool"),
+                    "result": str(item.get("result") or item.get("status") or "completed"),
+                }
+                for item in raw_tools
+                if isinstance(item, dict)
+            ]
+            response = str(result.get("output") or "")
+            # O adapter Agno não escreve em `ctx` (ao contrário de
+            # `run_one_turn_with_fallback`, que já grava internamente) —
+            # mesmo padrão dos sprints 38/39.
+            ctx.add_assistant(response)
+            if metrics is not None:
+                metrics.record_tools(tool_log)
+                recorded_tools = True
             if control is not None:
                 control.checkpoint()
         except BaseException as exc:
