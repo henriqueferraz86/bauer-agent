@@ -18,8 +18,12 @@ from bauer.tools.base import ToolError
 @pytest.mark.parametrize('governed', [False, True])
 def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monkeypatch, mode, transport, governed):
     monkeypatch.setenv('BAUER_HOME', str(tmp_path / 'home'))
-    if transport == 'stream':
-        monkeypatch.setenv('BAUER_APPROVAL_WAIT_SECONDS', '30')
+    # Both transports now block on a pending approval the same way: `/chat`
+    # gained the same `set_policy_approval_wait` as `/stream` (sprint 38 of
+    # plans/062-agno-executor-padrao.md) to close a real gap the approval
+    # test for `/chat` exposed. 30s matches what `/stream` already needed
+    # here before `/chat` shared the wait.
+    monkeypatch.setenv('BAUER_APPROVAL_WAIT_SECONDS', '30')
     monkeypatch.setattr('bauer.server._MEMORY_PREFETCH_ENABLED', False)
     monkeypatch.setattr('bauer.projects_registry._DEFAULT_REGISTRY', tmp_path / 'projects.json')
     workspace = tmp_path / 'project'
@@ -47,6 +51,12 @@ def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monk
 
     def invoke(active_router, message):
         seen.append(message)
+        if 'fake-cli' not in message:
+            # A bare "sim" in another session must not itself attempt the
+            # risky command — otherwise it would open its OWN pending
+            # approval and hang this probe on the same policy wait as the
+            # real command below.
+            return 'ok'
         try:
             result = active_router.execute_native_call('run_command', {'command': 'fake-cli --version'})
         except ToolError as exc:
@@ -72,66 +82,66 @@ def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monk
                      system_prompt='test', sessions_dir=tmp_path / 'sessions', config_path=config,
                      api_key='', web_auth_enabled=False, rate_limit_requests=0)
 
-    def send(client, message, sid=None):
+    def send_async(client, message, sid=None):
+        """`/chat` and `/stream` both block on a pending approval now (the
+        same `_evaluate_runtime_policy` wait either transport shares), so
+        both need the request run off-thread, exactly like `/stream` already
+        required before `/chat` gained the same wait."""
+        import threading
+
         payload = {'message': message}
         if sid:
             payload['session_id'] = sid
-        if transport == 'chat':
-            response = client.post('/chat', json=payload)
-            assert response.status_code == 200, response.text
-            return response.json()['response'], response.json()['session_id']
-        response = client.get('/stream', params=payload)
-        assert response.status_code == 200, response.text
-        return response.text, response.headers['X-Session-ID']
+
+        result = {}
+
+        def run():
+            if transport == 'chat':
+                result['response'] = client.post('/chat', json=payload)
+            else:
+                result['response'] = client.get('/stream', params=payload)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread, result
 
     with TestClient(app) as client:
-        if transport == 'stream':
-            import threading
-            import time
+        import time
 
-            result = {}
-            thread = threading.Thread(target=lambda: result.update(response=client.get(
-                '/stream', params={'message': 'rode fake-cli --version', 'session_id': 'pending-session'},
-            )), daemon=True)
-            thread.start()
-            try:
-                deadline = time.monotonic() + 10
-                cards = []
-                while time.monotonic() < deadline:
-                    cards = client.get('/api/obs/approvals?status=pending').json()['approvals']
-                    if cards:
-                        break
-                    time.sleep(0.025)
-                assert len(cards) == 1
-                assert executed == [] and load_learned_commands() == set()
-                # A bare yes in another session still cannot authorize this card.
-                other = client.post('/chat', json={'message': 'sim', 'session_id': 'other-session'})
-                assert other.status_code == 200
-                assert executed == [] and load_learned_commands() == set()
-                assert client.post(f"/api/approvals/{cards[0]['id']}/approve", json={'scope': 'always'}).status_code == 200
-                thread.join(10)
-                assert not thread.is_alive()
-                assert 'event: approval' in result['response'].text
-                assert executed == [['fake-cli', '--version']]
-                assert load_learned_commands() == {'fake-cli'}
-                assert ShellRunner(workspace=workspace).validate('fake-cli --version') == ['fake-cli', '--version']
-            finally:
-                for card in client.get('/api/obs/approvals?status=pending').json()['approvals']:
-                    client.post(f"/api/approvals/{card['id']}/deny")
-                thread.join(10)
-            return
-        question, sid = send(client, 'rode fake-cli --version')
-        assert "O comando 'fake-cli' está fora da allowlist" in question
-        assert executed == [] and load_learned_commands() == set()
-        # A different session's bare yes cannot authorize this pending command.
-        _, other_sid = send(client, 'sim')
-        assert other_sid != sid and executed == [] and load_learned_commands() == set()
-        _, _ = send(client, 'sim', sid)
-        assert executed == [['fake-cli', '--version']]
-        assert load_learned_commands() == {'fake-cli'}
-        assert 'Tarefa original: rode fake-cli --version' in seen[-1]
-        # Existing cached runners also learn grants, while validation remains active.
-        assert ShellRunner(workspace=workspace).validate('fake-cli --version') == ['fake-cli', '--version']
+        thread, result = send_async(client, 'rode fake-cli --version', sid='pending-session')
+        try:
+            deadline = time.monotonic() + 10
+            cards = []
+            while time.monotonic() < deadline:
+                cards = client.get('/api/obs/approvals?status=pending').json()['approvals']
+                if cards:
+                    break
+                time.sleep(0.025)
+            assert len(cards) == 1
+            assert executed == [] and load_learned_commands() == set()
+            # A bare yes in another session still cannot authorize this card
+            # — and, per the `invoke()` guard above, does not even attempt
+            # the risky command (so it cannot open a second pending card and
+            # hang this synchronous probe on its own policy wait).
+            other = client.post('/chat', json={'message': 'sim', 'session_id': 'other-session'})
+            assert other.status_code == 200
+            assert executed == [] and load_learned_commands() == set()
+            assert client.post(f"/api/approvals/{cards[0]['id']}/approve", json={'scope': 'always'}).status_code == 200
+            thread.join(10)
+            assert not thread.is_alive()
+            response = result['response']
+            assert response.status_code == 200, getattr(response, 'text', '')
+            if transport == 'stream':
+                assert 'event: approval' in response.text
+            else:
+                assert response.json()['response']
+            assert executed == [['fake-cli', '--version']]
+            assert load_learned_commands() == {'fake-cli'}
+            assert ShellRunner(workspace=workspace).validate('fake-cli --version') == ['fake-cli', '--version']
+        finally:
+            for card in client.get('/api/obs/approvals?status=pending').json()['approvals']:
+                client.post(f"/api/approvals/{card['id']}/deny")
+            thread.join(10)
 
 
 def test_shell_flag_builds_the_actual_terminal(tmp_path):

@@ -341,21 +341,72 @@ registrado; suíte hermética cobre o roteamento sem chamar Agno real;
 caminho `_turno_cru` fornece (ex.: eventos específicos não mapeáveis pelo
 Agno) sem solução identificada.
 
-### Sprint 38 — Migrar o caminho web (chat)
+### Sprint 38 — Migrar o caminho web (chat) — DONE (2026-11-03)
 
 **Esforço:** M. **Dependência:** sprint 37 validado.
 
-- Mesma mudança de padrão em `server_chat.py`: permitir `executor=None`
-  quando o adapter configurado for `agno`, preservando o `executor`
-  explícito como fallback.
-- Validar fluxo de aprovação assíncrona (approve/deny via API) com um run
-  Agno — o plano 061 (etapa 4, futura) depende de aprovação funcionando
-  igual em qualquer executor.
-- Testes de regressão do Desktop/web chat cobrindo o novo branch.
+**Correção de 2026-11-03 (investigação em `specs/sprint-38-migrate-web/`,
+checkout `6b839a1`): o texto original abaixo descrevia um trabalho que já
+não reflete o código** — "permitir `executor=None` quando o adapter
+configurado for `agno`" é o padrão do sprint 37 (CLI via
+`kernel.execute(executor=None)` + `adapter_factory`), mas `/chat`
+**nunca** usou esse padrão e não precisava: `run_chat_turn`
+(`bauer/server_chat.py:108`, dentro do closure `executor` passado a
+`deps.kernel.execute(..., executor=executor)`) já despachava
+condicionalmente — `if deps.runtime_mode() == "agno": result =
+deps.run_agno_turn(...)` — usando o MESMO toggle bespoke `_runtime_mode()`
+(`GET/POST /api/runtime/mode`) que `/stream` já usa (ver a correção de
+2026-10-29 na seção "Evidência e baseline" acima). Ou seja: "o Agno roda
+de verdade em `/chat`" já estava resolvido antes desta sprint começar, só
+que por um mecanismo diferente do planejado — não havia `executor=None`
+para migrar.
 
-**Aceite:** chat web com `runtime.default_adapter: agno` preserva streaming
-SSE, aprovação e cancelamento observados pelo usuário; suíte herdada do
-`test_server_*` continua verde.
+O trabalho real desta sprint, delimitado por
+`specs/sprint-38-migrate-web/SPEC.md`/`ARCHITECTURE.md`, foi então mais
+estreito:
+
+- Escrever a cobertura de teste que faltava: `/stream` já tinha um teste
+  real (SDK Agno real, sem provider) de aprovação assíncrona via API
+  (`test_real_agno_chat_approval_runs_each_command_once`), mas `/chat`
+  (POST, síncrono) nunca foi exercitado nesse cenário. Adicionado o helper
+  `start_chat(app, session)` e o teste
+  `test_real_agno_post_chat_approval_runs_each_command_once` em
+  `tests/test_approval_chat_e2e.py`, reaproveitando `environment`/
+  `TwoCommands`/`pending` já existentes — cobre caminho feliz (duas tool
+  calls aprovadas em sequência, efeitos no workspace, histórico de sessão)
+  e um caso de deny (run falha, nenhum efeito).
+- Esse teste **revelou dois bugs reais e pontuais, específicos de
+  `/chat`** (ambos corrigidos nesta sprint, conforme o STOP só pede parar
+  para mudança estrutural maior — não foi o caso):
+  1. `run_chat_turn`/`chat_via_kernel` nunca chamavam
+     `set_policy_approval_wait(True)` — sem isso,
+     `_evaluate_runtime_policy` (`tool_router.py`) levantava
+     `ToolError("waiting_approval: ...")` na hora em vez de bloquear a
+     requisição HTTP até o operador decidir via
+     `POST /api/approvals/{id}/approve`, que é o que `/stream` já faz no
+     seu worker (`bauer/server.py` chama `set_policy_approval_wait(True)`
+     ali). Corrigido em `bauer/server_chat.py` (nos dois branches, com e
+     sem Kernel), ligando/desligando o contextvar ao redor do turno, no
+     mesmo padrão de `server.py::_worker`.
+  2. O branch Agno de `run_chat_turn` nunca chamava `ctx.add_assistant(...)`
+     — diferente do caminho nativo (cujo `run_one_turn` já grava a
+     resposta em `ctx.messages`), o adapter Agno mantém seu próprio
+     contexto interno e nunca escreve no `ctx` do chamador. Resultado: uma
+     sessão `/chat` com `runtime_mode=agno` nunca persistia a resposta do
+     assistente no histórico (`/sessions/{id}/messages`) — o próximo
+     turno carregaria a conversa sem o que o modelo disse antes. Corrigido
+     chamando `ctx.add_assistant(deps.format_response(response))` no
+     branch Agno, no mesmo ponto em que `server.py`'s `_worker` já faz
+     isso para `/stream`.
+- Checado (não implementado, é escopo do sprint 39): `bauer doctor`/painel
+  ainda não expõem qual executor está ativo por canal — achado registrado
+  em `specs/sprint-38-migrate-web/BACKLOG.md` para o sprint 39 consumir.
+
+**Aceite:** teste real (SDK Agno real, sem mock) comprova que `/chat` com
+`runtime_mode: agno` completa o fluxo approve/deny via API corretamente —
+mesma garantia que `/stream` já tinha; suíte completa + Ruff
+bloqueante/estilo verdes; nenhuma regressão nos testes existentes de
+`/stream`/`/chat`/approval.
 
 ### Sprint 39 — Migrar OpenAI-compat e consolidar
 

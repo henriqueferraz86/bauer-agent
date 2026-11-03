@@ -114,6 +114,23 @@ def start_stream(app, session):
     return thread, result
 
 
+def start_chat(app, session):
+    result = {}
+
+    def consume():
+        try:
+            response = TestClient(app).post(
+                "/chat", json={"message": "execute test", "session_id": session}
+            )
+            result["response"] = response
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=consume, daemon=True)
+    thread.start()
+    return thread, result
+
+
 def pending(approvals, *, exclude=(), timeout=6):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -229,6 +246,64 @@ def test_real_agno_chat_approval_runs_each_command_once(environment, scope, expe
     assert runs.get_run(next_approval.run_id).status == "failed"
     assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
     assert "duas etapas verificadas" not in next_result["response"].text
+
+
+def test_real_agno_post_chat_approval_runs_each_command_once(environment):
+    """Same guarantee as the /stream test above, proven for POST /chat.
+
+    `/chat` dispatches through the same `run_chat_turn`/`_evaluate_runtime_policy`
+    machinery as `/stream` (see `bauer/server_chat.py:108`); it just blocks the
+    HTTP request instead of streaming SSE while the approval is pending. One
+    full happy path (approve both tool calls) plus one deny path is enough to
+    prove the mechanism holds for this transport too — the full scope/expiry/
+    cancel matrix is already covered for `/stream`, which shares the code.
+    """
+    app, control, workspace, approvals, runs = environment
+    thread, result = start_chat(app, "chat-first-session")
+    first = pending(approvals)
+    assert not (workspace / "effects.txt").exists()
+    try:
+        response = control.post(f"/api/approvals/{first.id}/approve", json={"scope": "run"})
+        assert response.status_code == 200, response.text
+        # Idempotent resubmission of the same decision must not blow up.
+        repeated = control.post(f"/api/approvals/{first.id}/approve", json={"scope": "run"})
+        assert repeated.status_code == 200, repeated.text
+        thread.join(10)
+        assert not thread.is_alive(), result
+        assert "error" not in result, result
+        response = result["response"]
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["session_id"] == "chat-first-session"
+        assert "duas etapas verificadas" in body["response"]
+        assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
+        assert len(approvals.list()) == 1
+        assert runs.get_run(first.run_id).status == "completed"
+        history = control.get("/sessions/chat-first-session/messages").json()["messages"]
+        assert any("duas etapas verificadas" in str(message) for message in history)
+    finally:
+        for record in approvals.list("pending"):
+            control.post(f"/api/approvals/{record.id}/deny")
+        thread.join(10)
+
+    # Denying the first approval on a fresh session fails the run and
+    # produces no workspace effects, same as the /stream equivalent.
+    deny_thread, deny_result = start_chat(app, "chat-deny-session")
+    deny_approval = pending(approvals, exclude={first.id})
+    assert deny_approval.run_id != first.run_id
+    assert control.post(f"/api/approvals/{deny_approval.id}/deny").status_code == 200
+    deny_thread.join(10)
+    assert not deny_thread.is_alive(), deny_result
+    assert runs.get_run(deny_approval.run_id).status == "failed"
+    assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
+    # A deny discovered deep inside tool execution (not at Kernel admission)
+    # surfaces as a 500 here: `out.policy_action` is only populated from the
+    # Kernel's own preflight ask/deny, which never ran for this request (the
+    # request-level policy allowed queuing; the shell-level tool call is what
+    # asked and got denied). This matches `chat_via_kernel`'s generic-failure
+    # branch in `bauer/server_chat.py`, not the 403 branch reserved for
+    # admission-time `policy_action == "deny"`.
+    assert deny_result["response"].status_code == 500
 
 
 @pytest.mark.parametrize("prefix", ["/api", ""])

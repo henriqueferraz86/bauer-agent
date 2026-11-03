@@ -111,6 +111,14 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                     active_router, turn_model, resolved,
                 )
                 response, tool_log = result["response"], result["tool_log"]
+                # O adapter Agno mantém seu próprio contexto interno e nunca
+                # escreve em `ctx` — diferente do caminho nativo, cujo
+                # `run_one_turn` já grava a resposta em `ctx.messages` como
+                # parte do laço de tools. Sem isto, `/chat` com Agno nunca
+                # persistia a resposta do assistente na sessão: o próximo
+                # turno carregava o histórico sem o que o modelo disse antes
+                # (`/stream` já faz este append no worker de `bauer/server.py`).
+                ctx.add_assistant(deps.format_response(response))
             else:
                 response, tool_log = deps.run_one_turn_with_fallback(
                     ctx, active_router, turn_client, turn_model, deps.fallback_clients,
@@ -157,10 +165,21 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 deps.publish_route(run_id, session_id, request_agent_id, route)
 
             from .cost_meter import cost_sink
-            from .tool_router import reset_runtime_ids, set_runtime_ids
+            from .tool_router import (
+                reset_policy_approval_wait,
+                reset_runtime_ids,
+                set_policy_approval_wait,
+                set_runtime_ids,
+            )
 
             cost = deps.turn_cost_recorder(session_id)
             cost_token = cost_sink.set(cost)
+            # `/chat` bloqueia a própria requisição HTTP até o turno terminar
+            # (sem SSE para reabrir mais tarde), então a espera de aprovação
+            # precisa ficar ligada aqui — sem isso, `_evaluate_runtime_policy`
+            # (tool_router.py) levanta "waiting_approval" na hora em vez de
+            # bloquear até o operador decidir, que é o que `/stream` já faz.
+            wait_token = set_policy_approval_wait(True)
             ids_token = set_runtime_ids(session_id, run_id)
             tool_log = []
             try:
@@ -189,6 +208,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 deps.metrics.tool_calls_total += len(tool_log)
                 cost_sink.reset(cost_token)
                 reset_runtime_ids(ids_token)
+                reset_policy_approval_wait(wait_token)
                 deps.record_turn_budget(cost, run_id, request_agent_id)
 
         out = deps.kernel.execute(
@@ -277,11 +297,20 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
         deps.publish_selected_skill(run.id, session_id, request_agent_id, resolved)
 
         from .cost_meter import cost_sink
-        from .tool_router import reset_runtime_ids, set_runtime_ids
+        from .tool_router import (
+            reset_policy_approval_wait,
+            reset_runtime_ids,
+            set_policy_approval_wait,
+            set_runtime_ids,
+        )
 
         deps.publish_route(run.id, session_id, request_agent_id, route)
         cost = deps.turn_cost_recorder(session_id)
         cost_token = cost_sink.set(cost)
+        # Mesma razão do caminho via Kernel acima: sem isto, aprovação pedida
+        # durante este turno nunca teria a chance de ser decidida — levantaria
+        # "waiting_approval" na hora em vez de esperar o operador.
+        wait_token = set_policy_approval_wait(True)
         ids_token = set_runtime_ids(session_id, run.id)
         tool_log = []
         try:
@@ -313,6 +342,7 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
             deps.metrics.tool_calls_total += len(tool_log)
             cost_sink.reset(cost_token)
             reset_runtime_ids(ids_token)
+            reset_policy_approval_wait(wait_token)
             deps.record_turn_budget(cost, run.id, request_agent_id)
 
     return router
