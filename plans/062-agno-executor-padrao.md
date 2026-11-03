@@ -1,34 +1,19 @@
 # Plano 062 — Agno como motor de execução padrão do turno
 
-**Status:** IN PROGRESS — sprints 35 (checkpoints de cancelamento) e 36
-(streaming/custo/contexto) entregues e fechados em 2026-10-30: suíte
-hermética e Ruff verdes, harness de comparação rodado contra o provider real
-da Beelink (custo/tokens praticamente empatados em 3 de 4 tarefas, qualidade
-equivalente por revisão manual), e o operador confirmou manter o mecanismo
-nativo de histórico do Agno por enquanto ("manter Agno como padrão"). Sprint
-37 (migrar CLI) implementado e corrigido em 2026-10-30 via time de agentes
-(implementação → revisão independente → correção dos dois achados
-bloqueantes que a revisão encontrou: chave de ativação própria da CLI,
-`runtime.cli_default_adapter`, default `bauer_native`, independente de
-`runtime.default_adapter`; e Ctrl-C que matava a sessão inteira em vez de só
-cancelar o turno). Suíte hermética completa verde (8500 testes). Validação
-manual rodada em 2026-10-31 contra provider real (sessão interativa de
-verdade, não simulada): pergunta simples, tool call e cancelamento por
-Ctrl-C confirmados funcionando — o processo sobrevive ao `SIGINT` e a sessão
-continua normal depois, resolvendo o risco que motivou o achado bloqueante
-nº2. Aprovação inline de tool sensível **investigada em 2026-11-03 e
-explicada**: `ToolRouter(policy_enabled=False)` é o default que o CLI usa
-para os dois executores (web liga isso explicitamente, CLI nunca ligou) —
-não é gap do sprint 37, é o modelo de segurança do CLI sempre ter sido
-"operador presente + Ctrl-C", não aprovação assíncrona. Sprint 37 fechado
-por completo. Sprint 38 (web) concluído em 2026-11-03: o trabalho real foi
-mais estreito que o planejado (`/chat` já despachava para Agno antes desta
-sprint via `_runtime_mode()`, mecanismo pré-existente compartilhado com
-`/stream`) — escrever o teste real de aprovação assíncrona que faltava para
-`/chat` revelou dois bugs reais e corrigidos: aprovação nunca esperava
-(`set_policy_approval_wait` nunca ligado) e resposta do Agno nunca
-persistia no histórico da sessão. Suíte completa + Ruff verdes. Sprints
-39-40 não iniciadas.
+**Status:** IN PROGRESS — sprints 35-39 entregues e fechadas (detalhes em
+cada seção de sprint abaixo e em `specs/sprint-{35..39}-*/`). Resumo:
+cancelamento cooperativo (35), streaming/custo/contexto com harness de
+comparação validado contra provider real (36, operador confirmou manter o
+Agno como padrão), CLI condicional com validação manual real incluindo
+Ctrl-C (37), e web (`/chat`/`/stream`, 38) + OpenAI-compat (39) — as duas
+últimas corrigiram, cada uma, dois bugs reais e pré-existentes de aprovação
+assíncrona/persistência de histórico, achados por teste real com SDK Agno,
+não hermético-mockado. ADR consolidando `bauer_native` como fallback
+permanente (`plans/adr/001-bauer-native-fallback.md`). Suíte completa e
+Ruff bloqueante/estilo verdes em toda sprint, confirmados de forma
+independente (implementação + revisão cruzada) desde o sprint 37. Sprint
+40 (Telegram) não iniciada — tem STOP explícito exigindo estabilidade em
+produção real por tempo suficiente antes de trocar o default.
 
 **Prioridade:** P1
 
@@ -415,7 +400,7 @@ mesma garantia que `/stream` já tinha; suíte completa + Ruff
 bloqueante/estilo verdes; nenhuma regressão nos testes existentes de
 `/stream`/`/chat`/approval.
 
-### Sprint 39 — Migrar OpenAI-compat e consolidar
+### Sprint 39 — Migrar OpenAI-compat e consolidar — DONE (2026-11-03)
 
 **Esforço:** M. **Dependência:** sprint 38.
 
@@ -429,6 +414,26 @@ bloqueante/estilo verdes; nenhuma regressão nos testes existentes de
 **Aceite:** os três caminhos (CLI, web, OpenAI-compat) suportam
 `runtime.default_adapter: agno` com paridade medida contra o baseline do
 sprint 36; `bauer_native` segue disponível e testado como fallback.
+
+**Entregue:** diferente de `/chat`/`/stream` (já despachavam para Agno
+antes dos sprints 36/38 existirem), `/v1/chat/completions` nunca teve
+nenhum dispatch — trabalho genuíno aqui, não só teste faltando.
+`OpenAIRouteDependencies` ganhou `runtime_mode`/`run_agno_turn`; `execute_v1`
+despacha condicionalmente, replicando o padrão corrigido do sprint 38
+(commit `770fe08`). Aplicados proativamente, sem precisar que um teste
+revelasse primeiro: `set_policy_approval_wait` (bug pré-existente,
+independente do Agno — tool pedindo aprovação levantava erro na hora em
+vez de esperar) e `ctx.add_assistant` no branch Agno (resposta não
+persistia no histórico). Teste real de aprovação assíncrona via esse
+endpoint adicionado e validado por revisão independente que reverteu cada
+fix isoladamente e confirmou a falha esperada nos dois casos. `bauer
+doctor` agora mostra o executor web ativo (best-effort, lê o mesmo JSON
+que `server.py` persiste). ADR (`plans/adr/001-bauer-native-fallback.md`):
+manter `bauer_native` como fallback permanente, sem depreciação planejada
+— consolidação do que já era verdade na prática desde o sprint 35, não
+uma decisão nova. Suíte completa (8487 testes) + Ruff bloqueante/estilo
+verdes, confirmados de forma independente duas vezes (implementação +
+revisão).
 
 ### Sprint 40 — Migrar o caminho Telegram (canal mais exposto)
 
