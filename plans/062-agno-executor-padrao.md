@@ -21,7 +21,14 @@ explicada**: `ToolRouter(policy_enabled=False)` é o default que o CLI usa
 para os dois executores (web liga isso explicitamente, CLI nunca ligou) —
 não é gap do sprint 37, é o modelo de segurança do CLI sempre ter sido
 "operador presente + Ctrl-C", não aprovação assíncrona. Sprint 37 fechado
-por completo. Sprints 38-40 não iniciadas.
+por completo. Sprint 38 (web) concluído em 2026-11-03: o trabalho real foi
+mais estreito que o planejado (`/chat` já despachava para Agno antes desta
+sprint via `_runtime_mode()`, mecanismo pré-existente compartilhado com
+`/stream`) — escrever o teste real de aprovação assíncrona que faltava para
+`/chat` revelou dois bugs reais e corrigidos: aprovação nunca esperava
+(`set_policy_approval_wait` nunca ligado) e resposta do Agno nunca
+persistia no histórico da sessão. Suíte completa + Ruff verdes. Sprints
+39-40 não iniciadas.
 
 **Prioridade:** P1
 
