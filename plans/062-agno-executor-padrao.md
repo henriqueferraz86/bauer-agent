@@ -16,10 +16,12 @@ manual rodada em 2026-10-31 contra provider real (sessão interativa de
 verdade, não simulada): pergunta simples, tool call e cancelamento por
 Ctrl-C confirmados funcionando — o processo sobrevive ao `SIGINT` e a sessão
 continua normal depois, resolvendo o risco que motivou o achado bloqueante
-nº2. Aprovação inline de tool sensível **não foi possível confirmar nem
-refutar** (duas tentativas executaram direto, sem prompt visível) — fica
-como item explicitamente não verificado para investigação futura, não como
-falha confirmada. Sprints 38-40 não iniciadas.
+nº2. Aprovação inline de tool sensível **investigada em 2026-11-03 e
+explicada**: `ToolRouter(policy_enabled=False)` é o default que o CLI usa
+para os dois executores (web liga isso explicitamente, CLI nunca ligou) —
+não é gap do sprint 37, é o modelo de segurança do CLI sempre ter sido
+"operador presente + Ctrl-C", não aprovação assíncrona. Sprint 37 fechado
+por completo. Sprints 38-40 não iniciadas.
 
 **Prioridade:** P1
 

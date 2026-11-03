@@ -179,19 +179,26 @@ provider real (openrouter/deepseek-chat), custo real ~$0,10 na sessão.
   interpretado como tag de estilo); o comportamento real (turno cancelado,
   sessão viva) é o que importa para o critério de aceite, e esse foi
   confirmado.
-- [~] **Aprovação inline de tool sensível**: tentado duas vezes
-  (`run_command` com `uname -a`; `delete_file` em `relatorio.txt`) — as
-  duas executaram direto, sem nenhum prompt de aprovação visível no log,
-  apesar de `shell.execute`/`filesystem.delete` estarem como `action: ask`
-  no `DEFAULT_RULES` do `PolicyEngine` (`bauer/core/policy/engine.py`).
-  **Não dá para afirmar se isso é um gap real do caminho Agno ou um
-  comportamento pré-existente da sessão CLI** (ex.: auto-aprovação nesse
-  contexto específico, independente de qual executor roda) — não investiguei
-  a fundo para não gastar mais chamadas reais de provider sem necessidade.
-  Fica como item explicitamente **não verificado**, nem confirmado
-  funcionando nem confirmado quebrado — próxima sessão que mexer nisso
-  deve investigar o código da aprovação antes de testar de novo, não só
-  repetir o teste manual.
+- [x] **Aprovação inline de tool sensível — investigado e explicado
+  (2026-11-03), não é gap do sprint 37.** Causa raiz:
+  `ToolRouter.__init__` tem `policy_enabled: bool = False`
+  (`bauer/tool_router.py:387`), e `_build_router()`
+  (`bauer/commands/_runtime.py`, usado pelo CLI nos dois executores) nunca
+  passa `policy_enabled=True`. `execute()` só chama
+  `_evaluate_runtime_policy` (o código que avalia a `PolicyEngine` e abre o
+  `ApprovalManager`) quando `self._policy_enabled` é verdadeiro
+  (`tool_router.py:1695`) — com o default `False`, essa chamada nunca
+  acontece, nenhuma regra "ask" é avaliada, nenhuma aprovação é pedida.
+  `bauer/server.py:330` liga isso explicitamente
+  (`r._policy_enabled = _SERVE_POLICY_MODE != "off"`) para o caminho
+  web — o CLI nunca ligou. Isto é **idêntico para `bauer_native` e Agno**,
+  antes e depois do sprint 37: o modelo de segurança do CLI sempre foi
+  "operador presente observando o terminal, pode interromper com Ctrl-C",
+  não o fluxo assíncrono de aprovar/negar que web/Telegram usam. Não há
+  correção a fazer aqui — é comportamento existente e consistente, só não
+  estava documentado. Relevante para o sprint 38: lá a aprovação assíncrona
+  É o mecanismo real (via `policy_enabled=True` do `server.py`), então essa
+  validação precisa acontecer de verdade nessa sprint, diferente do CLI.
 
 Critério de aceite da SPEC ("turno completo via Agno na CLI real — pergunta
 simples, turno com tool call, cancelamento por Ctrl-C, aprovação de uma
