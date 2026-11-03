@@ -1,19 +1,24 @@
 # Plano 062 — Agno como motor de execução padrão do turno
 
-**Status:** IN PROGRESS — sprints 35-39 entregues e fechadas (detalhes em
-cada seção de sprint abaixo e em `specs/sprint-{35..39}-*/`). Resumo:
-cancelamento cooperativo (35), streaming/custo/contexto com harness de
-comparação validado contra provider real (36, operador confirmou manter o
-Agno como padrão), CLI condicional com validação manual real incluindo
-Ctrl-C (37), e web (`/chat`/`/stream`, 38) + OpenAI-compat (39) — as duas
-últimas corrigiram, cada uma, dois bugs reais e pré-existentes de aprovação
-assíncrona/persistência de histórico, achados por teste real com SDK Agno,
-não hermético-mockado. ADR consolidando `bauer_native` como fallback
-permanente (`plans/adr/001-bauer-native-fallback.md`). Suíte completa e
-Ruff bloqueante/estilo verdes em toda sprint, confirmados de forma
-independente (implementação + revisão cruzada) desde o sprint 37. Sprint
-40 (Telegram) não iniciada — tem STOP explícito exigindo estabilidade em
-produção real por tempo suficiente antes de trocar o default.
+**Status:** Código de todas as 6 sprints (35-40) entregue, testado e
+mergeado — todo canal (CLI, web, OpenAI-compat, Telegram) consegue rodar
+via Agno hoje, atrás de opt-in explícito por config, com `bauer_native`
+preservado como fallback real (ADR
+`plans/adr/001-bauer-native-fallback.md`). Detalhes em cada seção de
+sprint abaixo e em `specs/sprint-{35..40}-*/`. O que falta não é código:
+é tempo — o STOP do sprint 40 continua valendo e não foi contornado: o
+default de PRODUÇÃO do Telegram continua `bauer_native`, e só deve mudar
+depois que os sprints 35-39 (já em produção via `/stream`/`/chat` desde
+antes mesmo deste plano) tiverem tempo de calendário suficiente de
+estabilidade real — decisão do operador, não deste plano. Dois achados
+reais de bugs pré-existentes foram corrigidos ao longo do caminho
+(aprovação assíncrona e persistência de histórico em `/chat` e
+`/v1/chat/completions`, sprints 38/39); um achado real foi documentado e
+deliberadamente NÃO corrigido por estar fora de escopo (custo de LLM
+perdido em cancelamentos do `AgnoRuntimeAdapter`, sprint 40 — recomendado
+para sprint futura dona do adapter). Suíte completa e Ruff
+bloqueante/estilo verdes em toda sprint, confirmados de forma
+independente (implementação + revisão cruzada) desde o sprint 37.
 
 **Prioridade:** P1
 
@@ -455,6 +460,42 @@ sessões.
 
 **STOP:** não trocar o default de produção do Telegram para Agno enquanto
 qualquer critério do sprint 34 não estiver comprovadamente equivalente.
+
+**Entregue em 2026-11-03 — código pronto e testado, default de produção
+NÃO trocado (STOP respeitado).** `runtime.telegram_default_adapter`
+(chave própria, default `bauer_native`, independente de
+`runtime.default_adapter`/`cli_default_adapter`) controla o branch.
+`_turno_agno` nova em `ChannelBase`, resolvida uma vez em `_execute_turn`
+e usada nos dois pontos onde `_turno_cru` era chamado — a estrutura
+`control.activate()/checkpoint()/close()` do sprint 34 (plano 061) não foi
+tocada. A peça de lógica nova: `AgnoRuntimeAdapter.run_agent` sinaliza
+cancelamento como resultado estruturado (`status: "cancelled"`), não
+exceção — `_turno_agno` traduz de volta para `ProviderRetryInterrupted`
+para o `except` existente reconhecer. Verificado ponta a ponta por
+implementação + revisão independente, rastreando a string de `reason`
+por todos os módulos envolvidos (`ExecutionControl` →
+`ProviderRetryInterrupted` → handler de exceção do `AgnoRuntimeAdapter` →
+`_turno_agno` → dict de mensagens de `_executar`), com testes reais (não
+mockados na fronteira do problema) provando cada salto. Cancelamento,
+custódia de Run, isolamento entre operadores/sessões: todos confirmados
+equivalentes ao caminho nativo.
+
+**Achado real descoberto (não corrigido aqui, fora do escopo desta
+sprint):** testando com o SDK Agno real, confirmou-se que
+`AgnoRuntimeAdapter._report_run_cost` só dispara no evento final
+`RunCompleted`/`TeamRunCompleted` — uma execução cancelada nunca emite
+esse evento, então custo de chamadas de LLM já completadas antes do
+cancelamento nunca chega ao `cost_sink` (o motor nativo reporta cada
+chamada assim que completa, não tem esse problema). Documentado com teste
+de regressão real
+(`tests/test_channel_agno_turn.py::test_agno_cancellation_during_tool_loop_loses_partial_llm_cost_confirmed_gap`)
+que falhará se uma sprint futura corrigir o adapter — sinal para
+atualizá-lo. Pertence ao sprint 35/36 (dono do `AgnoRuntimeAdapter`), não
+a este sprint do canal Telegram; recomendado como trabalho futuro, não
+decidido nem agendado aqui.
+
+Suíte completa + Ruff bloqueante/estilo verdes, confirmados
+independentemente duas vezes.
 
 ## Rollout, reversão e compatibilidade
 
