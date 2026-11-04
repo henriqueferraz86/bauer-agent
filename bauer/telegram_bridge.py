@@ -425,6 +425,15 @@ class TelegramBridge(BaseBridge):
         self._project_callback_lock = threading.Lock()
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
+        # Sprint 44 (plano 061, Etapa 5): guarda de execução única da
+        # reconciliação de `/loop` pendente (ver `telegram_loop.reconcile_
+        # pending`). `GatewayRuntime._run_bridge` pode chamar `start()` de
+        # novo NA MESMA instância após uma exceção não tratada — sem esta
+        # guarda, esse retry in-process re-executaria a reconciliação contra
+        # threads de `/loop` que ainda estão genuinamente vivas. Só um
+        # restart de PROCESSO real (nova instância) deve reconciliar de
+        # novo; `reset()` não limpa este flag de propósito.
+        self._loop_reconciled = False
         # Sprint 43 (plano 063): entrega de resultado de tarefas em
         # background. `session_id` do Telegram é sempre "tg:{chat_id}"
         # (ver `_active_pair`/`session_key` abaixo) — registra o prefixo uma

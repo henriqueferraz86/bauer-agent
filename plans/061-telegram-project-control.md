@@ -250,12 +250,56 @@ sucesso; relatório terminal reflete os gates reais do Kernel.
   (aditivo; comportamento igual ao anterior quando omitido) — usado pela
   reconciliação e pelo cancelamento, que rodam fora do contexto de projeto
   ativo normal.
-- `tests/test_telegram_loop.py` (12 casos, hermético: Kernel fake, sem rede/
+- `tests/test_telegram_loop.py` (14 casos, hermético: Kernel fake, sem rede/
   Telegram/LLM real) cobre admissão feliz, `waiting_approval` sem falso
   "iniciado", `deny` sem persistência, replay do mesmo `update_id` sem
   duplicar, cancelamento via `/cancelar <run_id>`, reconciliação com run
   terminal (entrega só uma vez) e não-terminal (marca interrompido, nunca
   reemite), expurgo de registros antigos e permissão 0600 do arquivo.
+- **Correção pós-review independente** (dois bugs reais confirmados por
+  leitura de código, com a suíte já verde e os demais pontos — ordenação de
+  admissão, persistência antes do offset, idempotência de replay, chaves de
+  entrega, permissão 0600, expurgo, compatibilidade de `_resolver_kernel`,
+  ausência de leak com Kernel desabilitado — todos confirmados corretos):
+  - **Bug 1**: `GatewayRuntime._run_bridge` pode chamar `bridge.start()` de
+    novo NA MESMA instância/processo após qualquer exceção não capturada por
+    `start()` (ex.: algo fora de `(httpx.HTTPError, RuntimeError)` no loop de
+    polling) — só limpando `_stop_event`, nunca matando threads de `/loop`
+    já em andamento. A premissa de `reconcile_pending` ("thread morta porque
+    processo reiniciou") era falsa nesse caminho: um retry in-process
+    re-executaria a reconciliação contra uma thread genuinamente viva,
+    marcaria o run `failed` por engano e mandaria um "interrompido" falso ao
+    usuário, enquanto a thread real seguiria e entregaria depois um segundo
+    relatório contraditório ("completed"). Corrigido com uma guarda de
+    execução única por instância de bridge
+    (`TelegramBridge.__init__`/`bauer/telegram_bridge.py:436`, flag
+    `self._loop_reconciled`; checada no topo de
+    `telegram_loop.reconcile_pending`, `bauer/telegram_loop.py:609`) —
+    `bridge.reset()` não a limpa de propósito, então só uma instância NOVA
+    (restart de processo real) reconcilia de novo.
+  - **Bug 2**: tanto `_worker` quanto o ramo terminal de `reconcile_pending`
+    marcavam o registro local como terminal (`state=completed/failed/
+    stopped/limit`) ANTES de confirmar a entrega. Como `reconcile_pending`
+    só revisita `list_non_terminal()`, um crash (ou esgotamento dos retries
+    de `deliver_with_retry`) exatamente nessa janela perdia o relatório para
+    sempre — loops não têm `/atividade` (fora de escopo do SPEC), então não
+    havia outro jeito do usuário descobrir o desfecho. Corrigido com
+    `TelegramLoopStore.list_terminal_undelivered()`
+    (`bauer/telegram_loop.py:182`, filtra `state terminal and not
+    delivered`) e uma nova varredura em `reconcile_pending`
+    (`bauer/telegram_loop.py:677`, via `_redeliver_terminal_record`,
+    `bauer/telegram_loop.py:550`) que reconstrói o relatório a partir do
+    que o Kernel ainda souber sobre o Run e tenta a entrega de novo — mesma
+    claim key (`claim_delivery`) de sempre, então uma redescoberta não
+    duplica o envio.
+  - Testes novos em `tests/test_telegram_loop.py`:
+    `test_reconcile_pending_runs_only_once_per_bridge_instance` (prova que um
+    segundo `reconcile_pending` na MESMA instância de bridge é um no-op
+    completo mesmo havendo registro não-terminal) e
+    `test_reconcile_pending_redelivers_terminal_record_missing_delivery`
+    (prova que um registro terminal-mas-não-entregue é entregue na próxima
+    reconciliação, exatamente uma vez mesmo com uma segunda instância de
+    bridge reconciliando de novo).
 
 Desvios/escopo reduzido conscientemente (documentados no código):
 - O relatório final não inclui custo em USD — o recorder de custo por turno

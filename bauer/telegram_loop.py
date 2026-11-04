@@ -58,6 +58,20 @@ _STATE_FOR_RUN_STATUS = {
     "failed": "failed",
 }
 
+#: tradução aproximada estado do registro -> stop_reason, usada só para
+#: reconstruir o relatório de um registro TERMINAL-mas-não-entregue (ver
+#: `list_terminal_undelivered`/`_redeliver_terminal_record`): o `stop_reason`
+#: exato só existia nas variáveis locais da thread que morreu antes de
+#: entregar; "stopped" e "limit" são ambíguos (cancelled/kill_switch,
+#: budget_exhausted/max_rounds) — a melhor aproximação disponível é escolhida,
+#: nunca um texto genérico de sucesso.
+_STOP_REASON_FOR_STATE = {
+    "completed": "completed",
+    "limit": "budget_exhausted",
+    "stopped": "cancelled",
+    "failed": "failed",
+}
+
 
 @dataclass
 class TelegramLoopRecord:
@@ -164,6 +178,17 @@ class TelegramLoopStore:
     def list_non_terminal(self) -> list[TelegramLoopRecord]:
         with self._lock:
             return [r for r in self._load_all_unlocked() if r.state in _RECONCILABLE_STATES]
+
+    def list_terminal_undelivered(self) -> list[TelegramLoopRecord]:
+        """Registros já TERMINAIS cuja entrega nunca foi confirmada.
+
+        Cobre o crash entre `store.update(..., state=<terminal>)` e a
+        confirmação de `deliver_with_retry` (ou o esgotamento dos retries) —
+        sem isto o relatório final fica perdido para sempre, já que
+        `list_non_terminal` nunca mais revisita um registro terminal."""
+        with self._lock:
+            return [r for r in self._load_all_unlocked()
+                    if r.state in _TERMINAL_STATES and not r.delivered]
 
     def purge_old(self, *, now: datetime | None = None) -> int:
         """Remove registros TERMINAIS com `finished_at` há mais de 7 dias."""
@@ -522,12 +547,69 @@ def _interrupted_report_text(record: TelegramLoopRecord) -> str:
     )
 
 
+def _redeliver_terminal_record(backend: Any, record: TelegramLoopRecord) -> bool:
+    """Re-tenta a entrega de um registro já TERMINAL que nunca confirmou
+    `delivered` (ver `TelegramLoopStore.list_terminal_undelivered`).
+
+    Best-effort: o `last_text`/`tool_calls` exatos só existiam nas variáveis
+    locais da thread `_worker` que morreu (ou do processo que caiu) antes de
+    confirmar a entrega — o que sobra é o que o Kernel ainda tiver sobre o
+    Run (se o processo do Kernel sobreviveu) e o próprio registro. Mesma
+    chave de claim que `_worker`/`reconcile_pending` usariam para este
+    `run_id` — processo novo, `claim_delivery` começa vazio, então não há
+    risco de bloquear numa claim que "já foi usada" antes do crash.
+    """
+    from .channel_execution import claim_delivery, deliver_with_retry
+
+    last_text, tool_calls = "", 0
+    if record.run_id:
+        run = None
+        try:
+            kernel = backend._resolver_kernel(workspace=Path(record.workspace))
+            if kernel is not None:
+                run = kernel.runs.get_run(record.run_id)
+        except Exception:
+            logger.warning("Re-entrega de /loop: Kernel/get_run falhou para %s",
+                           record.run_id, exc_info=True)
+        if run is not None:
+            last_text = str((run.output or {}).get("response", "") or "")
+            tool_calls = getattr(run, "tool_calls_count", 0) or 0
+
+    text = _terminal_report_text(
+        run_id=record.run_id or "?", goal=record.goal,
+        stop_reason=_STOP_REASON_FOR_STATE.get(record.state, record.state),
+        last_text=last_text, tool_calls=tool_calls,
+    )
+    if not claim_delivery(f"loop:{record.run_id}:done"):
+        return False
+    return deliver_with_retry(record.session_id, text)
+
+
 def reconcile_pending(bridge: Any) -> None:
     """Chamado em `TelegramBridge.start()`, antes do polling.
 
     Nunca reemite `/loop` sozinho: só corrige o registro local contra o que o
     Kernel realmente sabe, e entrega (uma única vez) o relatório pendente.
+
+    Guarda de execução única por instância (`bridge._loop_reconciled`): a
+    premissa "o registro não-terminal está morto porque threads não
+    sobrevivem a um restart de processo" só é verdadeira para um restart DE
+    PROCESSO real. `GatewayRuntime._run_bridge` também chama `bridge.start()`
+    de novo, na MESMA instância e MESMO processo, após qualquer exceção não
+    tratada por `start()` (ex.: algo fora de `(httpx.HTTPError, RuntimeError)`
+    no loop de polling) — nesse caso uma thread de `/loop` pode estar
+    genuinamente viva. Sem a guarda, esse retry in-process re-executaria
+    `reconcile_pending`, marcaria o run `failed` por engano e mandaria um
+    "interrompido" falso enquanto a thread real ainda roda e depois tentaria
+    entregar um segundo relatório contraditório ("completed"). A guarda
+    garante que isso só roda uma vez por vida real do processo desta
+    instância de bridge — `bridge.reset()` (chamado entre retries) não a
+    limpa de propósito.
     """
+    if getattr(bridge, "_loop_reconciled", False):
+        return
+    bridge._loop_reconciled = True
+
     from .channel_execution import claim_delivery, deliver_with_retry
 
     backend = bridge.backend
@@ -584,6 +666,21 @@ def reconcile_pending(bridge: Any) -> None:
         if claim_delivery(f"loop:{record.run_id}:interrupted"):
             if deliver_with_retry(record.session_id, _interrupted_report_text(record)):
                 store.update(record.update_id, delivered=True)
+
+    # Varredura dos registros TERMINAIS que nunca confirmaram entrega — um
+    # crash exatamente entre `store.update(..., state=<terminal>)` e a
+    # confirmação de `deliver_with_retry` (ou o esgotamento dos retries do
+    # próprio `_worker`) deixaria esse relatório perdido para sempre, já que
+    # `list_non_terminal` acima nunca revisita um registro terminal. Loops
+    # não têm `/atividade` (fora de escopo do SPEC) — esta é a única outra
+    # chance do usuário descobrir o desfecho.
+    for record in store.list_terminal_undelivered():
+        try:
+            if _redeliver_terminal_record(backend, record):
+                store.update(record.update_id, delivered=True)
+        except Exception:
+            logger.warning("Reconciliação de /loop: re-entrega falhou para %s",
+                           record.run_id, exc_info=True)
 
     store.purge_old()
 

@@ -382,6 +382,99 @@ def test_reconcile_pending_marks_dead_thread_failed_and_never_resubmits(tmp_path
     assert "reiniciou" in received[0][1]
 
 
+# ── 7b. reconciliação é execução única por instância de bridge ─────────────
+# (reviewer fix: `GatewayRuntime._run_bridge` pode retomar `bridge.start()`
+# NA MESMA instância/processo após uma exceção não tratada — sem a guarda,
+# esse retry re-executaria `reconcile_pending` contra uma thread de `/loop`
+# que ainda está genuinamente viva, marcando-a `failed` por engano.)
+
+def test_reconcile_pending_runs_only_once_per_bridge_instance(tmp_path):
+    backend = backend_at(tmp_path)
+    kernel = FakeKernel()
+    install_kernel(backend, kernel)
+
+    run = kernel.runs.create(status="running")
+    store = telegram_loop._store_for(backend)
+    store.put(telegram_loop.TelegramLoopRecord(
+        update_id=20, chat_id="42", session_id="tg:42", run_id=run.id,
+        workspace=str(backend._router.workspace), goal="faça algo", state="running",
+    ))
+
+    received: list = []
+    channel_execution.register_delivery_channel(
+        "tg:", lambda sid, text: received.append((sid, text)) or True,
+    )
+
+    bridge = SimpleNamespace(backend=backend)
+    telegram_loop.reconcile_pending(bridge)
+
+    # Primeira chamada: thread "morta" (nada rodando de fato aqui) é uma
+    # reconciliação legítima — marca failed e avisa.
+    assert kernel.runs.get_run(run.id).status == "failed"
+    assert len(received) == 1
+    assert bridge._loop_reconciled is True
+
+    # Um novo /loop é admitido enquanto o processo (e a instância do bridge)
+    # continuam vivos — simula a thread genuinamente viva que o bug mataria.
+    run2 = kernel.runs.create(status="running")
+    store.put(telegram_loop.TelegramLoopRecord(
+        update_id=21, chat_id="42", session_id="tg:42", run_id=run2.id,
+        workspace=str(backend._router.workspace), goal="outra coisa", state="running",
+    ))
+
+    # Retry in-process de `start()` na MESMA instância de bridge: deve ser
+    # um no-op completo, mesmo havendo um registro não-terminal no store.
+    telegram_loop.reconcile_pending(bridge)
+
+    assert kernel.runs.get_run(run2.id).status == "running"  # intocado
+    assert len(received) == 1  # nenhuma notificação nova/falsa
+    assert store.get_by_update_id(21).state == "running"  # não marcado failed
+
+
+# ── 7c. registro terminal mas nunca entregue é re-entregue na reconciliação ─
+# (reviewer fix: um crash entre marcar o estado terminal e confirmar a
+# entrega perdia o relatório para sempre, já que `list_non_terminal` nunca
+# revisita um registro já terminal.)
+
+def test_reconcile_pending_redelivers_terminal_record_missing_delivery(tmp_path):
+    backend = backend_at(tmp_path)
+    kernel = FakeKernel()
+    install_kernel(backend, kernel)
+
+    run = kernel.runs.create(status="completed")
+    run.output = {"response": "trabalho concluído antes do crash"}
+    run.tool_calls_count = 3
+    run.finished_at = datetime.now(UTC).isoformat()
+
+    store = telegram_loop._store_for(backend)
+    store.put(telegram_loop.TelegramLoopRecord(
+        update_id=22, chat_id="42", session_id="tg:42", run_id=run.id,
+        workspace=str(backend._router.workspace), goal="faça algo",
+        state="completed", finished_at=run.finished_at, delivered=False,
+    ))
+
+    received: list = []
+    channel_execution.register_delivery_channel(
+        "tg:", lambda sid, text: received.append((sid, text)) or True,
+    )
+
+    bridge = SimpleNamespace(backend=backend)
+    telegram_loop.reconcile_pending(bridge)
+
+    assert len(received) == 1
+    assert "trabalho concluído antes do crash" in received[0][1]
+    record = store.get_by_update_id(22)
+    assert record.delivered is True
+
+    # Um segundo "restart de processo" (nova instância de bridge) reconcilia
+    # de novo — o registro já está `delivered=True`, então não é mais
+    # candidato (e a claim key já usada protegeria mesmo que estivesse).
+    bridge2 = SimpleNamespace(backend=backend)
+    telegram_loop.reconcile_pending(bridge2)
+
+    assert len(received) == 1  # entregue exatamente uma vez
+
+
 # ── 8. expurgo de registros antigos ─────────────────────────────────────────
 
 def test_purge_old_removes_terminal_records_past_ttl(tmp_path):
