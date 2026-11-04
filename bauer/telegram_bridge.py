@@ -48,6 +48,7 @@ from .channel_base import (
     chunk_text,
     resolve_token,
 )
+from .channel_execution import register_delivery_channel
 
 logger = logging.getLogger("bauer.telegram")
 
@@ -423,6 +424,24 @@ class TelegramBridge(BaseBridge):
         self._project_callback_lock = threading.Lock()
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
+        # Sprint 43 (plano 063): entrega de resultado de tarefas em
+        # background. `session_id` do Telegram é sempre "tg:{chat_id}"
+        # (ver `_active_pair`/`session_key` abaixo) — registra o prefixo uma
+        # vez por instância; re-registrar (vários bridges no mesmo processo
+        # de teste, por exemplo) só substitui o handler anterior.
+        register_delivery_channel("tg:", self._deliver_background_result)
+
+    def _deliver_background_result(self, session_id: str, text: str) -> bool:
+        """`deliver_fn` registrado para o prefixo ``"tg:"``.
+
+        Resolve `chat_id` direto do `session_id` (sem registro adicional de
+        "qual canal é este" — formato já é `f"tg:{chat_id}"`,
+        ver `_active_pair`) e usa `send_text_result`, que propaga erro em
+        vez de engolir, para o chamador (`channel_execution.deliver_with_
+        retry`) poder classificar transitório vs. permanente.
+        """
+        chat_id = session_id.removeprefix("tg:")
+        return self.send_text_result(chat_id, text)
 
     # ── API Telegram ───────────────────────────────────────────────────────
 
@@ -507,6 +526,31 @@ class TelegramBridge(BaseBridge):
                 except Exception as exc:  # noqa: BLE001
                     self.last_error = f"sendMessage: {exc}"
                     logger.error("Falha enviando para %s: %s", chat_id, exc)
+
+    def send_text_result(self, chat_id: str, text: str) -> bool:
+        """Como `send_text`, mas devolve sucesso/falha em vez de engolir tudo.
+
+        `send_text` nunca propaga exceção (fallback silencioso: cai pra
+        texto puro e, se isso também falhar, só loga em `self.last_error`)
+        porque é usado no caminho normal de turno, onde não há ninguém pra
+        reagir a uma falha de rede do Telegram.
+
+        O caminho de entrega de tarefas em background (sprint 43, plano
+        063, `bauer/channel_execution.py`) precisa saber se a entrega deu
+        certo pra decidir retry — então este método deixa a última falha
+        (depois do fallback pra texto puro) subir como exceção, em vez de
+        engolir. Não reescreve `send_text` (usado em outros lugares e cujo
+        contrato "nunca lança" outros chamadores já dependem).
+        """
+        for chunk in chunk_text_fenced(text, MAX_MESSAGE_CHARS):
+            try:
+                self._api(
+                    "sendMessage", chat_id=chat_id,
+                    text=md_to_telegram_html(chunk), parse_mode="HTML",
+                )
+            except Exception:  # noqa: BLE001 — fallback plain text, não engole
+                self._api("sendMessage", chat_id=chat_id, text=chunk)
+        return True
 
     def send_media(self, chat_id: str, path: str | Path, caption: str = "") -> bool:
         """Envia um arquivo local: foto/voz/áudio/vídeo/documento por extensão."""

@@ -1,6 +1,7 @@
 # Plano 063 — Entrega de resultado de tarefas em background no Telegram
 
-**Status:** TODO
+**Status:** Sprint 43 entregue, testada e verificada (gates completos
+verdes). Ver "Entregue em" ao final do documento.
 
 **Prioridade:** P1
 
@@ -186,3 +187,106 @@ independente → correção já usado nos sprints do plano 062.
   permanente (chat/token inválido) não fica tentando para sempre.
 - Suíte hermética (`tests/conftest.py`) preservada — nenhum teste novo bate
   em rede real ou Telegram real.
+
+## Entregue em 2026-11-04 — sprint 43 completa, STOP não disparado
+
+Implementado inteiro numa sprint só, conforme consolidação descrita acima.
+Evidência de código real reconferida em `specs/sprint-43-telegram-
+background-delivery/SPEC.md`/`ARCHITECTURE.md` antes de implementar
+(checkout `28d5fcb`); o STOP da SPEC.md ("`TelegramBridge` sem jeito de
+expor sucesso/falha sem reestruturar") foi confirmado como NÃO disparado
+— `send_text` já existia como método normal, só faltava um sinal de
+retorno.
+
+- **`bauer/telegram_bridge.py`**: método novo
+  `send_text_result(chat_id, text) -> bool` ao lado de `send_text`
+  (opção (a) da ARCHITECTURE.md) — mesmo fallback HTML→texto puro, mas
+  deixa a última falha subir como exceção em vez de engolir, pra quem
+  chama (o retry da entrega de background) poder classificar transitório
+  vs. permanente. `send_text` não foi tocado — outros chamadores já
+  dependem do seu contrato "nunca lança". `TelegramBridge.__init__` passou
+  a chamar `register_delivery_channel("tg:", self._deliver_background_
+  result)`, onde `_deliver_background_result` extrai `chat_id` de
+  `session_id.removeprefix("tg:")` (formato já confirmado em
+  `telegram_bridge.py:728`/`:920`, sem precisar de registro adicional).
+- **`bauer/channel_execution.py`**: novo "mail slot" channel-agnostic —
+  `register_delivery_channel`/`deliver_to_session` (resolve por prefixo de
+  `session_id`), `deliver_with_retry` (backoff `2.0/5.0/10.0`s,
+  distinguindo erro permanente via substrings reconhecíveis do erro da
+  API do Telegram — `chat not found`, `bot was blocked`, `unauthorized`,
+  etc. — de erro transitório, tratado como default), `claim_delivery`
+  (idempotência em memória, chave `pid:started_at`, marcada ANTES de
+  tentar entregar) e `deliver_background_completion`/
+  `format_background_result` (o template de cabeçalho explícito "Resultado
+  da tarefa em background (PID {pid})...").
+- **`bauer/tools/execution.py`**: no branch `background` de `_run_command`,
+  logo após montar `self._processes[pid_str]`, captura
+  `get_runtime_ids()` (confirmado: já devolve o `session_id` correto
+  dentro de um turno de canal, via `TurnMetrics.context()` em
+  `channel_governance.py:98` — não precisou de nenhuma mudança nesse
+  módulo nem no adapter Agno) e, se houver `origin_session_id`, sobe uma
+  thread daemon que faz `proc.wait()` (com um join curto dos readers de
+  stdout/stderr antes, pra reduzir a janela de corrida com o EOF do pipe)
+  e chama `deliver_background_completion`. Sem canal (CLI/sem turno),
+  nenhum watcher é criado.
+- **Sem heurística de "editar mensagem viva"** — mensagem nova sempre,
+  como o SPEC já previa; não há hoje um jeito de rastrear no bridge se
+  uma mensagem anterior ainda está "viva"/editável.
+- **Testes**: `tests/test_background_delivery.py` (14 testes novos,
+  hermético) cobrindo registro/`deliver_to_session`, captura de
+  `origin_session_id` (com e sem canal), watcher entregando num processo
+  real (`python -c "print(1)"`), idempotência, retry
+  transitório/permanente/esgotamento, e um teste de ponta a ponta mínimo
+  (`backend.process()` real disparando `run_command(background=true)`
+  dentro de um turno simulado, entregando num `deliver_fn` fake registrado
+  sob `"tg:"`, sem o usuário perguntar de novo).
+- **Achado durante a implementação, corrigido**: os dois testes que
+  disparam um `run_command(background=true)` REAL usavam o mesmo
+  `session_id` literal (`"fake:777"`) — sob a suíte completa com
+  `pytest-xdist`, um watcher daemon (deliberadamente não joinado) de um
+  teste anterior conseguiu, uma vez, entregar usando o canal fake
+  registrado por um teste posterior que caiu no mesmo worker. Corrigido
+  com prefixo de `session_id` único por teste (`uuid4` curto); confirmado
+  estável em 3 reruns consecutivos do arquivo isolado + 1 rerun da suíte
+  completa depois da correção.
+- **Limitação conhecida, documentada e aceita (não resolvida aqui)**: tudo
+  em memória de processo — um restart do processo do gateway entre o fim
+  da tarefa e a confirmação de entrega perde o registro pendente e mata o
+  watcher (uma thread do processo antigo) junto; o processo background em
+  si (não é filho do gateway) continua rodando órfão. Consistente com o
+  plano explicitamente descartar fila/claim distribuído multi-processo.
+- **Reaproveitável para o futuro `/loop`** (etapa 5 do plano 061, não
+  iniciada): `deliver_to_session`/`deliver_with_retry` não assumem nada
+  específico de `run_command` — qualquer caller com `session_id` + texto
+  pode reusar o mesmo caminho.
+
+**Gates executados (checkout `codex/sprint-43-telegram-background-
+delivery`, worktree isolado), resultado real por código de saída — não
+estimado**:
+
+```
+uv sync --frozen --extra dev
+  → 13 pacotes instalados (pytest-xdist, pytest-asyncio, mypy, ...), sem erro
+
+uv run --with ruff==0.17.0 ruff check bauer/ --select E9,F63,F7,F82
+  → "All checks passed!" — exit 0
+
+uv run --with ruff==0.17.0 ruff check bauer/ --select E,F,W --ignore E501,W291,W293,E302,E303
+  → "All checks passed!" — exit 0
+
+uv run pytest tests/test_controlled_processes.py tests/test_telegram_bridge.py \
+  tests/test_channel_base.py tests/test_channel_execution.py tests/test_background_delivery.py -q --tb=short
+  → exit 0, sem FAILED/ERROR
+
+uv run pytest tests/ -q --tb=short
+  → exit 0 confirmado via código de saída do próprio pytest (não do pipe
+    com `tail`, que mascara o código real — armadilha notada durante a
+    execução: a primeira rodada em background usava `| tail -150`, cujo
+    exit code é o do `tail` e não do `pytest`; a rodada de confirmação
+    final gravou a saída num arquivo e checou `$?` do `pytest` direto).
+    Nenhum FAILED/ERROR no log completo.
+```
+
+Nenhum commit novo criado nesta sessão — trabalho fica no working tree da
+branch `codex/sprint-43-telegram-background-delivery`, conforme
+instrução.

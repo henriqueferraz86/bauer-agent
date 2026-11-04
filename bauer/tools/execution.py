@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import re
 import logging
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+from ..channel_execution import deliver_background_completion
 from ..privacy import redact_text
 from ..execution_control import checkpoint_execution
 from ..process_control import controlled_popen, process_owner, run_process
 from ..provider_retry import ProviderRetryInterrupted
+from ..runtime_ids import get_runtime_ids
 from ..shell_runner import ShellError, validate_command_syntax
 from .base import ToolError
 
@@ -270,8 +273,15 @@ class ExecToolsMixin:
                     except Exception:
                         pass
 
-                _th.Thread(target=_reader, args=(proc.stdout, stdout_buf), daemon=True).start()
-                _th.Thread(target=_reader, args=(proc.stderr, stderr_buf), daemon=True).start()
+                reader_stdout = _th.Thread(
+                    target=_reader, args=(proc.stdout, stdout_buf), daemon=True,
+                )
+                reader_stderr = _th.Thread(
+                    target=_reader, args=(proc.stderr, stderr_buf), daemon=True,
+                )
+                reader_stdout.start()
+                reader_stderr.start()
+                started_at = time.monotonic()
                 self._processes[pid_str] = {
                     "proc": proc,
                     "owner": process_owner(),
@@ -279,7 +289,51 @@ class ExecToolsMixin:
                     "command": cmd_str,
                     "stdout_buf": stdout_buf,
                     "stderr_buf": stderr_buf,
+                    "started_at": started_at,
                 }
+
+                # Sprint 43 (plano 063): captura a origem (sessão do canal
+                # que disparou este background) NO MOMENTO da criação — não
+                # resolvida depois. `get_runtime_ids()` já devolve o
+                # session_id correto aqui porque `_run_command` roda dentro
+                # de `TurnMetrics.context()` (channel_governance.py:98),
+                # ativo tanto no executor bauer_native quanto no Agno
+                # (plano 062). CLI/testes sem canal não têm runtime ids
+                # instalados — `origin_session_id` fica `None` e nenhum
+                # watcher é criado (sem canal, não há onde entregar).
+                runtime_ids = get_runtime_ids()
+                origin_session_id = runtime_ids[0] if runtime_ids else None
+                self._processes[pid_str]["origin_session_id"] = origin_session_id
+
+                if origin_session_id is not None:
+                    def _watch_and_deliver(
+                        _proc=proc, _pid=pid_str, _cmd=cmd_str,
+                        _session_id=origin_session_id, _started_at=started_at,
+                        _stdout_buf=stdout_buf, _stderr_buf=stderr_buf,
+                        _reader_stdout=reader_stdout, _reader_stderr=reader_stderr,
+                    ):
+                        _proc.wait()
+                        # Dá uma chance curta aos readers de stdout/stderr
+                        # esvaziarem o pipe antes de montar o texto de
+                        # entrega — proc.wait() pode retornar levemente
+                        # antes do EOF do pipe ser lido por completo.
+                        _reader_stdout.join(timeout=5)
+                        _reader_stderr.join(timeout=5)
+                        try:
+                            deliver_background_completion(
+                                pid=_pid, command=_cmd,
+                                returncode=_proc.returncode,
+                                stdout_buf=_stdout_buf, stderr_buf=_stderr_buf,
+                                session_id=_session_id, started_at=_started_at,
+                            )
+                        except Exception:  # noqa: BLE001 — watcher nunca derruba o processo
+                            logger.exception(
+                                "Falha entregando resultado do PID %s (sessão %s)",
+                                _pid, _session_id,
+                            )
+
+                    _th.Thread(target=_watch_and_deliver, daemon=True).start()
+
                 return (
                     f"[run_command background] PID {pid_str}: {cmd_str}\n"
                     f"Acompanhe com process(action='poll'|'log', pid='{pid_str}'); "
