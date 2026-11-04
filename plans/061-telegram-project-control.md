@@ -5,8 +5,9 @@
 - **Status**: IN PROGRESS — execução autorizada em 2026-10-21; sprint 33 (etapa 1)
   e sprint 34 (etapa 2, cancelamento) entregues com gates completos e revisão
   cruzada em 2026-10-22; sprint 44 entrega a etapa 5 (`/loop` autônomo e
-  recuperação, ver nota "Entregue em sprint 44" abaixo); etapa 3 (atividade
-  dos agentes) ainda não iniciada.
+  recuperação, ver nota "Entregue em sprint 44" abaixo); sprint 45 entrega a
+  etapa 3 (`/atividade`, ver nota "Entregue em sprint 45" abaixo); etapa 4
+  (aprovação remota) em andamento em sessão paralela nesta mesma janela.
 - **Data/base**: 2026-10-21, checkout `e22e1aa`.
 - **Prioridade/esforço**: P1 / L, dividido em entregas pequenas.
 - **Objetivo**: conversar com o Bauer pelo celular sabendo em qual projeto ele
@@ -178,6 +179,68 @@ efeitos já realizados ou encerrar à força uma thread Python.
 **Aceite**: duas delegações ao mesmo agente aparecem separadas; dados de outra
 sessão não aparecem; falha no Telegram não interrompe a tarefa; mensagens longas
 mantêm formatação válida e não inundam o chat.
+
+**Entregue em sprint 45** (spec completa em
+`specs/sprint-45-telegram-activity/{SPEC,ARCHITECTURE,BACKLOG}.md`):
+
+- `/atividade` em conversa privada autorizada: resolve a sessão do chat,
+  consulta `build_chat_activity` (já existente, pura, compartilhada com a
+  web — nada foi extraído/alterado em `bauer/server_activity.py`, só
+  consumido) via o Kernel do canal, e envia um cartão em texto (projeto,
+  tarefa, estado em português, agente/ferramenta corrente por linha, custo
+  conhecido lido direto de `run.cost_estimate`/`run.usage_known`) com botões
+  `Atualizar`/`Cancelar tarefa`.
+- Novo módulo `bauer/telegram_activity.py` (isolado de `telegram_bridge.py`
+  pelo mesmo motivo do sprint 44 — menos superfície de merge com a sessão
+  paralela da etapa 4): `render_activity_card` (pura), `_activity_keyboard`,
+  `send_activity_card`, `_watch_activity`, `handle_activity_callback`.
+- Thread observadora por POLLING (não `EventBus.subscribe()` — `publish()`
+  roda handlers inline na thread que publicou; um handler bloqueando numa
+  chamada HTTP ao Telegram atrasaria a governança): edita a MESMA mensagem a
+  cada `STREAM_EDIT_INTERVAL_S` (2,5s, a mesma constante de `_StreamingDraft`)
+  só quando o texto renderizado muda, com teto de 2h independente do budget
+  da execução (UX, não governança). A edição final (terminal ou teto) é
+  tentada INCONDICIONALMENTE — nunca herda o padrão "falhou uma vez, desiste
+  para sempre" do `_StreamingDraft`; provado por
+  `test_watch_activity_intermediate_failure_never_blocks_final_edit`, que
+  injeta uma falha na edição intermediária e confirma que a edição final
+  ainda ocorre.
+- Botão `Cancelar tarefa` reusa `TelegramBridge._cancel_run_or_loop`, extraído
+  do bloco que já era inline no branch `/cancelar` de `_handle_update`
+  (mesma lógica combinada `cancel_channel_execution` +
+  `telegram_loop.cancel_loop` do sprint 44) — refatoração comportamento-
+  preservada, confirmada pela suíte existente de `/cancelar`
+  (`tests/test_telegram_cancel_command.py`) passando sem alterar um assert.
+- Callback com prefixo `"act:"` segue o mesmo padrão de `self._project_callbacks`
+  (`bridge._activity_callbacks`/`_activity_callback_lock`: token opaco
+  `secrets.token_urlsafe`, TTL, limite de 500 entradas, vínculo a
+  `chat_id`/`owner`/`message_id`, consumo atômico no botão `Cancelar`).
+- `tests/test_telegram_activity.py` (23 casos, hermético: `RunManager`+
+  `EventBus` reais sobre `tmp_path` gerando os dados via `runs.create_run`/
+  `bus.publish`, igual ao padrão de `tests/test_chat_activity.py`; só `_api`
+  e `AgentBackend._resolver_kernel` são fake) cobre: renderização e custo
+  conhecido/desconhecido; duas delegações ao mesmo agente em linhas
+  separadas; isolamento entre sessões; ausência de execução ativa sem erro
+  nem botões; Kernel desabilitado sem crash; tick sem mudança não edita;
+  falha intermediária não bloqueia a edição final; teto de 2h interrompe a
+  observação mesmo sem terminal; botões `Atualizar`/`Cancelar` com token
+  válido/expirado/de outro chat/usuário/mensagem; paridade observável do
+  botão `Cancelar tarefa` com `/cancelar <run_id>`.
+
+Desvios/escopo reduzido conscientemente (documentados no código):
+- O cartão é texto puro (sem HTML/`parse_mode`) — mais simples e já elimina
+  por construção o risco de cortar uma tag HTML no truncamento (requisito 8
+  do SPEC), ao custo de não ter negrito/itálico. `render_activity_card`
+  trunca com o mesmo `chunk_text` do resto do bridge.
+- `render_activity_card(envelope_run, run, *, project_name=None)` ganhou um
+  terceiro parâmetro opcional (mantendo os dois primeiros exigidos pela
+  ARCHITECTURE) para incluir a linha "Projeto: <nome>" do exemplo ilustrativo
+  do plano — essa informação não está no envelope de `build_chat_activity`
+  nem no `Run`, só na `ChannelProjectContext` que `send_activity_card` já tem
+  em mãos; função continua pura e testável com só os dois primeiros argumentos.
+- Grupos/tópicos, histórico de execuções passadas e qualquer dependência do
+  trabalho ainda não mergeado da etapa 4 (aprovação remota, sessão paralela)
+  permanecem fora de escopo, como já definido no SPEC desta sprint.
 
 ## Etapa 4 — Aprovação remota da operação exata
 
@@ -377,7 +440,7 @@ Checklist de execução:
 - [x] Contratos e baseline (etapa 0).
 - [x] Projeto e isolamento (etapa 1).
 - [x] Cancelamento e limites (etapa 2).
-- [ ] Atividade dos agentes (etapa 3).
+- [x] Atividade dos agentes (etapa 3).
 - [ ] Aprovação remota exata (etapa 4).
 - [x] Autonomia e recuperação (etapa 5).
 - [ ] Operação e jornada real na Beelink (etapa 6).
