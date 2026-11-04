@@ -72,6 +72,7 @@ BOT_COMMANDS = [
     {"command": "projetos", "description": "Escolher o projeto desta conversa"},
     {"command": "projeto", "description": "Consultar projeto desta conversa"},
     {"command": "tarefas", "description": "Tarefas do projeto"},
+    {"command": "loop", "description": "Trabalho autônomo governado até concluir"},
     {"command": "cancelar", "description": "Solicitar parada da tarefa atual"},
     {"command": "status", "description": "Modelo, contexto e sessão atual"},
     {"command": "model", "description": "Trocar provider/modelo (botões)"},
@@ -1022,6 +1023,16 @@ class TelegramBridge(BaseBridge):
         logger.info("Telegram bridge online como @%s", me.get("username"))
         self.register_commands()  # menu "/" no cliente Telegram
 
+        # Sprint 44 (plano 061, Etapa 5): um restart mata a thread de QUALQUER
+        # /loop em andamento (threads não sobrevivem a processo). Sem isto um
+        # run ficaria "running" pra sempre e o usuário nunca saberia — nunca
+        # reemite o /loop sozinho, só corrige o registro local e avisa.
+        try:
+            from . import telegram_loop
+            telegram_loop.reconcile_pending(self)
+        except Exception:  # noqa: BLE001 — reconciliação não pode travar o start
+            logger.exception("Reconciliação de /loop pendente falhou")
+
         backoff = 2.0
         while not self.stopped:
             try:
@@ -1093,9 +1104,34 @@ class TelegramBridge(BaseBridge):
                 return
             try:
                 response = self.backend.cancel_channel_execution(msg, run_id)
+                # `cancel_channel_execution` só conhece ChannelExecutionRegistry
+                # (turno único); `/loop` fica em outro registro
+                # (`telegram_loop.py`). Tenta o fallback só na sentinela exata
+                # de "nada encontrado" — nunca sobre um erro real.
+                if response == "Nenhuma execução ativa correspondente nesta conversa e projeto.":
+                    from . import telegram_loop
+                    loop_response = telegram_loop.cancel_loop(self.backend, chat_id, run_id)
+                    if loop_response is not None:
+                        response = loop_response
             except Exception:
                 logger.exception("Falha ao solicitar cancelamento no Telegram")
                 response = "Não foi possível solicitar a parada. Consulte /status e tente novamente."
+            self.send_text(chat_id, response)
+            return
+        if command == "/loop":
+            if (message.get("chat") or {}).get("type") != "private":
+                self.send_text(chat_id, "Use /loop em uma conversa privada autorizada com o bot.")
+                return
+            parts = text.split(None, 1)
+            goal = parts[1].strip() if len(parts) > 1 else ""
+            try:
+                from . import telegram_loop
+                response = telegram_loop.start_loop(
+                    self.backend, msg, int(update.get("update_id", 0)), goal,
+                )
+            except Exception:
+                logger.exception("Falha ao iniciar /loop no Telegram")
+                response = "Não foi possível iniciar o /loop. Nenhuma execução foi admitida."
             self.send_text(chat_id, response)
             return
         if command == "/projetos":

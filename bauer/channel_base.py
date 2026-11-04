@@ -865,14 +865,23 @@ class AgentBackend:
                 "Efeitos e custo já consumidos serão preservados."
                 + self._pending_discard_notice(execution.batch))
 
-    def _resolver_kernel(self) -> Any:
+    def _resolver_kernel(self, workspace: Path | None = None) -> Any:
         """Kernel do canal (lazy). None = ``kernel.enabled`` desligado.
 
         Canais (Telegram/Slack/Discord) recebem input de TERCEIROS — é o caminho
         onde a policy mais importa, e era um dos que executavam turno sem Run,
         sem policy_check e sem gates.
+
+        ``workspace`` opcional (sprint 44, plano 061 Etapa 5): quando passado,
+        usa esse workspace direto em vez de ler ``self._effective_router()``
+        — que depende da ContextVar de projeto ativo, válida só durante o
+        processamento de UMA mensagem (``capture_project_context``), não no
+        startup do bridge (reconciliação de `/loop`) nem em cancelamento
+        fora do fluxo normal. Omitido, o comportamento é 100% igual ao
+        anterior.
         """
-        workspace = Path(self._effective_router().workspace).resolve()
+        workspace = (Path(workspace).resolve() if workspace is not None
+                    else Path(self._effective_router().workspace).resolve())
         with self._kernel_lock:
             if workspace in self._workspace_kernels:
                 self._workspace_kernels.move_to_end(workspace)
