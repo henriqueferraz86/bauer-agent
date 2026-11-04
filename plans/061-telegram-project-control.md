@@ -379,7 +379,7 @@ Checklist de execução:
 - [x] Cancelamento e limites (etapa 2).
 - [ ] Atividade dos agentes (etapa 3).
 - [ ] Aprovação remota exata (etapa 4).
-- [ ] Autonomia e recuperação (etapa 5).
+- [x] Autonomia e recuperação (etapa 5).
 - [ ] Operação e jornada real na Beelink (etapa 6).
 - [ ] Revisão, documentação e atualização do status em `plans/README.md`.
 
