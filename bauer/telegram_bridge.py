@@ -73,6 +73,7 @@ BOT_COMMANDS = [
     {"command": "projeto", "description": "Consultar projeto desta conversa"},
     {"command": "tarefas", "description": "Tarefas do projeto"},
     {"command": "loop", "description": "Trabalho autônomo governado até concluir"},
+    {"command": "atividade", "description": "Ver agentes/tarefa/custo da execução atual"},
     {"command": "cancelar", "description": "Solicitar parada da tarefa atual"},
     {"command": "status", "description": "Modelo, contexto e sessão atual"},
     {"command": "model", "description": "Trocar provider/modelo (botões)"},
@@ -423,6 +424,11 @@ class TelegramBridge(BaseBridge):
         self._picker_state: dict[str, dict] = {}
         self._project_callbacks: dict[str, dict] = {}
         self._project_callback_lock = threading.Lock()
+        # Sprint 45 (plano 061, Etapa 3): token opaco dos botões "Atualizar"/
+        # "Cancelar tarefa" do /atividade — mesmo padrão de _project_callbacks
+        # (TTL, ownership, message_id, limite de 500 entradas).
+        self._activity_callbacks: dict[str, dict] = {}
+        self._activity_callback_lock = threading.Lock()
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
         # Sprint 44 (plano 061, Etapa 5): guarda de execução única da
@@ -929,6 +935,10 @@ class TelegramBridge(BaseBridge):
         if data.startswith("proj:"):
             self._project_callback(cq)
             return
+        if data.startswith("act:"):
+            from . import telegram_activity
+            telegram_activity.handle_activity_callback(self, cq)
+            return
         if not data.startswith("mp:") or not chat_id or msg_id is None:
             return
 
@@ -1067,6 +1077,30 @@ class TelegramBridge(BaseBridge):
                 backoff = min(backoff * 2, 60.0)
         logger.info("Telegram bridge parado.")
 
+    def _cancel_run_or_loop(self, msg: ChannelMessage, run_id: str | None) -> str:
+        """Cancelamento combinado: turno único + fallback de `/loop` (sprint 44).
+
+        Extraído do que era o corpo inline do branch `/cancelar` para ser
+        reusado também pelo botão "Cancelar tarefa" do `/atividade` (sprint
+        45) sem duplicar lógica nem texto de resposta — mesmo comportamento
+        observável nos dois caminhos.
+        """
+        try:
+            response = self.backend.cancel_channel_execution(msg, run_id)
+            # `cancel_channel_execution` só conhece ChannelExecutionRegistry
+            # (turno único); `/loop` fica em outro registro
+            # (`telegram_loop.py`). Tenta o fallback só na sentinela exata
+            # de "nada encontrado" — nunca sobre um erro real.
+            if response == "Nenhuma execução ativa correspondente nesta conversa e projeto.":
+                from . import telegram_loop
+                loop_response = telegram_loop.cancel_loop(self.backend, msg.chat_id, run_id)
+                if loop_response is not None:
+                    response = loop_response
+        except Exception:
+            logger.exception("Falha ao solicitar cancelamento no Telegram")
+            response = "Não foi possível solicitar a parada. Consulte /status e tente novamente."
+        return response
+
     def _handle_update(self, update: dict) -> None:
         """Roteia o update. Turnos rodam no executor — polling nunca trava."""
         if update.get("callback_query"):
@@ -1111,21 +1145,16 @@ class TelegramBridge(BaseBridge):
             if run_id and len(run_id.split()) != 1:
                 self.send_text(chat_id, "Use /cancelar ou /cancelar <id da execução>.")
                 return
-            try:
-                response = self.backend.cancel_channel_execution(msg, run_id)
-                # `cancel_channel_execution` só conhece ChannelExecutionRegistry
-                # (turno único); `/loop` fica em outro registro
-                # (`telegram_loop.py`). Tenta o fallback só na sentinela exata
-                # de "nada encontrado" — nunca sobre um erro real.
-                if response == "Nenhuma execução ativa correspondente nesta conversa e projeto.":
-                    from . import telegram_loop
-                    loop_response = telegram_loop.cancel_loop(self.backend, chat_id, run_id)
-                    if loop_response is not None:
-                        response = loop_response
-            except Exception:
-                logger.exception("Falha ao solicitar cancelamento no Telegram")
-                response = "Não foi possível solicitar a parada. Consulte /status e tente novamente."
+            response = self._cancel_run_or_loop(msg, run_id)
             self.send_text(chat_id, response)
+            return
+        if command == "/atividade":
+            try:
+                from . import telegram_activity
+                telegram_activity.send_activity_card(self, msg)
+            except Exception:
+                logger.exception("Falha ao processar /atividade no Telegram")
+                self.send_text(chat_id, "Não foi possível obter a atividade agora. Tente novamente.")
             return
         if command == "/loop":
             if (message.get("chat") or {}).get("type") != "private":
