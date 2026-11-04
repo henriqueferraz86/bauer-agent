@@ -8,8 +8,23 @@ from pathlib import Path
 import httpx
 import pytest
 
+from bauer import channel_execution
 from bauer.channel_base import AgentBackend, ChannelMessage
 from bauer.telegram_bridge import MAX_MESSAGE_CHARS, TelegramBridge
+
+
+@pytest.fixture(autouse=True)
+def _isolated_delivery_registry():
+    """Todo `_make_bridge` registra `"tg:"` no registro global de entrega
+    (sprint 43, plano 063 — `TelegramBridge.__init__`) — sem isolar, os
+    muitos bridges construídos neste arquivo pisariam uns nos outros no
+    registro compartilhado. Mesmo padrão/razão de
+    `tests/test_background_delivery.py::_isolated_delivery_registry`."""
+    saved_channels = dict(channel_execution._delivery_channels)
+    channel_execution._delivery_channels.clear()
+    yield
+    channel_execution._delivery_channels.clear()
+    channel_execution._delivery_channels.update(saved_channels)
 
 
 class _EchoBackend(AgentBackend):
@@ -287,3 +302,77 @@ class TestBuildFromConfig:
         bridge = build_bridge_from_config(cfg)
         assert bridge.token == "env-token"  # env vence
         assert bridge.allowed_users == {1, 2}
+
+
+class TestSendTextResult:
+    """Sprint 43 (plano 063): `send_text_result` dá sinal de sucesso/falha
+    pro caminho de entrega de tarefas em background poder decidir retry —
+    diferente de `send_text`, que nunca levanta. Mesmo padrão de mock de
+    `TestEnvioHtmlComFallback`, só com `send_text_result` no lugar."""
+
+    def test_sucesso_com_html_devolve_true(self, tmp_path):
+        bridge = _make_bridge(tmp_path, lambda r: httpx.Response(200, json={"ok": True, "result": {}}))
+        assert bridge.send_text_result("42", "**negrito**") is True
+
+    def test_fallback_plain_bem_sucedido_devolve_true(self, tmp_path):
+        def handler(request):
+            body = json.loads(request.content)
+            if body.get("parse_mode") == "HTML":
+                return httpx.Response(400, json={"ok": False, "description": "can't parse"})
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        bridge = _make_bridge(tmp_path, handler)
+        assert bridge.send_text_result("42", "texto com <tag> esquisita") is True
+
+    def test_falha_html_e_plain_propaga_excecao(self, tmp_path):
+        bridge = _make_bridge(
+            tmp_path, lambda r: httpx.Response(400, json={"ok": False, "description": "bad request"}),
+        )
+        with pytest.raises(RuntimeError, match="bad request"):
+            bridge.send_text_result("42", "nunca entrega")
+
+
+class TestDeliverBackgroundResult:
+    """Sprint 43: `TelegramBridge.__init__` registra `"tg:"` em
+    `channel_execution.deliver_to_session` — cobre o fio real, não só o
+    `deliver_fn` fake que os testes de `channel_execution`/`execution`
+    usam."""
+
+    def test_construir_bridge_registra_canal_tg(self, tmp_path):
+        from bauer.channel_execution import deliver_to_session
+
+        sent: list[dict] = []
+
+        def handler(request):
+            if "sendMessage" in str(request.url):
+                sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        _make_bridge(tmp_path, handler)  # __init__ já registra "tg:"
+        delivered = deliver_to_session("tg:555", "Resultado da tarefa em background")
+        assert delivered is True
+        assert sent[0]["chat_id"] == "555"
+        assert "Resultado da tarefa em background" in sent[0]["text"]
+
+    def test_segundo_bridge_substitui_registro_do_primeiro(self, tmp_path):
+        from bauer.channel_execution import deliver_to_session
+
+        sent_first: list[dict] = []
+        sent_second: list[dict] = []
+
+        def handler_first(request):
+            if "sendMessage" in str(request.url):
+                sent_first.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        def handler_second(request):
+            if "sendMessage" in str(request.url):
+                sent_second.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        _make_bridge(tmp_path, handler_first)
+        _make_bridge(tmp_path, handler_second)  # re-registra "tg:", substitui o handler
+
+        deliver_to_session("tg:1", "msg")
+        assert sent_first == []
+        assert len(sent_second) == 1
