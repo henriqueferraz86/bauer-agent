@@ -429,6 +429,11 @@ class TelegramBridge(BaseBridge):
         # (TTL, ownership, message_id, limite de 500 entradas).
         self._activity_callbacks: dict[str, dict] = {}
         self._activity_callback_lock = threading.Lock()
+        # Bug fix (revisão pós-sprint 45): epoch/generation do observador de
+        # /atividade vivo por chat — evita que dois /atividade seguidos para
+        # o mesmo chat criem dois cartões/threads independentes (requisito 6
+        # do SPEC). Guardado pelo mesmo lock acima. Ver bauer/telegram_activity.py.
+        self._activity_watch_state: dict[str, dict] = {}
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
         # Sprint 44 (plano 061, Etapa 5): guarda de execução única da

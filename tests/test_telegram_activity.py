@@ -76,6 +76,7 @@ class FakeBridge:
         self.api_calls: list[tuple[str, dict]] = []
         self._activity_callbacks: dict[str, dict] = {}
         self._activity_callback_lock = threading.Lock()
+        self._activity_watch_state: dict[str, dict] = {}
         self._next_message_id = 1000
         self._api_raise_on: list[bool] = []  # fila de "deve levantar?" por chamada de _api
         self._cancel_run_or_loop = Mock(return_value="Cancelamento solicitado para run-x.")
@@ -368,6 +369,127 @@ def test_watch_activity_run_disappearing_stops_cleanly(runtime, monkeypatch):
         last_rendered="", deadline_monotonic=time.monotonic() + 3600,
     )
     assert bridge.edit_calls() == []  # some sem crashar, sem editar nada
+
+
+# ── bug fix (revisão pós-sprint 45): /atividade duas vezes não duplica ─────
+
+
+def test_second_atividade_same_run_reuses_card_instead_of_duplicating(runtime, monkeypatch):
+    """Requisito 6 do SPEC: 'nunca manda uma segunda mensagem para a mesma
+    execução enquanto a primeira ainda existir'. Antes do fix, duas
+    chamadas de /atividade para o mesmo chat/run ativo criavam DOIS cartões
+    (dois sendMessage) e DUAS threads observadoras independentes — a antiga
+    ficava orfã, editando sua própria mensagem com botões já invalidados.
+
+    Agora: a 2ª chamada reusa (edita) a MESMA mensagem da 1ª via
+    `editMessageText` (nunca manda `sendMessage` de novo) e o epoch/
+    generation em `bridge._activity_watch_state` aposenta o observador
+    antigo — ele encerra em silêncio (zero edições) no primeiro tick,
+    deixando só o observador novo responsável pela edição final.
+    """
+    threads = no_real_thread(monkeypatch)
+    monkeypatch.setattr(ta.time, "sleep", lambda _interval: None)
+    runs, bus = runtime
+    run = new_run(runs, status="running")
+    kernel = kernel_of(runtime)
+    backend = make_backend(kernel, session_id="tg:42")
+    bridge = FakeBridge(backend)
+
+    # 1ª chamada: cartão novo.
+    ta.send_activity_card(bridge, private_msg())
+    assert len(bridge.api_calls) == 1
+    method1, kwargs1 = bridge.api_calls[0]
+    assert method1 == "sendMessage"
+    first_message_id = 1000
+
+    # 2ª chamada: MESMO chat, MESMA execução ainda ativa — não pode duplicar.
+    ta.send_activity_card(bridge, private_msg())
+    assert len(bridge.api_calls) == 2
+    method2, kwargs2 = bridge.api_calls[1]
+    assert method2 == "editMessageText"  # reusa a mensagem, não manda sendMessage de novo
+    assert kwargs2["message_id"] == first_message_id
+
+    # Nenhum sendMessage adicional foi disparado — uma mensagem só por execução.
+    send_messages = [m for m, _ in bridge.api_calls if m == "sendMessage"]
+    assert len(send_messages) == 1
+
+    assert len(threads) == 2  # duas threads AGENDADAS (fake, não rodaram ainda)
+    old_watch_kwargs, new_watch_kwargs = threads[0], threads[1]
+    assert old_watch_kwargs["generation"] == 1
+    assert new_watch_kwargs["generation"] == 2
+    assert old_watch_kwargs["message_id"] == first_message_id
+    assert new_watch_kwargs["message_id"] == first_message_id
+
+    edits_before_old_watch = len(bridge.edit_calls())
+
+    # A thread observadora ANTIGA (generation 1) foi superada — ao rodar,
+    # deve se encerrar em silêncio, SEM nenhuma edição (nem final).
+    ta._watch_activity(**old_watch_kwargs)
+    assert len(bridge.edit_calls()) == edits_before_old_watch  # zero edições novas
+
+    # A thread observadora NOVA (generation 2) é a única responsável pelo
+    # cartão agora — ao chegar a execução no estado terminal, faz exatamente
+    # UMA edição final, limpando o teclado na MESMA mensagem reusada.
+    runs.update_run(run.id, status="completed")
+    ta._watch_activity(**new_watch_kwargs)
+
+    edits = bridge.edit_calls()
+    final_edits = [e for e in edits if e.get("reply_markup") == {"inline_keyboard": []}]
+    assert len(final_edits) == 1  # exatamente uma edição final, não duas
+    assert final_edits[0]["message_id"] == first_message_id
+    # Nenhuma mensagem órfã: só existiu a mensagem reusada, nunca uma segunda.
+    assert len(send_messages) == 1
+
+
+def test_watch_activity_kernel_raising_mid_watch_attempts_final_edit(runtime, monkeypatch):
+    """Bug fix (revisão pós-sprint 45): antes, se `_resolver_kernel` levantasse
+    (Kernel ficou indisponível DEPOIS do /atividade já estar observando), o
+    laço simplesmente parava sem tentar a edição final — o cartão ficava
+    congelado para sempre mostrando 'em execução' com botões mortos. Agora
+    cai no mesmo caminho de melhor esforço do estado terminal: tenta editar
+    uma vez, limpando o teclado, mesmo sem saber o estado real mais atual.
+    """
+    runs, bus = runtime
+    run = new_run(runs, status="running")  # nunca chega a terminal
+    kernel = kernel_of(runtime)
+    backend = make_backend(kernel, session_id="tg:42")
+    backend._resolver_kernel = Mock(side_effect=RuntimeError("kernel caiu"))
+    bridge = FakeBridge(backend)
+    monkeypatch.setattr(ta.time, "sleep", lambda _interval: None)
+
+    ta._watch_activity(
+        bridge=bridge, chat_id="42", message_id=999, session_id="tg:42", run_id=run.id,
+        workspace="/workspace", project_name=None, last_rendered="texto anterior",
+        deadline_monotonic=time.monotonic() + 3600,
+    )
+
+    edits = bridge.edit_calls()
+    assert len(edits) == 1  # exatamente uma tentativa de edição final
+    assert edits[0]["message_id"] == 999
+    assert edits[0]["reply_markup"] == {"inline_keyboard": []}  # teclado sempre limpo
+
+
+def test_watch_activity_kernel_becoming_none_mid_watch_attempts_final_edit(runtime, monkeypatch):
+    """Mesma proteção acima, mas para o caso de `_resolver_kernel` passar a
+    retornar `None` (em vez de levantar) depois que a observação já começou."""
+    runs, bus = runtime
+    run = new_run(runs, status="running")
+    kernel = kernel_of(runtime)
+    backend = make_backend(kernel, session_id="tg:42")
+    backend._resolver_kernel = Mock(return_value=None)
+    bridge = FakeBridge(backend)
+    monkeypatch.setattr(ta.time, "sleep", lambda _interval: None)
+
+    ta._watch_activity(
+        bridge=bridge, chat_id="42", message_id=999, session_id="tg:42", run_id=run.id,
+        workspace="/workspace", project_name=None, last_rendered="texto anterior",
+        deadline_monotonic=time.monotonic() + 3600,
+    )
+
+    edits = bridge.edit_calls()
+    assert len(edits) == 1
+    assert edits[0]["message_id"] == 999
+    assert edits[0]["reply_markup"] == {"inline_keyboard": []}
 
 
 # ── botões (handle_activity_callback) ───────────────────────────────────────

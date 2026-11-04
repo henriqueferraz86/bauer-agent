@@ -113,6 +113,16 @@ def send_activity_card(bridge: Any, msg: ChannelMessage) -> None:
 
     Sem execução ativa/recente ou Kernel indisponível → mensagem amigável,
     sem erro, sem botões, sem thread observadora (requisito 2 do SPEC).
+
+    Bug fix (revisão pós-sprint 45, requisito 6 do SPEC): um segundo
+    `/atividade` para o MESMO chat enquanto a execução anterior ainda não é
+    terminal NÃO manda uma segunda mensagem — reusa e edita o cartão já
+    enviado ("uma mensagem por execução, sempre editada, nunca duplicada").
+    Se for uma execução diferente (ou não havia observador vivo), manda um
+    cartão novo; de qualquer forma, o observador anterior para este chat é
+    sempre aposentado via epoch/generation (`bridge._activity_watch_state`)
+    — ver `_watch_activity` — nunca fica fazendo sua própria edição final
+    concorrente com a do cartão novo.
     """
     chat_id = msg.chat_id
     if not private_telegram(msg):
@@ -153,19 +163,42 @@ def send_activity_card(bridge: Any, msg: ChannelMessage) -> None:
     token = secrets.token_urlsafe(18)
     keyboard = None if terminal else _activity_keyboard(token, cancelable=True)
 
+    reuse_message_id: int | None = None
+    with bridge._activity_callback_lock:
+        current_watch = bridge._activity_watch_state.get(chat_id)
+        if (
+            current_watch is not None
+            and not terminal
+            and current_watch.get("run_id") == run_proj["run_id"]
+        ):
+            reuse_message_id = current_watch.get("message_id")
+        generation = (current_watch.get("generation") if current_watch else 0) + 1
+
     api_kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
     if keyboard is not None:
         api_kwargs["reply_markup"] = keyboard
-    try:
-        result = bridge._api("sendMessage", **api_kwargs)
-    except Exception:
-        logger.exception("Falha enviando cartão de atividade no Telegram")
-        bridge.send_text(chat_id, "Não consegui enviar o cartão de atividade agora; tente novamente.")
-        return
 
-    message_id = result.get("message_id")
-    if terminal or message_id is None:
-        return  # execução já terminal (ou sem message_id) — nada a observar
+    message_id: int | None
+    if reuse_message_id is not None:
+        try:
+            bridge._api("editMessageText", message_id=reuse_message_id, **api_kwargs)
+        except Exception:
+            logger.exception("Falha reeditando cartão de atividade existente no Telegram")
+            bridge.send_text(
+                chat_id, "Não consegui atualizar o cartão de atividade agora; tente novamente."
+            )
+            return
+        message_id = reuse_message_id
+    else:
+        try:
+            result = bridge._api("sendMessage", **api_kwargs)
+        except Exception:
+            logger.exception("Falha enviando cartão de atividade no Telegram")
+            bridge.send_text(chat_id, "Não consegui enviar o cartão de atividade agora; tente novamente.")
+            return
+        message_id = result.get("message_id")
+        if terminal or message_id is None:
+            return  # execução já terminal (ou sem message_id) — nada a observar
 
     now = time.monotonic()
     _register_activity_callback(
@@ -173,13 +206,17 @@ def send_activity_card(bridge: Any, msg: ChannelMessage) -> None:
         message_id=message_id, run_id=run_proj["run_id"], session_id=session_id,
         workspace=str(workspace), project_name=project_name, now=now,
     )
+    with bridge._activity_callback_lock:
+        bridge._activity_watch_state[chat_id] = {
+            "run_id": run_proj["run_id"], "message_id": message_id, "generation": generation,
+        }
     threading.Thread(
         target=_watch_activity, daemon=True, name=f"activity-{chat_id}",
         kwargs=dict(
             bridge=bridge, chat_id=chat_id, message_id=message_id,
             session_id=session_id, run_id=run_proj["run_id"], workspace=str(workspace),
             project_name=project_name, last_rendered=text,
-            deadline_monotonic=now + ACTIVITY_WATCH_TIMEOUT_S,
+            deadline_monotonic=now + ACTIVITY_WATCH_TIMEOUT_S, generation=generation,
         ),
     ).start()
 
@@ -204,9 +241,33 @@ def _register_activity_callback(bridge: Any, *, token: str, owner: str, chat_id:
             bridge._activity_callbacks.pop(next(iter(bridge._activity_callbacks)))
 
 
+def _activity_watch_superseded(bridge: Any, chat_id: str, generation: int) -> bool:
+    """Epoch check: um `/atividade` mais novo para o MESMO chat já assumiu o
+    cartão (bug fix pós-sprint 45, requisito 6 do SPEC)? Se sim, este
+    observador deve se aposentar em silêncio — SEM edição final, pois ele
+    não é mais "o" cartão vivo; a edição final é responsabilidade exclusiva
+    do observador atual (o que tem a `generation` corrente)."""
+    with bridge._activity_callback_lock:
+        current = bridge._activity_watch_state.get(chat_id)
+        return current is None or current.get("generation") != generation
+
+
+def _clear_activity_watch_state(bridge: Any, chat_id: str, generation: int | None) -> None:
+    """Limpa o registro de observador vivo deste chat, só se ainda for a
+    MESMA generation que está encerrando (nunca apaga o registro de um
+    observador mais novo que já o sucedeu)."""
+    if generation is None:
+        return
+    with bridge._activity_callback_lock:
+        current = bridge._activity_watch_state.get(chat_id)
+        if current is not None and current.get("generation") == generation:
+            bridge._activity_watch_state.pop(chat_id, None)
+
+
 def _watch_activity(*, bridge: Any, chat_id: str, message_id: int, session_id: str,
                     run_id: str, workspace: str, project_name: str | None,
-                    last_rendered: str, deadline_monotonic: float) -> None:
+                    last_rendered: str, deadline_monotonic: float,
+                    generation: int | None = None) -> None:
     """Thread observadora: poll a cada ~2,5s, edita só se o texto mudou.
 
     Requisito 7 do SPEC (o mais crítico desta sprint): uma falha de edição
@@ -214,32 +275,68 @@ def _watch_activity(*, bridge: Any, chat_id: str, message_id: int, session_id: s
     (diferente de `_StreamingDraft`) — a tentativa final, em estado terminal
     ou ao bater o teto de 2h, é SEMPRE feita, lida com sua própria falha de
     forma independente do que aconteceu nos ticks anteriores.
+
+    `generation` (bug fix pós-sprint 45): epoch capturado no spawn por
+    `send_activity_card`. Se um `/atividade` mais novo para o MESMO chat já
+    assumiu o cartão, este observador se encerra em silêncio (sem editar —
+    não é mais o cartão vivo). `None` (só usado por chamadas diretas nos
+    testes unitários do observador) desliga a checagem.
+
+    Bug fix (revisão pós-sprint 45): a resolução do Kernel/projeção
+    (`_resolver_kernel`, `get_run`, `build_chat_activity`) agora está
+    coberta por um `try/except` próprio, igual ao que já protegia só as
+    chamadas a `editMessageText`. Antes, se o Kernel ficasse indisponível
+    (ou `_resolver_kernel`/`get_run`/`build_chat_activity` levantasse) DEPOIS
+    do `/atividade` já estar observando, o laço simplesmente parava sem
+    nenhuma tentativa de edição final — o cartão ficava congelado para
+    sempre mostrando "em execução" com botões mortos. Agora esse caso cai no
+    MESMO caminho de melhor esforço do estado terminal/teto: tenta a edição
+    final (texto conhecido mais recente + teclado limpo), loga e encerra.
     """
     backend = bridge.backend
     workspace_path = Path(workspace)
     while True:
         time.sleep(ACTIVITY_POLL_INTERVAL_S)
+
+        if generation is not None and _activity_watch_superseded(bridge, chat_id, generation):
+            return  # cartão mais novo para este chat já assumiu — encerra sem editar
+
+        resolution_failed = False
         try:
             kernel = backend._resolver_kernel(workspace=workspace_path)
+            if kernel is None:
+                raise RuntimeError("Kernel indisponível durante observação de atividade")
+
+            run = kernel.runs.get_run(run_id)
+            if run is None:
+                _clear_activity_watch_state(bridge, chat_id, generation)
+                return  # execução desapareceu — nada a observar
+
+            envelope = build_chat_activity(kernel.runs, kernel.bus, session_id, run_id=run_id)
+            runs = envelope.get("runs") or []
+            proj = runs[0] if runs else None
+            terminal = proj is None or proj["status"] in TERMINAL_RUN_STATUSES
+            timed_out = time.monotonic() >= deadline_monotonic
+            text = render_activity_card(proj, run, project_name=project_name)
         except Exception:
-            logger.warning("Observador de atividade: Kernel indisponível", exc_info=True)
-            break
-        if kernel is None:
-            break
-
-        run = kernel.runs.get_run(run_id)
-        if run is None:
-            break  # execução desapareceu — nada a observar
-
-        envelope = build_chat_activity(kernel.runs, kernel.bus, session_id, run_id=run_id)
-        runs = envelope.get("runs") or []
-        proj = runs[0] if runs else None
-        terminal = proj is None or proj["status"] in TERMINAL_RUN_STATUSES
-        timed_out = time.monotonic() >= deadline_monotonic
-        text = render_activity_card(proj, run, project_name=project_name)
+            logger.warning(
+                "Observador de atividade: falha resolvendo Kernel/projeção; "
+                "encerrando com tentativa de edição final",
+                exc_info=True,
+            )
+            resolution_failed = True
+            terminal = True
+            timed_out = False
+            text = last_rendered
 
         if terminal or timed_out:
-            if timed_out and not terminal:
+            if resolution_failed:
+                text += (
+                    "\n\n(Acompanhamento interrompido: não foi possível consultar o estado da "
+                    "tarefa; a tarefa pode continuar em segundo plano — use /atividade de novo "
+                    "para abrir um novo acompanhamento.)"
+                )
+            elif timed_out and not terminal:
                 text += (
                     "\n\n(Acompanhamento encerrado após 2h; a tarefa pode continuar em segundo "
                     "plano — use /atividade de novo para abrir um novo acompanhamento.)"
@@ -253,6 +350,7 @@ def _watch_activity(*, bridge: Any, chat_id: str, message_id: int, session_id: s
                 )
             except Exception:
                 logger.warning("Observador de atividade: edição final falhou", exc_info=True)
+            _clear_activity_watch_state(bridge, chat_id, generation)
             break
 
         if text != last_rendered:
