@@ -4,7 +4,9 @@
 
 - **Status**: IN PROGRESS — execução autorizada em 2026-10-21; sprint 33 (etapa 1)
   e sprint 34 (etapa 2, cancelamento) entregues com gates completos e revisão
-  cruzada em 2026-10-22; etapa 3 (atividade dos agentes) ainda não iniciada.
+  cruzada em 2026-10-22; sprint 44 entrega a etapa 5 (`/loop` autônomo e
+  recuperação, ver nota "Entregue em sprint 44" abaixo); etapa 3 (atividade
+  dos agentes) ainda não iniciada.
 - **Data/base**: 2026-10-21, checkout `e22e1aa`.
 - **Prioridade/esforço**: P1 / L, dividido em entregas pequenas.
 - **Objetivo**: conversar com o Bauer pelo celular sabendo em qual projeto ele
@@ -223,6 +225,50 @@ restart não concedem autorização. HARDLINE continua incondicional.
 **Aceite**: restart após receber update ou emitir aprovação não perde o vínculo
 nem duplica tarefa/efeito; queda do Telegram não altera budget nem declara
 sucesso; relatório terminal reflete os gates reais do Kernel.
+
+**Entregue em sprint 44** (spec completa em
+`specs/sprint-44-telegram-loop/{SPEC,ARCHITECTURE,BACKLOG}.md`):
+
+- `/loop <objetivo>` em conversa privada autorizada, admitido via
+  `core.kernel.admit`/`continue_governed` + `serve_loop.resolve_loop_limits`/
+  `run_loop_rounds` — o MESMO motor do `/loop` da web (`server.py:
+  _start_loop_impl`), importado direto (processo do gateway é separado do
+  `bauer serve`). Resposta "iniciado" só sai depois de `admit()` devolver um
+  run sem bloqueio; `waiting_approval`/`deny`/erro nunca dizem "iniciado".
+- Novo módulo `bauer/telegram_loop.py`: `TelegramLoopRecord`/
+  `TelegramLoopStore` (JSON 0600 em `workspace/.bauer_gateway/
+  telegram_loops.json`, expurgo de registros terminais com mais de 7 dias),
+  `start_loop` (admite+persiste SINCRONAMENTE antes de qualquer resposta —
+  fecha o gap de ordenação só para `/loop`, sem tocar a ordem de dispatch de
+  outras mensagens/comandos), `reconcile_pending` (chamado em
+  `TelegramBridge.start()` antes do polling; nunca reemite o `/loop` — corrige
+  o registro contra `kernel.runs.get_run`, e usa
+  `kernel.runs.fail_run_se_nao_terminal` quando a thread morreu com o
+  processo), `cancel_loop` (fallback do `/cancelar` quando
+  `ChannelExecutionRegistry` não conhece a execução).
+- `AgentBackend._resolver_kernel` ganhou o parâmetro opcional `workspace`
+  (aditivo; comportamento igual ao anterior quando omitido) — usado pela
+  reconciliação e pelo cancelamento, que rodam fora do contexto de projeto
+  ativo normal.
+- `tests/test_telegram_loop.py` (12 casos, hermético: Kernel fake, sem rede/
+  Telegram/LLM real) cobre admissão feliz, `waiting_approval` sem falso
+  "iniciado", `deny` sem persistência, replay do mesmo `update_id` sem
+  duplicar, cancelamento via `/cancelar <run_id>`, reconciliação com run
+  terminal (entrega só uma vez) e não-terminal (marca interrompido, nunca
+  reemite), expurgo de registros antigos e permissão 0600 do arquivo.
+
+Desvios/escopo reduzido conscientemente (documentados no código):
+- O relatório final não inclui custo em USD — o recorder de custo por turno
+  (`_TurnCostRecorder`) é uma classe privada aninhada em
+  `server.py:create_app`, não pensada para reuso fora da instância do serve;
+  extrair esse acoplamento ficou fora do escopo. O relatório usa
+  rodadas/tool_calls como sinal de "quanto trabalho" em vez disso.
+- Reconciliação não tenta retomar registros em estado `received`
+  (`waiting_approval`): nenhuma thread chegou a existir para eles, então não
+  há "thread morta" para detectar — ficam como estão até alguém decidir a
+  aprovação ou até expirarem via outro mecanismo existente.
+- Gap de ordenação offset-antes-de-concluir para mensagens/comandos que NÃO
+  são `/loop` permanece (pré-existente, fora de escopo desta sprint).
 
 ## Etapa 6 — Operação na Beelink e validação real
 
