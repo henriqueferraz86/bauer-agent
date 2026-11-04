@@ -363,6 +363,27 @@ class AgnoRuntimeAdapter:
             "mode": self.mode,
         }
 
+        # Any event back from the SDK loop means agent.run() genuinely started
+        # processing — used in the except block below to tell "cancelled
+        # before any real work" from "cancelled after at least one LLM
+        # round-trip that may have incurred real cost we can no longer
+        # report". Initialized here, outside the try, so it is always bound
+        # even if the exception fires before the loop (e.g. building the
+        # Agent itself raises).
+        #
+        # _checkpointed_events() below checks for cancellation both before
+        # and after pulling each event from the SDK, so in theory a
+        # cancellation landing in that narrow window could discard the very
+        # event that would prove cost was incurred, undercounting
+        # sdk_events_seen. This does not happen in practice: agno always
+        # emits a cheap RunStarted event (no model call yet) before ever
+        # invoking the model, so at least one event is already counted
+        # before any real cost can exist. Verified against agno 3.0.10 and
+        # covered by test_agno_cancellation_during_bare_llm_call_still_logs_
+        # the_warning (tests/test_channel_agno_turn.py), which cancels mid
+        # invoke() with no tool call involved — the leanest case where this
+        # race could matter.
+        sdk_events_seen = 0
         try:
             agent = self._runtime_for_request(request, session_id=session_id, user_id=user_id)
             prompt = self._prompt_from_request(request)
@@ -374,6 +395,7 @@ class AgnoRuntimeAdapter:
                 prompt, stream=True, stream_events=True,
                 run_id=run_id, session_id=session_id, user_id=user_id,
             ))):
+                sdk_events_seen += 1
                 agno_run_id = getattr(event, "run_id", agno_run_id)
                 agno_event = self._agno_event_name(event)
                 singular_tool = getattr(event, "tool", None)
@@ -434,6 +456,30 @@ class AgnoRuntimeAdapter:
                     self._report_run_cost(event, request)
         except Exception as exc:  # noqa: BLE001 — normalize cancellation at the adapter boundary
             cancelled = isinstance(exc, ProviderRetryInterrupted) or _is_agno_cancellation(exc)
+            if sdk_events_seen > 0:
+                # Known SDK gap (plano 062, sprint 40): RunCompleted/
+                # TeamRunCompleted is the only event that carries metrics, and
+                # a cancelled/failed run never reaches it — any LLM cost
+                # already incurred before the interruption never reaches
+                # cost_sink. `sdk_events_seen > 0` means agent.run() actually
+                # started (at minimum a RunStarted event came back), so real
+                # provider cost may well have been incurred. No clean fix
+                # exists without a fragile monkeypatch of agno internals (no
+                # public hook fires per-call, no persisted run_response to
+                # read after the fact, no event besides the terminal one
+                # carries metrics — confirmed by inspecting agno 3.0.10's
+                # Agent/Model source directly, not guessed). This makes the
+                # gap visible in logs instead of silently under-reporting
+                # budget, without attempting to reconstruct a cost figure we
+                # cannot verify.
+                logging.getLogger("bauer.agno_adapter").warning(
+                    "run %s terminou %s após pelo menos %d evento(s) do SDK, "
+                    "mas nenhum custo de LLM foi reportado ao cost_sink — a "
+                    "contabilidade de orçamento deste run pode estar "
+                    "incompleta (limitação conhecida do SDK Agno: só o evento "
+                    "final de conclusão carrega métricas de uso).",
+                    run_id, "cancelado" if cancelled else "com falha", sdk_events_seen,
+                )
             failed = {
                 "event": "run.cancelled" if cancelled else "run.failed",
                 "status": "cancelled" if cancelled else "failed",

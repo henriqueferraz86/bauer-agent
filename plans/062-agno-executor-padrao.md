@@ -1,23 +1,21 @@
 # Plano 062 — Agno como motor de execução padrão do turno
 
-**Status:** Código de todas as 6 sprints (35-40) entregue, testado e
-mergeado — todo canal (CLI, web, OpenAI-compat, Telegram) consegue rodar
-via Agno hoje, atrás de opt-in explícito por config, com `bauer_native`
-preservado como fallback real (ADR
-`plans/adr/001-bauer-native-fallback.md`). Detalhes em cada seção de
-sprint abaixo e em `specs/sprint-{35..40}-*/`. O que falta não é código:
-é tempo — o STOP do sprint 40 continua valendo e não foi contornado: o
-default de PRODUÇÃO do Telegram continua `bauer_native`, e só deve mudar
-depois que os sprints 35-39 (já em produção via `/stream`/`/chat` desde
-antes mesmo deste plano) tiverem tempo de calendário suficiente de
-estabilidade real — decisão do operador, não deste plano. Dois achados
-reais de bugs pré-existentes foram corrigidos ao longo do caminho
-(aprovação assíncrona e persistência de histórico em `/chat` e
-`/v1/chat/completions`, sprints 38/39); um achado real foi documentado e
-deliberadamente NÃO corrigido por estar fora de escopo (custo de LLM
-perdido em cancelamentos do `AgnoRuntimeAdapter`, sprint 40 — recomendado
-para sprint futura dona do adapter). Suíte completa e Ruff
-bloqueante/estilo verdes em toda sprint, confirmados de forma
+**Status:** DONE. Código de todas as 6 sprints (35-40) entregue, testado e
+mergeado — todo canal (CLI, web, OpenAI-compat, Telegram) roda via Agno,
+com `bauer_native` preservado como fallback real (ADR
+`plans/adr/001-bauer-native-fallback.md`). **Telegram em produção na
+Beelink trocado para Agno em 2026-11-04** — o STOP do sprint 40 (tempo
+real de estabilidade antes do flip) foi conscientemente sobreposto pelo
+operador, não contornado silenciosamente; decisão explícita, registrada
+aqui. Dois achados reais de bugs pré-existentes foram corrigidos ao longo
+do caminho (aprovação assíncrona e persistência de histórico em `/chat` e
+`/v1/chat/completions`, sprints 38/39); um achado real (custo de LLM
+perdido em cancelamentos do `AgnoRuntimeAdapter`) não tem correção limpa
+possível sem monkeypatch frágil do SDK — mitigado com um aviso visível em
+vez de uma correção que não existe (ver seção do sprint 40, "Mitigação
+entregue em 2026-11-04"). Detalhes em cada seção de sprint abaixo e em
+`specs/sprint-{35..40}-*/`. Suíte completa e Ruff bloqueante/estilo verdes
+em toda sprint, confirmados de forma
 independente (implementação + revisão cruzada) desde o sprint 37.
 
 **Prioridade:** P1
@@ -493,6 +491,29 @@ que falhará se uma sprint futura corrigir o adapter — sinal para
 atualizá-lo. Pertence ao sprint 35/36 (dono do `AgnoRuntimeAdapter`), não
 a este sprint do canal Telegram; recomendado como trabalho futuro, não
 decidido nem agendado aqui.
+
+**Mitigação entregue em 2026-11-04** (branch `codex/agno-cost-on-cancellation`):
+investigação direta do SDK Agno 3.0.10 instalado (campos de evento,
+mecanismo `pre_hooks`/`post_hooks`, atributo `run_response`) confirmou que
+**não há correção limpa sem monkeypatch frágil do SDK** — nenhum evento
+intermediário carrega métricas, nenhum hook dispara por chamada de LLM,
+nenhum estado acumulado é exposto publicamente. O operador, ciente disso,
+escolheu tornar a lacuna visível em vez de silenciosa:
+`AgnoRuntimeAdapter.stream_agent` agora loga um `warning` (nunca altera
+`status`/fluxo do run) quando um run cancelado/com falha teve pelo menos
+um evento real do SDK processado (`sdk_events_seen > 0` — sinal escolhido
+deliberadamente no lugar de "pelo menos uma tool completada", que fica
+vazio justamente no cenário mais comum de cancelamento). Três testes
+novos em `tests/test_channel_agno_turn.py`: o warning dispara no
+cancelamento durante tool call, dispara também cancelando uma chamada de
+LLM NUA (sem tool — fecha uma janela teórica de corrida entre
+`checkpoint_execution()` e `yield` em `_checkpointed_events`, identificada
+e confirmada inofensiva na prática pela revisão independente), e nunca
+dispara num turno que completa normalmente. Revisão cruzada reproduziu
+manualmente o cenário de corrida teórica contra o SDK real antes de
+confirmar que não se materializa. `AgnoRuntimeAdapter`/
+`execution_control.py` não tiveram nenhuma outra mudança de
+comportamento — é só observabilidade.
 
 Suíte completa + Ruff bloqueante/estilo verdes, confirmados
 independentemente duas vezes.
