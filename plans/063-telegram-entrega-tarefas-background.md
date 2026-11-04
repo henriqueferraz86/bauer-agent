@@ -162,15 +162,18 @@ MESMA sessão/chat que disparou a tarefa, sem precisar resolver canal "home"):
 
 ## Sprints propostos
 
+**Renumerado em 2026-11-04**: os números originais (41-44) colidiam com
+sprints já em andamento de outra frente concorrente (plano 061, atividade
+e aprovação remota). Consolidado numa sprint só, porque os itens são
+fortemente acoplados — ver `specs/sprint-43-telegram-background-delivery/
+SPEC.md` para o raciocínio completo.
+
 | Sprint | Entrega | Esforço |
 |---|---|---|
-| 41 | Callback de conclusão + captura de `chat_id` na criação do processo background (`run_command`) | M |
-| 42 | Ponto único de entrega em `channel_execution.py` (editar em lugar vs. mensagem nova com cabeçalho) | M |
-| 43 | Idempotência (claim local) + retry curto com backoff | S |
-| 44 | Testes de ponta a ponta com Telegram simulado (bot/API falsos) + atualização de `plans/061` etapa 5 referenciando este mecanismo | M |
+| 43 | Callback + captura de origem + ponto único de entrega + idempotência + retry + testes de ponta a ponta (consolida os itens 1-6 do desenho acima, antes planejados como sprints 41-44 separados) | L |
 
-Cada sprint segue o mesmo processo de evidência → implementação → testes
-hermeticos → revisão cruzada já usado nos sprints 33-34 do plano 061.
+Segue o mesmo processo de evidência → implementação → revisão cruzada
+independente → correção já usado nos sprints do plano 062.
 
 ## Critérios de aceite
 
