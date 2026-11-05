@@ -21,7 +21,7 @@ Rules that keep the manifest honest:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Callable, Literal
 
 ActionRisk = Literal["read", "write", "execute", "external"]
 _RISK_ORDER: dict[str, int] = {"read": 0, "external": 1, "write": 2, "execute": 3}
@@ -68,6 +68,17 @@ class ToolkitPolicy:
     #: Free-form reviewer notes shown in doctor/UI (no secrets).
     notes: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: Actions derived from operator settings (admin-enumerated, e.g. MCP
+    #: tools). Called with the validated settings section (or ``None``).
+    dynamic_actions: Callable[[Any], tuple[ActionPolicy, ...]] | None = None
+
+    def with_settings(self, section: Any) -> "ToolkitPolicy":
+        """Policy with settings-derived actions resolved (static ones kept)."""
+        if self.dynamic_actions is None:
+            return self
+        from dataclasses import replace
+
+        return replace(self, actions=tuple(self.actions) + tuple(self.dynamic_actions(section)))
 
     def action(self, name: str) -> ActionPolicy | None:
         return next((item for item in self.actions if item.name == name), None)

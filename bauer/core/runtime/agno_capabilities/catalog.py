@@ -161,6 +161,7 @@ def resolve_capability(
         )
     if settings is None:
         settings = load_capability_settings()
+    policy = policy.with_settings(settings.section(policy.settings_section or policy.id))
     status = capability_status(policy, settings=settings, sdk=sdk)
     if status.state != "ready":
         detail = status.reason or status.state
@@ -271,6 +272,7 @@ def catalog_entries(
             assert module is not None
             rows.append(_unreviewed_row(module))
             continue
+        policy = policy.with_settings(settings.section(policy.settings_section or policy.id))
         status = capability_status(policy, settings=settings, sdk=sdk)
         state = status.state
         if state == "ready" and capability_id in assigned:

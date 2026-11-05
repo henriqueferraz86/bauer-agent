@@ -19,7 +19,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | Plano | Spec executada | Branch | Estado |
 |---|---|---|---|
 | 18 — catálogo, capabilities, ponte ToolRouter | `specs/sprint-50-agno-capability-bridge/` | `codex/sprint-50-agno-capability-bridge` | DONE |
-| 19 — pesquisa/dev read-only | `specs/sprint-51-*` | `codex/sprint-51-*` | TODO |
+| 19 — pesquisa/dev read-only | `specs/sprint-51-agno-research-readonly/` | `codex/sprint-51-agno-research-readonly` | DONE |
 | 20 — Bauer Data + SQL read-only | `specs/sprint-52-*` | `codex/sprint-52-*` | TODO |
 | 21 — browser/testes de UI | `specs/sprint-53-*` | `codex/sprint-53-*` | TODO |
 | 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-*` | `codex/sprint-54-*` | TODO |
@@ -44,6 +44,17 @@ refeita.
 - [x] Config do operador em `$BAUER_HOME/agno_capabilities.yaml` (estrito,
   só leitura, nunca criado no update); credenciais por nome.
 - [x] `bauer doctor` e Desktop mostram estado e o que falta.
+
+### Entregue na sprint 51 (plano "19")
+
+- [x] Busca web revisada como leitura (websearch/duckduckgo/hackernews/pubmed/
+  wikipedia/arxiv); extratores de URL arbitrária `incompatible` →
+  `bauer.web_fetch` (url_safety).
+- [x] Argumentos com segredo bloqueados em operações de saída.
+- [x] `bauer.github` nativo (httpx) e `agno.github` (SDK, PyGithub opcional)
+  só leitura, allowlist de repositórios, credencial por nome.
+- [x] `bauer.mcp`: servidores/tools enumerados pelo admin, ambiente mínimo,
+  start-on-call, saída não confiável; `agno.mcp` `incompatible`.
 
 ## Problema e resultado esperado
 

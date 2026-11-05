@@ -54,6 +54,7 @@ _BAUER_CAPABILITIES: tuple[AgnoCapability, ...] = (
     AgnoCapability("bauer.search_text", "Buscar texto", "workspace", "Busca texto no workspace autorizado.", "bauer", ("read",), "read", True, package=None),
     AgnoCapability("bauer.write_file", "Escrever arquivo", "workspace", "Escreve arquivo sob as políticas Bauer.", "bauer", ("write",), "write", True, package=None),
     AgnoCapability("bauer.run_command", "Executar comando", "execution", "Executa comando sob shell runner e policy Bauer.", "bauer", ("execute",), "execute", True, package=None),
+    AgnoCapability("bauer.web_fetch", "Extração web", "research", "Extrai conteúdo de URL via ToolRouter, com url_safety (SSRF) e limites Bauer.", "bauer", ("read",), "external", True, package=None),
     AgnoCapability("bauer.web_search", "Busca web", "research", "Pesquisa web através do ToolRouter.", "bauer", ("search",), "external", True, package=None),
     AgnoCapability("bauer.memory", "Memória", "memory", "Consulta ou atualiza memória via ToolRouter.", "bauer", ("read", "write"), "write", True, package=None),
 )

@@ -244,6 +244,23 @@ def materialize(
     return governed
 
 
+#: Operations whose arguments leave the machine: refuse secret material in
+#: them (the ``network.http`` "contains_secret" policy rule has no producer).
+_OUTBOUND_OPERATIONS = frozenset({"network.http", "integration.write", "mcp.call"})
+
+
+def _refuse_secret_material(call_args: dict[str, Any]) -> None:
+    try:
+        from ....secrets_scanner import scan
+
+        text = json.dumps(call_args, ensure_ascii=False, default=str)
+        found = scan(text, redact=False).found
+    except Exception:  # noqa: BLE001 - scanner failure must not open the gate silently
+        found = False
+    if found:
+        raise ToolError("argumentos contêm material secreto; envio externo bloqueado")
+
+
 def _governed_entrypoint(
     tool_name: str,
     fn: Callable[..., Any],
@@ -252,7 +269,11 @@ def _governed_entrypoint(
 ) -> Callable[..., str]:
     """Closure (no defaulted kwargs a model could override) routing via ToolRouter."""
 
+    outbound = str(registration.get("operation") or "") in _OUTBOUND_OPERATIONS
+
     def invoke(call_args: dict[str, Any]) -> str:
+        if outbound:
+            _refuse_secret_material(call_args)
         try:
             return stringify_result(fn(**call_args))
         except ToolError:
