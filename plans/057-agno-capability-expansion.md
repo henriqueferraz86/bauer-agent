@@ -22,7 +22,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | 19 — pesquisa/dev read-only | `specs/sprint-51-agno-research-readonly/` | `codex/sprint-51-agno-research-readonly` | DONE |
 | 20 — Bauer Data + SQL read-only | `specs/sprint-52-agno-data-sql-readonly/` | `codex/sprint-52-agno-data-sql-readonly` | DONE |
 | 21 — browser/testes de UI | `specs/sprint-53-agno-browser-ui/` | `codex/sprint-53-agno-browser-ui` | DONE |
-| 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-*` | `codex/sprint-54-*` | TODO |
+| 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-agno-devops-readonly/` | `codex/sprint-54-agno-devops-readonly` | DONE |
 | 23 — workflows Agno sob o Kernel | `specs/sprint-55-*` | `codex/sprint-55-*` | TODO |
 | 24 — evals e memória de decisões | `specs/sprint-56-*` | `codex/sprint-56-*` | TODO |
 | 25 — primeiro conector com escrita | `specs/sprint-57-*` | `codex/sprint-57-*` | TODO |
@@ -72,6 +72,14 @@ refeita.
   (navegação, redirect, SSRF em subrecursos), downloads cancelados, saída do
   perfil/cancelamento fecham a sessão, interações sob aprovação
   (`os.ui_control`), auditoria só com domínio.
+
+### Entregue na sprint 54 (plano "22")
+
+- [x] `bauer.docker` (Engine API só-GET, allowlist de containers, env/mounts
+  ocultos, logs redigidos), `bauer.aws` (cliente read-only por allowlist de
+  operações, conta verificada por STS, regiões/clusters EKS em allowlist) e
+  `bauer.kubernetes` (contexto explícito, namespaces em allowlist).
+- [x] `agno.docker`/`agno.aws_lambda`/`agno.aws_ses` `incompatible`.
 
 ## Problema e resultado esperado
 

@@ -10,3 +10,4 @@ from __future__ import annotations
 from . import github, mcp, research  # noqa: E402,F401  (sprint 51)
 from . import data, sql  # noqa: E402,F401  (sprint 52)
 from . import browser  # noqa: E402,F401  (sprint 53)
+from . import devops  # noqa: E402,F401  (sprint 54)
