@@ -21,7 +21,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | 18 — catálogo, capabilities, ponte ToolRouter | `specs/sprint-50-agno-capability-bridge/` | `codex/sprint-50-agno-capability-bridge` | DONE |
 | 19 — pesquisa/dev read-only | `specs/sprint-51-agno-research-readonly/` | `codex/sprint-51-agno-research-readonly` | DONE |
 | 20 — Bauer Data + SQL read-only | `specs/sprint-52-agno-data-sql-readonly/` | `codex/sprint-52-agno-data-sql-readonly` | DONE |
-| 21 — browser/testes de UI | `specs/sprint-53-*` | `codex/sprint-53-*` | TODO |
+| 21 — browser/testes de UI | `specs/sprint-53-agno-browser-ui/` | `codex/sprint-53-agno-browser-ui` | DONE |
 | 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-*` | `codex/sprint-54-*` | TODO |
 | 23 — workflows Agno sob o Kernel | `specs/sprint-55-*` | `codex/sprint-55-*` | TODO |
 | 24 — evals e memória de decisões | `specs/sprint-56-*` | `codex/sprint-56-*` | TODO |
@@ -64,6 +64,14 @@ refeita.
   driver (SQLite `mode=ro`/`query_only`; PG/MySQL `READ ONLY` + usuário
   read-only atestado), timeout com cancelamento, fingerprint.
 - [x] Toolkits de dados/SQL do SDK `incompatible` com substituto.
+
+### Entregue na sprint 53 (plano "21")
+
+- [x] Backend único: Playwright do Bauer; Browserbase/AgentQL `incompatible`.
+- [x] `bauer.browser`: perfis com allowlist de domínios aplicada na página
+  (navegação, redirect, SSRF em subrecursos), downloads cancelados, saída do
+  perfil/cancelamento fecham a sessão, interações sob aprovação
+  (`os.ui_control`), auditoria só com domínio.
 
 ## Problema e resultado esperado
 

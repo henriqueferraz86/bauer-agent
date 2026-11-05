@@ -65,6 +65,9 @@ class FactoryContext:
     """Per-agent facts a factory may scope itself to (never from the model)."""
 
     workspace: Path | None = None
+    #: Session-aware factory of the agent's own ToolRouter (for adapters that
+    #: compose existing Bauer tools, e.g. the single browser session).
+    router_factory: Callable[[], Any] | None = None
 
 
 #: ``factory(resolved, section, context=FactoryContext)`` → implementations.
@@ -196,7 +199,7 @@ def materialize(
     resolved = resolve_capability(value, settings=settings)
     section = settings.section(resolved.policy.settings_section or resolved.policy.id)
     try:
-        impls = factory_for(resolved)(resolved, section, context=FactoryContext(workspace=workspace))
+        impls = factory_for(resolved)(resolved, section, context=FactoryContext(workspace=workspace, router_factory=router_factory))
     except CapabilityError:
         raise
     except ImportError as exc:

@@ -18,7 +18,7 @@ pytest.importorskip("agno")
 
 _KNOWN_OPERATIONS_PREFIXES = (
     "network.http", "compute.local", "integration.", "mcp.", "data.", "browser.", "infra.",
-    "workflow.", "memory.", "filesystem.",
+    "workflow.", "memory.", "filesystem.", "os.ui_control",
 )
 
 
