@@ -23,7 +23,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | 20 — Bauer Data + SQL read-only | `specs/sprint-52-agno-data-sql-readonly/` | `codex/sprint-52-agno-data-sql-readonly` | DONE |
 | 21 — browser/testes de UI | `specs/sprint-53-agno-browser-ui/` | `codex/sprint-53-agno-browser-ui` | DONE |
 | 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-agno-devops-readonly/` | `codex/sprint-54-agno-devops-readonly` | DONE |
-| 23 — workflows Agno sob o Kernel | `specs/sprint-55-*` | `codex/sprint-55-*` | TODO |
+| 23 — workflows Agno sob o Kernel | `specs/sprint-55-agno-governed-workflows/` | `codex/sprint-55-agno-governed-workflows` | DONE |
 | 24 — evals e memória de decisões | `specs/sprint-56-*` | `codex/sprint-56-*` | TODO |
 | 25 — primeiro conector com escrita | `specs/sprint-57-*` | `codex/sprint-57-*` | TODO |
 | 26 — cobertura/paridade do catálogo | `specs/sprint-58-*` | `codex/sprint-58-*` | TODO |
@@ -80,6 +80,15 @@ refeita.
   operações, conta verificada por STS, regiões/clusters EKS em allowlist) e
   `bauer.kubernetes` (contexto explícito, namespaces em allowlist).
 - [x] `agno.docker`/`agno.aws_lambda`/`agno.aws_ses` `incompatible`.
+
+### Entregue na sprint 55 (plano "23")
+
+- [x] `GovernedWorkflow`: `Workflow` Agno sem db como motor de etapas dentro
+  de `run_governed`; retry/skip do Agno desligados (falha nunca vira
+  `completed`); checagem de run/cancelamento/prazo por etapa; revisão humana
+  como aprovação vinculada ao run com retomada pelo Kernel.
+- [x] Piloto `data_report_workflow` (perfil → totais ∥ qualidade →
+  condição → revisão → publicação) e comparação com o turno de agente.
 
 ## Problema e resultado esperado
 

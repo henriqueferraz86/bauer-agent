@@ -54,6 +54,9 @@ os.environ["BAUER_AGENTS_FILE"] = str(
 # tempo finito; testes de aprovação interativa definem seus próprios prazos.
 # O serviço real mantém o prazo de produção de uma hora.
 os.environ.setdefault("BAUER_APPROVAL_WAIT_SECONDS", "2")
+# Agno (Agent/Team/Workflow/Eval) envia telemetria anônima para a API da Agno
+# por padrão. A suíte não fala com rede: desligado para todo objeto Agno.
+os.environ["AGNO_TELEMETRY"] = "false"
 
 # Mesma hermeticidade para MCP: `MCP_SERVER_<NOME>` no ambiente VENCE o
 # config.yaml na descoberta de servidores, então um dev com MCP configurado
