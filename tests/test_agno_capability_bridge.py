@@ -82,7 +82,7 @@ def fake_capability(monkeypatch):
     def explode() -> str:
         raise RuntimeError("upstream said token=sk-ant-SECRETSECRETSECRET123456 is bad")
 
-    def factory(resolved, section):
+    def factory(resolved, section, context=None):
         impls = {
             "lookup": bridge.ActionImpl(
                 fn=lookup,

@@ -24,6 +24,7 @@ import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from ....execution_control import ExecutionControlError
@@ -59,7 +60,15 @@ class ActionImpl:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
 
 
-Factory = Callable[[ResolvedCapability, StrictSettings | None], dict[str, ActionImpl]]
+@dataclass(frozen=True, slots=True)
+class FactoryContext:
+    """Per-agent facts a factory may scope itself to (never from the model)."""
+
+    workspace: Path | None = None
+
+
+#: ``factory(resolved, section, context=FactoryContext)`` → implementations.
+Factory = Callable[..., dict[str, ActionImpl]]
 _FACTORIES: dict[str, Factory] = {}
 
 
@@ -84,6 +93,7 @@ def factory_for(resolved: ResolvedCapability) -> Factory:
 def sdk_toolkit_factory(
     resolved: ResolvedCapability,
     section: StrictSettings | None,
+    context: FactoryContext | None = None,
     *,
     init_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, ActionImpl]:
@@ -174,6 +184,7 @@ def materialize(
     *,
     router_factory: Callable[[], Any],
     settings: CapabilitySettings | None = None,
+    workspace: Path | None = None,
 ) -> list[GovernedAction]:
     """Resolve ``value`` and return governed actions bound to the router.
 
@@ -185,7 +196,7 @@ def materialize(
     resolved = resolve_capability(value, settings=settings)
     section = settings.section(resolved.policy.settings_section or resolved.policy.id)
     try:
-        impls = factory_for(resolved)(resolved, section)
+        impls = factory_for(resolved)(resolved, section, context=FactoryContext(workspace=workspace))
     except CapabilityError:
         raise
     except ImportError as exc:

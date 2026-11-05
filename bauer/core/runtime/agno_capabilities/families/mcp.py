@@ -226,7 +226,7 @@ def _invoke(server_name: str, server: McpServerSettings, tool: str, arguments: d
     return _UNTRUSTED_HEADER + text
 
 
-def _factory(resolved, section) -> dict[str, ActionImpl]:
+def _factory(resolved, section, context=None) -> dict[str, ActionImpl]:
     if not isinstance(section, McpSettings):
         raise ToolError("bauer.mcp sem configuração")
     mapping = _tool_map(section)

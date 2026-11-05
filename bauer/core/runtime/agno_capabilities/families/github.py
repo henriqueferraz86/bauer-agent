@@ -302,7 +302,7 @@ def _safe_path(path: Any) -> str:
     return text
 
 
-def _native_factory(resolved, section) -> dict[str, ActionImpl]:
+def _native_factory(resolved, section, context=None) -> dict[str, ActionImpl]:
     from ..bridge import _parameters_for
 
     if not isinstance(section, GithubSettings):
@@ -364,7 +364,7 @@ _SDK_READ_ACTIONS = (
 )
 
 
-def _sdk_factory(resolved, section) -> dict[str, ActionImpl]:
+def _sdk_factory(resolved, section, context=None) -> dict[str, ActionImpl]:
     if not isinstance(section, GithubSettings):
         raise ToolError("agno.github sem configuração")
     token = resolve_credential(section.credential)

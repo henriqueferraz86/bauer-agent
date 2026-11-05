@@ -115,3 +115,5 @@ graphify-out/
 !specs/sprint-50-agno-capability-bridge/**
 !specs/sprint-51-agno-research-readonly/
 !specs/sprint-51-agno-research-readonly/**
+!specs/sprint-52-agno-data-sql-readonly/
+!specs/sprint-52-agno-data-sql-readonly/**
