@@ -1,6 +1,6 @@
 # Plano 057 — Expandir com segurança as capacidades Agno no Bauer
 
-**Status:** TODO
+**Status:** IN PROGRESS
 
 **Prioridade:** P1
 
@@ -10,6 +10,40 @@
 **Referências:** levantamento arquitetural e avaliação do catálogo no
 [PR #151](https://github.com/henriqueferraz86/bauer-agent/pull/151), e
 [documentação oficial do Agno](https://docs.agno.com/llms.txt).
+
+## Execução (numeração de sprints)
+
+Os números 18–26 deste plano já estavam ocupados por outras specs quando a
+execução começou. O trilho usa **50–58**, na mesma ordem:
+
+| Plano | Spec executada | Branch | Estado |
+|---|---|---|---|
+| 18 — catálogo, capabilities, ponte ToolRouter | `specs/sprint-50-agno-capability-bridge/` | `codex/sprint-50-agno-capability-bridge` | DONE |
+| 19 — pesquisa/dev read-only | `specs/sprint-51-*` | `codex/sprint-51-*` | TODO |
+| 20 — Bauer Data + SQL read-only | `specs/sprint-52-*` | `codex/sprint-52-*` | TODO |
+| 21 — browser/testes de UI | `specs/sprint-53-*` | `codex/sprint-53-*` | TODO |
+| 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-*` | `codex/sprint-54-*` | TODO |
+| 23 — workflows Agno sob o Kernel | `specs/sprint-55-*` | `codex/sprint-55-*` | TODO |
+| 24 — evals e memória de decisões | `specs/sprint-56-*` | `codex/sprint-56-*` | TODO |
+| 25 — primeiro conector com escrita | `specs/sprint-57-*` | `codex/sprint-57-*` | TODO |
+| 26 — cobertura/paridade do catálogo | `specs/sprint-58-*` | `codex/sprint-58-*` | TODO |
+
+A fundação parcial já existente (`specs/sprint-18-agno-capability-catalog/`:
+endpoint, painel, rejeição de nome desconhecido) foi reaproveitada, não
+refeita.
+
+### Entregue na sprint 50 (plano "18")
+
+- [x] Catálogo de **todos** os toolkits do Agno 3.0.10 por AST, sem import
+  (`bauer/core/runtime/agno_capabilities/discovery.py`).
+- [x] Manifesto revisado por ação/risco/operação; não classificado =
+  `unreviewed` visível e inerte; duplicatas de tools Bauer `incompatible`.
+- [x] Declaração por agente `agno.<id>[:acoes]`, fail-closed antes do provider.
+- [x] Ponte: cada ação vira tool da instância do ToolRouter do agente
+  (policy, aprovação, budget, timeout, eventos sem argumentos/resultados).
+- [x] Config do operador em `$BAUER_HOME/agno_capabilities.yaml` (estrito,
+  só leitura, nunca criado no update); credenciais por nome.
+- [x] `bauer doctor` e Desktop mostram estado e o que falta.
 
 ## Problema e resultado esperado
 

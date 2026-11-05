@@ -34,15 +34,15 @@ def test_catalog_discovery_does_not_import_optional_agno_modules(monkeypatch):
     assert any(entry["id"] == "bauer.read_file" for entry in entries)
 
 
-def test_cataloged_sdk_family_requires_adapter_before_materialization():
-    catalog = AgnoCapabilityCatalog()
-    family = next((item for item in catalog.list() if item["module_family"]), None)
+def test_sdk_toolkits_are_listed_individually_with_review_state():
+    entries = AgnoCapabilityCatalog().list()
+    sdk = [item for item in entries if item["source"] == "agno" and item["id"].startswith("agno.")]
 
-    if family is None:
-        return
-    assert family["state"] == "adapter_required"
-    assert AgnoCapabilityCatalog.find(family["id"]) is not None
-    assert AgnoCapabilityCatalog.resolve_bauer_tool(family["id"]) is None
+    if not sdk:
+        return  # Agno extra not installed: only Bauer adapters are listed
+    assert all(item["state"] for item in sdk)
+    assert all(not item["id"].startswith("agno.family.") for item in sdk)
+    assert AgnoCapabilityCatalog.resolve_bauer_tool(sdk[0]["id"]) is None
 
 
 def test_missing_agno_package_is_reported_without_hiding_catalog(monkeypatch):

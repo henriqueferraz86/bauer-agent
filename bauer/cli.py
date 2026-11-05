@@ -444,6 +444,29 @@ def doctor(
     except Exception as _web_exc:
         console.print(f"[dim]Web search: não foi possível detectar ({_web_exc})[/dim]")
 
+    # --- Capabilities Agno (plano 057) ---------------------------------------------
+    # Só diagnostica: nunca instala dependência, cria config ou habilita nada.
+    try:
+        from .core.runtime.agno_capabilities.doctor import build_report as _cap_report
+
+        _cap = _cap_report()
+        _ct = Table(show_header=False, box=None, padding=(0, 1))
+        _ct.add_row("Estados:", ", ".join(f"{k}={v}" for k, v in _cap.counts.items() if v))
+        _ct.add_row(
+            "Config:",
+            f"{_cap.settings_file} ({'presente' if _cap.settings_present else 'ausente — nada configurado'})",
+        )
+        if _cap.settings_error:
+            _ct.add_row("[red]Erro:[/red]", _cap.settings_error)
+        for _line in _cap.actionable[:12]:
+            _ct.add_row("Habilitar:", _line)
+        for _agent, _problems in _cap.agent_problems.items():
+            for _problem in _problems:
+                _ct.add_row(f"[yellow]{_agent}:[/yellow]", _problem)
+        console.print(Panel(_ct, title="Capabilities Agno", border_style="cyan"))
+    except Exception as _cap_exc:
+        console.print(f"[dim]Capabilities Agno: diagnóstico indisponível ({type(_cap_exc).__name__})[/dim]")
+
     # --- Memória semântica (embeddings + vector store) ----------------------------
     # Diagnóstico dedicado para o problema mais opaco do Bauer: sem isto, um
     # usuário via "vector_store: N linhas ignoradas" no log e não tinha como

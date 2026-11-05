@@ -1298,6 +1298,12 @@ class ToolRouter(
         if self._tool_allowlist and name not in self._tool_allowlist:
             return False
         context = _normalize_tool_context(context or self.tool_context)
+        if name in _CAPABILITY_TOOLS and name in self._tools:
+            # Agno capability actions exist only on routers whose agent was
+            # explicitly granted them (plano 057): that grant is the allowlist.
+            # An operator can still deny the name per context in tool_policy.
+            rule = self._tool_policy.contexts.get(context) or self._tool_policy.contexts.get("supervisor")
+            return rule is None or name not in rule.deny
         return self._tool_policy.allows(context, name)
 
     def _allowed_contexts_for_tool(self, name: str) -> list[str]:
@@ -1402,6 +1408,44 @@ class ToolRouter(
     def tool_security(self, name: str) -> dict:
         """Retorna metadados de segurança de uma tool."""
         return _TOOL_SECURITY.get(name, {"permission": "read", "risk": "low", "approval": False})
+
+    def has_capability_tool(self, name: str) -> bool:
+        """Whether an Agno capability action is registered on THIS router."""
+        return name in _CAPABILITY_TOOLS and name in self._tools
+
+    def register_capability_tool(
+        self,
+        name: str,
+        fn,
+        *,
+        description: str,
+        args: dict,
+        operation: str,
+        permission: str,
+        risk: str,
+        capability: str,
+        action: str,
+        timeout_seconds: int = 60,
+    ) -> None:
+        """Register one reviewed Agno capability action on this router only.
+
+        Used by ``core.runtime.agno_capabilities.bridge``: the action becomes a
+        regular tool of THIS instance (other routers/agents never see it), so
+        context allowlist, PolicyEngine (``operation``), approvals, budget,
+        timeouts and events apply unchanged. Telemetry for these tools carries
+        only argument names, never values or results (plano 057, invariante 6).
+        """
+        if name in self._tools and name not in _CAPABILITY_TOOLS:
+            raise ToolError(f"capability tool '{name}' colide com tool existente")
+        known = _CAPABILITY_TOOLS.get(name)
+        meta = {"operation": operation, "capability": capability, "action": action}
+        if known is not None and known != meta:
+            raise ToolError(f"capability tool '{name}' já registrada com outra policy")
+        _CAPABILITY_TOOLS[name] = meta
+        _TOOL_SECURITY.setdefault(name, {"permission": permission, "risk": risk, "approval": False})
+        if timeout_seconds > 0:
+            _TOOL_TIMEOUTS.setdefault(name, int(timeout_seconds))
+        self._tools[name] = {"fn": fn, "description": description, "args": dict(args)}
 
     def reset_call_count(self) -> None:
         """Reseta o contador de chamadas (use no inicio de cada sessão de agent)."""
@@ -1898,10 +1942,10 @@ class ToolRouter(
             _duration_ms = (_time.monotonic() - _t0) * 1000
             if self._audit is not None:
                 self._audit.log_tool_call(
-                    name, args,
+                    name, _telemetry_args(name, args),
                     status="error",
                     duration_ms=_duration_ms,
-                    error_msg=str(_exc)[:300],
+                    error_msg=type_only_error(str(_exc)) if name in _CAPABILITY_TOOLS else str(_exc)[:300],
                 )
             # Plugin hooks — post_tool_call (erro)
             self._publish_tool_event(
@@ -1960,10 +2004,12 @@ class ToolRouter(
         # SEG-3: audit de sucesso
         if self._audit is not None:
             self._audit.log_tool_call(
-                name, args,
+                name, _telemetry_args(name, args),
                 status="ok",
                 duration_ms=_duration_ms,
-                result_preview=result[:200] if isinstance(result, str) else None,
+                result_preview=(
+                    result[:200] if isinstance(result, str) and name not in _CAPABILITY_TOOLS else None
+                ),
             )
 
         # Plugin hooks — post_tool_call (sucesso)
@@ -1996,10 +2042,17 @@ class ToolRouter(
         if self._event_bus is None:
             return
         data = {
-            "args": args,
+            "args": _telemetry_args(tool_name, args),
             "permission": _TOOL_SECURITY.get(tool_name, {}).get("permission"),
             "risk": _TOOL_SECURITY.get(tool_name, {}).get("risk"),
         }
+        capability_meta = _CAPABILITY_TOOLS.get(tool_name)
+        if capability_meta is not None:
+            data["capability"] = capability_meta["capability"]
+            data["action"] = capability_meta["action"]
+            data["operation"] = capability_meta["operation"]
+            result_preview = None
+            error = type_only_error(error)
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
         if result_preview is not None:
@@ -2143,7 +2196,31 @@ def _policy_operation_for_tool(tool_name: str) -> str | None:
         "browser_press": "os.ui_control",
         "browser_cdp": "os.ui_control",
     }
-    return mapping.get(tool_name)
+    operation = mapping.get(tool_name)
+    if operation is None and tool_name in _CAPABILITY_TOOLS:
+        operation = _CAPABILITY_TOOLS[tool_name]["operation"]
+    return operation
+
+
+#: Agno capability actions registered through ``register_capability_tool``.
+#: Name → {operation, capability, action}. Static manifest metadata, not a
+#: grant: a router only executes the names registered on its own instance.
+_CAPABILITY_TOOLS: dict[str, dict[str, str]] = {}
+
+
+def type_only_error(error: "str | None") -> "str | None":
+    """Keep only the exception-ish prefix of a capability error message."""
+    if not error:
+        return error
+    head = str(error).split(":", 1)[0].strip()
+    return head[:80] or "error"
+
+
+def _telemetry_args(tool_name: str, args: dict) -> dict:
+    """Capability tools publish argument names only (values may be private)."""
+    if tool_name in _CAPABILITY_TOOLS:
+        return {"arg_keys": sorted(str(key) for key in args)}
+    return args
 
     # P4: todas as tools por categoria foram extraídas para bauer/tools/*.py
     # (mixins herdados na declaração da classe). Esta classe contém agora só o
