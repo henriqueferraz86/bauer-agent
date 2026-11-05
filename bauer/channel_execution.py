@@ -35,6 +35,7 @@ class SessionWorker:
     current: ChannelExecution | None = None
     discarded_pending: int = 0
     timed_out: bool = False
+    generation_control: ExecutionControl = field(default_factory=ExecutionControl)
 
 
 @dataclass
@@ -46,6 +47,7 @@ class ChannelExecution:
     session_key: str
     workspace: Path
     batch: SessionWorker
+    private_chat: bool = False
     job_id: str = field(default_factory=lambda: f"job-{uuid4().hex[:16]}")
     started_at: float = field(default_factory=time.monotonic)
     done: threading.Event = field(default_factory=threading.Event)
@@ -54,7 +56,12 @@ class ChannelExecution:
     phase: str = "admitting"
 
     def __post_init__(self) -> None:
-        self.control = ExecutionControl(session_id=self.session_key, workspace=self.workspace)
+        self.control = ExecutionControl(
+            session_id=self.session_key, workspace=self.workspace,
+            channel=self.channel, owner=self.owner, chat_id=self.chat_id,
+            project_id=self.project_id, private_chat=self.private_chat,
+        )
+        self.control._generation_parent = self.batch.generation_control
 
     @property
     def id(self) -> str:
@@ -95,6 +102,18 @@ class ChannelExecutionRegistry:
         with self._lock:
             return next((job for job in reversed(self._entries.values())
                          if job.session_key == session_key and not job.done.is_set()), None)
+
+    def active_by_run(self, run_id: str) -> ChannelExecution | None:
+        """Find a live worker by its current governed run ID."""
+        with self._lock:
+            return next((job for job in reversed(self._entries.values())
+                         if not job.done.is_set() and job.control.run_id == run_id), None)
+
+    def active_for_channel(self, channel: str) -> list[ChannelExecution]:
+        """Return live workers for a channel, without inferring their phase."""
+        with self._lock:
+            return [job for job in self._entries.values()
+                    if job.channel == channel and not job.done.is_set()]
 
 
 # ── Background-task delivery (sprint 43, plano 063) ─────────────────────────

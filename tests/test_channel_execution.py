@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -128,6 +127,125 @@ def test_timeout_keeps_same_context_and_kernel_custody(tmp_path, monkeypatch):
     run = manager.get_run(job.control.run_id)
     assert run.status == "cancelled" and run.cost_estimate == pytest.approx(0.4)
     assert backend._get_session("tg:42")[0] is original
+
+
+def test_human_approval_wait_pauses_gateway_generation_timeout(tmp_path, monkeypatch):
+    import time
+    import bauer.channel_base as cb
+
+    backend = backend_at(tmp_path)
+    # Wall-clock budget must cover worker setup before the approval wait starts.
+    monkeypatch.setattr(cb, "_TURN_TIMEOUT_SECONDS", 1.0)
+    entered, release = threading.Event(), threading.Event()
+    output = {}
+    controls = []
+
+    def waiting_turn(_ctx, *_args, **_kwargs):
+        control = current_control()
+        controls.append(control)
+        assert control is not None
+        assert control.begin_approval_wait("approval-1", "digest-1")
+        entered.set()
+        assert release.wait(timeout=5)
+        return "done", []
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", waiting_turn)
+    caller = threading.Thread(target=lambda: output.update(reply=backend.process(message())))
+    caller.start()
+    assert entered.wait(timeout=5)
+    try:
+        time.sleep(1.3)
+        assert caller.is_alive()
+        assert controls[0] is not None and not controls[0].cancel_event.is_set()
+        assert controls[0].end_approval_wait("approval-1")
+        caller.join(timeout=3)
+        assert not caller.is_alive()
+        assert "interrupção solicitada" in output["reply"]
+    finally:
+        release.set()
+        caller.join(timeout=5)
+
+
+def test_execution_control_has_explicit_telegram_identity_and_registry_lookup(tmp_path):
+    job = ChannelExecution("owner-1", "telegram", "chat-1", "project-1",
+                           "session-1", tmp_path, SessionWorker())
+    job.control.run_id = "run-1"
+    registry = ChannelExecutionRegistry()
+    registry.add(job)
+
+    assert job.control.channel == "telegram"
+    assert job.control.owner == "owner-1"
+    assert job.control.chat_id == "chat-1"
+    assert job.control.project_id == "project-1"
+    with pytest.raises(AttributeError):
+        job.control.channel = "discord"
+    assert registry.active_by_run("run-1") is job
+    assert registry.active_for_channel("telegram") == [job]
+    assert registry.active_for_channel("discord") == []
+    job.done.set()
+    assert registry.active_by_run("run-1") is None
+    assert registry.active_for_channel("telegram") == []
+
+
+@pytest.mark.parametrize(("channel", "private", "expected"), [
+    ("telegram", True, True),
+    ("telegram", False, False),
+    ("discord", True, False),
+])
+def test_backend_enables_toolrouter_approval_wait_only_for_private_telegram(
+    tmp_path, monkeypatch, channel, private, expected,
+):
+    from types import SimpleNamespace
+
+    import bauer.tool_router as tool_router_module
+
+    backend = backend_at(tmp_path)
+    bus = object()
+    kernel = SimpleNamespace(
+        bus=bus, budget=None, control=None,
+        runs=SimpleNamespace(get_run=lambda _run_id: None),
+    )
+    backend._resolver_kernel = lambda: kernel
+    backend._configure_channel_router = lambda _router: bus
+    subscribed = []
+    backend._telegram_approval_subscriber = lambda received: subscribed.append(received)
+    job = ChannelExecution(
+        owner="owner", channel=channel, chat_id="chat", project_id="project",
+        session_key="session", workspace=backend._router.workspace,
+        batch=SessionWorker(), private_chat=private,
+    )
+    job.control.run_id = "run-1"
+    router = backend._effective_router()
+    assert router._policy_enabled is False
+    observed = []
+    monkeypatch.setattr(
+        router, "_evaluate_runtime_policy",
+        lambda *_args, **_kwargs: observed.append(tool_router_module._POLICY_APPROVAL_WAIT.get()),
+    )
+
+    def native_turn(_ctx, *_args, **_kwargs):
+        router.execute({"action": "calculate", "args": {"expression": "1 + 1"}})
+        return "ok"
+
+    monkeypatch.setattr(backend, "_turno_cru", native_turn)
+
+    def governed(_kernel, execute, **_kwargs):
+        result = execute({"run_id": "run-1"})
+        return SimpleNamespace(
+            output=result["output"], result=result, ok=True, governed=True,
+            blocked_before_start=False,
+        )
+
+    monkeypatch.setattr("bauer.core.kernel.run_governed", governed)
+    response = backend._execute_turn(
+        object(), "session", object(), "model", "task", execution=job,
+    )
+
+    assert response == "ok"
+    assert observed == ([True] if expected else [])
+    assert (subscribed == [bus]) is (channel == "telegram")
+    assert tool_router_module._POLICY_APPROVAL_WAIT.get() is False
+    assert router._policy_enabled is False
 
 
 def test_cancel_discards_queue_explicitly_and_does_not_replay_it(tmp_path, monkeypatch):

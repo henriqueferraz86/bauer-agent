@@ -30,7 +30,10 @@ class ExecutionControl:
     def __init__(self, run_id: str | None = None, session_id: str = "",
                  workspace: Path | None = None, *,
                  check_callback: Callable[[], str | None] | None = None,
-                 cancel_event: threading.Event | None = None) -> None:
+                 cancel_event: threading.Event | None = None,
+                 channel: str | None = None, owner: str | None = None,
+                 chat_id: str | None = None, project_id: str | None = None,
+                 private_chat: bool = False) -> None:
         self.run_id = run_id
         self.session_id = session_id
         self.workspace = workspace
@@ -38,10 +41,140 @@ class ExecutionControl:
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._reason: str | None = None
         self._lock = threading.Lock()
+        self._wait_condition = threading.Condition(self._lock)
+        self._approval_wait_id: str | None = None
+        self._approval_wait_digest: str | None = None
+        self._approval_wait_deadline: float | str | None = None
+        self._approval_wait_started_at: float | None = None
+        self._approval_wait_total = 0.0
+        self._generation_parent: ExecutionControl | None = None
         self._processes: dict[int, tuple[Any, Callable[[], None]]] = {}
         self._termination_threads: dict[int, threading.Thread] = {}
         self.max_tool_calls: int | None = None
         self._tool_calls = 0
+
+        # Optional channel identity is populated by ChannelExecution. These
+        # fields let channel-specific approval surfaces establish provenance
+        # without guessing it from a session key.
+        self._channel = channel
+        self._owner = owner
+        self._chat_id = chat_id
+        self._project_id = project_id
+        self._private_chat = private_chat
+
+    @property
+    def channel(self) -> str | None:
+        return self._channel
+
+    @property
+    def owner(self) -> str | None:
+        return self._owner
+
+    @property
+    def chat_id(self) -> str | None:
+        return self._chat_id
+
+    @property
+    def project_id(self) -> str | None:
+        return self._project_id
+
+    @property
+    def private_chat(self) -> bool:
+        return self._private_chat
+
+    @property
+    def approval_wait_active(self) -> bool:
+        with self._lock:
+            return self._approval_wait_id is not None
+
+    @property
+    def approval_wait_id(self) -> str | None:
+        with self._lock:
+            return self._approval_wait_id
+
+    @property
+    def approval_wait_digest(self) -> str | None:
+        with self._lock:
+            return self._approval_wait_digest
+
+    @property
+    def approval_wait_deadline(self) -> float | str | None:
+        with self._lock:
+            return self._approval_wait_deadline
+
+    def begin_approval_wait(self, approval_id: str, digest: str,
+                            deadline: float | str | None = None) -> bool:
+        """Pause the gateway generation clock while a human decides.
+
+        Only one approval can suspend a live ToolRouter worker at a time. A
+        repeated registration for the same approval is idempotent and does
+        not reset the pause interval.
+        """
+        if not approval_id or not digest:
+            return False
+        with self._wait_condition:
+            if self._approval_wait_id is not None:
+                return (self._approval_wait_id == approval_id
+                        and self._approval_wait_digest == digest)
+            self._approval_wait_id = approval_id
+            self._approval_wait_digest = digest
+            self._approval_wait_deadline = deadline
+            self._approval_wait_started_at = time.monotonic()
+            self._wait_condition.notify_all()
+        parent = self._generation_parent
+        if parent is not None and not parent.begin_approval_wait(approval_id, digest, deadline):
+            self.end_approval_wait(approval_id)
+            return False
+        return True
+
+    def end_approval_wait(self, approval_id: str) -> bool:
+        """Resume the generation clock iff ``approval_id`` owns the pause."""
+        with self._wait_condition:
+            if self._approval_wait_id != approval_id:
+                return False
+            started = self._approval_wait_started_at
+            if started is not None:
+                self._approval_wait_total += max(0.0, time.monotonic() - started)
+            self._approval_wait_id = None
+            self._approval_wait_digest = None
+            self._approval_wait_deadline = None
+            self._approval_wait_started_at = None
+            self._wait_condition.notify_all()
+        parent = self._generation_parent
+        if parent is not None:
+            parent.end_approval_wait(approval_id)
+        return True
+
+    def wait_for_generation(self, done: threading.Event, timeout: float) -> bool:
+        """Wait for ``done`` while charging only time outside human waits.
+
+        This is deliberately a gateway generation timeout only. Kernel
+        runtime/budget checks and cooperative cancellation keep their own
+        clocks and are not modified by this pause.
+        """
+        allowance = max(0.0, timeout)
+        started = time.monotonic()
+        with self._wait_condition:
+            paused_at_start = self._approval_wait_total
+            while not done.is_set():
+                now = time.monotonic()
+                current_pause = (max(0.0, now - self._approval_wait_started_at)
+                                 if self._approval_wait_started_at is not None else 0.0)
+                paused = self._approval_wait_total - paused_at_start + current_pause
+                charged = max(0.0, now - started - paused)
+                remaining = allowance - charged
+                if remaining <= 0:
+                    return False
+                if self._approval_wait_id is not None:
+                    self._wait_condition.wait()
+                else:
+                    self._wait_condition.wait(timeout=remaining)
+            return True
+
+    def notify_generation_waiters(self) -> None:
+        """Wake gateway waiters after the owned batch completes."""
+        with self._wait_condition:
+            self._wait_condition.notify_all()
 
     @property
     def tool_calls(self) -> int:
@@ -66,6 +199,7 @@ class ExecutionControl:
                 self._reason = normalized
             self.cancel_event.set()
             processes = list(self._processes.values())
+            self._wait_condition.notify_all()
         for process, terminate in processes:
             self._start_termination(process, terminate)
 

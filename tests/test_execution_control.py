@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from contextvars import copy_context
 
 import pytest
@@ -284,3 +285,40 @@ def test_execution_control_propagates_only_when_context_is_copied():
         worker.start()
         worker.join()
     assert observed == [control]
+
+
+def test_approval_wait_pauses_only_generation_timeout():
+    control = ExecutionControl()
+    done = threading.Event()
+    returned = threading.Event()
+    result = []
+
+    def wait():
+        result.append(control.wait_for_generation(done, 0.08))
+        returned.set()
+
+    worker = threading.Thread(target=wait)
+    worker.start()
+    time.sleep(0.02)
+    assert control.begin_approval_wait("approval-1", "digest-1", "deadline")
+    assert control.approval_wait_active
+    assert control.approval_wait_id == "approval-1"
+    assert control.approval_wait_digest == "digest-1"
+    assert control.approval_wait_deadline == "deadline"
+    time.sleep(0.12)
+    assert not returned.is_set()
+    assert not control.end_approval_wait("another-approval")
+    assert control.end_approval_wait("approval-1")
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert not control.approval_wait_active
+
+
+def test_approval_wait_registration_is_idempotent_and_single_owner():
+    control = ExecutionControl()
+    assert not control.begin_approval_wait("", "digest")
+    assert control.begin_approval_wait("approval-1", "digest-1")
+    assert control.begin_approval_wait("approval-1", "digest-1")
+    assert not control.begin_approval_wait("approval-2", "digest-2")
+    assert control.end_approval_wait("approval-1")

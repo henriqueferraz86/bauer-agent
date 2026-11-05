@@ -1104,6 +1104,13 @@ bauer gateway stop            # encerra o gateway (e bridges antigos órfãos)
    descobrir seu user id (allowlist automática).
 3. `bauer gateway start` (ou `bauer telegram start` para só este canal).
 
+Em conversa privada com projeto selecionado (`/projetos`), quando uma ferramenta
+exige aprovação humana o bot envia um cartão com resumo seguro (sem argumentos
+nem caminhos) e os botões **Aprovar uma vez** / **Negar**. A decisão vale só
+para aquela chamada exata, expira em 10 minutos e também pode ser tomada pela
+UI web; reiniciar o gateway invalida cartões antigos. Sem projeto selecionado
+não há cartão: o pedido só pode ser decidido pela UI web ou expira.
+
 ### 🎮 Discord
 
 1. [Developer Portal](https://discord.com/developers/applications) → New

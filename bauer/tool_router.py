@@ -62,6 +62,7 @@ import threading
 from contextvars import ContextVar
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 from .tool_policy import load_tool_policy
@@ -109,7 +110,10 @@ except ImportError:
     _SCHEMA_SANITIZER_AVAILABLE = False
 
 try:
-    from .approval import check_all_command_guards as _check_command_guards
+    from .approval import (
+        check_all_command_guards as _check_command_guards,
+        detect_hardline_command as _detect_hardline_command,
+    )
     _APPROVAL_AVAILABLE = True
 except ImportError:
     _APPROVAL_AVAILABLE = False
@@ -1451,7 +1455,7 @@ class ToolRouter(
         return self.execute(action)
 
     def _evaluate_runtime_policy(self, tool_name: str, args: dict) -> bool | None:
-        from .execution_control import ExecutionControlError, checkpoint_execution
+        from .execution_control import ExecutionControlError, checkpoint_execution, current_control
         from .provider_retry import ProviderRetryInterrupted
         checkpoint_execution()
         from .core.runtime.run_manager import RunManager, TERMINAL_RUN_STATUSES
@@ -1464,6 +1468,12 @@ class ToolRouter(
             if run.session_id != self._runtime_session_id:
                 raise ToolError("runtime session does not match run")
         wait_for_approval = self._wait_for_policy_approval or _POLICY_APPROVAL_WAIT.get()
+        control = current_control()
+        telegram_wait = bool(
+            wait_for_approval and control is not None
+            and getattr(control, "channel", None) == "telegram"
+            and getattr(control, "private_chat", False) is True
+        )
         operation = _policy_operation_for_tool(tool_name)
         if operation is None:
             return
@@ -1557,6 +1567,20 @@ class ToolRouter(
                 # visível. Caso contrário, um clique rápido pode resolver o
                 # record enquanto o run ainda está "running" e o Kernel rejeita
                 # a transição running → queued.
+                before_publish = None
+                approval_ttl = None
+                if telegram_wait:
+                    approval_ttl = 600.0
+
+                    def _register_waiter(pending_record):
+                        registered = control.begin_approval_wait(
+                            pending_record.id, pending_record.payload_digest or "",
+                            pending_record.expires_at,
+                        )
+                        if not registered:
+                            raise ToolError("Telegram approval waiter could not be registered")
+
+                    before_publish = _register_waiter
                 record = approvals.request(
                     operation=operation,
                     tool_name=tool_name,
@@ -1566,71 +1590,82 @@ class ToolRouter(
                     run_id=self._runtime_run_id,
                     session_id=self._runtime_session_id,
                     suspend_run=run is not None or bool(wait_for_approval),
+                    expires_in_seconds=approval_ttl,
+                    before_publish=before_publish,
                 )
                 if wait_for_approval and self._runtime_run_id:
-                    wait_seconds = max(
-                        1.0,
-                        float(os.environ.get("BAUER_APPROVAL_WAIT_SECONDS", "3600")),
-                    )
-                    deadline = time.monotonic() + wait_seconds
-                    while time.monotonic() < deadline:
-                        checkpoint_execution()
-                        run = manager.get_run(self._runtime_run_id)
-                        if run is None or run.status in TERMINAL_RUN_STATUSES:
-                            if run is not None:
-                                from .core.kernel.kernel import BauerKernel
-
-                                try:
-                                    BauerKernel(
-                                        runs=manager, bus=self._event_bus, approvals=approvals,
-                                    ).expire_approval(record.id)
-                                except ValueError:
-                                    pass  # decision already resolved; keep its outcome
-                            raise ToolError(
-                                f"approval stopped: run is {run.status if run else 'missing'}"
-                            )
-                        current = approvals.get(record.id)
-                        if current is None:
-                            raise ToolError(
-                                "approval request disappeared: "
-                                f"approval_id={record.id}"
-                            )
-                        if current.status == "approved":
-                            # A decision alone does not resume a run. Kernel
-                            # commits queued with the decision; legacy writers
-                            # can still expose approved before that transition.
-                            latest_decision = PolicyEngine(
-                                workspace=self.workspace, rules_path=self._policy_rules_path,
-                                runtime_root=root,
-                            ).evaluate(operation, args)
-                            if latest_decision.action == "deny":
-                                raise ToolError(f"policy denied: {latest_decision.reason}")
-                            if approvals.authorize(record.id, **authorization, resume_run=True):
-                                checkpoint_execution()
-                                return True
-                            if current.consumed_at:
-                                raise ToolError("approval was already consumed")
-                        if current.status in {"denied", "expired", "cancelled"}:
-                            raise ToolError(
-                                f"approval {current.status}: "
-                                f"approval_id={record.id} reason={current.reason}"
-                            )
-                        time.sleep(0.25)
-                    from .core.kernel.kernel import BauerKernel
-
-                    kernel = BauerKernel(runs=manager, bus=self._event_bus, approvals=approvals)
-                    try:
-                        kernel.expire_approval(record.id)
-                    except ValueError:
-                        # Resolution won the timeout race. Do not replace it or
-                        # execute after the caller's wait budget has elapsed.
-                        kernel._fail_se_nao_terminal(
-                            self._runtime_run_id, "approval timed out before execution", [],
+                    if telegram_wait:
+                        if not record.expires_at:
+                            raise ToolError("Telegram approval is missing its persisted deadline")
+                        expires_at = datetime.fromisoformat(record.expires_at)
+                        wait_seconds = max(0.0, (expires_at - datetime.now(expires_at.tzinfo)).total_seconds())
+                    else:
+                        wait_seconds = max(
+                            1.0,
+                            float(os.environ.get("BAUER_APPROVAL_WAIT_SECONDS", "3600")),
                         )
-                    raise ToolError(
-                        "approval timed out: "
-                        f"approval_id={record.id} wait_seconds={wait_seconds:g}"
-                    )
+                    deadline = time.monotonic() + wait_seconds
+                    try:
+                        while time.monotonic() < deadline:
+                            checkpoint_execution()
+                            run = manager.get_run(self._runtime_run_id)
+                            if run is None or run.status in TERMINAL_RUN_STATUSES:
+                                if not telegram_wait and run is not None:
+                                    from .core.kernel.kernel import BauerKernel
+
+                                    try:
+                                        BauerKernel(
+                                            runs=manager, bus=self._event_bus,
+                                            approvals=approvals,
+                                        ).expire_approval(record.id)
+                                    except ValueError as exc:
+                                        logger.debug("Could not expire stopped approval (%s)", type(exc).__name__)
+                                raise ToolError(
+                                    f"approval stopped: run is {run.status if run else 'missing'}"
+                                )
+                            current = approvals.get(record.id)
+                            if current is None:
+                                raise ToolError("approval request disappeared")
+                            if current.status == "approved":
+                                latest_decision = PolicyEngine(
+                                    workspace=self.workspace, rules_path=self._policy_rules_path,
+                                    runtime_root=root,
+                                ).evaluate(operation, args)
+                                if latest_decision.action == "deny":
+                                    raise ToolError(f"policy denied: {latest_decision.reason}")
+                                if approvals.authorize(record.id, **authorization, resume_run=True):
+                                    checkpoint_execution()
+                                    return True
+                                if current.consumed_at:
+                                    raise ToolError("approval was already consumed")
+                            if current.status in {"denied", "expired", "cancelled"}:
+                                raise ToolError(f"approval {current.status}")
+                            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+                        if telegram_wait:
+                            approvals.resolve_for_run(record.id, "expired", run_status=None)
+                            raise ToolError(f"approval timed out after {wait_seconds:g}s")
+                        from .core.kernel.kernel import BauerKernel
+
+                        kernel = BauerKernel(runs=manager, bus=self._event_bus, approvals=approvals)
+                        try:
+                            kernel.expire_approval(record.id)
+                        except ValueError:
+                            kernel._fail_se_nao_terminal(
+                                self._runtime_run_id, "approval timed out before execution", [],
+                            )
+                        raise ToolError(
+                            f"approval timed out: approval_id={record.id} "
+                            f"wait_seconds={wait_seconds:g}"
+                        )
+                    finally:
+                        if telegram_wait:
+                            try:
+                                pending = approvals.get(record.id)
+                                if pending is not None and pending.status == "pending":
+                                    approvals.resolve_for_run(record.id, "expired", run_status=None)
+                            except (KeyError, ValueError) as exc:
+                                logger.debug("Could not expire abandoned approval (%s)", type(exc).__name__)
+                            control.end_approval_wait(record.id)
                 raise ToolError(
                     f"waiting_approval: approval_id={record.id} operation={operation} "
                     f"risk={decision.risk_level} reason={decision.reason}"
@@ -1691,11 +1726,42 @@ class ToolRouter(
                 f"tool denied: '{name}' nao permitido no contexto '{self.tool_context}'."
             )
 
+        # HARDLINE is unconditional. Evaluate it before runtime policy can
+        # persist an approval request, otherwise a dangerous command could
+        # briefly appear as approvable in another surface.
+        if _APPROVAL_AVAILABLE and name in {"run_command", "execute_code", "process"}:
+            is_process_start = name != "process" or str(args.get("action", "")).strip().lower() == "start"
+            _hardline_command = str(args.get("command", args.get("code", "")) or "")
+            if is_process_start and _hardline_command.strip():
+                _hardline = _detect_hardline_command(_hardline_command)
+                if _hardline is not None:
+                    raise ToolError(
+                        f"[BLOCKED] HARDLINE: {_hardline.description}"
+                    )
+                if name == "process" and self._shell_runner is not None:
+                    try:
+                        self._shell_runner._check_denylist(_hardline_command)
+                    except Exception as exc:
+                        raise ToolError(f"[BLOCKED] denylist: {exc}") from exc
+                if name == "execute_code":
+                    from .tools.execution import code_denylist_reason
+
+                    denial = code_denylist_reason(_hardline_command)
+                    if denial is not None:
+                        raise ToolError(f"[BLOCKED] execute_code denylist bloqueado: {denial}")
+
         approved_call = False
-        if self._policy_enabled:
+        # Channel-native governed workers can enable policy for just their
+        # current execution via ContextVar. Do not mutate this shared router:
+        # other concurrent channels and direct CLI callers keep their own
+        # configured policy behavior.
+        if self._policy_enabled or _POLICY_APPROVAL_WAIT.get():
             approved_call = self._evaluate_runtime_policy(name, args) is True
         checkpoint_execution()
-        approved_command = args.get("command") if approved_call and name == "run_command" else None
+        approved_shell_tool = name == "run_command" or (
+            name == "process" and str(args.get("action", "")).strip().lower() == "start"
+        )
+        approved_command = args.get("command") if approved_call and approved_shell_tool else None
 
         # LIMITS-001: enforça max_tool_calls por sessão
         self._tool_call_count += 1
