@@ -811,6 +811,7 @@ class AgentBackend:
                     self._turn_started_at.pop(key, None)
                 lock.release()
                 batch.done.set()
+                batch.generation_control.notify_generation_waiters()
                 if batch.timed_out and send_fn is not None:
                     terminal = (batch.response if batch.error is None else
                                 self._friendly_provider_error(batch.error))
@@ -828,7 +829,7 @@ class AgentBackend:
             execution.done.set()
             lock.release()
             raise
-        if not batch.done.wait(timeout=_TURN_TIMEOUT_SECONDS):
+        if not batch.generation_control.wait_for_generation(batch.done, _TURN_TIMEOUT_SECONDS):
             batch.timed_out = True
             with self._pending_lock:
                 if batch.done.is_set():
@@ -854,7 +855,7 @@ class AgentBackend:
             owner=operator_key(msg), channel=msg.channel, chat_id=msg.chat_id,
             project_id=project.project_id if project is not None else None,
             session_key=key, workspace=Path(self._effective_router().workspace).resolve(),
-            batch=batch,
+            batch=batch, private_chat=private_telegram(msg),
         )
 
     def _live_session_execution(self, key: str) -> ChannelExecution | None:
@@ -957,6 +958,9 @@ class AgentBackend:
         canal = execution.channel if execution is not None else (
             getattr(self, "name", None) or type(self).__name__.lower()
         )
+        approval_subscriber = getattr(self, "_telegram_approval_subscriber", None)
+        if kernel is not None and canal == "telegram" and callable(approval_subscriber):
+            approval_subscriber(kernel.bus)
         falha: list[BaseException] = []
 
         def _executar(_payload):
@@ -983,6 +987,13 @@ class AgentBackend:
                     )
                 return data
 
+            policy_wait_token = None
+            if (control is not None and execution is not None
+                    and execution.channel == "telegram" and execution.private_chat
+                    and callable(approval_subscriber)):
+                from .tool_router import set_policy_approval_wait
+
+                policy_wait_token = set_policy_approval_wait(True)
             try:
                 with metrics.context(key, _payload.get("run_id")):
                     if control is None:
@@ -1009,6 +1020,10 @@ class AgentBackend:
                 falha.append(exc)
                 return result(status="failed", error=str(exc))
             finally:
+                if policy_wait_token is not None:
+                    from .tool_router import reset_policy_approval_wait
+
+                    reset_policy_approval_wait(policy_wait_token)
                 if execution is not None:
                     execution.phase = "evaluating"
 

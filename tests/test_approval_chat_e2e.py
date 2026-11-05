@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -263,6 +264,32 @@ def test_expired_approval_ends_run_without_second_request(environment, monkeypat
     assert len(approvals.list()) == 1
     assert not (workspace / "effects.txt").exists()
     assert control.post(f"/api/approvals/{record.id}/approve").status_code == 409
+
+
+def test_web_endpoint_rejects_expired_legacy_telegram_approval(environment):
+    _, control, workspace, approvals, runs = environment
+    run = runs.create_run(
+        session_id="tg-project-legacy-web-check", agent_id="channel.telegram",
+        input={"endpoint": "canal:telegram", "operator": "telegram:42:42",
+               "project_id": "legacy-project", "workspace": str(workspace)},
+        status="waiting_approval",
+    )
+    record = approvals.request(
+        operation="shell.execute", tool_name="run_command", reason="expired Telegram approval",
+        risk_level="high", payload={"command": "write marker.txt"},
+        run_id=run.id, session_id=run.session_id, expires_in_seconds=600,
+    )
+    approvals.store.upsert("approvals", {
+        **approvals.store.latest("approvals", record.id),
+        "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+    })
+
+    response = control.post(f"/api/approvals/{record.id}/approve", json={"scope": "once"})
+
+    assert response.status_code == 409, response.text
+    assert approvals.get(record.id).status == "expired"
+    assert runs.get_run(run.id).status == "failed"
+    assert not (workspace / "marker.txt").exists()
 
 
 def test_waiting_for_human_does_not_exhaust_stream_execution_timeout(environment, monkeypatch):

@@ -2,9 +2,10 @@
 
 ## Status e objetivo
 
-- **Status**: IN PROGRESS — sprints 33 (projeto/contexto), 34 (cancelamento)
-  e 41 (atividade dos agentes) entregues com testes e revisão cruzada; etapa 4
-  (aprovação remota exata) é a próxima sprint.
+- **Status**: IN PROGRESS — sprints 33 (projeto/contexto), 34 (cancelamento),
+  41 (atividade dos agentes) e 42 (aprovação remota exata) entregues com
+  testes e gates completos; etapa 5 (autonomia e recuperação) é a próxima
+  sprint.
 - **Data/base**: 2026-10-21, checkout `e22e1aa`.
 - **Prioridade/esforço**: P1 / L, dividido em entregas pequenas.
 - **Objetivo**: conversar com o Bauer pelo celular sabendo em qual projeto ele
@@ -288,7 +289,7 @@ Checklist de execução:
 - [x] Projeto e isolamento (etapa 1).
 - [x] Cancelamento e limites (etapa 2).
 - [x] Atividade dos agentes (etapa 3, sprint 41; gates completos e revisão cruzada).
-- [ ] Aprovação remota exata (etapa 4).
+- [x] Aprovação remota exata (etapa 4, sprint 42; gates completos).
 - [ ] Autonomia e recuperação (etapa 5).
 - [ ] Operação e jornada real na Beelink (etapa 6).
 - [ ] Revisão, documentação e atualização do status em `plans/README.md`.

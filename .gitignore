@@ -113,3 +113,5 @@ graphify-out/
 !specs/sprint-34-telegram-cancellation/**
 !specs/sprint-41-telegram-activity/
 !specs/sprint-41-telegram-activity/**
+!specs/sprint-42-telegram-approval/
+!specs/sprint-42-telegram-approval/**
