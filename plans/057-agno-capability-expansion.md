@@ -24,7 +24,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | 21 — browser/testes de UI | `specs/sprint-53-agno-browser-ui/` | `codex/sprint-53-agno-browser-ui` | DONE |
 | 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-agno-devops-readonly/` | `codex/sprint-54-agno-devops-readonly` | DONE |
 | 23 — workflows Agno sob o Kernel | `specs/sprint-55-agno-governed-workflows/` | `codex/sprint-55-agno-governed-workflows` | DONE |
-| 24 — evals e memória de decisões | `specs/sprint-56-*` | `codex/sprint-56-*` | TODO |
+| 24 — evals e memória de decisões | `specs/sprint-56-agno-evals-decisions/` | `codex/sprint-56-agno-evals-decisions` | DONE |
 | 25 — primeiro conector com escrita | `specs/sprint-57-*` | `codex/sprint-57-*` | TODO |
 | 26 — cobertura/paridade do catálogo | `specs/sprint-58-*` | `codex/sprint-58-*` | TODO |
 
@@ -89,6 +89,16 @@ refeita.
   como aprovação vinculada ao run com retomada pelo Kernel.
 - [x] Piloto `data_report_workflow` (perfil → totais ∥ qualidade →
   condição → revisão → publicação) e comparação com o turno de agente.
+
+### Entregue na sprint 56 (plano "24")
+
+- [x] `ReliabilityEval` do Agno adotado offline sobre a trilha do EventBus
+  (sem db/telemetria; consultivo); Accuracy/AgentAsJudge/Performance
+  avaliados e não adotados (motivos no SPEC).
+- [x] Cenários de harness 56.1–56.3 e scorecard regenerado.
+- [x] `CapabilityDecisionLog` sobre `DecisionMemory`: versão, escopo,
+  expiração, exclusão, redação; sem raciocínio privado; gravação automática
+  opt-in (`bauer.decisions.auto_record`).
 
 ## Problema e resultado esperado
 

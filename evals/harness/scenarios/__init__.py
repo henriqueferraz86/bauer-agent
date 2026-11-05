@@ -4,4 +4,4 @@ from __future__ import annotations
 
 
 def carregar_tudo() -> None:
-    from . import governanca, resiliencia  # noqa: F401
+    from . import agno_evals, governanca, resiliencia  # noqa: F401

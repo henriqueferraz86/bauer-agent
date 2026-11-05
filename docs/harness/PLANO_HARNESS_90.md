@@ -207,7 +207,7 @@ tabela escrita à mão envelhece em silêncio, gerada ou está certa ou quebra.
 | Observabilidade | **100%** ✅ | 17/17 | 90% | — |
 | Capacidade do runtime | **100%** ✅ | 6/6 | 100% | — |
 | Retry, fallback e recovery | **100%** ✅ | 6/6 | 90% | — |
-| Avaliacoes de harness | **100%** ✅ | 23/23 | 85% | — |
+| Avaliacoes de harness | **100%** ✅ | 26/26 | 85% | — |
 | **média (só o mensurável)** | **98%** | | **90%** | |
 
 2 capacidades ficam **fora da média** por não serem contáveis — declaradas em vez de receberem um número inventado:
