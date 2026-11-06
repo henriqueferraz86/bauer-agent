@@ -58,6 +58,11 @@ class ActionImpl:
         default_factory=lambda: {"type": "object", "properties": {}, "required": []}
     )
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    #: ``summary(args) -> str`` shown to the approver (target/effect/identity).
+    approval_summary: Callable[[dict[str, Any]], str] | None = None
+    #: ``preflight(args)`` — cheap, local validation run BEFORE the router
+    #: (so an out-of-scope call never even creates an approval request).
+    preflight: Callable[[dict[str, Any]], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +245,8 @@ def materialize(
             "action": action.name,
             "timeout_seconds": impl.timeout_seconds,
         }
+        if impl.approval_summary is not None:
+            registration["approval_summary"] = impl.approval_summary
         governed.append(
             GovernedAction(
                 tool_name=tool_name,
@@ -247,7 +254,7 @@ def materialize(
                 action=action.name,
                 description=(impl.description or action.description or action.name)[:1024],
                 parameters=deepcopy(impl.parameters),
-                entrypoint=_governed_entrypoint(tool_name, impl.fn, registration, router_factory),
+                entrypoint=_governed_entrypoint(tool_name, impl.fn, registration, router_factory, impl.preflight),
             )
         )
     logger.info(
@@ -275,11 +282,18 @@ def _refuse_secret_material(call_args: dict[str, Any]) -> None:
         raise ToolError("argumentos contêm material secreto; envio externo bloqueado")
 
 
+def _always_ask_operations() -> frozenset[str]:
+    from ...policy.engine import ALWAYS_ASK_OPERATIONS
+
+    return ALWAYS_ASK_OPERATIONS
+
+
 def _governed_entrypoint(
     tool_name: str,
     fn: Callable[..., Any],
     registration: dict[str, Any],
     router_factory: Callable[[], Any],
+    preflight: Callable[[dict[str, Any]], None] | None = None,
 ) -> Callable[..., str]:
     """Closure (no defaulted kwargs a model could override) routing via ToolRouter."""
 
@@ -301,8 +315,15 @@ def _governed_entrypoint(
                 f"{tool_name} falhou ({type(exc).__name__}): {redact_text(str(exc))[:300]}"
             ) from None
 
+    always_ask = str(registration.get("operation") or "") in _always_ask_operations()
+
     def entrypoint(**kwargs: Any) -> str:
         router = router_factory()
+        if always_ask and not getattr(router, "_policy_enabled", False):
+            # Without the PolicyEngine there is no approval: refuse the write.
+            raise ToolError("escrita externa exige policy habilitada (aprovação humana); chamada recusada")
+        if preflight is not None:
+            preflight(dict(kwargs))
         if not router.has_capability_tool(tool_name):
             router.register_capability_tool(tool_name, invoke, **registration)
         return router.execute_native_call(tool_name, kwargs)

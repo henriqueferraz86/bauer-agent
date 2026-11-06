@@ -434,6 +434,7 @@ class ToolRouter(
         # ver server.py. Default "enforce" preserva o comportamento de quem liga
         # policy_enabled diretamente.
         self._policy_mode = "enforce"
+        self._capability_approval_summaries: dict = {}
         # O serve em modo enforce mantém a própria tool call bloqueada até a
         # decisão humana. Fora dele, preservamos a semântica histórica: a
         # chamada falha imediatamente com um ToolError que o caller decide
@@ -1426,6 +1427,7 @@ class ToolRouter(
         capability: str,
         action: str,
         timeout_seconds: int = 60,
+        approval_summary=None,
     ) -> None:
         """Register one reviewed Agno capability action on this router only.
 
@@ -1446,6 +1448,9 @@ class ToolRouter(
         if timeout_seconds > 0:
             _TOOL_TIMEOUTS.setdefault(name, int(timeout_seconds))
         self._tools[name] = {"fn": fn, "description": description, "args": dict(args)}
+        if approval_summary is not None:
+            # Per-instance: what the approver reads (target, effect, identity).
+            self._capability_approval_summaries[name] = approval_summary
 
     def reset_call_count(self) -> None:
         """Reseta o contador de chamadas (use no inicio de cada sessão de agent)."""
@@ -1546,6 +1551,13 @@ class ToolRouter(
                         data={"operation": operation, "risk_level": decision.risk_level},
                     )
                 raise ToolError(f"policy denied: {decision.reason}")
+            if decision.action == "ask":
+                summarize = getattr(self, "_capability_approval_summaries", {}).get(tool_name)
+                if summarize is not None:
+                    try:
+                        decision.reason = str(summarize(args))[:300]
+                    except Exception as exc:  # noqa: BLE001 - keep the policy reason
+                        logger.debug("capability approval summary failed: %s", type(exc).__name__)
             needs_command_approval = False
             if (tool_name == "run_command" and self._shell_runner is not None
                     and (wait_for_approval or self._policy_mode == "enforce")):
@@ -1585,7 +1597,11 @@ class ToolRouter(
                 # Modo audit: registra a trilha e deixa passar (operador presente;
                 # sem fluxo de aprovar-e-retomar no chat, bloquear todo shell
                 # quebraria o uso normal). deny já foi tratado acima e bloqueia.
-                if self._policy_mode == "audit" and not needs_command_approval:
+                # Escrita externa (ALWAYS_ASK_OPERATIONS) nunca é auto-aprovada.
+                from .core.policy.engine import ALWAYS_ASK_OPERATIONS
+
+                if (self._policy_mode == "audit" and not needs_command_approval
+                        and operation not in ALWAYS_ASK_OPERATIONS):
                     if self._event_bus is not None:
                         self._event_bus.publish(
                             "approval.accepted",

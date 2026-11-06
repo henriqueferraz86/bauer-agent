@@ -25,7 +25,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-agno-devops-readonly/` | `codex/sprint-54-agno-devops-readonly` | DONE |
 | 23 — workflows Agno sob o Kernel | `specs/sprint-55-agno-governed-workflows/` | `codex/sprint-55-agno-governed-workflows` | DONE |
 | 24 — evals e memória de decisões | `specs/sprint-56-agno-evals-decisions/` | `codex/sprint-56-agno-evals-decisions` | DONE |
-| 25 — primeiro conector com escrita | `specs/sprint-57-*` | `codex/sprint-57-*` | TODO |
+| 25 — primeiro conector com escrita | `specs/sprint-57-agno-write-connector/` | `codex/sprint-57-agno-write-connector` | DONE |
 | 26 — cobertura/paridade do catálogo | `specs/sprint-58-*` | `codex/sprint-58-*` | TODO |
 
 A fundação parcial já existente (`specs/sprint-18-agno-capability-catalog/`:
@@ -99,6 +99,15 @@ refeita.
 - [x] `CapabilityDecisionLog` sobre `DecisionMemory`: versão, escopo,
   expiração, exclusão, redação; sem raciocínio privado; gravação automática
   opt-in (`bauer.decisions.auto_record`).
+
+### Entregue na sprint 57 (plano "25")
+
+- [x] `bauer.github_issues:create_issue`, capability separada e desabilitada
+  até configuração; piso `ask` para `integration.write` (policy custom não
+  rebaixa; audit não auto-aprova; policy off recusa); aprovação vinculada aos
+  argumentos exatos, uso único; resumo com alvo/efeito/identidade;
+  preflight antes da aprovação; idempotência por run; falhas explícitas.
+- [x] STOP respeitado: nenhum outro conector de escrita.
 
 ## Problema e resultado esperado
 
