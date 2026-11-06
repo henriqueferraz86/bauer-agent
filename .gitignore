@@ -127,3 +127,5 @@ graphify-out/
 !specs/sprint-56-agno-evals-decisions/**
 !specs/sprint-57-agno-write-connector/
 !specs/sprint-57-agno-write-connector/**
+!specs/sprint-58-agno-catalog-coverage/
+!specs/sprint-58-agno-catalog-coverage/**

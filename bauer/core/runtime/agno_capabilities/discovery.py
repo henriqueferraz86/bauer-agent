@@ -39,6 +39,8 @@ class SdkToolkitModule:
     pip_hints: tuple[str, ...] = ()
     env_vars: tuple[str, ...] = ()
     functions: tuple[str, ...] = ()
+    #: Constructor parameter names of the toolkit class(es) (AST).
+    init_args: tuple[str, ...] = ()
     parse_error: bool = False
 
     @property
@@ -53,6 +55,7 @@ class _ModuleScan:
     pip_hints: set[str] = field(default_factory=set)
     env_vars: set[str] = field(default_factory=set)
     functions_by_class: dict[str, set[str]] = field(default_factory=dict)
+    init_args_by_class: dict[str, set[str]] = field(default_factory=dict)
 
 
 def agno_tools_dirs() -> list[Path]:
@@ -157,6 +160,7 @@ def _scan_module(path: Path, module: str) -> SdkToolkitModule:
         elif isinstance(node, ast.ClassDef):
             scan.classes[node.name] = [_base_name(base) for base in node.bases]
             scan.functions_by_class[node.name] = _registered_functions(node)
+            scan.init_args_by_class[node.name] = _init_args(node)
     for inner in ast.walk(tree):
         name = _env_var_name(inner)
         if name:
@@ -178,6 +182,16 @@ def _scan_module(path: Path, module: str) -> SdkToolkitModule:
                     for name, bases in scan.classes.items()
                     if "Toolkit" in bases
                     for fn in scan.functions_by_class.get(name, set())
+                }
+            )
+        ),
+        init_args=tuple(
+            sorted(
+                {
+                    arg
+                    for name, bases in scan.classes.items()
+                    if "Toolkit" in bases
+                    for arg in scan.init_args_by_class.get(name, set())
                 }
             )
         ),
@@ -278,6 +292,14 @@ def _registered_functions(cls: ast.ClassDef) -> set[str]:
                     if inner.value.id == "self" and inner.attr in methods and not inner.attr.startswith("_"):
                         found.add(inner.attr)
     return found
+
+
+def _init_args(cls: ast.ClassDef) -> set[str]:
+    for item in cls.body:
+        if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+            args = item.args
+            return {a.arg for a in args.posonlyargs + args.args + args.kwonlyargs if a.arg != "self"}
+    return set()
 
 
 def _env_var_name(node: ast.AST) -> str | None:

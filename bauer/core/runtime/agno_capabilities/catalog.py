@@ -108,6 +108,8 @@ def capability_status(
 ) -> CapabilityStatus:
     if policy.incompatible:
         return CapabilityStatus("incompatible", reason=policy.incompatible)
+    if policy.blocked:
+        return CapabilityStatus("blocked_by_policy", reason=policy.blocked)
     sdk = sdk if sdk is not None else sdk_modules_by_id()
     if policy.source == "agno":
         if not module_spec_exists("agno"):
@@ -284,12 +286,12 @@ def catalog_entries(
                 "category": policy.category,
                 "description": policy.description,
                 "source": policy.source,
-                "review": "incompatible" if policy.incompatible else "reviewed",
+                "review": "incompatible" if policy.incompatible else ("blocked" if policy.blocked else "reviewed"),
                 "actions": [action.name for action in policy.actions],
                 "action_risks": {action.name: action.risk for action in policy.actions},
                 "default_actions": [action.name for action in policy.default_actions],
                 "risk": policy.max_risk,
-                "factory_registered": policy.incompatible is None,
+                "factory_registered": policy.incompatible is None and policy.blocked is None,
                 "package": policy.install_hint or (module.pip_hints[0] if module and module.pip_hints else None),
                 "module_family": False,
                 "required_config": [

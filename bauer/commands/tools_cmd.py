@@ -120,3 +120,61 @@ def tools_run(
     except ToolError as exc:
         console.print(f"[red]Erro na tool:[/red]\n{exc}")
         raise typer.Exit(code=1)
+
+
+@tools_app.command("capabilities")
+def tools_capabilities(
+    search: str = typer.Option("", "--search", "-s", help="Filtra por id, nome ou categoria"),
+    state: str = typer.Option("", "--state", help="Filtra por estado (enabled, ready, needs_configuration, ...)"),
+    category: str = typer.Option("", "--category", help="Filtra por categoria"),
+    as_json: bool = typer.Option(False, "--json", help="Saída JSON"),
+    coverage: bool = typer.Option(False, "--coverage", help="Matriz de cobertura do catálogo Agno instalado"),
+    markdown: bool = typer.Option(False, "--markdown", help="Com --coverage: tabela Markdown"),
+    diff: bool = typer.Option(False, "--diff", help="Diferença do SDK instalado vs. snapshot revisado"),
+    write_snapshot: bool = typer.Option(False, "--write-snapshot", help="(dev) grava o snapshot revisado do SDK"),
+):
+    """Catálogo de capabilities Agno (plano 057): estado, requisitos e cobertura.
+
+    Só lê metadados: não importa conectores, não instala nada e não altera config.
+    """
+    import json as _json
+
+    from ..core.runtime.agno_capabilities import coverage as _coverage
+    from ..core.runtime.agno_capabilities.catalog import catalog_entries
+
+    if write_snapshot:
+        console.print(f"snapshot gravado em {_coverage.write_snapshot()}")
+        return
+    if diff:
+        typer.echo(_json.dumps(_coverage.snapshot_diff(), indent=2, ensure_ascii=False))
+        return
+    if coverage:
+        matrix = _coverage.coverage_matrix()
+        if markdown:
+            typer.echo(_coverage.coverage_markdown(matrix))
+        elif as_json:
+            typer.echo(_json.dumps(matrix, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(f"Agno {matrix['agno_version']}: "
+                       + ", ".join(f"{k}={v}" for k, v in matrix["totals"].items()))
+        return
+
+    needle = search.strip().lower()
+    rows = [
+        row for row in catalog_entries()
+        if (not needle or needle in f"{row['id']} {row['name']} {row['category']}".lower())
+        and (not state or row["state"] == state)
+        and (not category or row["category"].lower() == category.lower())
+    ]
+    if as_json:
+        typer.echo(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return
+    table = Table(title=f"Capabilities Agno ({len(rows)})")
+    table.add_column("id", style="cyan")
+    table.add_column("categoria")
+    table.add_column("estado")
+    table.add_column("ações / motivo")
+    for row in rows:
+        detail = ", ".join(row["actions"]) or row.get("reason") or ""
+        table.add_row(row["id"], row["category"], row["state"], detail[:90])
+    console.print(table)

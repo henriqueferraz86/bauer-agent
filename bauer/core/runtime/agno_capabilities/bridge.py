@@ -31,6 +31,7 @@ from ....execution_control import ExecutionControlError
 from ....privacy import redact_text
 from ....provider_retry import ProviderRetryInterrupted
 from ....tools.base import ToolError
+from .credentials import resolve_credential
 from .catalog import CapabilityError, ResolvedCapability, resolve_capability
 from .settings import CapabilitySettings, StrictSettings, load_capability_settings
 
@@ -117,7 +118,18 @@ def sdk_toolkit_factory(
     module = importlib.import_module(policy.module)
     toolkit_cls = getattr(module, policy.class_name)
     names = [action.name for action in resolved.actions]
-    toolkit = toolkit_cls(include_tools=names, **(init_kwargs or {}))
+    kwargs = dict(init_kwargs or {})
+    for kwarg, credential in policy.credential_kwargs:
+        if kwarg not in kwargs:
+            secret = resolve_credential(credential)
+            if secret:
+                kwargs[kwarg] = secret
+    try:
+        toolkit = toolkit_cls(include_tools=names, **kwargs)
+    except ValueError:
+        # A reviewed tool may be off by default behind an ``enable_*`` flag;
+        # ``all=True`` + ``include_tools`` still registers only these names.
+        toolkit = toolkit_cls(include_tools=names, all=True, **kwargs)
     functions = dict(toolkit.get_functions())
     impls: dict[str, ActionImpl] = {}
     for name in names:

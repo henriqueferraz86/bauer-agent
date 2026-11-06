@@ -65,6 +65,12 @@ class ToolkitPolicy:
     credentials: tuple[str, ...] = ()
     #: Present ⇒ catalog shows ``incompatible`` with this reason.
     incompatible: str | None = None
+    #: Present ⇒ ``blocked_by_policy``: compatible in principle, but held back
+    #: by a governance decision (e.g. write connectors until pilot review).
+    blocked: str | None = None
+    #: ``(constructor_kwarg, credential_name)`` pairs injected by the SDK
+    #: factory from env/``bauer credential`` (value never leaves the factory).
+    credential_kwargs: tuple[tuple[str, str], ...] = ()
     #: Free-form reviewer notes shown in doctor/UI (no secrets).
     notes: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)

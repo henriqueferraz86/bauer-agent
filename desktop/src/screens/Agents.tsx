@@ -57,6 +57,8 @@ export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activity, setActivity] = useState<Record<string, AgentActivity>>({});
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
+  const [capabilityQuery, setCapabilityQuery] = useState("");
+  const [capabilityState, setCapabilityState] = useState("");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -110,7 +112,26 @@ export default function Agents() {
           <div className="muted" style={{ marginBottom: 10 }}>
             A disponibilidade não concede acesso: cada agente recebe somente as ferramentas declaradas em sua configuração.
           </div>
-          {capabilities.map((capability) => {
+          <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
+            <input
+              placeholder="Buscar capability, categoria…"
+              value={capabilityQuery}
+              onChange={(event) => setCapabilityQuery(event.target.value)}
+            />
+            <select value={capabilityState} onChange={(event) => setCapabilityState(event.target.value)}>
+              <option value="">todos os estados</option>
+              {Array.from(new Set(capabilities.map((item) => item.state))).sort().map((state) => (
+                <option key={state} value={state}>{CAPABILITY_STATE_LABELS[state] ?? state}</option>
+              ))}
+            </select>
+          </div>
+          {capabilities
+            .filter((capability) => !capabilityState || capability.state === capabilityState)
+            .filter((capability) => {
+              const needle = capabilityQuery.trim().toLowerCase();
+              return !needle || `${capability.id} ${capability.name} ${capability.category}`.toLowerCase().includes(needle);
+            })
+            .map((capability) => {
             const simpleId = capability.id.replace(/^bauer\./, "");
             const enabledAgents = agents
               .filter((agent) => (agent.tools || agent.capabilities || []).some((tool) => {

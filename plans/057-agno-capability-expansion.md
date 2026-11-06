@@ -1,6 +1,6 @@
 # Plano 057 — Expandir com segurança as capacidades Agno no Bauer
 
-**Status:** IN PROGRESS
+**Status:** DONE
 
 **Prioridade:** P1
 
@@ -26,7 +26,7 @@ execução começou. O trilho usa **50–58**, na mesma ordem:
 | 23 — workflows Agno sob o Kernel | `specs/sprint-55-agno-governed-workflows/` | `codex/sprint-55-agno-governed-workflows` | DONE |
 | 24 — evals e memória de decisões | `specs/sprint-56-agno-evals-decisions/` | `codex/sprint-56-agno-evals-decisions` | DONE |
 | 25 — primeiro conector com escrita | `specs/sprint-57-agno-write-connector/` | `codex/sprint-57-agno-write-connector` | DONE |
-| 26 — cobertura/paridade do catálogo | `specs/sprint-58-*` | `codex/sprint-58-*` | TODO |
+| 26 — cobertura/paridade do catálogo | `specs/sprint-58-agno-catalog-coverage/` | `codex/sprint-58-agno-catalog-coverage` | DONE |
 
 A fundação parcial já existente (`specs/sprint-18-agno-capability-catalog/`:
 endpoint, painel, rejeição de nome desconhecido) foi reaproveitada, não
@@ -108,6 +108,23 @@ refeita.
   argumentos exatos, uso único; resumo com alvo/efeito/identidade;
   preflight antes da aprovação; idempotência por run; falhas explícitas.
 - [x] STOP respeitado: nenhum outro conector de escrita.
+
+### Entregue na sprint 58 (plano "26")
+
+- [x] Todos os toolkits do Agno 3.0.10 com estado e justificativa
+  (`unreviewed=0`): 24 de leitura revisados, conectores com escrita/PII/mídia
+  paga `blocked_by_policy`, runtime/execução remota/sem escopo `incompatible`.
+- [x] Matriz de cobertura reprodutível, snapshot do SDK + diff revisável
+  (bump não habilita nada), CLI `bauer tools capabilities`, filtros no
+  Desktop, contratos por família.
+
+### Pendências fora deste plano
+
+- Liberar leitura isolada de conectores hoje `blocked_by_policy` exige
+  revisão do piloto de escrita (sprint 57) e policy por ação.
+- `npm run build` do Desktop não foi executado no ambiente das sprints.
+- Agentes/Teams Agno do adapter (plano 062) usam `telemetry=True` padrão do
+  SDK; recomenda-se `AGNO_TELEMETRY=false`/`telemetry=False` no executor.
 
 ## Problema e resultado esperado
 

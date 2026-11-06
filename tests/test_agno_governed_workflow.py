@@ -99,7 +99,7 @@ def test_success_with_review_resumes_and_kernel_declares_completion(kit):
     assert ("agent.paused", "review") in steps and ("agent.resumed", "review") in steps
     # Events reconstruct the sequence without carrying step content.
     serialized = json.dumps([e.data for e in _workflow_events(kit, result.run_id)])
-    assert "15" not in serialized and "sul" not in serialized
+    assert "sul" not in serialized and "norte" not in serialized and "amount" not in serialized
 
 
 def test_review_denied_fails_run_and_nothing_is_published(kit):

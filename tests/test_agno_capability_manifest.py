@@ -30,7 +30,7 @@ def test_reviewed_ids_are_valid_references():
 def test_every_reviewed_sdk_action_exists_in_installed_agno():
     modules = {item.id: item for item in discover_sdk_modules()}
     for policy in reviewed_policies().values():
-        if policy.source != "agno" or policy.incompatible:
+        if policy.source != "agno" or policy.incompatible or policy.blocked:
             continue
         assert policy.id in modules, f"{policy.id} não existe no SDK instalado"
         assert policy.module and policy.class_name
