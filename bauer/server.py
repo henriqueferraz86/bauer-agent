@@ -712,6 +712,43 @@ def create_app(
         "applied_context": applied_context,
     }
 
+    # ── Garantia `--local` (sprint 62, WEB-03) ───────────────────────────────
+    # `profile_set='local'` é o `bauer serve --local`: a CLI recusa subir se
+    # algo apontar para a nuvem, e esta é a mesma promessa DEPOIS do boot.
+    # Toda porta que troca ou constrói client — /models/switch, restauração do
+    # modelo salvo, seleção automática pós-OAuth, fallback e roteamento por
+    # tier — passa por `_provider_allowed` ANTES de mutar `_state`.
+    _local_only = profile_set == "local"
+
+    def _local_cfg():
+        if config_path is None:
+            return None
+        try:
+            from .config_loader import load_config as _load_local_cfg
+
+            return _load_local_cfg(config_path)
+        except Exception as exc:  # noqa: BLE001 - sem config, `custom` falha fechado
+            _log.debug("local guard config unavailable: %s", exc)
+            return None
+
+    def _provider_allowed(provider: str) -> bool:
+        if not _local_only:
+            return True
+        from .model_router import provider_e_local
+
+        return provider_e_local(provider, _local_cfg())
+
+    if _local_only and _fallback_clients:
+        _kept_fallbacks = []
+        for _fb in _fallback_clients:
+            _fb_client = _fb[0] if isinstance(_fb, (tuple, list)) and _fb else _fb
+            if _provider_allowed(_detect_provider(_fb_client)):
+                _kept_fallbacks.append(_fb)
+            else:
+                _log.warning("--local: fallback fora da máquina descartado (%s)",
+                             _detect_provider(_fb_client) or "provider desconhecido")
+        _fallback_clients = _kept_fallbacks
+
     _runtime_mode_file = runtime_root / "serve-runtime-mode.json"
     _model_state_file = runtime_root / "serve-model-state.json"
     try:
@@ -722,7 +759,11 @@ def create_app(
         _state["runtime_mode"] = "bauer_native"
     try:
         _saved_model_state = json.loads(_model_state_file.read_text(encoding="utf-8"))
-        if _saved_model_state.get("provider") and _saved_model_state.get("model"):
+        if (_saved_model_state.get("provider") and _saved_model_state.get("model")
+                and not _provider_allowed(str(_saved_model_state["provider"]))):
+            _log.warning("--local: seleção salva %s/%s ignorada (provider não é local)",
+                         _saved_model_state.get("provider"), _saved_model_state.get("model"))
+        elif _saved_model_state.get("provider") and _saved_model_state.get("model"):
             saved_provider = str(_saved_model_state["provider"])
             saved_model = str(_saved_model_state["model"])
             if config_path is not None:
@@ -913,6 +954,9 @@ def create_app(
         senão constrói e cacheia. None em falha (caller cai no default)."""
         if not provider or provider == _state["provider"]:
             return _state["client"]
+        if not _provider_allowed(provider):
+            _log.warning("--local: profile com provider '%s' ignorado (não é local)", provider)
+            return None
         if provider in _profile_clients:
             return _profile_clients[provider]
         try:
@@ -1383,6 +1427,17 @@ def create_app(
         # Normaliza: se não veio provider, assume o atual
         if not new_provider:
             new_provider = current_provider
+
+        # O provider atual já passou pela checagem do boot (e toda troca
+        # posterior por esta guarda); só um provider DIFERENTE é reavaliado.
+        if new_provider != current_provider and not _provider_allowed(new_provider):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"--local ativo: provider '{new_provider}' não roda nesta máquina; "
+                    "troca recusada. Reinicie o serve sem --local para usar a nuvem."
+                ),
+            )
 
         if new_provider == current_provider:
             # Mesmo provider — valida com has_model() só para Ollama
@@ -2737,6 +2792,11 @@ def create_app(
     def _on_openai_auth_connected() -> str | None:
         if config_path is None:
             return "OpenAI conectada, mas o Serve não possui config_path para selecionar o modelo."
+        if not _provider_allowed("openai"):
+            # A credencial fica guardada (nada sai da máquina por isso); só a
+            # troca automática de modelo é recusada enquanto `--local` vale.
+            return ("OpenAI conectada, mas o Serve está em --local: o modelo local "
+                    "foi mantido. Reinicie sem --local para usar a OpenAI.")
         from .auxiliary_client import _build_client_for_provider
         from .config_loader import load_config
 

@@ -312,10 +312,25 @@ def validar_execucao_local(cfg, model_name: str = "") -> "list[str]":
     problemas: list[str] = []
     section = getattr(cfg, "model", None) or getattr(cfg, "models", None)
 
-    if not (getattr(section, "profiles_local", None) or {}):
+    perfis_locais = getattr(section, "profiles_local", None) or {}
+    if not perfis_locais:
         problemas.append(
             "`model.profiles_local` ausente no config — sem ele não há tiers "
             "locais para rotear")
+    elif isinstance(perfis_locais, dict):
+        # Sprint 62 (WEB-03): um tier "local" apontando para a nuvem seria a
+        # quarta porta — o roteamento por tier mandaria o turno para fora.
+        tiers_remotos = [
+            f"{nome}={_spec_field(spec, 'provider')}/{_spec_field(spec, 'model')}"
+            for nome, spec in perfis_locais.items()
+            # provider vazio = o primário, já verificado logo abaixo
+            if _spec_field(spec, "provider")
+            and not provider_e_local(_spec_field(spec, "provider"), cfg)
+        ]
+        if tiers_remotos:
+            problemas.append(
+                f"`model.profiles_local` tem {len(tiers_remotos)} tier(s) na nuvem "
+                f"({', '.join(tiers_remotos[:3])}) — o roteamento por tier iria para fora")
 
     alvo = (model_name or str(getattr(section, "name", "") or "")).strip()
     prov = str(getattr(section, "provider", "") or "")

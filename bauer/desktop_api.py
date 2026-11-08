@@ -737,16 +737,21 @@ def build_desktop_router(
             raise HTTPException(status_code=404, detail=f"time não encontrado: {team_id}")
         return orchestrator.delegations.team_budget_status(team_id)
 
-    @router.get("/teams/{team_id}/stream")
-    def team_stream(
-        team_id: str,
-        task: str = Query(..., min_length=1),
-        session_id: str = Query(""),
-        user_id: str = Query("local-user"),
-    ):
+    # Sprint 62 (WEB-02): iniciar um time executa agents/tools e gasta custo,
+    # então só via POST — o middleware de auth exige CSRF de toda sessão por
+    # cookie em método mutável. Um GET de navegação cross-site (cookie
+    # SameSite=Lax) não pode mais disparar orquestração; observar uma run já
+    # iniciada continua em GET /teams/runs/{run_id}/events.
+    @router.post("/teams/{team_id}/stream")
+    def team_stream(team_id: str, body: dict = Body(...)):
         from fastapi.encoders import jsonable_encoder
         from fastapi.responses import StreamingResponse
 
+        task = str(body.get("task") or "").strip()
+        if not task:
+            raise HTTPException(status_code=422, detail="task é obrigatório")
+        session_id = str(body.get("session_id") or "")
+        user_id = str(body.get("user_id") or "local-user")
         orchestrator = _team_orchestrator()
         if orchestrator.team_registry.get(team_id) is None:
             raise HTTPException(status_code=404, detail=f"time não encontrado: {team_id}")
@@ -754,7 +759,7 @@ def build_desktop_router(
         def _events():
             try:
                 for event in orchestrator.stream(
-                    team_id, task.strip(), session_id=session_id or None, user_id=user_id,
+                    team_id, task, session_id=session_id or None, user_id=user_id,
                 ):
                     encoded = json.dumps(jsonable_encoder(event), ensure_ascii=False)
                     yield f"event: team\ndata: {encoded}\n\n"

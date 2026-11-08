@@ -131,3 +131,5 @@ graphify-out/
 !specs/sprint-58-agno-catalog-coverage/**
 !specs/sprint-46-telegram-approval/
 !specs/sprint-46-telegram-approval/**
+!specs/sprint-62-security-network-web/
+!specs/sprint-62-security-network-web/**

@@ -1534,7 +1534,14 @@ class ToolRouter(
             approvals = ApprovalManager(root=root, event_bus=self._event_bus)
             engine = PolicyEngine(workspace=self.workspace, rules_path=self._policy_rules_path,
                                   runtime_root=root)
-            decision = engine.evaluate(operation, args)
+            policy_payload = args
+            if operation == "network.http":
+                # Sprint 62 (T02): URL/método/host normalizados e detecção de
+                # segredo feita pelo runtime, não só pela flag do modelo.
+                from .tools.web import network_policy_payload
+
+                policy_payload = network_policy_payload(args)
+            decision = engine.evaluate(operation, policy_payload)
             if self._event_bus is not None:
                 self._event_bus.publish(
                     "policy.evaluated",
@@ -2270,6 +2277,11 @@ def _policy_operation_for_tool(tool_name: str) -> str | None:
         "glob_files": "filesystem.read",
         "regex_search": "filesystem.read",
         "search_text": "filesystem.read",
+        # Sprint 62 (T02): tools que fazem request para URL escolhida pelo
+        # modelo. web_search (provider configurado), mcp_call e delegate_task
+        # têm contrato próprio e ficam fora deste mapeamento.
+        "http_request": "network.http",
+        "web_fetch": "network.http",
         "social_post": "social.publish",
         "channel_send": "social.publish",
         "send_message": "social.publish",
