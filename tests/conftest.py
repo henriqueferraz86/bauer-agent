@@ -76,6 +76,12 @@ for _k in [k for k in os.environ if k.startswith("MCP_SERVER_")]:
 # Quem quiser exercitar o caminho Ollama passa a URL explícita ou seta a var
 # por monkeypatch (override por-teste continua funcionando).
 os.environ["BAUER_OLLAMA_URL"] = "http://127.0.0.1:1"
+# Mesma hermeticidade para o inventário Docker (sprint 64): todo `create_app`
+# monta o router desktop, que roda `docker ps -a` no boot e grava os containers
+# DO HOST no config do teste. No runner Windows o CLI do Docker existe e cada
+# chamada leva segundos — centenas por suíte, em paralelo, competindo com os
+# testes sensíveis a tempo. Testes do inventário passam `runner=` explícito.
+os.environ["BAUER_DOCKER_DISCOVERY"] = "0"
 
 
 @pytest.fixture(autouse=True)

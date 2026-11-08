@@ -245,7 +245,9 @@ def test_stream_approval_is_visible_and_resumes_after_rest_api_decision(tmp_path
     thread.start()
     approval = None
     control = TestClient(app)
-    for _ in range(40):
+    # Anti-travamento, não asserção de velocidade (conftest.py).
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
         approvals = control.get("/api/obs/approvals?status=pending").json()["approvals"]
         if approvals:
             approval = approvals[0]
@@ -255,7 +257,7 @@ def test_stream_approval_is_visible_and_resumes_after_rest_api_decision(tmp_path
 
     decision = control.post(f"/api/approvals/{approval['id']}/approve")
     assert decision.status_code == 200
-    thread.join(timeout=5)
+    thread.join(timeout=30.0)
     assert not thread.is_alive()
     assert "event: approval" in result["body"]
     assert '"operation": "runtime.execute"' in result["body"]

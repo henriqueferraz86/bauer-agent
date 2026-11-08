@@ -150,7 +150,14 @@ def start_openai_completion(app, session):
     return thread, result
 
 
-def pending(approvals, *, exclude=(), timeout=6):
+# Rede de segurança contra travamento, não asserção de velocidade (ver
+# DEADLINE_ANTI_TRAVAMENTO em conftest.py). SDK Agno real + subprocessos reais
+# no runner Windows levaram mais que os 6-10s de antes antes do primeiro
+# pedido de aprovação; no caminho feliz estas esperas retornam em ~1s.
+ANTI_HANG = 30.0
+
+
+def pending(approvals, *, exclude=(), timeout=ANTI_HANG):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         records = [a for a in approvals.list("pending") if a.id not in exclude]
@@ -197,7 +204,7 @@ def test_playwright_outside_allowlist_emits_card_and_obeys_decision(environment,
             second = pending(approvals, exclude={first.id})
             assert executed == [["playwright", "step-1"]]
             assert control.post(f"/api/approvals/{second.id}/approve").status_code == 200
-        thread.join(10)
+        thread.join(ANTI_HANG)
         assert not thread.is_alive(), result
         assert "error" not in result
         assert "event: approval" in result["response"].text
@@ -214,7 +221,7 @@ def test_playwright_outside_allowlist_emits_card_and_obeys_decision(environment,
     finally:
         for record in approvals.list("pending"):
             control.post(f"/api/approvals/{record.id}/deny")
-        thread.join(10)
+        thread.join(ANTI_HANG)
 
 
 @pytest.mark.parametrize("scope,expected_decisions", [("once", 2), ("run", 1), ("text", 1)])
@@ -236,7 +243,7 @@ def test_real_agno_chat_approval_runs_each_command_once(environment, scope, expe
         if scope == "once":
             second = pending(approvals, exclude={first.id})
             assert control.post(f"/api/approvals/{second.id}/approve").status_code == 200
-        thread.join(10)
+        thread.join(ANTI_HANG)
         assert not thread.is_alive(), result
         assert "error" not in result, result
         response = result["response"]
@@ -252,7 +259,7 @@ def test_real_agno_chat_approval_runs_each_command_once(environment, scope, expe
     finally:
         for record in approvals.list("pending"):
             control.post(f"/api/approvals/{record.id}/deny")
-        thread.join(10)
+        thread.join(ANTI_HANG)
 
     # The next task cannot inherit a run grant, even in the same browser.
     next_thread, next_result = start_stream(app, "next-session")
@@ -260,7 +267,7 @@ def test_real_agno_chat_approval_runs_each_command_once(environment, scope, expe
     assert next_approval.run_id != first.run_id
     assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
     assert control.post(f"/api/approvals/{next_approval.id}/deny").status_code == 200
-    next_thread.join(10)
+    next_thread.join(ANTI_HANG)
     assert not next_thread.is_alive(), next_result
     assert runs.get_run(next_approval.run_id).status == "failed"
     assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
@@ -287,7 +294,7 @@ def test_real_agno_post_chat_approval_runs_each_command_once(environment):
         # Idempotent resubmission of the same decision must not blow up.
         repeated = control.post(f"/api/approvals/{first.id}/approve", json={"scope": "run"})
         assert repeated.status_code == 200, repeated.text
-        thread.join(10)
+        thread.join(ANTI_HANG)
         assert not thread.is_alive(), result
         assert "error" not in result, result
         response = result["response"]
@@ -303,7 +310,7 @@ def test_real_agno_post_chat_approval_runs_each_command_once(environment):
     finally:
         for record in approvals.list("pending"):
             control.post(f"/api/approvals/{record.id}/deny")
-        thread.join(10)
+        thread.join(ANTI_HANG)
 
     # Denying the first approval on a fresh session fails the run and
     # produces no workspace effects, same as the /stream equivalent.
@@ -311,7 +318,7 @@ def test_real_agno_post_chat_approval_runs_each_command_once(environment):
     deny_approval = pending(approvals, exclude={first.id})
     assert deny_approval.run_id != first.run_id
     assert control.post(f"/api/approvals/{deny_approval.id}/deny").status_code == 200
-    deny_thread.join(10)
+    deny_thread.join(ANTI_HANG)
     assert not deny_thread.is_alive(), deny_result
     assert runs.get_run(deny_approval.run_id).status == "failed"
     assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
@@ -345,7 +352,7 @@ def test_real_agno_openai_completion_approval_runs_each_command_once(environment
         # Idempotent resubmission of the same decision must not blow up.
         repeated = control.post(f"/api/approvals/{first.id}/approve", json={"scope": "run"})
         assert repeated.status_code == 200, repeated.text
-        thread.join(10)
+        thread.join(ANTI_HANG)
         assert not thread.is_alive(), result
         assert "error" not in result, result
         response = result["response"]
@@ -360,7 +367,7 @@ def test_real_agno_openai_completion_approval_runs_each_command_once(environment
     finally:
         for record in approvals.list("pending"):
             control.post(f"/api/approvals/{record.id}/deny")
-        thread.join(10)
+        thread.join(ANTI_HANG)
 
     # Denying the first approval on a fresh session fails the run and
     # produces no workspace effects, same as /stream and /chat.
@@ -368,7 +375,7 @@ def test_real_agno_openai_completion_approval_runs_each_command_once(environment
     deny_approval = pending(approvals, exclude={first.id})
     assert deny_approval.run_id != first.run_id
     assert control.post(f"/api/approvals/{deny_approval.id}/deny").status_code == 200
-    deny_thread.join(10)
+    deny_thread.join(ANTI_HANG)
     assert not deny_thread.is_alive(), deny_result
     assert runs.get_run(deny_approval.run_id).status == "failed"
     assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
@@ -388,7 +395,7 @@ def test_cancel_while_waiting_never_executes_or_resurrects(environment):
     record = pending(approvals)
     runs.cancel_run(record.run_id)
     assert control.post(f"/api/approvals/{record.id}/approve").status_code == 409
-    thread.join(10)
+    thread.join(ANTI_HANG)
     assert not thread.is_alive(), result
     assert runs.get_run(record.run_id).status == "cancelled"
     assert not (workspace / "effects.txt").exists()
@@ -400,7 +407,7 @@ def test_expired_approval_ends_run_without_second_request(environment, monkeypat
     app, control, workspace, approvals, runs = environment
     thread, result = start_stream(app, "expire-session")
     record = pending(approvals)
-    thread.join(10)
+    thread.join(ANTI_HANG)
     assert not thread.is_alive(), result
     assert runs.get_run(record.run_id).status == "failed"
     assert approvals.get(record.id).status == "expired"
@@ -442,15 +449,19 @@ def test_waiting_for_human_does_not_exhaust_stream_execution_timeout(environment
     # Leave real SDK/subprocess startup a realistic execution budget; the wait
     # itself is deliberately longer than that budget.
     monkeypatch.setenv("BAUER_APPROVAL_WAIT_SECONDS", "30")
-    monkeypatch.setattr(server, "_STREAM_TURN_TIMEOUT_SECONDS", 8)
+    # The budget must cover real SDK/subprocess execution on the slowest
+    # runner (Windows took longer than 8s); the human wait below must still
+    # outlast it, which is the property under test.
+    budget = 15
+    monkeypatch.setattr(server, "_STREAM_TURN_TIMEOUT_SECONDS", budget)
     thread, result = start_stream(app, "patient-session")
     record = pending(approvals)
     try:
-        time.sleep(8.3)
+        time.sleep(budget + 0.3)
         assert runs.get_run(record.run_id).status == "waiting_approval"
         assert thread.is_alive()
         assert control.post(f"/api/approvals/{record.id}/approve", json={"scope": "run"}).status_code == 200
-        thread.join(10)
+        thread.join(ANTI_HANG)
         assert not thread.is_alive(), result
         completed = runs.get_run(record.run_id)
         assert completed.status == "completed", (completed.error, result)
@@ -458,7 +469,7 @@ def test_waiting_for_human_does_not_exhaust_stream_execution_timeout(environment
     finally:
         for approval in approvals.list("pending"):
             control.post(f"/api/approvals/{approval.id}/deny")
-        thread.join(10)
+        thread.join(ANTI_HANG)
 
 
 @pytest.mark.parametrize("environment", [False, True], indirect=True)

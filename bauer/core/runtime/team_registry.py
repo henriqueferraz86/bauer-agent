@@ -8,11 +8,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import yaml
 
 from ..events import EventBus
 from ..policy import PolicyEngine
-from .agent_registry import RuntimeAgentRegistry
+from .agent_registry import RuntimeAgentRegistry, load_spec_yaml
 from .run_manager import RunManager
 from .state_store import SqliteStateStore
 
@@ -70,9 +69,17 @@ class TeamRegistry:
 
     def list(self) -> list[TeamSpec]:
         teams: dict[str, TeamSpec] = {}
-        for path in self._spec_paths():
+        paths = self._spec_paths()
+        # Um snapshot dos agents por listagem — antes cada agent de cada time
+        # relia e re-parseava todos os specs (O(times × agents) por turno).
+        known_agents: set[str] | None = None
+        for path in paths:
             team = team_spec_from_mapping(self._read(path))
-            self._validate(team, path)
+            if known_agents is None:
+                known_agents = {
+                    key for spec in self.agent_registry.list() for key in (spec.id, spec.name)
+                }
+            self._validate(team, path, known_agents=known_agents)
             teams[team.id] = team
         return sorted(teams.values(), key=lambda item: item.id)
 
@@ -95,19 +102,23 @@ class TeamRegistry:
         return paths
 
     def _read(self, path: Path) -> dict[str, Any]:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = load_spec_yaml(path) or {}
         if not isinstance(raw, dict):
             raise TeamRegistryError(f"{path}: team spec must be a mapping")
         return raw
 
-    def _validate(self, team: TeamSpec, path: Path) -> None:
+    def _validate(self, team: TeamSpec, path: Path, *,
+                  known_agents: set[str] | None = None) -> None:
         if not team.id:
             raise TeamRegistryError(f"{path}: id is required")
         if not team.name:
             raise TeamRegistryError(f"{path}: name is required")
         if not team.agents:
             raise TeamRegistryError(f"{path}: agents must not be empty")
-        missing = [agent_id for agent_id in team.agents if self.agent_registry.get(agent_id) is None]
+        if known_agents is None:
+            missing = [agent_id for agent_id in team.agents if self.agent_registry.get(agent_id) is None]
+        else:
+            missing = [agent_id for agent_id in team.agents if agent_id not in known_agents]
         if missing:
             raise TeamRegistryError(f"{path}: unknown agents: {', '.join(missing)}")
         mode = str(team.coordination.get("mode") or "supervisor")
