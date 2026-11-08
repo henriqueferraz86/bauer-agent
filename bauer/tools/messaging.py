@@ -16,6 +16,18 @@ from .base import ToolError
 class MessagingToolsMixin:
     """Envio de mensagens a canais de chat (Telegram/Discord) e posts em redes sociais."""
 
+    def _outbound_media_path(self, raw: str, tool: str) -> str:
+        """Resolve mídia de saída no workspace antes de qualquer envio (T04).
+
+        Mesma fronteira do ``read_file``: ``_sandbox`` resolve symlinks e
+        rejeita absoluto externo/traversal. Bridge, outbox e Postiz recebem só
+        o caminho absoluto já resolvido — o outbox não depende do CWD do pump.
+        """
+        resolved = self._sandbox(raw)
+        if not resolved.is_file():
+            raise ToolError(f"{tool}: mídia não encontrada no workspace: '{raw}'.")
+        return str(resolved)
+
     def _channel_send(self, args: dict) -> str:
         """Envia mensagem a um canal do gateway via outbox durável.
 
@@ -91,6 +103,8 @@ class MessagingToolsMixin:
             raise ToolError("send_message requer 'chat_id' (id do chat destino).")
         if not text and not media_path:
             raise ToolError("send_message requer 'text' e/ou 'media_path'.")
+        if media_path:
+            media_path = self._outbound_media_path(media_path, "send_message")
 
         from .. import live_bridges
         bridge = live_bridges.get(channel)
@@ -209,6 +223,10 @@ class MessagingToolsMixin:
             )
         if post_type not in ("schedule", "draft", "story", "now"):
             raise ToolError("post_type deve ser 'schedule', 'draft', 'story' ou 'now'.")
+
+        if not isinstance(media_paths, list):
+            raise ToolError("social_post: 'media_paths' deve ser uma lista de arquivos do workspace.")
+        media_paths = [self._outbound_media_path(str(p), "social_post") for p in media_paths]
 
         client = self._postiz_client()
         channel_ids = [str(c) for c in channels]

@@ -6,10 +6,9 @@ self._execute_code, resolvido por heranca de ExecToolsMixin.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from .base import ToolError
+from .base import ToolError, load_internal_json, save_internal_json
 
 
 class CronjobToolsMixin:
@@ -21,19 +20,10 @@ class CronjobToolsMixin:
         return self.workspace / self._CRONJOB_FILE
 
     def _cronjob_load(self) -> dict:
-        p = self._cronjob_path()
-        if not p.exists():
-            return {}
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        return load_internal_json(self._cronjob_path(), self.workspace, "Os cronjobs")
 
     def _cronjob_save(self, data: dict) -> None:
-        self._cronjob_path().write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        save_internal_json(self._cronjob_path(), self.workspace, data, "Os cronjobs")
 
     def _cronjob_next_run(self, schedule: dict) -> str:
         """Calcula próxima execução como string legível."""

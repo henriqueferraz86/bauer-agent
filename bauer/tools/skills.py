@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 
-from .base import ToolError
+from .base import ToolError, load_internal_json, save_internal_json
 
 
 class SkillsToolsMixin:
@@ -12,17 +11,10 @@ class SkillsToolsMixin:
     _SKILLS_FILE = ".bauer_skills.json"
 
     def _load_skills(self) -> dict:
-        p = self.workspace / self._SKILLS_FILE
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                return {}
-        return {}
+        return load_internal_json(self.workspace / self._SKILLS_FILE, self.workspace, "As skills")
 
     def _save_skills(self, skills: dict) -> None:
-        p = self.workspace / self._SKILLS_FILE
-        p.write_text(json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_internal_json(self.workspace / self._SKILLS_FILE, self.workspace, skills, "As skills")
 
     def _skill_manage(self, args: dict) -> str:
         action = str(args.get("action", "")).strip().lower()

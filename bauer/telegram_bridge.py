@@ -1569,9 +1569,16 @@ class TelegramBridge(BaseBridge):
             logger.warning("Telegram recebeu resposta vazia do backend para sessão %s", msg.session_key)
             self.send_text(msg.chat_id, "⚠️ Não consegui gerar uma resposta para esta solicitação. Tente novamente ou consulte /status.")
             return
-        workspace = context.workspace if context is not None else Path(self.backend.config_path).resolve().parent
+        if context is not None:
+            workspace = context.workspace
+        else:
+            # T04: sem projeto vinculado, a mídia citada na resposta também
+            # fica confinada ao workspace do router do gateway.
+            legacy_ws = getattr(getattr(self.backend, "_router", None), "workspace", None)
+            workspace = (Path(legacy_ws) if isinstance(legacy_ws, (str, Path))
+                         else Path(self.backend.config_path).parent).resolve()
         media_files, clean = extract_outbound_media(
-            response, workspace=workspace, allowed_root=workspace if context is not None else None,
+            response, workspace=workspace, allowed_root=workspace,
         )
         delivered = streamer.finish(clean)
         if clean and not delivered:
