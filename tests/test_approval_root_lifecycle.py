@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
 import pytest
@@ -12,6 +13,7 @@ from bauer.core.policy import ApprovalManager
 from bauer.core.runtime.run_manager import RunManager
 from bauer.core.runtime.state_store import SqliteStateStore
 from bauer.tool_router import ToolError, ToolRouter
+import bauer.core.policy.approvals as approvals_module
 
 
 @pytest.fixture
@@ -235,6 +237,43 @@ def test_policy_deny_wins_over_explicit_id_and_implicit_run_grant(kit, tmp_path)
             tool_router._evaluate_runtime_policy("run_command", args)
 
 
+@pytest.mark.parametrize("tool,args", [
+    ("run_command", {"command": "rm -rf /"}),
+    ("execute_code", {"code": "rm -rf /"}),
+    ("process", {"action": "start", "command": "rm -rf /"}),
+])
+def test_hardline_rejects_before_persisting_approval(tmp_path, tool, args):
+    from bauer.shell_runner import ShellRunner
+
+    tool_router = ToolRouter(
+        workspace=tmp_path, shell_runner=ShellRunner(workspace=tmp_path),
+        policy_root=tmp_path / "runtime", policy_enabled=True,
+    )
+    tool_router._policy_mode = "enforce"
+    tool_router._wait_for_policy_approval = True
+
+    with pytest.raises(ToolError, match="HARDLINE"):
+        tool_router.execute({"action": tool, "args": args})
+
+    assert not ApprovalManager(root=tmp_path / "runtime").list()
+
+
+def test_execute_code_denylist_rejects_before_persisting_approval(tmp_path):
+    tool_router = ToolRouter(
+        workspace=tmp_path, policy_root=tmp_path / "runtime", policy_enabled=True,
+    )
+    tool_router._policy_mode = "enforce"
+    tool_router._wait_for_policy_approval = True
+
+    with pytest.raises(ToolError, match="execute_code denylist"):
+        tool_router.execute({
+            "action": "execute_code",
+            "args": {"code": "import os; os.system('echo harmless')"},
+        })
+
+    assert not ApprovalManager(root=tmp_path / "runtime").list()
+
+
 @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
 def test_terminal_run_rejects_pending_approval_and_tool_entry(kit, tmp_path, terminal):
     _, runs, approvals, kernel, run = kit
@@ -258,6 +297,183 @@ def test_stale_writer_cannot_resurrect_cancelled_or_denied_run(kit):
     # RunManager preserves the existing terminal outcome and returns it.
     assert runs.complete_run(run.id).status == "failed"
     assert runs.get_run(run.id).status == "failed"
+
+
+class _MutableClock(datetime):
+    current = datetime(2026, 10, 30, 12, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return cls.current.replace(tzinfo=None)
+        return cls.current.astimezone(tz)
+
+
+def _freeze_approval_clock(monkeypatch, at=None):
+    _MutableClock.current = at or datetime(2026, 10, 30, 12, tzinfo=UTC)
+    monkeypatch.setattr(approvals_module, "datetime", _MutableClock)
+
+
+def test_deadline_is_persisted_and_approval_after_expiry_fails_run_across_managers(
+    kit, monkeypatch,
+):
+    root, runs, approvals, _, run = kit
+    _freeze_approval_clock(monkeypatch)
+    record = request(kit, expires_in_seconds=30)
+    assert record.expires_at == "2026-10-30T12:00:30+00:00"
+    assert ApprovalManager(root=root).get(record.id).expires_at == record.expires_at
+
+    _MutableClock.current += timedelta(seconds=30)
+    other_manager = ApprovalManager(root=root)
+    resolved, changed = other_manager.resolve_for_run(
+        record.id, "approved", run_status="queued",
+    )
+    assert changed
+    assert resolved.status == "expired"
+    assert runs.get_run(run.id).status == "failed"
+
+
+def test_authorize_expires_previously_approved_but_unconsumed_request(kit, monkeypatch):
+    _, runs, approvals, kernel, run = kit
+    _freeze_approval_clock(monkeypatch)
+    record = request(kit, expires_in_seconds=30)
+    kernel.approve(record.id)
+    assert runs.get_run(run.id).status == "queued"
+
+    _MutableClock.current += timedelta(seconds=31)
+    assert not authorize(kit, record.id)
+    assert approvals.get(record.id).status == "expired"
+    assert runs.get_run(run.id).status == "failed"
+
+
+@pytest.mark.parametrize("mismatch", [
+    {"payload": {"command": "echo attacker"}},
+    {"run_id": "other-run"},
+    {"session_id": "other-session"},
+    {"operation": "filesystem.delete", "tool_name": "delete_file"},
+])
+def test_expired_approval_claim_mismatch_cannot_expire_owner_run(kit, monkeypatch, mismatch):
+    _, runs, approvals, kernel, run = kit
+    _freeze_approval_clock(monkeypatch)
+    payload = {"command": "echo first"}
+    record = request(kit, payload, expires_in_seconds=30)
+    kernel.approve(record.id)
+    assert runs.get_run(run.id).status == "queued"
+
+    _MutableClock.current += timedelta(seconds=31)
+    claim = dict(
+        operation=record.operation, tool_name=record.tool_name,
+        payload=payload, run_id=run.id, session_id=run.session_id, resume_run=True,
+    )
+    claim.update(mismatch)
+    assert not approvals.authorize(record.id, **claim)
+    assert approvals.get(record.id).status == "approved"
+    assert runs.get_run(run.id).status == "queued"
+
+    # The correctly bound waiter can still perform the deadline transition;
+    # the unauthorized attempt above must not consume or expire its approval.
+    assert not authorize(kit, record.id, payload)
+    assert approvals.get(record.id).status == "expired"
+    assert runs.get_run(run.id).status == "failed"
+
+
+def test_before_publish_hook_runs_after_persist_and_before_request_event(kit, monkeypatch):
+    _, _, approvals, _, _ = kit
+    events = []
+    original_publish = approvals.event_bus.publish
+    monkeypatch.setattr(
+        approvals.event_bus, "publish",
+        lambda event_type, **kwargs: (events.append(event_type), original_publish(event_type, **kwargs)),
+    )
+
+    def register_waiter(record):
+        assert approvals.get(record.id) == record
+        assert not events
+
+    record = request(kit, expires_in_seconds=60, before_publish=register_waiter)
+    assert events == ["approval.requested"]
+    assert approvals.get(record.id).status == "pending"
+
+
+def test_before_publish_failure_expires_without_actionable_request_event(kit):
+    _, runs, approvals, _, run = kit
+
+    def fail_registration(_record):
+        raise RuntimeError("waiter registration failed")
+
+    with pytest.raises(RuntimeError, match="waiter registration failed"):
+        request(kit, before_publish=fail_registration)
+
+    records = approvals.list()
+    assert len(records) == 1
+    assert records[0].status == "expired"
+    assert runs.get_run(run.id).status == "failed"
+    assert not any(event.event_type == "approval.requested"
+                   for event in approvals.event_bus.list_events())
+
+
+def test_requests_without_deadline_keep_existing_approval_semantics(kit, monkeypatch):
+    _freeze_approval_clock(monkeypatch)
+    record = request(kit)
+    assert record.expires_at is None
+    _MutableClock.current += timedelta(days=365)
+    assert kit[3].approve(record.id)["status"] == "queued"
+
+
+def test_legacy_telegram_approval_without_deadline_fails_closed_by_run_provenance(tmp_path):
+    root = tmp_path / "runtime"
+    bus = EventBus(root=root)
+    runs = RunManager(root=root, event_bus=bus)
+    approvals = ApprovalManager(root=root, event_bus=bus)
+    kernel = BauerKernel(runs=runs, bus=bus, approvals=approvals)
+    run = runs.create_run(
+        session_id="tg-project-legacy-session", agent_id="channel.telegram",
+        input={"endpoint": "canal:telegram", "operator": "telegram:42:42"},
+        status="waiting_approval",
+    )
+    record = approvals.request(
+        operation="shell.execute", tool_name="run_command", reason="legacy Telegram",
+        risk_level="high", payload={"command": "git status"},
+        run_id=run.id, session_id=run.session_id,
+    )
+    # Simulate a row written before ApprovalRecord.expires_at existed.
+    legacy = approvals.store.latest("approvals", record.id)
+    legacy.pop("expires_at", None)
+    approvals.store.upsert("approvals", legacy)
+
+    result = kernel.approve(record.id)
+
+    assert result["status"] == "failed"
+    assert approvals.get(record.id).status == "expired"
+    assert runs.get_run(run.id).status == "failed"
+
+
+def test_legacy_web_approval_without_deadline_is_preserved_despite_telegram_like_session(
+    tmp_path,
+):
+    root = tmp_path / "runtime"
+    bus = EventBus(root=root)
+    runs = RunManager(root=root, event_bus=bus)
+    approvals = ApprovalManager(root=root, event_bus=bus)
+    kernel = BauerKernel(runs=runs, bus=bus, approvals=approvals)
+    run = runs.create_run(
+        session_id="tg-project-looks-like-telegram", agent_id="serve.stream",
+        input={"endpoint": "/stream"}, status="waiting_approval",
+    )
+    record = approvals.request(
+        operation="shell.execute", tool_name="run_command", reason="legacy web",
+        risk_level="high", payload={"command": "git status"},
+        run_id=run.id, session_id=run.session_id,
+    )
+    legacy = approvals.store.latest("approvals", record.id)
+    legacy.pop("expires_at", None)
+    approvals.store.upsert("approvals", legacy)
+
+    result = kernel.approve(record.id)
+
+    assert result["status"] == "queued"
+    assert approvals.get(record.id).status == "approved"
+    assert runs.get_run(run.id).status == "queued"
 
 
 def test_cancel_expires_pending_without_resurrection(kit):

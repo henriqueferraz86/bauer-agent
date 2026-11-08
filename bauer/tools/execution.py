@@ -41,6 +41,14 @@ _CODE_DENYLIST: list[tuple] = [
 ]
 
 
+def code_denylist_reason(code: str) -> str | None:
+    """Return the fixed denial label for blocked Python code, if any."""
+    for pattern, label in _CODE_DENYLIST:
+        if pattern.search(code):
+            return str(label)
+    return None
+
+
 _BAUER_PYTHON_CACHE: dict[str, str] = {}  # workspace_str -> python_path
 _BAUER_CONFIG_CACHE: dict[str, str] = {}  # workspace_str -> config_yaml_path
 
@@ -377,12 +385,12 @@ class ExecToolsMixin:
             raise ToolError("execute_code requer 'code'.")
 
         # Scan de conteúdo — bloqueia padrões destrutivos mesmo no subprocesso
-        for pattern, label in _CODE_DENYLIST:
-            if pattern.search(code):
-                raise ToolError(
-                    f"execute_code: código bloqueado — contém '{label}'. "
-                    "Remova o padrão perigoso ou use a tool apropriada (run_command, delete_file, etc.)."
-                )
+        denial = code_denylist_reason(code)
+        if denial is not None:
+            raise ToolError(
+                f"execute_code: código bloqueado — contém '{denial}'. "
+                "Remova o padrão perigoso ou use a tool apropriada (run_command, delete_file, etc.)."
+            )
 
         timeout = self._coerce_int(args.get("timeout", 30), default=30, minimum=1)
         timeout = max(1, min(timeout, 120))

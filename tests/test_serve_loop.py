@@ -517,7 +517,9 @@ def test_loop_projects_playwright_card_and_resumes_only_after_decision(tmp_path,
         status = {}
         while time.monotonic() < deadline:
             status = tc.get(f"/loop/{run_id}").json()
-            if status.get("approvals"):
+            # The approval record can be visible a moment before the loop
+            # status projects waiting_approval; wait for both.
+            if status.get("approvals") and status.get("state") == "waiting_approval":
                 break
             time.sleep(0.025)
         assert status["state"] == "waiting_approval", status

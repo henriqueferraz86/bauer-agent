@@ -1632,6 +1632,19 @@ def build_desktop_router(
                 runs=RunManager(root=_runtime_root, event_bus=bus), bus=bus,
                 approvals=ApprovalManager(root=_runtime_root, event_bus=bus),
             ).approve(approval_id, scope=scope)
+            # The Kernel has already committed fail-closed expiry for an
+            # expired Telegram approval. Translate its terminal result to an
+            # HTTP conflict after the transaction, so the persisted expiry
+            # and failed run are not rolled back.
+            result_status = (
+                result.get("status") if isinstance(result, dict)
+                else getattr(result, "status", None)
+            )
+            if result_status == "failed":
+                raise HTTPException(
+                    status_code=409,
+                    detail="A aprovação expirou ou a execução foi encerrada.",
+                )
             return asdict(result) if hasattr(result, "__dataclass_fields__") else result
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Approval '{approval_id}' nao encontrado.")

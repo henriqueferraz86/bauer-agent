@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,6 +34,7 @@ class ApprovalRecord:
     payload_digest: str | None = None
     consumed_at: str | None = None
     governed: bool = False
+    expires_at: str | None = None
 
 
 def _payload_digest(payload: dict[str, Any]) -> str:
@@ -42,6 +45,15 @@ def _payload_digest(payload: dict[str, Any]) -> str:
         data, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")).hexdigest()
+
+
+def _deadline_passed(expires_at: str, now: datetime) -> bool:
+    deadline = datetime.fromisoformat(expires_at)
+    if deadline.tzinfo is None:
+        # Defensive compatibility for hand-written/early records. Persisted
+        # deadlines created here always include their UTC offset.
+        deadline = deadline.replace(tzinfo=UTC)
+    return now >= deadline
 
 
 class ApprovalManager:
@@ -61,7 +73,17 @@ class ApprovalManager:
         run_id: str | None = None,
         session_id: str | None = None,
         suspend_run: bool = False,
+        expires_in_seconds: float | None = None,
+        before_publish: Callable[[ApprovalRecord], None] | None = None,
     ) -> ApprovalRecord:
+        if expires_in_seconds is not None and (
+            isinstance(expires_in_seconds, bool)
+            or not isinstance(expires_in_seconds, (int, float))
+            or not math.isfinite(expires_in_seconds)
+            or expires_in_seconds <= 0
+        ):
+            raise ValueError("expires_in_seconds must be a finite positive number")
+        created_at = datetime.now(UTC)
         record = ApprovalRecord(
             id=f"appr-{uuid4()}",
             operation=operation,
@@ -72,6 +94,9 @@ class ApprovalManager:
             payload=payload or {},
             run_id=run_id,
             session_id=session_id,
+            created_at=created_at.isoformat(),
+            expires_at=(created_at + timedelta(seconds=expires_in_seconds)).isoformat()
+            if expires_in_seconds is not None else None,
             payload_digest=_payload_digest(payload or {}),
         )
         with self.store.transaction() as tx:
@@ -86,6 +111,18 @@ class ApprovalManager:
                 tx.upsert("runs", {**run, "status": "waiting_approval",
                                    "updated_at": datetime.now(UTC).isoformat()})
             tx.upsert("approvals", asdict(record))
+        if before_publish is not None:
+            try:
+                before_publish(record)
+            except Exception:
+                # A missing waiter registration must never leave an actionable
+                # approval behind. The request event is deliberately omitted.
+                self._resolve(
+                    record.id, "expired", scope="once",
+                    run_status="failed" if suspend_run else None,
+                    publish_event=False,
+                )
+                raise
         self.event_bus.publish(
             "approval.requested",
             run_id=run_id,
@@ -155,6 +192,7 @@ class ApprovalManager:
     def _resolve(
         self, approval_id: str, status: str, *, scope: str = "once",
         run_status: str | None = None,
+        publish_event: bool = True,
     ) -> tuple[ApprovalRecord, bool]:
         if not isinstance(scope, str) or scope not in {"once", "run", "always"}:
             raise ValueError(f"Invalid approval scope: {scope}")
@@ -169,13 +207,40 @@ class ApprovalManager:
                 if current.status == status and current.scope == scope:
                     return current, False
                 raise ValueError("Approval decision or scope already resolved")
+            now_dt = datetime.now(UTC)
+            now = now_dt.isoformat()
+            run = tx.latest("runs", current.run_id) if current.run_id else None
+            run_input = run.get("input") if isinstance(run, dict) else None
+            legacy_telegram = bool(
+                current.expires_at is None
+                and run is not None
+                and run.get("session_id") == current.session_id
+                and run.get("agent_id") == "channel.telegram"
+                and isinstance(run_input, dict)
+                and run_input.get("endpoint") == "canal:telegram"
+            )
+            if legacy_telegram:
+                # Historical Telegram requests predate persisted TTLs and have
+                # no resumable worker after restart. Provenance must come from
+                # the persisted run envelope, never a session-key prefix.
+                # Retire them atomically instead of allowing web/CLI to approve
+                # a call whose original worker no longer exists.
+                status = "expired"
+                scope = "once"
+                run_status = "failed"
+            elif current.expires_at is not None and _deadline_passed(current.expires_at, now_dt):
+                # Expiry wins over a concurrent web or Telegram decision while
+                # holding the same SQLite write transaction.
+                status = "expired"
+                scope = "once"
+                if run_status == "queued":
+                    run_status = "failed"
             if scope in {"run", "always"} and (
                 status != "approved" or current.operation != "shell.execute"
                 or current.tool_name != "run_command"
                 or not current.run_id or not current.session_id
             ):
                 raise ValueError("Run scope requires shell.execute/run_command and a run/session")
-            run = tx.latest("runs", current.run_id) if current.run_id else None
             closing_terminal = bool(
                 status == "expired" and run and run["status"] in TERMINAL_RUN_STATUSES
                 and run.get("session_id") == current.session_id
@@ -184,7 +249,6 @@ class ApprovalManager:
                 run = self._active_run(
                     tx, current, allow_standalone=run_status is None and scope == "once",
                 )
-            now = datetime.now(UTC).isoformat()
             if run is not None and run_status is not None and not closing_terminal:
                 if run_status == "queued":
                     if status != "approved" or run["status"] != "waiting_approval":
@@ -201,16 +265,17 @@ class ApprovalManager:
                 **asdict(current), "status": status, "scope": scope, "resolved_at": now,
             })
             tx.upsert("approvals", asdict(record))
-        self.event_bus.publish(
-            "approval.accepted" if status == "approved" else "approval.denied",
-            run_id=record.run_id,
-            session_id=record.session_id,
-            tool_name=record.tool_name,
-            status=status,
-            message=record.reason,
-            data={"approval_id": record.id, "operation": record.operation,
-                  "risk_level": record.risk_level, "scope": scope},
-        )
+        if publish_event:
+            self.event_bus.publish(
+                "approval.accepted" if status == "approved" else "approval.denied",
+                run_id=record.run_id,
+                session_id=record.session_id,
+                tool_name=record.tool_name,
+                status=status,
+                message=record.reason,
+                data={"approval_id": record.id, "operation": record.operation,
+                      "risk_level": record.risk_level, "scope": scope},
+            )
         return record, True
 
     def authorize(
@@ -236,6 +301,10 @@ class ApprovalManager:
                 if data is None:
                     continue
                 record = ApprovalRecord(**data)
+                # Authenticate the attempted claim before applying its deadline.
+                # Otherwise a caller who knows another approval ID can expire
+                # that approval (and fail its run) with mismatched arguments or
+                # run/session bindings.
                 if (record.status != "approved" or record.operation != operation
                         or record.tool_name != tool_name or record.run_id != run_id
                         or record.session_id != session_id):
@@ -247,6 +316,20 @@ class ApprovalManager:
                     record.scope == "run" and operation == "shell.execute"
                     and tool_name == "run_command" and run_id and session_id
                 ):
+                    continue
+                now_dt = datetime.now(UTC)
+                if record.expires_at is not None and _deadline_passed(record.expires_at, now_dt):
+                    tx.upsert("approvals", {
+                        **asdict(record), "status": "expired", "resolved_at": now_dt.isoformat(),
+                    })
+                    run = tx.latest("runs", record.run_id) if record.run_id else None
+                    if run is not None and run.get("session_id") == record.session_id \
+                            and run.get("status") in {"waiting_approval", "queued"}:
+                        tx.upsert("runs", {
+                            **run, "status": "failed", "updated_at": now_dt.isoformat(),
+                            "finished_at": now_dt.isoformat(),
+                            "error": f"approval expired: {record.reason}",
+                        })
                     continue
                 run = self._active_run(tx, record, allow_standalone=True)
                 if run is not None:

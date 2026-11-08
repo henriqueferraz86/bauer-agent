@@ -129,3 +129,5 @@ graphify-out/
 !specs/sprint-57-agno-write-connector/**
 !specs/sprint-58-agno-catalog-coverage/
 !specs/sprint-58-agno-catalog-coverage/**
+!specs/sprint-46-telegram-approval/
+!specs/sprint-46-telegram-approval/**

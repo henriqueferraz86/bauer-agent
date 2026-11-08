@@ -210,6 +210,23 @@ class AgentBackend:
         self._project_routers: Any = None
         self._project_router_builder: Any = None
         self._project_model_loaded: set[str] = set()
+        # Sprint 46 (plano 061, Etapa 4): todos os Kernels de projeto deste
+        # backend usam o mesmo runtime root. Um único EventBus por backend
+        # garante que o ToolRouter publique `approval.requested` no MESMO bus
+        # em que o Telegram instalou seu subscriber (Kernel.bus); com um bus
+        # novo por turno o evento nunca chegaria ao cartão de aprovação.
+        self._channel_event_bus: Any = None
+        self._channel_event_bus_lock = threading.Lock()
+
+    def _configure_channel_router(self, router: Any) -> Any:
+        from .channel_governance import configure_router
+
+        with self._channel_event_bus_lock:
+            self._channel_event_bus = configure_router(
+                router, sessions_dir=self.sessions_dir,
+                event_bus=self._channel_event_bus,
+            )
+            return self._channel_event_bus
 
     def _channel_project_router(self, workspace: Path) -> Any:
         if self._project_router_builder is not None:
@@ -300,6 +317,29 @@ class AgentBackend:
             msg.project_snapshot = self.project_context(msg)
             msg.project_snapshot_captured = True
         return msg.project_snapshot
+
+    def channel_approval_source(self, msg: ChannelMessage) -> tuple[ChannelProjectContext, Any]:
+        """Resolve the current private project binding and its governed Kernel.
+
+        Approval cards and callbacks must follow the operator's *current*
+        persistent binding, never a snapshot retained by an older update. A
+        missing, changed or unavailable project fails closed.
+        """
+        if not private_telegram(msg):
+            raise ChannelProjectError("Aprovações estão disponíveis somente em conversa privada.")
+        current = ChannelMessage(
+            channel=msg.channel, user_id=msg.user_id, chat_id=msg.chat_id,
+            text=msg.text, user_name=msg.user_name, raw=msg.raw,
+        )
+        context = self.capture_project_context(current)
+        if context is None:
+            raise ChannelProjectError("Nenhum projeto vinculado a esta conversa.")
+        with self.project_scope(current):
+            binding = self._project_store.binding(operator_key(current))
+            if binding != (context.project_id, str(context.workspace)):
+                raise ChannelProjectError("O projeto desta conversa mudou.")
+            kernel = self._resolver_kernel(workspace=context.workspace)
+        return context, kernel
 
     def validate_project_snapshot(self, context: ChannelProjectContext | None) -> None:
         """Revalidate a queued request without following a changed selection."""
@@ -766,6 +806,7 @@ class AgentBackend:
                     self._turn_started_at.pop(key, None)
                 lock.release()
                 batch.done.set()
+                batch.generation_control.notify_generation_waiters()
                 if batch.timed_out and send_fn is not None:
                     terminal = (batch.response if batch.error is None else
                                 self._friendly_provider_error(batch.error))
@@ -783,7 +824,7 @@ class AgentBackend:
             execution.done.set()
             lock.release()
             raise
-        if not batch.done.wait(timeout=_TURN_TIMEOUT_SECONDS):
+        if not batch.generation_control.wait_for_generation(batch.done, _TURN_TIMEOUT_SECONDS):
             batch.timed_out = True
             with self._pending_lock:
                 if batch.done.is_set():
@@ -809,7 +850,7 @@ class AgentBackend:
             owner=operator_key(msg), channel=msg.channel, chat_id=msg.chat_id,
             project_id=project.project_id if project is not None else None,
             session_key=key, workspace=Path(self._effective_router().workspace).resolve(),
-            batch=batch,
+            batch=batch, private_chat=private_telegram(msg),
         )
 
     def _live_session_execution(self, key: str) -> ChannelExecution | None:
@@ -896,8 +937,10 @@ class AgentBackend:
                 # Config missing preserves the injected/legacy backend contract.
                 return None
             from .channel_governance import build_channel_kernel
+            event_bus = self._configure_channel_router(self._effective_router())
             kernel = build_channel_kernel(cfg, workspace=workspace,
-                                          sessions_dir=self.sessions_dir)
+                                          sessions_dir=self.sessions_dir,
+                                          event_bus=event_bus)
             self._workspace_kernels[workspace] = kernel
             while len(self._workspace_kernels) > 8:
                 self._workspace_kernels.popitem(last=False)
@@ -911,14 +954,17 @@ class AgentBackend:
                       execution: ChannelExecution | None = None) -> str:
         """Run synchronously inside the session's custody-owning worker."""
         from .core.kernel import run_governed
-        from .channel_governance import TurnMetrics, configure_router
+        from .channel_governance import TurnMetrics
         from .provider_retry import ProviderRetryInterrupted
 
-        configure_router(self._effective_router(), sessions_dir=self.sessions_dir)
+        self._configure_channel_router(self._effective_router())
         kernel = self._resolver_kernel()
         canal = execution.channel if execution is not None else (
             getattr(self, "name", None) or type(self).__name__.lower()
         )
+        approval_subscriber = getattr(self, "_telegram_approval_subscriber", None)
+        if kernel is not None and canal == "telegram" and callable(approval_subscriber):
+            approval_subscriber(kernel.bus)
         falha: list[BaseException] = []
         # Sprint 40 (plano 062): resolvido UMA VEZ por turno, relido do
         # config.yaml a cada chamada (mesmo padrão de _resolve_cli_runtime_
@@ -951,6 +997,13 @@ class AgentBackend:
                     )
                 return data
 
+            policy_wait_token = None
+            if (control is not None and execution is not None
+                    and execution.channel == "telegram" and execution.private_chat
+                    and callable(approval_subscriber)):
+                from .tool_router import set_policy_approval_wait
+
+                policy_wait_token = set_policy_approval_wait(True)
             try:
                 with metrics.context(key, _payload.get("run_id")):
                     if control is None:
@@ -977,6 +1030,10 @@ class AgentBackend:
                 falha.append(exc)
                 return result(status="failed", error=str(exc))
             finally:
+                if policy_wait_token is not None:
+                    from .tool_router import reset_policy_approval_wait
+
+                    reset_policy_approval_wait(policy_wait_token)
                 if execution is not None:
                     execution.phase = "evaluating"
 
