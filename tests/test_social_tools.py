@@ -146,8 +146,10 @@ class TestSocialPost:
             })
         assert "rascunho" in out.lower() or "salvo como rascunho" in out
 
-    def test_upload_de_midia_antes_do_post(self, router, tmp_path):
-        img = tmp_path / "foto.png"
+    def test_upload_de_midia_antes_do_post(self, router, ws):
+        # T04: mídia local precisa estar dentro do workspace.
+        ws.mkdir(parents=True, exist_ok=True)
+        img = ws / "foto.png"
         img.write_bytes(b"fake")
         fake_client = MagicMock()
         fake_client.upload.return_value = {"path": "https://cdn.postiz.com/foto.png"}
@@ -160,7 +162,7 @@ class TestSocialPost:
                     "media_paths": [str(img)],
                 },
             })
-        fake_client.upload.assert_called_once_with(str(img))
+        fake_client.upload.assert_called_once_with(str(img.resolve()))
         _, kwargs = fake_client.create_post.call_args
         assert kwargs["media_urls"] == ["https://cdn.postiz.com/foto.png"]
 
@@ -191,11 +193,13 @@ class TestSocialPost:
         _, kwargs = fake_client.create_post.call_args
         assert kwargs["media_urls"] == ["https://imgen.x.ai/abc.jpeg"]
 
-    def test_upload_com_url_localhost_rejeitada(self, router, tmp_path):
+    def test_upload_com_url_localhost_rejeitada(self, router, ws):
         """Regressão: Postiz self-hosted sem storage público devolve URL
         localhost do upload — Instagram rejeita ('Media fetch failed').
         Precisa falhar cedo e claro, não deixar o Postiz tentar publicar."""
-        img = tmp_path / "foto.png"
+        # T04: mídia local precisa estar dentro do workspace.
+        ws.mkdir(parents=True, exist_ok=True)
+        img = ws / "foto.png"
         img.write_bytes(b"fake")
         fake_client = MagicMock()
         fake_client.upload.return_value = {"path": "http://localhost:4007/uploads/foto.png"}
@@ -211,8 +215,10 @@ class TestSocialPost:
                 })
         fake_client.create_post.assert_not_called()
 
-    def test_media_urls_e_media_paths_combinados(self, router, tmp_path):
-        img = tmp_path / "foto.png"
+    def test_media_urls_e_media_paths_combinados(self, router, ws):
+        # T04: mídia local precisa estar dentro do workspace.
+        ws.mkdir(parents=True, exist_ok=True)
+        img = ws / "foto.png"
         img.write_bytes(b"fake")
         fake_client = MagicMock()
         fake_client.upload.return_value = {"path": "https://cdn.postiz.com/foto.png"}

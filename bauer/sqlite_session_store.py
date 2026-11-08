@@ -26,6 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import confined_files
+from .confined_files import ConfinementError
+from .session_ids import is_valid_session_id, validate_session_id
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -285,13 +289,16 @@ class SqliteSessionStore:
                 for row in conn.execute("SELECT session_id FROM sessions")
             }
             for jsonl_path in sorted(self.dir.glob("*.jsonl")):
-                sid = jsonl_path.stem
-                if sid in existing:
+                sid = jsonl_path.stem.replace("%3A", ":") if os.name == "nt" else jsonl_path.stem
+                if sid in existing or not is_valid_session_id(sid):
+                    continue
+                try:
+                    # WEB-01: nunca importar via symlink/hardlink para fora.
+                    raw = confined_files.read_text(jsonl_path, self.dir, errors="replace")
+                except (ConfinementError, OSError):
                     continue
                 messages: list[dict] = []
-                for line in jsonl_path.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines():
+                for line in (raw or "").splitlines():
                     line = line.strip()
                     if line:
                         try:
@@ -313,6 +320,7 @@ class SqliteSessionStore:
         return str(uuid.uuid4())[:8]
 
     def save(self, session_id: str, messages: list[dict]) -> None:
+        validate_session_id(session_id)
         conn = self._connect()
         try:
             self._save_to_conn(conn, session_id, messages)
@@ -320,6 +328,7 @@ class SqliteSessionStore:
             conn.close()
 
     def load(self, session_id: str) -> list[dict]:
+        validate_session_id(session_id)
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -342,6 +351,7 @@ class SqliteSessionStore:
             conn.close()
 
     def delete(self, session_id: str) -> bool:
+        validate_session_id(session_id)
         conn = self._connect()
         try:
             with conn:
@@ -362,6 +372,7 @@ class SqliteSessionStore:
         return deleted
 
     def exists(self, session_id: str) -> bool:
+        validate_session_id(session_id)
         conn = self._connect()
         try:
             row = conn.execute(

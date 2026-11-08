@@ -29,6 +29,9 @@ rules:
   - id: os.ui_control.ask
     operation: os.ui_control
     action: ask
+  - id: tool.approval.ask
+    operation: tool.approval
+    action: ask
   - id: filesystem.read.allow
     operation: filesystem.read
     action: allow

@@ -40,6 +40,12 @@ def router(ws: Path) -> ToolRouter:
 
 class TestCronjobShellDenylist:
 
+    @pytest.fixture
+    def router(self, ws: Path) -> ToolRouter:
+        # Sprint 61 (T01): cronjob shell só existe com shell habilitado.
+        from bauer.shell_runner import ShellRunner
+        return ToolRouter(workspace=ws, shell_runner=ShellRunner(workspace=ws))
+
     def _create_job(self, router, name: str, command: str, mode: str = "shell"):
         router._cronjob({
             "action": "create",

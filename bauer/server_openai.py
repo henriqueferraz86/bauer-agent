@@ -16,7 +16,9 @@ from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .session_ids import InvalidSessionIdError, optional_session_id
 
 
 class OAIMessage(BaseModel):
@@ -36,6 +38,8 @@ class OAICompletionRequest(BaseModel):
     history_mode: Literal["transcript", "incremental"] = "transcript"
     max_tokens: int | None = None
     temperature: float | None = None
+
+    _check_session_id = field_validator("session_id")(optional_session_id)
 
 
 @dataclass
@@ -90,11 +94,11 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
             raise HTTPException(status_code=422, detail="O modelo solicitado deve ser o modelo ativo; use /models/switch para selecioná-lo.")
         deps.metrics.chat_requests_total += 1
 
-        sid = (
-            request.headers.get("X-Hermes-Session-Id")
-            or req.session_id
-            or deps.store.new_id()
-        )
+        try:
+            header_sid = optional_session_id(request.headers.get("X-Hermes-Session-Id"))
+        except InvalidSessionIdError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        sid = header_sid or req.session_id or deps.store.new_id()
         last_user_message = next(
             (msg.content for msg in reversed(req.messages) if msg.role == "user"),
             "",

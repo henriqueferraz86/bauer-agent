@@ -433,6 +433,10 @@ def agent(
 
     if resume:
         if session_id_opt:
+            from ..session_ids import is_valid_session_id
+            if not is_valid_session_id(session_id_opt):
+                console.print(f"[red]--session-id invalido: {session_id_opt!r}.[/red]")
+                raise typer.Exit(code=1)
             if store.exists(session_id_opt):
                 sid = session_id_opt
                 console.print(f"[yellow]Retomando sessao: {sid}[/yellow]")
