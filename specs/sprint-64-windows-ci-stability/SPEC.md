@@ -46,6 +46,21 @@ de `4b799cb` a `415c56a`):
    `tests/conftest.py` já documenta a regra (`DEADLINE_ANTI_TRAVAMENTO =
    30`): timeout em teste é contra travamento, não contra lentidão.
 
+4. **Corrida entre admissão e aprovador rápido (bug de produto).**
+   `BauerKernel._preflight` persistia o pedido de aprovação e só depois relia
+   o run para montar o resultado da admissão. Se a aprovação chegava nessa
+   janela (aba Approvals, Telegram ou o teste, que aprova assim que vê o
+   pedido), o run já estava `queued`. O `/stream` via `queued`, respondia
+   "⛔ aprovação humana necessária" e abandonava um run aprovado. No Windows
+   o I/O do `approval.requested` alarga a janela; o diagnóstico adicionado ao
+   teste mostrou o run terminando em `queued` com a aprovação já concedida.
+   Com aprovação instantânea forçada, o teste
+   `test_admission_reports_waiting_approval_even_if_approved_before_reread`
+   reproduz a falha de forma determinística. A correção está em
+   `_waiting_result`: uma admissão que pediu aprovação informa
+   `waiting_approval`, e o fluxo de aprovação lê o estado vivo e inicia o
+   worker. Negação ou cancelamento concorrente continua terminal.
+
 Nenhuma das falhas era semântica POSIX, e nenhuma ganhou skip. O alvo do
 monkeypatch (`bauer.agent.run_one_turn_with_fallback`) funciona no Windows:
 o teste de cancelamento, que usa o mesmo helper sem budget curto, passava.

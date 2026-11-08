@@ -193,7 +193,7 @@ def test_playwright_outside_allowlist_emits_card_and_obeys_decision(environment,
     monkeypatch.setattr(ShellRunner, "_execute", execute)
     thread, result = start_stream(app, "playwright-session")
     try:
-        first = pending(approvals, timeout=20)
+        first = pending(approvals)
         assert not executed
         assert "playwright" in first.reason
         endpoint = "deny" if scope == "deny" else "approve"

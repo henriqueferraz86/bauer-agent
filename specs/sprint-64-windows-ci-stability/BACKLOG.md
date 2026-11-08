@@ -35,6 +35,15 @@ Status: concluído
 - Polling de aprovação, de run terminal e de `/loop`, e os joins dos e2e:
   anti-travamento de 30s.
 
+### 4b. Corrida admissão × aprovador rápido
+
+Status: concluído
+
+`BauerKernel._waiting_result` vale nos dois pontos de admissão do
+`_preflight` (policy e contrato). O ponto de revalidação K08 (sprint 60) tem
+o mesmo padrão e não foi alterado aqui. A regressão está em
+`tests/test_sprint64_runtime_registry_cost.py` e falha sem a correção.
+
 ### 5. Validar no CI da branch
 
 Status: em andamento (ver notas de entrega)

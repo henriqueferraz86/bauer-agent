@@ -246,8 +246,8 @@ class BauerKernel:
         if decision is not None and decision.action == "ask":
             self._transition(run, "waiting_approval", trajectory)
             approval_id = self._request_approval(request, run, decision)
-            return decision, self._result(run.id, session_id, trajectory, decision=decision,
-                                          approval_id=approval_id)
+            return decision, self._waiting_result(run.id, session_id, trajectory,
+                                                  decision=decision, approval_id=approval_id)
 
         # S12 nível 3 — aprovação humana pedida pelo CONTRATO da tarefa.
         # `waiting_approval` já existia completo (transição, approve, deny,
@@ -259,8 +259,8 @@ class BauerKernel:
         if motivo:
             self._transition(run, "waiting_approval", trajectory)
             approval_id = self._pedir_aprovacao_do_contrato(request, run, motivo)
-            return decision, self._result(run.id, session_id, trajectory,
-                                          decision=decision, approval_id=approval_id)
+            return decision, self._waiting_result(run.id, session_id, trajectory,
+                                                  decision=decision, approval_id=approval_id)
 
         self._transition(run, "queued", trajectory)
         return decision, None
@@ -1203,6 +1203,24 @@ class BauerKernel:
     def _adapter_for(self, run: Any) -> Any:
         return self.adapter_factory(getattr(run, "runtime_adapter", None) or None,
                                     config=self.config)
+
+    def _waiting_result(self, run_id: str, session_id: str, trajectory: list[str], *,
+                        decision: Any, approval_id: str | None) -> KernelRun:
+        """Resultado de uma admissão que PEDIU aprovação.
+
+        Sprint 64: um aprovador rápido (aba Approvals, Telegram, teste) pode
+        aprovar entre a persistência do pedido e esta releitura; o run já está
+        ``queued`` e o caller, vendo ``queued``, tratava a admissão como
+        bloqueio e abandonava um run aprovado. O desfecho da ADMISSÃO é
+        "aguardando aprovação" — quem continua é o fluxo de aprovação, que lê o
+        estado vivo. Uma negação/cancelamento concorrente é terminal e fica
+        como está.
+        """
+        result = self._result(run_id, session_id, trajectory, decision=decision,
+                              approval_id=approval_id)
+        if approval_id and result.status in {"queued", "running"}:
+            result.status = "waiting_approval"
+        return result
 
     def _result(self, run_id: str, session_id: str, trajectory: list[str], *,
                 decision: Any = None, output: Any = None,

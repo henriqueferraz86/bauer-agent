@@ -121,3 +121,71 @@ def test_suite_boot_is_hermetic_for_docker():
     import os
 
     assert os.environ.get("BAUER_DOCKER_DISCOVERY") == "0"
+
+
+# ─── Admissão × aprovador rápido (sprint 64) ─────────────────────────────────
+# Falha vista no Windows: o teste (como a aba Approvals ou o Telegram) aprova
+# assim que o pedido aparece no store. Se a aprovação chega ANTES de o Kernel
+# reler o run para montar o resultado da admissão, o run já está `queued` e o
+# /stream respondia "⛔ aprovação humana necessária", abandonando um run
+# aprovado. No Linux a janela é de microssegundos; no Windows o publish do
+# `approval.requested` (I/O de SQLite) a alarga. Aqui ela é forçada.
+
+
+class _InstantApprover:
+    """ApprovalManager real cujo pedido é decidido logo após ser persistido."""
+
+    def __init__(self, inner, kernel_ref, decision="approve"):
+        self._inner, self._kernel_ref, self._decision = inner, kernel_ref, decision
+
+    def request(self, **kwargs):
+        record = self._inner.request(**kwargs)
+        kernel = self._kernel_ref[0]
+        if self._decision == "approve":
+            kernel.approve(record.id)
+        else:
+            kernel.deny(record.id)
+        return record
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _ask_kernel(tmp_path, decision="approve"):
+    from bauer.core.kernel import BauerKernel
+    from bauer.core.policy.approvals import ApprovalManager
+    from bauer.core.policy.engine import PolicyEngine
+    from bauer.core.runtime.run_manager import RunManager
+
+    runs = RunManager(root=tmp_path)
+    ref: list = []
+    approvals = _InstantApprover(ApprovalManager(root=tmp_path, event_bus=runs.event_bus), ref,
+                                 decision)
+    kernel = BauerKernel(
+        runs=runs, heartbeat_interval_s=0, approvals=approvals,
+        policy=PolicyEngine(workspace=tmp_path, runtime_root=tmp_path, rules=[
+            {"id": "ask", "operation": "runtime.execute", "action": "ask"}]),
+    )
+    ref.append(kernel)
+    return kernel, runs
+
+
+def test_admission_reports_waiting_approval_even_if_approved_before_reread(tmp_path):
+    from bauer.core.kernel import KernelRequest
+
+    kernel, runs = _ask_kernel(tmp_path)
+    run, early = kernel.admit(KernelRequest(task="x", session_id="s"))
+    assert early is not None and early.approval_id
+    # O chamador precisa entrar no fluxo de aprovação (que encontra o pedido
+    # já aprovado e inicia o worker), não tratar a admissão como bloqueio.
+    assert early.status == "waiting_approval"
+    assert runs.get_run(run.id).status == "queued"
+
+
+def test_admission_keeps_terminal_status_when_denied_before_reread(tmp_path):
+    from bauer.core.kernel import KernelRequest
+
+    kernel, runs = _ask_kernel(tmp_path, decision="deny")
+    run, early = kernel.admit(KernelRequest(task="x", session_id="s"))
+    assert early is not None
+    assert early.status == runs.get_run(run.id).status == "failed"
