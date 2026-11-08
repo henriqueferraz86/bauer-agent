@@ -36,6 +36,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -49,6 +50,8 @@ from .channel_base import (
     resolve_token,
 )
 from .channel_execution import register_delivery_channel
+from .channel_projects import private_telegram
+from .privacy import redact_text
 
 logger = logging.getLogger("bauer.telegram")
 
@@ -60,6 +63,14 @@ TYPING_INTERVAL_S = 4.5      # sendChatAction expira em ~5s
 STREAM_EDIT_INTERVAL_S = 2.5  # rate limit de editMessageText
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # limite da Bot API p/ getFile
 PROJECT_PICKER_TTL_S = 600.0
+APPROVAL_TTL_S = 600.0
+APPROVAL_CALLBACK_LIMIT = 500
+# Cartões de aprovação nunca exibem caminhos absolutos (POSIX, drive Windows
+# ou UNC), mesmo quando aparecem no texto da tarefa persistida.
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:/])(?:[A-Za-z]:[\\/]|/)(?:[^\\/\s<>\"'|]+[\\/])*[^\\/\s<>\"'|]*"
+)
+_UNC_PATH_RE = re.compile(r"(?<!\w)\\\\[^\\/\s<>\"'|]+(?:\\[^\\/\s<>\"'|]+)+")
 _MEDIA_CONTEXT: ContextVar[tuple[Path, str] | None] = ContextVar("telegram_media_context", default=None)
 MAX_TURN_WORKERS = 4         # turnos concorrentes (chats diferentes)
 
@@ -436,6 +447,23 @@ class TelegramBridge(BaseBridge):
         self._activity_watch_state: dict[str, dict] = {}
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
+        # Sprint 46 (plano 061, Etapa 4): aprovação exata de tool. Estado
+        # próprio — tokens opacos só em memória, geração invalidada em
+        # stop/reset e um lock de HTTP que serializa envio/edição de cartão
+        # com o fechamento do client em stop().
+        self._approval_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="tg-approval"
+        )
+        self._approval_executor_shutdown = False
+        self._approval_callbacks: dict[str, dict] = {}
+        self._approval_lock = threading.RLock()
+        self._approval_http_lock = threading.Lock()
+        self._approval_buses: dict[int, object] = {}
+        self._approval_shutdown = False
+        self._approval_generation = 0
+        # AgentBackend instala este subscriber ao resolver o Kernel governado,
+        # antes que run_governed possa publicar um evento síncrono de aprovação.
+        self.backend._telegram_approval_subscriber = self._ensure_approval_subscriber
         # Sprint 44 (plano 061, Etapa 5): guarda de execução única da
         # reconciliação de `/loop` pendente (ver `telegram_loop.reconcile_
         # pending`). `GatewayRuntime._run_bridge` pode chamar `start()` de
@@ -944,6 +972,9 @@ class TelegramBridge(BaseBridge):
             from . import telegram_activity
             telegram_activity.handle_activity_callback(self, cq)
             return
+        if data.startswith("apr:"):
+            self._approval_callback(cq)
+            return
         if not data.startswith("mp:") or not chat_id or msg_id is None:
             return
 
@@ -1028,6 +1059,295 @@ class TelegramBridge(BaseBridge):
             self._picker_state.pop(chat_id, None)
             _edit(re.sub(r"[*_`]", "", result))  # resposta usa *bold* de texto
             return
+
+    # ── Aprovação exata de tool (sprint 46, plano 061 Etapa 4) ─────────────
+
+    def _ensure_approval_subscriber(self, event_bus) -> None:
+        """Install approval handling before a Telegram worker can request one."""
+        bus_id = id(event_bus)
+        with self._approval_lock:
+            if self._approval_shutdown or self.stopped or bus_id in self._approval_buses:
+                return
+            self._approval_buses[bus_id] = event_bus
+
+            def on_event(event, *, expected_bus_id=bus_id):
+                if getattr(event, "event_type", "") != "approval.requested":
+                    return
+                with self._approval_lock:
+                    if self._approval_shutdown or self.stopped:
+                        return
+                    generation = self._approval_generation
+                try:
+                    self._approval_executor.submit(
+                        self._present_approval, expected_bus_id, event, generation,
+                    )
+                except RuntimeError:
+                    logger.debug("Telegram approval dispatcher is shutting down")
+
+            event_bus.subscribe("approval.requested", on_event)
+
+    @staticmethod
+    def _approval_expiry(record) -> datetime | None:
+        raw = getattr(record, "expires_at", None)
+        if not isinstance(raw, str):
+            return None
+        try:
+            value = datetime.fromisoformat(raw)
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _approval_safe_text(value: object, limit: int) -> str:
+        safe = redact_text(str(value or ""))
+        safe = _UNC_PATH_RE.sub("[caminho removido]", safe)
+        safe = _ABSOLUTE_PATH_RE.sub("[caminho removido]", safe)
+        safe = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", safe).split())
+        return safe[:limit]
+
+    @staticmethod
+    def _approval_keyboard(token: str) -> dict:
+        return {"inline_keyboard": [[
+            {"text": "✅ Aprovar uma vez", "callback_data": f"apr:{token}:yes"},
+            {"text": "⛔ Negar", "callback_data": f"apr:{token}:no"},
+        ]]}
+
+    def _present_approval(self, bus_id: int, event, generation: int) -> None:
+        """Render a safe card only for the exact live ToolRouter waiter."""
+        data = getattr(event, "data", None)
+        approval_id = data.get("approval_id") if isinstance(data, dict) else None
+        run_id = getattr(event, "run_id", None)
+        if not isinstance(approval_id, str) or not isinstance(run_id, str):
+            return
+        try:
+            execution = self.backend._executions.active_by_run(run_id)
+            if (execution is None or execution.channel != "telegram"
+                    or not execution.private_chat):
+                return
+            control = execution.control
+            if (control.approval_wait_id != approval_id
+                    or not control.approval_wait_digest
+                    or execution.done.is_set()):
+                return
+            msg = ChannelMessage(
+                channel="telegram", user_id=execution.owner.rsplit(":", 1)[-1],
+                chat_id=execution.chat_id, text="", raw={"message": {
+                    "chat": {"id": execution.chat_id, "type": "private"},
+                }},
+            )
+            if not private_telegram(msg) or not self._is_authorized(msg):
+                return
+            context, kernel = self.backend.channel_approval_source(msg)
+            if (kernel is None or id(kernel.bus) != bus_id
+                    or context.project_id != execution.project_id
+                    or context.session_key != execution.session_key
+                    or context.workspace != execution.workspace):
+                return
+            approvals = getattr(kernel, "approvals", None)
+            if approvals is None:
+                return
+            record = approvals.get(approval_id)
+            if (record is None or record.status != "pending"
+                    or record.run_id != run_id
+                    or record.session_id != execution.session_key
+                    or record.payload_digest != control.approval_wait_digest
+                    or record.tool_name == "kernel"):
+                return
+            expires_at = self._approval_expiry(record)
+            now = datetime.now(UTC)
+            if expires_at is None or now >= expires_at:
+                return
+            run = kernel.runs.get_run(run_id)
+            if (run is None or run.status != "waiting_approval"
+                    or run.agent_id != "channel.telegram"
+                    or run.input.get("endpoint") != "canal:telegram"
+                    or run.input.get("operator") != execution.owner
+                    or run.input.get("project_id") != execution.project_id
+                    or run.input.get("workspace") != str(execution.workspace)):
+                return
+            token = secrets.token_urlsafe(24)
+            remaining = max(0.0, (expires_at - now).total_seconds())
+            record_state = {
+                "token": token, "owner": execution.owner,
+                "user_id": msg.user_id, "chat_id": execution.chat_id,
+                "message_id": None, "project_id": execution.project_id,
+                "workspace": str(execution.workspace), "session_key": execution.session_key,
+                "run_id": run_id, "approval_id": approval_id,
+                "payload_digest": record.payload_digest, "expires_at": record.expires_at,
+                "callback_expires_at": time.monotonic() + remaining,
+                "generation": generation, "bus_id": bus_id,
+                "kernel": kernel, "execution": execution, "ready": False,
+                "deciding": False,
+            }
+            with self._approval_lock:
+                if self._approval_shutdown or self.stopped:
+                    return
+                self._approval_callbacks[token] = record_state
+                while len(self._approval_callbacks) > APPROVAL_CALLBACK_LIMIT:
+                    self._approval_callbacks.pop(next(iter(self._approval_callbacks)))
+            from .approval_presentation import approval_summary
+
+            risk = {"low": "baixo", "medium": "médio", "high": "alto", "critical": "crítico"}
+            project_name = self._approval_safe_text(context.name, 80) or "Projeto"
+            task = self._approval_safe_text(run.input.get("task"), 160) or "Tarefa em andamento"
+            summary = self._approval_safe_text(approval_summary(record), 100)
+            text = (
+                f"🔐 Aprovação necessária — {project_name}\n"
+                f"Tarefa: {task}\n"
+                f"Operação: {summary}\n"
+                "Motivo: a política exige confirmação humana.\n"
+                f"Risco: {risk.get(record.risk_level, 'não classificado')} · uma vez · expira em até 10 min."
+            )
+            if len(text) > MAX_MESSAGE_CHARS:
+                text = text[:MAX_MESSAGE_CHARS - 1] + "…"
+            try:
+                with self._approval_http_lock:
+                    with self._approval_lock:
+                        if (self._approval_shutdown or self.stopped
+                                or generation != self._approval_generation
+                                or self._approval_callbacks.get(token) is not record_state):
+                            self._approval_callbacks.pop(token, None)
+                            return
+                    sent = self._api(
+                        "sendMessage", chat_id=execution.chat_id, text=text,
+                        reply_markup=self._approval_keyboard(token),
+                    )
+            except Exception as exc:
+                logger.debug("Telegram approval card send failed (%s)", type(exc).__name__)
+                with self._approval_lock:
+                    self._approval_callbacks.pop(token, None)
+                return
+            with self._approval_http_lock:
+                with self._approval_lock:
+                    current = self._approval_callbacks.get(token)
+                    if (current is record_state and not self._approval_shutdown
+                            and generation == self._approval_generation):
+                        record_state["message_id"] = sent.get("message_id") if isinstance(sent, dict) else None
+                        record_state["ready"] = record_state["message_id"] is not None
+        except Exception as exc:  # noqa: BLE001 — approval presentation is best-effort
+            logger.debug("Telegram approval presentation unavailable (%s)", type(exc).__name__)
+
+    def _approval_callback(self, cq: dict) -> None:
+        query_id = str(cq.get("id", ""))
+        message = cq.get("message") or {}
+        chat = message.get("chat") or {}
+        from_user = cq.get("from") or {}
+        chat_id, user_id = str(chat.get("id", "")), str(from_user.get("id", ""))
+        message_id = message.get("message_id")
+        parts = str(cq.get("data", "")).split(":")
+        token, choice = (parts[1], parts[2]) if len(parts) == 3 else ("", "")
+        try:
+            self._api("answerCallbackQuery", _retries=1, callback_query_id=query_id)
+        except Exception as exc:
+            logger.debug("Telegram callback acknowledgement failed (%s)", type(exc).__name__)
+        if chat.get("type") != "private" or not self._user_id_authorized(user_id):
+            return
+        with self._approval_lock:
+            state = self._approval_callbacks.get(token)
+            if (state is None or not state.get("ready") or state.get("deciding")
+                    or state["owner"] != f"telegram:{chat_id}:{user_id}"
+                    or state["user_id"] != user_id or state["chat_id"] != chat_id
+                    or state["message_id"] != message_id
+                    or state["callback_expires_at"] <= time.monotonic()
+                    or state["generation"] != self._approval_generation
+                    or choice not in {"yes", "no"}):
+                return
+            state["deciding"] = True
+        try:
+            execution = self.backend._executions.active_by_run(state["run_id"])
+            if (execution is not state["execution"] or execution.done.is_set()
+                    or execution.control.approval_wait_id != state["approval_id"]
+                    or execution.control.approval_wait_digest != state["payload_digest"]):
+                return
+            msg = ChannelMessage(
+                channel="telegram", user_id=user_id, chat_id=chat_id, text="",
+                raw={"message": message},
+            )
+            context, kernel = self.backend.channel_approval_source(msg)
+            if (kernel is not state["kernel"] or id(kernel.bus) != state["bus_id"]
+                    or context.project_id != state["project_id"]
+                    or context.session_key != state["session_key"]
+                    or str(context.workspace) != state["workspace"]):
+                return
+            approvals = kernel.approvals
+            record = approvals.get(state["approval_id"])
+            run = kernel.runs.get_run(state["run_id"])
+            expires_at = self._approval_expiry(record) if record is not None else None
+            if (record is None or record.status != "pending"
+                    or record.payload_digest != state["payload_digest"]
+                    or record.run_id != state["run_id"]
+                    or record.session_id != state["session_key"]
+                    or run is None or run.status != "waiting_approval"
+                    or expires_at is None
+                    or kernel.control is not None and kernel.control.kill_switch_enabled()):
+                return
+            if datetime.now(UTC) >= expires_at:
+                with self._approval_lock:
+                    if (self._approval_shutdown or self.stopped
+                            or state["generation"] != self._approval_generation
+                            or self._approval_callbacks.get(token) is not state):
+                        return
+                    latest = approvals.get(state["approval_id"])
+                    if latest is not None and latest.status == "pending":
+                        approvals.resolve_for_run(latest.id, "expired", run_status=None)
+                    self._approval_callbacks.pop(token, None)
+                with self._approval_http_lock:
+                    with self._approval_lock:
+                        if self._approval_shutdown or state["generation"] != self._approval_generation:
+                            return
+                    self._api("editMessageText", chat_id=chat_id, message_id=message_id,
+                              text="⌛ A aprovação expirou; a operação não foi liberada.",
+                              reply_markup={"inline_keyboard": []})
+                return
+            with self._approval_lock:
+                if (self._approval_shutdown or self.stopped
+                        or state["generation"] != self._approval_generation
+                        or self._approval_callbacks.get(token) is not state):
+                    return
+                # Serialize the final identity check and Kernel decision with
+                # stop/reset so a stale callback cannot approve after restart.
+                latest = approvals.get(state["approval_id"])
+                if latest is None or latest.status != "pending":
+                    return
+                if choice == "yes":
+                    kernel.approve(latest.id, scope="once")
+                else:
+                    kernel.deny(latest.id)
+                resolved = approvals.get(latest.id)
+                if resolved is not None and resolved.status == "approved":
+                    response = "✅ Aprovação concedida para esta chamada."
+                elif resolved is not None and resolved.status == "denied":
+                    response = "⛔ Solicitação negada."
+                elif resolved is not None and resolved.status == "expired":
+                    response = "⌛ A aprovação expirou; a operação não foi liberada."
+                else:
+                    response = "A solicitação não foi alterada."
+                self._approval_callbacks.pop(token, None)
+            try:
+                with self._approval_http_lock:
+                    with self._approval_lock:
+                        if self._approval_shutdown or state["generation"] != self._approval_generation:
+                            return
+                    self._api("editMessageText", chat_id=chat_id, message_id=message_id,
+                              text=response, reply_markup={"inline_keyboard": []})
+            except Exception as exc:
+                logger.debug("Telegram approval card update failed (%s)", type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 — the worker/web decision remains authoritative
+            logger.debug("Telegram approval decision lost or failed (%s)", type(exc).__name__)
+        finally:
+            with self._approval_lock:
+                current = self._approval_callbacks.get(token)
+                if current is state:
+                    current["deciding"] = False
+
+    def _cancel_telegram_approval_waiters(self) -> None:
+        """Cooperatively release live approval waiters without terminalizing runs."""
+        try:
+            for execution in self.backend._executions.active_for_channel("telegram"):
+                if execution.control.approval_wait_active:
+                    execution.control.request_cancel("cancelled")
+        except Exception:
+            logger.debug("Could not cancel Telegram approval waiters", exc_info=True)
 
     # ── Loop principal ─────────────────────────────────────────────────────
 
@@ -1259,13 +1579,43 @@ class TelegramBridge(BaseBridge):
         for path in media_files:
             self.send_media(msg.chat_id, path)
 
+    def _invalidate_approvals(self) -> None:
+        """Invalidate every in-memory approval token (stop/restart)."""
+        with self._approval_http_lock:
+            with self._approval_lock:
+                self._approval_generation += 1
+                self._approval_shutdown = True
+                self._approval_callbacks.clear()
+
     def stop(self) -> None:
+        # Shutdown is published under the approval HTTP lock, so no card
+        # send/edit can start against the client closed below.
+        self._invalidate_approvals()
         super().stop()
+        # The live ToolRouter waiter owns the terminal transition. Stop only
+        # cancels those workers cooperatively; each waiter expires its own
+        # pending approval while unwinding.
+        self._cancel_telegram_approval_waiters()
         self._executor.shutdown(wait=False)
+        self._approval_executor.shutdown(wait=False)
+        self._approval_executor_shutdown = True
         try:
             self._http.close()
         except Exception:  # noqa: BLE001
             pass
+
+    def reset(self) -> None:
+        """Fail closed for approvals across the gateway's automatic restart."""
+        self._invalidate_approvals()
+        self._cancel_telegram_approval_waiters()
+        super().reset()
+        with self._approval_lock:
+            if self._approval_executor_shutdown:
+                self._approval_executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="tg-approval"
+                )
+                self._approval_executor_shutdown = False
+            self._approval_shutdown = False
 
 
 def build_bridge_from_config(cfg, backend: AgentBackend | None = None) -> TelegramBridge:

@@ -6,8 +6,10 @@
   e sprint 34 (etapa 2, cancelamento) entregues com gates completos e revisão
   cruzada em 2026-10-22; sprint 44 entrega a etapa 5 (`/loop` autônomo e
   recuperação, ver nota "Entregue em sprint 44" abaixo); sprint 45 entrega a
-  etapa 3 (`/atividade`, ver nota "Entregue em sprint 45" abaixo); etapa 4
-  (aprovação remota) em andamento em sessão paralela nesta mesma janela.
+  etapa 3 (`/atividade`, ver nota "Entregue em sprint 45" abaixo); sprint 46
+  entrega a etapa 4 (aprovação remota exata, port da sprint 42 — ver nota
+  "Entregue em sprint 46" abaixo). Pendente: etapa 6 (jornada real na
+  Beelink).
 - **Data/base**: 2026-10-21, checkout `e22e1aa`.
 - **Prioridade/esforço**: P1 / L, dividido em entregas pequenas.
 - **Objetivo**: conversar com o Bauer pelo celular sabendo em qual projeto ele
@@ -267,6 +269,40 @@ Desvios/escopo reduzido conscientemente (documentados no código):
 vezes; payload alterado, usuário errado, projeto trocado, replay, expiração e
 restart não concedem autorização. HARDLINE continua incondicional.
 
+**Entregue em sprint 46** (port da sprint 42; spec completa em
+`specs/sprint-46-telegram-approval/{SPEC,ARCHITECTURE,BACKLOG}.md`):
+
+- A sprint 42 (`f009cd5`) foi escrita sobre a sprint 41 (`bb9aee1`), nunca
+  mergeada. A sprint 41 foi descartada — `/atividade` da sprint 45 é a
+  implementação canônica — e só a aprovação foi portada, com estado próprio
+  no `TelegramBridge` (`_approval_http_lock`, `_approval_generation`,
+  `_approval_lock`, tokens só em memória) e
+  `AgentBackend.channel_approval_source` para revalidar projeto/Kernel.
+- Cartão privado com resumo redigido (`approval_summary`, sem args/payload/
+  caminhos absolutos) e botões `Aprovar uma vez`/`Negar`; callback carrega só
+  token opaco vinculado no servidor a usuário, chat, mensagem, projeto,
+  workspace, sessão, run, approval e digest.
+- O worker fica suspenso no `ToolRouter`; após a decisão revalida a política e
+  consome o digest exato (`scope="once"`), sem reenviar o objetivo. Deadline
+  absoluto de 600s persistido só para pedidos Telegram elegíveis; web e
+  Telegram decidem na mesma transação do `ApprovalManager`. A espera humana
+  pausa só o timeout de geração de 120s do gateway. HARDLINE/denylist barram
+  antes de criar o pedido. `stop()`/`reset()` invalidam tokens e cancelam
+  cooperativamente os waiters; pedidos Telegram legados sem prazo falham
+  fechados.
+- EventBus único por backend (`_configure_channel_router`): no `master`, o
+  router do turno e o Kernel usavam buses distintos e o evento não chegaria
+  ao cartão.
+- Funciona igual com `runtime.telegram_default_adapter: agno` (produção na
+  Beelink): as tools Bauer do Agno passam por `ToolRouter.execute_native_call`
+  na thread do worker. `tests/test_telegram_approval_e2e.py` prova
+  aprovar/negar ponta a ponta nos dois executores.
+- Limitação conhecida: sem projeto vinculado (`/projetos`) a espera é ligada
+  mas o cartão não é enviado (o callback é vinculado ao projeto); o pedido
+  pode ser decidido pela UI web ou expira em 600s, sem executar.
+- Fora de escopo (inalterado): aprovação de preflight do Kernel, escopos
+  sessão/run/permanente, grupos/tópicos, retomada após restart.
+
 ## Etapa 5 — Trabalho autônomo e recuperação
 
 1. Implementar `/loop` como entrada para o motor governado compartilhado com
@@ -398,6 +434,13 @@ Desvios/escopo reduzido conscientemente (documentados no código):
 vínculo após restart e apresenta controles testados. Sem token ou jornada
 real, registrar implantação/validação real pendente; não marcar o plano DONE.
 
+**Estado em 2026-11-05 (sprint 46)**: o item 1 já está coberto pelo `README.md`
+(seção "bauer gateway": `bauer gateway init` com token gravado no `.env`,
+allowlist automática, `gateway start/status/stop`, `service install` e
+`bauer telegram stop` para conflito 409); a seção Telegram agora também
+descreve o cartão de aprovação. Os itens 2–5 exigem a Beelink e o bot real e
+**não foram executados** — nenhuma validação de hardware é declarada aqui.
+
 ## Estratégia de testes e gates
 
 Testes novos devem seguir os vizinhos de Telegram/gateway, usar
@@ -441,7 +484,7 @@ Checklist de execução:
 - [x] Projeto e isolamento (etapa 1).
 - [x] Cancelamento e limites (etapa 2).
 - [x] Atividade dos agentes (etapa 3).
-- [ ] Aprovação remota exata (etapa 4).
+- [x] Aprovação remota exata (etapa 4, sprint 46 — port da sprint 42; gates completos).
 - [x] Autonomia e recuperação (etapa 5).
 - [ ] Operação e jornada real na Beelink (etapa 6).
 - [ ] Revisão, documentação e atualização do status em `plans/README.md`.
