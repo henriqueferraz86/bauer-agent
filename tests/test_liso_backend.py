@@ -176,7 +176,9 @@ class TestSendMessageTool:
                 sent.append((chat_id, f"media:{path}"))
                 return True
 
-        img = tmp_path / "x.png"
+        # T04: a mídia precisa estar no workspace do router.
+        Path(router.workspace).mkdir(parents=True, exist_ok=True)
+        img = Path(router.workspace) / "x.png"
         img.write_bytes(b"PNG")
         live_bridges.clear()
         live_bridges.register("telegram", _FakeBridge())

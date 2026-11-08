@@ -163,9 +163,10 @@ def create_app(
     from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel as PydanticModel, Field
+    from pydantic import BaseModel as PydanticModel, Field, field_validator
 
     from .agent import run_one_turn_with_fallback
+    from .session_ids import InvalidSessionIdError, optional_session_id
 
     _fallback_clients = fallback_clients or []
     from .context_manager import ContextManager
@@ -229,6 +230,18 @@ def create_app(
         version="0.1.0",
         description="Bauer Agent como API REST. Modelos locais via Ollama.",
     )
+
+    @app.exception_handler(InvalidSessionIdError)
+    async def _invalid_session_id(_request: Request, exc: InvalidSessionIdError):
+        # WEB-01: ID fora do formato (traversal, absoluto, separador, symlink
+        # no store) é erro do cliente — nunca 500 e nunca chega ao LLM/run.
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    def _session_id_param(session_id: str | None) -> str | None:
+        try:
+            return optional_session_id(session_id)
+        except InvalidSessionIdError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # --- middleware setup (ordem importa: outer-first em FastAPI) ----------------
 
@@ -1692,7 +1705,7 @@ def create_app(
         _: None = Depends(_verify_key),
     ):
         """Projeto/workspace efetivos, sem iniciar uma conversa ou execução."""
-        _, context = _resolve_chat_project(session_id, project_id)
+        _, context = _resolve_chat_project(_session_id_param(session_id), project_id)
         return context
 
     @app.get("/stream")
@@ -1704,6 +1717,7 @@ def create_app(
     ):
         """Resposta em tempo real via Server-Sent Events (SSE)."""
         _metrics.stream_requests_total += 1
+        session_id = _session_id_param(session_id)
         sid = session_id or store.new_id()
 
         # A typed confirmation is a decision only when it is unambiguous and
@@ -2391,6 +2405,8 @@ def create_app(
         max_minutes: Optional[int] = None
         max_tool_calls: Optional[int] = None
         max_cost_usd: Optional[float] = None
+
+        _check_session_id = field_validator("session_id")(optional_session_id)
 
     def _loop_limits(req: LoopStartRequest) -> dict:
         """Limites efetivos via helper único (serve_loop.resolve_loop_limits):

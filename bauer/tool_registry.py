@@ -51,6 +51,9 @@ class ToolDefinition:
         risk: Nível de risco (low/medium/high/critical).
         requires_approval: Se True, ToolRouter deve pedir confirmação humana.
         tags: Tags opcionais para categorização/filtragem.
+        side_effects: Default seguro ``True`` — em ``dry_run`` a chamada é
+            simulada. Só uma extensão que declara ``side_effects=False``
+            (leitura pura) roda em ``dry_run`` (sprint 61, T06).
     """
 
     name: str
@@ -61,6 +64,7 @@ class ToolDefinition:
     risk: str = "low"
     requires_approval: bool = False
     tags: list[str] = field(default_factory=list)
+    side_effects: bool = True
 
     def to_info(self) -> dict:
         """Retorna dict compatível com ToolRouter.tool_info()."""
@@ -71,6 +75,7 @@ class ToolDefinition:
             "risk": self.risk,
             "requires_approval": self.requires_approval,
             "tags": self.tags,
+            "side_effects": self.side_effects,
         }
 
 
@@ -121,6 +126,7 @@ class ToolRegistry:
         risk: str = "low",
         requires_approval: bool = False,
         tags: list[str] | None = None,
+        side_effects: bool = True,
     ) -> ToolDefinition:
         """Registra uma tool no registry.
 
@@ -151,6 +157,7 @@ class ToolRegistry:
             risk=risk,
             requires_approval=requires_approval,
             tags=list(tags) if tags else [],
+            side_effects=bool(side_effects),
         )
         self._tools[name] = td
         return td
@@ -169,6 +176,7 @@ class ToolRegistry:
         risk: str = "low",
         requires_approval: bool = False,
         tags: list[str] | None = None,
+        side_effects: bool = True,
     ) -> Callable:
         """Decorator para registrar uma função como tool.
 
@@ -194,6 +202,7 @@ class ToolRegistry:
                 risk=risk,
                 requires_approval=requires_approval,
                 tags=tags,
+                side_effects=side_effects,
             )
             return fn
 
