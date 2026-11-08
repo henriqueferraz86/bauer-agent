@@ -62,8 +62,9 @@ def trace_from_events(events: Iterable[Any], *, run_id: str | None = None) -> li
         name = getattr(event, "tool_name", None)
         if not name:
             continue
-        data = getattr(event, "data", None) or {}
-        args = data.get("args") if isinstance(data.get("args"), dict) else {}
+        data = getattr(event, "data", None)
+        raw_args = data.get("args") if isinstance(data, dict) else None
+        args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
         if "arg_keys" in args:  # capability tool: values never recorded
             args = {}
         if kind == "tool.call.completed":

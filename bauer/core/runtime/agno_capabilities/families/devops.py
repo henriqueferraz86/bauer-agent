@@ -444,7 +444,7 @@ def _aws_actions(settings: AwsSettings) -> dict[str, Callable[..., Any]]:
         groups = _call(lambda: eks.list_nodegroups(clusterName=name)).get("nodegroups") or []
         result = []
         for group in groups[: settings.max_items]:
-            info = _call(lambda g=group: eks.describe_nodegroup(clusterName=name, nodegroupName=g)).get("nodegroup") or {}
+            info = _call(lambda: eks.describe_nodegroup(clusterName=name, nodegroupName=group)).get("nodegroup") or {}
             result.append({
                 "name": group,
                 "status": info.get("status"),

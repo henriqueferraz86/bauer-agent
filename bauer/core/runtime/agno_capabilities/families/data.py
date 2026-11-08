@@ -164,7 +164,7 @@ def _match(row: dict[str, Any], condition: dict[str, Any]) -> bool:
     if op not in _OPS:
         raise ToolError(f"operador inválido; use {', '.join(sorted(_OPS))}")
     value = row.get(column)
-    expected = condition.get("value")
+    expected: Any = condition.get("value")
     if op == "isnull":
         return value is None
     if op == "notnull":
@@ -180,7 +180,8 @@ def _match(row: dict[str, Any], condition: dict[str, Any]) -> bool:
             return str(expected).lower() in str(value).lower()
         if op == "startswith":
             return str(value).lower().startswith(str(expected).lower())
-        left, right = (value, expected) if isinstance(value, str) else (float(value), float(expected))
+        pair: tuple[Any, Any] = (value, expected) if isinstance(value, str) else (float(value), float(expected))
+        left, right = pair
         return {"lt": left < right, "le": left <= right, "gt": left > right, "ge": left >= right}[op]
     except (TypeError, ValueError):
         return False
