@@ -424,6 +424,17 @@ def test_agno_stream_checks_cancellation_before_advancing_sdk(tmp_path, monkeypa
     assert remaining[-1]["status"] == "cancelled"
 
 
+def test_agno_adapter_disables_sdk_telemetry(tmp_path):
+    adapter = AgnoRuntimeAdapter(adapter_config={"db_file": str(tmp_path / "telemetry.db")})
+
+    agent = adapter._build_agent({"session_id": "s", "user_id": "u"})
+    team = adapter._build_team({"session_id": "s", "user_id": "u", "members": [{"name": "m"}]})
+
+    assert agent.telemetry is False
+    assert team.telemetry is False
+    assert all(member.telemetry is False for member in team.members)
+
+
 def test_agno_team_stream_stops_before_second_event(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

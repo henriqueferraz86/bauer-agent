@@ -698,6 +698,7 @@ class AgnoRuntimeAdapter:
             stream_member_events=True,
             add_history_to_context=True,
             num_history_runs=3,
+            telemetry=False,
         )
 
     @staticmethod
@@ -877,6 +878,8 @@ class AgnoRuntimeAdapter:
             instructions=instructions or None,
             add_history_to_context=True,
             num_history_runs=int(spec.get("num_history_runs") or 3),
+            # Agno reports every run to its API by default; Bauer keeps runs local.
+            telemetry=False,
         )
 
     def _build_team(self, spec: dict[str, Any]) -> Any:
@@ -910,6 +913,7 @@ class AgnoRuntimeAdapter:
             add_history_to_context=True,
             num_history_runs=int(spec.get("num_history_runs") or 3),
             stream_member_events=True,
+            telemetry=False,
         )
 
     def _legacy_team_for_request(self, request: dict[str, Any], *, session_id: str, user_id: str) -> Any:
