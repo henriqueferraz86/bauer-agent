@@ -14,13 +14,17 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .session_ids import optional_session_id
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., max_length=100_000)
     session_id: str | None = None
     project_id: str | None = None
+
+    _check_session_id = field_validator("session_id")(optional_session_id)
 
 
 class ToolCallLog(BaseModel):

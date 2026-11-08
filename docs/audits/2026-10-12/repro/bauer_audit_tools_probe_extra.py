@@ -1,5 +1,5 @@
 from pathlib import Path
-exec(Path('/tmp/bauer_audit_tools_probe.py').read_text())
+exec((Path(__file__).resolve().parent / 'bauer_audit_tools_probe.py').read_text())
 from bauer.tool_router import _TOOL_SECURITY, _policy_operation_for_tool
 from bauer.tools.base import SandboxError
 # Metadata drift inventory.
@@ -11,8 +11,10 @@ linkws=root/'links';linkws.mkdir(); outside=root/'outside-memory.json';outside.w
 lr=ToolRouter(workspace=linkws,audit_enabled=False)
 try:lr._sandbox('.bauer_memory.json')
 except SandboxError:print('SANDBOX_SYMLINK_BLOCKED',True)
-lr.execute({'action':'memory','args':{'action':'set','key':'audit','value':'wrote-outside'}})
-print('MEMORY_SYMLINK_OUTSIDE_WRITE',json.loads(outside.read_text())['audit']['value'])
+try:
+ lr.execute({'action':'memory','args':{'action':'set','key':'audit','value':'wrote-outside'}})
+except SandboxError as e:print('MEMORY_SYMLINK_REJECTED',type(e).__name__)
+print('MEMORY_SYMLINK_OUTSIDE_WRITE',json.loads(outside.read_text()).get('audit',{}).get('value'))
 # Dynamic tool approval is never consulted, even with llm_client.
 ext.register('approval_audit',lambda a:'ran',description='critical',args={},permission='system',risk='critical',requires_approval=True)
 lr._llm_client=object()
@@ -43,5 +45,6 @@ class Bridge:
   self.path=path;return True
 bridge=Bridge(); media=root/'outside-private.txt';media.write_text('audit-only-private')
 with patch('bauer.live_bridges.get',lambda channel:bridge):
- print('SEND_MEDIA_OUTSIDE',r.execute({'action':'send_message','args':{'channel':'telegram','chat_id':'audit','media_path':str(media)}}))
- print('SEND_MEDIA_RECEIVED_ABS_PATH',bridge.path)
+ try:print('SEND_MEDIA_OUTSIDE',r.execute({'action':'send_message','args':{'channel':'telegram','chat_id':'audit','media_path':str(media)}}))
+ except SandboxError as e:print('SEND_MEDIA_REJECTED',type(e).__name__)
+ print('SEND_MEDIA_RECEIVED_ABS_PATH',getattr(bridge,'path',None))

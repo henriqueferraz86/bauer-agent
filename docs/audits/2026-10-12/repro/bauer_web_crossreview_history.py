@@ -18,8 +18,8 @@ with patch('bauer.agent.run_one_turn_with_fallback',side_effect=fake_turn),patch
  tc=TestClient(app);headers={'X-API-Key':'audit-key'}
  (root/'victim.jsonl').write_text(json.dumps({'role':'user','content':'outside-original'})+'\n')
  resp=tc.post('/chat',headers=headers,json={'message':'overwrite','session_id':'../victim'})
- print('TRAVERSAL_KERNEL_ENABLED',resp.status_code,resp.json()['response'])
- print('TRAVERSAL_STORE',SessionStore(root/'sessions').load('../victim'))
+ print('TRAVERSAL_KERNEL_ENABLED',resp.status_code,resp.json().get('response',resp.json()))
+ print('TRAVERSAL_VICTIM_FILE',(root/'victim.jsonl').read_text().strip())
  for msgs in [[{'role':'user','content':'first'}],[{'role':'user','content':'first'},{'role':'assistant','content':'answer-first'},{'role':'user','content':'second'}]]:
   resp=tc.post('/v1/chat/completions',headers=headers,json={'session_id':'review','messages':msgs})
   print('V1_RESULT',resp.status_code,resp.json()['choices'][0]['message'])

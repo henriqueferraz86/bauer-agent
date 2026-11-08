@@ -7,6 +7,22 @@ para preservar `from bauer.tool_router import ToolError, SandboxError, DryRunRes
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
+# T01 (sprint 61): chamada governada interna (ex.: cronjob run → run_command/
+# execute_code). Passa por TODOS os gates do ToolRouter.execute, mas não conta
+# de novo no max_tool_calls — a tool externa que a originou já contou.
+INNER_GOVERNED_CALL: ContextVar[bool] = ContextVar("inner_governed_call", default=False)
+
+
+def execute_governed(router, name: str, args: dict) -> str:
+    """Executa ``name`` pelo dispatcher completo como chamada interna."""
+    token = INNER_GOVERNED_CALL.set(True)
+    try:
+        return router.execute({"action": name, "args": args})
+    finally:
+        INNER_GOVERNED_CALL.reset(token)
+
 
 class ToolError(Exception):
     """Erro de execução de tool com mensagem legível."""
@@ -14,6 +30,43 @@ class ToolError(Exception):
 
 class SandboxError(ToolError):
     """Tentativa de acesso fora do workspace."""
+
+
+def load_internal_json(path, root, label: str) -> dict:
+    """Lê um store JSON interno do workspace sem seguir symlink (T05).
+
+    Conteúdo ausente ou corrompido continua virando ``{}`` (comportamento
+    histórico); symlink, hardlink ou caminho fora da raiz vira ``SandboxError``.
+    """
+    import json
+
+    from ..confined_files import ConfinementError, read_text
+
+    try:
+        raw = read_text(path, root)
+    except ConfinementError as exc:
+        raise SandboxError(f"{label} deve permanecer dentro do workspace: {exc}") from exc
+    except (OSError, UnicodeDecodeError):
+        return {}
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_internal_json(path, root, data: dict, label: str) -> None:
+    """Grava atomicamente um store JSON interno sem escrever via symlink (T05)."""
+    import json
+
+    from ..confined_files import ConfinementError, write_text_atomic
+
+    try:
+        write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2), root)
+    except ConfinementError as exc:
+        raise SandboxError(f"{label} deve permanecer dentro do workspace: {exc}") from exc
 
 
 class DryRunResult:

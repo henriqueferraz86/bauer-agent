@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from .base import ToolError
+from .base import ToolError, load_internal_json, save_internal_json
 
 
 class MemoryToolsMixin:
@@ -15,25 +14,13 @@ class MemoryToolsMixin:
     _MAX_KEYS = 500
 
     def _memory_path(self) -> Path:
-        path = self.workspace / self._MEMORY_FILE
-        if not path.resolve().is_relative_to(self.workspace.resolve()):
-            raise ToolError("A memória deve permanecer dentro do workspace.")
-        return path
+        return self.workspace / self._MEMORY_FILE
 
     def _memory_load(self) -> dict:
-        p = self._memory_path()
-        if not p.exists():
-            return {}
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        return load_internal_json(self._memory_path(), self.workspace, "A memória")
 
     def _memory_save(self, data: dict) -> None:
-        self._memory_path().write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        save_internal_json(self._memory_path(), self.workspace, data, "A memória")
 
     def _memory(self, args: dict) -> str:
         """Key-value persistente em .bauer_memory.json dentro do workspace."""

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
@@ -17,8 +16,13 @@ from functools import wraps
 from pathlib import Path
 from weakref import WeakValueDictionary
 
+from . import confined_files
+from .confined_files import ConfinementError
+from .session_ids import InvalidSessionIdError, is_valid_session_id, validate_session_id
 from .unicode_utils import safe_json_dumps as _safe_json_dumps
 from .privacy import public_messages, redact_data
+
+__all__ = ["SessionStore", "InvalidSessionIdError", "validate_session_id"]
 
 
 _TURN_LOCKS: WeakValueDictionary = WeakValueDictionary()
@@ -33,6 +37,16 @@ class SessionStore:
     def new_id(self) -> str:
         return str(uuid.uuid4())[:8]
 
+    def _path(self, session_id: str) -> Path:
+        """Único mapeamento ID → arquivo; valida o ID antes de tocar no disco.
+
+        No Windows ``:`` (``tg:123``) viraria drive relativo/stream NTFS, por
+        isso é codificado como ``%3A`` — ``%`` nunca aparece num ID válido.
+        """
+        validate_session_id(session_id)
+        name = session_id.replace(":", "%3A") if os.name == "nt" else session_id
+        return self.dir / f"{name}.jsonl"
+
     @contextmanager
     def turn(self, session_id: str):
         """Serialize a complete load/execute/save cycle for one session.
@@ -41,6 +55,7 @@ class SessionStore:
         Windows this coordinates threads/instances in the current process;
         sharing a sessions directory between Windows processes is unsupported.
         """
+        validate_session_id(session_id)
         key = (str(self.dir.resolve()), session_id)
         with _TURN_LOCKS_GUARD:
             lock = _TURN_LOCKS.get(key)
@@ -74,27 +89,24 @@ class SessionStore:
         return decorate
 
     def save(self, session_id: str, messages: list[dict]) -> None:
-        p = self.dir / f"{session_id}.jsonl"
-        temporary = None
+        # Persisted history remains the sanitized continuity copy.
+        content = "".join(
+            _safe_json_dumps(redact_data(msg), ensure_ascii=False) + "\n" for msg in messages
+        )
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=p.parent, suffix=".tmp", delete=False,
-            ) as f:
-                temporary = Path(f.name)
-                for msg in messages:
-                    # Persisted history remains the sanitized continuity copy.
-                    f.write(_safe_json_dumps(redact_data(msg), ensure_ascii=False) + "\n")
-            os.replace(temporary, p)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            confined_files.write_text_atomic(self._path(session_id), content, self.dir)
+        except ConfinementError as exc:
+            raise InvalidSessionIdError(str(exc)) from exc
 
     def load(self, session_id: str) -> list[dict]:
-        p = self.dir / f"{session_id}.jsonl"
-        if not p.exists():
+        try:
+            raw = confined_files.read_text(self._path(session_id), self.dir)
+        except ConfinementError as exc:
+            raise InvalidSessionIdError(str(exc)) from exc
+        if raw is None:
             return []
         messages = []
-        for line in p.read_text(encoding="utf-8").splitlines():
+        for line in raw.splitlines():
             line = line.strip()
             if line:
                 try:
@@ -108,14 +120,15 @@ class SessionStore:
         return public_messages(self.load(session_id))
 
     def list_sessions(self) -> list[str]:
-        return sorted(p.stem for p in self.dir.glob("*.jsonl"))
+        ids = []
+        for p in self.dir.glob("*.jsonl"):
+            sid = p.stem.replace("%3A", ":") if os.name == "nt" else p.stem
+            if is_valid_session_id(sid) and not p.is_symlink():
+                ids.append(sid)
+        return sorted(ids)
 
     def delete(self, session_id: str) -> bool:
-        p = self.dir / f"{session_id}.jsonl"
-        if p.exists():
-            p.unlink()
-            return True
-        return False
+        return confined_files.unlink(self._path(session_id), self.dir)
 
     def exists(self, session_id: str) -> bool:
-        return (self.dir / f"{session_id}.jsonl").exists()
+        return confined_files.exists(self._path(session_id), self.dir)

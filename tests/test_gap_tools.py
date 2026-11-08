@@ -31,6 +31,13 @@ def router(ws: Path) -> ToolRouter:
 
 
 @pytest.fixture
+def shell_router(ws: Path) -> ToolRouter:
+    # Sprint 61 (T01): cronjob shell só existe com shell habilitado.
+    from bauer.shell_runner import ShellRunner
+    return ToolRouter(workspace=ws, shell_runner=ShellRunner(workspace=ws))
+
+
+@pytest.fixture
 def router_with_client(ws: Path) -> ToolRouter:
     mock_client = MagicMock()
     mock_client.model = "gpt-4o"  # G18.4: modelo multimodal p/ passar no gate de visão
@@ -101,7 +108,8 @@ class TestCronjob:
         assert data["cron_job"]["schedule"]["type"] == "cron"
         assert "*/10" in data["cron_job"]["schedule"]["expression"]
 
-    def test_create_shell_mode(self, router):
+    def test_create_shell_mode(self, shell_router):
+        router = shell_router
         router._cronjob({
             "action": "create",
             "name": "shell_job",
@@ -202,7 +210,8 @@ class TestCronjob:
         assert data["run_me"]["run_count"] == 1
         assert data["run_me"]["last_run"] is not None
 
-    def test_run_shell_job(self, router):
+    def test_run_shell_job(self, shell_router):
+        router = shell_router
         router._cronjob({
             "action": "create", "name": "shell_run",
             "command": "python -c \"print('shell ok')\"", "schedule": "every 1h",
