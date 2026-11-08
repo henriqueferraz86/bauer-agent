@@ -1,6 +1,6 @@
 # Plano 057 — Expandir com segurança as capacidades Agno no Bauer
 
-**Status:** TODO
+**Status:** DONE
 
 **Prioridade:** P1
 
@@ -10,6 +10,121 @@
 **Referências:** levantamento arquitetural e avaliação do catálogo no
 [PR #151](https://github.com/henriqueferraz86/bauer-agent/pull/151), e
 [documentação oficial do Agno](https://docs.agno.com/llms.txt).
+
+## Execução (numeração de sprints)
+
+Os números 18–26 deste plano já estavam ocupados por outras specs quando a
+execução começou. O trilho usa **50–58**, na mesma ordem:
+
+| Plano | Spec executada | Branch | Estado |
+|---|---|---|---|
+| 18 — catálogo, capabilities, ponte ToolRouter | `specs/sprint-50-agno-capability-bridge/` | `codex/sprint-50-agno-capability-bridge` | DONE |
+| 19 — pesquisa/dev read-only | `specs/sprint-51-agno-research-readonly/` | `codex/sprint-51-agno-research-readonly` | DONE |
+| 20 — Bauer Data + SQL read-only | `specs/sprint-52-agno-data-sql-readonly/` | `codex/sprint-52-agno-data-sql-readonly` | DONE |
+| 21 — browser/testes de UI | `specs/sprint-53-agno-browser-ui/` | `codex/sprint-53-agno-browser-ui` | DONE |
+| 22 — DevOps Docker e AWS/EKS read-only | `specs/sprint-54-agno-devops-readonly/` | `codex/sprint-54-agno-devops-readonly` | DONE |
+| 23 — workflows Agno sob o Kernel | `specs/sprint-55-agno-governed-workflows/` | `codex/sprint-55-agno-governed-workflows` | DONE |
+| 24 — evals e memória de decisões | `specs/sprint-56-agno-evals-decisions/` | `codex/sprint-56-agno-evals-decisions` | DONE |
+| 25 — primeiro conector com escrita | `specs/sprint-57-agno-write-connector/` | `codex/sprint-57-agno-write-connector` | DONE |
+| 26 — cobertura/paridade do catálogo | `specs/sprint-58-agno-catalog-coverage/` | `codex/sprint-58-agno-catalog-coverage` | DONE |
+
+A fundação parcial já existente (`specs/sprint-18-agno-capability-catalog/`:
+endpoint, painel, rejeição de nome desconhecido) foi reaproveitada, não
+refeita.
+
+### Entregue na sprint 50 (plano "18")
+
+- [x] Catálogo de **todos** os toolkits do Agno 3.0.10 por AST, sem import
+  (`bauer/core/runtime/agno_capabilities/discovery.py`).
+- [x] Manifesto revisado por ação/risco/operação; não classificado =
+  `unreviewed` visível e inerte; duplicatas de tools Bauer `incompatible`.
+- [x] Declaração por agente `agno.<id>[:acoes]`, fail-closed antes do provider.
+- [x] Ponte: cada ação vira tool da instância do ToolRouter do agente
+  (policy, aprovação, budget, timeout, eventos sem argumentos/resultados).
+- [x] Config do operador em `$BAUER_HOME/agno_capabilities.yaml` (estrito,
+  só leitura, nunca criado no update); credenciais por nome.
+- [x] `bauer doctor` e Desktop mostram estado e o que falta.
+
+### Entregue na sprint 51 (plano "19")
+
+- [x] Busca web revisada como leitura (websearch/duckduckgo/hackernews/pubmed/
+  wikipedia/arxiv); extratores de URL arbitrária `incompatible` →
+  `bauer.web_fetch` (url_safety).
+- [x] Argumentos com segredo bloqueados em operações de saída.
+- [x] `bauer.github` nativo (httpx) e `agno.github` (SDK, PyGithub opcional)
+  só leitura, allowlist de repositórios, credencial por nome.
+- [x] `bauer.mcp`: servidores/tools enumerados pelo admin, ambiente mínimo,
+  start-on-call, saída não confiável; `agno.mcp` `incompatible`.
+
+### Entregue na sprint 52 (plano "20")
+
+- [x] `bauer.data` (stdlib): CSV/TSV/JSON/JSONL do workspace com orçamentos;
+  relatórios/gráficos SVG só em `.bauer/artifacts/data/`.
+- [x] `bauer.sql`: conexões nomeadas, guarda de instrução + read-only no
+  driver (SQLite `mode=ro`/`query_only`; PG/MySQL `READ ONLY` + usuário
+  read-only atestado), timeout com cancelamento, fingerprint.
+- [x] Toolkits de dados/SQL do SDK `incompatible` com substituto.
+
+### Entregue na sprint 53 (plano "21")
+
+- [x] Backend único: Playwright do Bauer; Browserbase/AgentQL `incompatible`.
+- [x] `bauer.browser`: perfis com allowlist de domínios aplicada na página
+  (navegação, redirect, SSRF em subrecursos), downloads cancelados, saída do
+  perfil/cancelamento fecham a sessão, interações sob aprovação
+  (`os.ui_control`), auditoria só com domínio.
+
+### Entregue na sprint 54 (plano "22")
+
+- [x] `bauer.docker` (Engine API só-GET, allowlist de containers, env/mounts
+  ocultos, logs redigidos), `bauer.aws` (cliente read-only por allowlist de
+  operações, conta verificada por STS, regiões/clusters EKS em allowlist) e
+  `bauer.kubernetes` (contexto explícito, namespaces em allowlist).
+- [x] `agno.docker`/`agno.aws_lambda`/`agno.aws_ses` `incompatible`.
+
+### Entregue na sprint 55 (plano "23")
+
+- [x] `GovernedWorkflow`: `Workflow` Agno sem db como motor de etapas dentro
+  de `run_governed`; retry/skip do Agno desligados (falha nunca vira
+  `completed`); checagem de run/cancelamento/prazo por etapa; revisão humana
+  como aprovação vinculada ao run com retomada pelo Kernel.
+- [x] Piloto `data_report_workflow` (perfil → totais ∥ qualidade →
+  condição → revisão → publicação) e comparação com o turno de agente.
+
+### Entregue na sprint 56 (plano "24")
+
+- [x] `ReliabilityEval` do Agno adotado offline sobre a trilha do EventBus
+  (sem db/telemetria; consultivo); Accuracy/AgentAsJudge/Performance
+  avaliados e não adotados (motivos no SPEC).
+- [x] Cenários de harness 56.1–56.3 e scorecard regenerado.
+- [x] `CapabilityDecisionLog` sobre `DecisionMemory`: versão, escopo,
+  expiração, exclusão, redação; sem raciocínio privado; gravação automática
+  opt-in (`bauer.decisions.auto_record`).
+
+### Entregue na sprint 57 (plano "25")
+
+- [x] `bauer.github_issues:create_issue`, capability separada e desabilitada
+  até configuração; piso `ask` para `integration.write` (policy custom não
+  rebaixa; audit não auto-aprova; policy off recusa); aprovação vinculada aos
+  argumentos exatos, uso único; resumo com alvo/efeito/identidade;
+  preflight antes da aprovação; idempotência por run; falhas explícitas.
+- [x] STOP respeitado: nenhum outro conector de escrita.
+
+### Entregue na sprint 58 (plano "26")
+
+- [x] Todos os toolkits do Agno 3.0.10 com estado e justificativa
+  (`unreviewed=0`): 24 de leitura revisados, conectores com escrita/PII/mídia
+  paga `blocked_by_policy`, runtime/execução remota/sem escopo `incompatible`.
+- [x] Matriz de cobertura reprodutível, snapshot do SDK + diff revisável
+  (bump não habilita nada), CLI `bauer tools capabilities`, filtros no
+  Desktop, contratos por família.
+
+### Pendências fora deste plano
+
+- Liberar leitura isolada de conectores hoje `blocked_by_policy` exige
+  revisão do piloto de escrita (sprint 57) e policy por ação.
+- `npm run build` do Desktop não foi executado no ambiente das sprints.
+- Agentes/Teams Agno do adapter (plano 062) usam `telemetry=True` padrão do
+  SDK; recomenda-se `AGNO_TELEMETRY=false`/`telemetry=False` no executor.
 
 ## Problema e resultado esperado
 

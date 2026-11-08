@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from importlib.machinery import PathFinder
-from pathlib import Path
-from typing import Any, List, Literal
+from typing import Any, Literal
 
 CapabilityRisk = Literal["read", "write", "execute", "external"]
 
@@ -55,26 +54,21 @@ _BAUER_CAPABILITIES: tuple[AgnoCapability, ...] = (
     AgnoCapability("bauer.search_text", "Buscar texto", "workspace", "Busca texto no workspace autorizado.", "bauer", ("read",), "read", True, package=None),
     AgnoCapability("bauer.write_file", "Escrever arquivo", "workspace", "Escreve arquivo sob as políticas Bauer.", "bauer", ("write",), "write", True, package=None),
     AgnoCapability("bauer.run_command", "Executar comando", "execution", "Executa comando sob shell runner e policy Bauer.", "bauer", ("execute",), "execute", True, package=None),
+    AgnoCapability("bauer.web_fetch", "Extração web", "research", "Extrai conteúdo de URL via ToolRouter, com url_safety (SSRF) e limites Bauer.", "bauer", ("read",), "external", True, package=None),
     AgnoCapability("bauer.web_search", "Busca web", "research", "Pesquisa web através do ToolRouter.", "bauer", ("search",), "external", True, package=None),
     AgnoCapability("bauer.memory", "Memória", "memory", "Consulta ou atualiza memória via ToolRouter.", "bauer", ("read", "write"), "write", True, package=None),
 )
 
-_FAMILY_LABELS = {
-    "code": "Desenvolvimento",
-    "file": "Arquivos",
-    "finance": "Finanças",
-    "google": "Google",
-    "knowledge": "Knowledge",
-    "mcp": "MCP",
-    "streamlit": "Streamlit",
-}
-_IGNORED_FAMILIES = {"models"}
-
-
 class AgnoCapabilityCatalog:
-    """Catalog static Bauer adapters and discoverable Agno SDK tool families."""
+    """Catalog Bauer tool adapters plus every toolkit of the installed Agno SDK.
+
+    SDK toolkits come from ``agno_capabilities`` (AST discovery + reviewed
+    manifest + operator settings). Nothing is imported or instantiated here.
+    """
 
     def list(self, *, agent_tools: list[str] | None = None) -> list[dict[str, Any]]:
+        from .agno_capabilities.catalog import catalog_entries
+
         enabled = {str(item).strip() for item in (agent_tools or [])}
         agno_installed = self._agno_installed()
         entries = [
@@ -84,8 +78,10 @@ class AgnoCapabilityCatalog:
             )
             for capability in _BAUER_CAPABILITIES
         ]
-        for family in self._discover_sdk_families():
-            entries.append(family.to_public_dict(installed=True))
+        known = {entry["id"] for entry in entries}
+        entries.extend(
+            entry for entry in catalog_entries(agent_tools=list(enabled)) if entry["id"] not in known
+        )
         return sorted(entries, key=lambda item: (str(item["category"]), str(item["name"])))
 
     @staticmethod
@@ -102,18 +98,8 @@ class AgnoCapabilityCatalog:
 
     @classmethod
     def find(cls, capability_id: str) -> AgnoCapability | None:
-        normalized = capability_id.strip()
-        known = next(
-            (
-                item
-                for item in _BAUER_CAPABILITIES
-                if normalized in {item.id, item.id.removeprefix("bauer.")}
-            ),
-            None,
-        )
-        if known is not None:
-            return known
-        return next((item for item in cls._discover_sdk_families() if item.id == normalized), None)
+        """Bauer tool adapter by id/legacy name (SDK toolkits: ``agno_capabilities``)."""
+        return cls.resolve_bauer_tool(capability_id)
 
     @staticmethod
     def _agno_installed() -> bool:
@@ -121,41 +107,3 @@ class AgnoCapabilityCatalog:
             return PathFinder.find_spec("agno") is not None
         except (ImportError, AttributeError, ValueError):
             return False
-
-    @classmethod
-    def _discover_sdk_families(cls) -> List[AgnoCapability]:
-        """Enumerate top-level ``agno.tools`` folders without importing them."""
-        try:
-            agno_spec = PathFinder.find_spec("agno")
-            if agno_spec is None or not agno_spec.submodule_search_locations:
-                return []
-            tools_spec = PathFinder.find_spec("agno.tools", list(agno_spec.submodule_search_locations))
-            if tools_spec is None or not tools_spec.submodule_search_locations:
-                return []
-            families: set[str] = set()
-            for root in tools_spec.submodule_search_locations:
-                path = Path(root)
-                if not path.is_dir():
-                    continue
-                families.update(
-                    child.name
-                    for child in path.iterdir()
-                    if child.is_dir()
-                    and not child.name.startswith("_")
-                    and child.name not in _IGNORED_FAMILIES
-                )
-            return [
-                AgnoCapability(
-                    id=f"agno.family.{family}",
-                    name=_FAMILY_LABELS.get(family, family.replace("_", " ").title()),
-                    category="Agno SDK",
-                    description="Família detectada no SDK instalado; requer registro e revisão de adapter antes de habilitar.",
-                    source="agno",
-                    risk="external",
-                    package="agno",
-                    module_family=True,
-                )
-                for family in sorted(families)
-            ]
-        except (OSError, ImportError, AttributeError, ValueError):
-            return []

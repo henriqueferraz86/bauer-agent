@@ -1093,6 +1093,10 @@ class AgnoRuntimeAdapter:
                 mapped.append(tool["callable"])
             elif isinstance(tool, dict) and callable(tool.get("function")):
                 mapped.append(tool["function"])
+            elif isinstance(tool, str) and self._is_governed_capability(tool):
+                mapped.extend(self._governed_capability_functions(
+                    tool, router_factory=router_for_session, workspace=self.workspace,
+                ))
             elif isinstance(tool, str):
                 capability = AgnoCapabilityCatalog.find(tool) or AgnoCapabilityCatalog.resolve_bauer_tool(tool)
                 if capability is not None and not capability.factory_registered:
@@ -1113,6 +1117,26 @@ class AgnoRuntimeAdapter:
             else:
                 raise RuntimeAdapterError("Agno tools must be registered names or trusted callables.")
         return mapped
+
+    @staticmethod
+    def _is_governed_capability(tool: str) -> bool:
+        """``agno.*`` ids and reviewed Bauer-native adapters go through the bridge."""
+        from ..agno_capabilities.catalog import is_reviewed_capability
+
+        text = tool.strip()
+        return text.startswith("agno.") or is_reviewed_capability(text)
+
+    @staticmethod
+    def _governed_capability_functions(tool: str, *, router_factory: Any, workspace: Any = None) -> list[Any]:
+        from ..agno_capabilities.bridge import materialize, to_agno_functions
+        from ..agno_capabilities.catalog import CapabilityError
+        from ..agno_capabilities.settings import CapabilitySettingsError
+
+        try:
+            actions = materialize(tool, router_factory=router_factory, workspace=workspace)
+        except (CapabilityError, CapabilitySettingsError) as exc:
+            raise RuntimeAdapterError(str(exc)) from None
+        return to_agno_functions(actions, guard=_guard_bauer_tool)
 
     def _bauer_tool_callable(
         self,

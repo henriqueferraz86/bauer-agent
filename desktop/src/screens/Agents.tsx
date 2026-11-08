@@ -34,7 +34,18 @@ interface Capability {
   state: string;
   installed: boolean;
   package?: string | null;
+  missing?: string[];
+  reason?: string;
 }
+
+const CAPABILITY_STATE_LABELS: Record<string, string> = {
+  adapter_required: "adapter necessário",
+  dependency_missing: "dependência ausente",
+  needs_configuration: "precisa configurar",
+  blocked_by_policy: "bloqueada por policy",
+  incompatible: "incompatível",
+  unreviewed: "não revisada · inativa",
+};
 
 function lastUsed(value?: string | null): string {
   if (!value) return "Nunca utilizado";
@@ -46,6 +57,8 @@ export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activity, setActivity] = useState<Record<string, AgentActivity>>({});
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
+  const [capabilityQuery, setCapabilityQuery] = useState("");
+  const [capabilityState, setCapabilityState] = useState("");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -99,18 +112,35 @@ export default function Agents() {
           <div className="muted" style={{ marginBottom: 10 }}>
             A disponibilidade não concede acesso: cada agente recebe somente as ferramentas declaradas em sua configuração.
           </div>
-          {capabilities.map((capability) => {
+          <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
+            <input
+              placeholder="Buscar capability, categoria…"
+              value={capabilityQuery}
+              onChange={(event) => setCapabilityQuery(event.target.value)}
+            />
+            <select value={capabilityState} onChange={(event) => setCapabilityState(event.target.value)}>
+              <option value="">todos os estados</option>
+              {Array.from(new Set(capabilities.map((item) => item.state))).sort().map((state) => (
+                <option key={state} value={state}>{CAPABILITY_STATE_LABELS[state] ?? state}</option>
+              ))}
+            </select>
+          </div>
+          {capabilities
+            .filter((capability) => !capabilityState || capability.state === capabilityState)
+            .filter((capability) => {
+              const needle = capabilityQuery.trim().toLowerCase();
+              return !needle || `${capability.id} ${capability.name} ${capability.category}`.toLowerCase().includes(needle);
+            })
+            .map((capability) => {
             const simpleId = capability.id.replace(/^bauer\./, "");
             const enabledAgents = agents
-              .filter((agent) => (agent.tools || agent.capabilities || []).some((tool) => tool === capability.id || tool === simpleId))
+              .filter((agent) => (agent.tools || agent.capabilities || []).some((tool) => {
+                const toolId = tool.split(":")[0].trim();
+                return toolId === capability.id || toolId === simpleId;
+              }))
               .map((agent) => agent.name);
-            const stateLabel = capability.state === "adapter_required"
-              ? "adapter necessário"
-              : capability.state === "dependency_missing"
-                ? "dependência ausente"
-                : capability.state === "needs_configuration"
-                  ? "precisa configurar"
-                  : enabledAgents.length ? "em uso" : "disponível · desativada";
+            const stateLabel = CAPABILITY_STATE_LABELS[capability.state]
+              ?? (enabledAgents.length ? "em uso" : "disponível · desativada");
             return <div className="list-item" key={capability.id} style={{ cursor: "default", alignItems: "flex-start" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="row" style={{ marginBottom: 4 }}>
@@ -123,6 +153,8 @@ export default function Agents() {
                 <div className="muted" style={{ marginTop: 5, fontSize: 11 }}>
                   {capability.id} · ações: {capability.actions.join(", ") || "a classificar"}
                   {capability.state === "dependency_missing" && capability.package && ` · dependência: ${capability.package}`}
+                  {capability.missing && capability.missing.length > 0 && ` · faltando: ${capability.missing.join(", ")}`}
+                  {(capability.state === "incompatible" || capability.state === "unreviewed") && capability.reason && ` · ${capability.reason}`}
                   {enabledAgents.length > 0 && ` · agentes: ${enabledAgents.join(", ")}`}
                 </div>
               </div>

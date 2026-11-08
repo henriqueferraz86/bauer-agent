@@ -149,6 +149,8 @@ bauer = [
     # Inclui dotfiles (.env.example) e extensões variadas (.md/.yml) em subdirs.
     "data/**/*.yaml", "data/**/*.yml", "data/**/*.json", "data/**/*.md",
     "data/app_factory/templates/.env.example",
+    # Snapshot revisado do catálogo Agno (plano 057, sprint 58).
+    "core/runtime/agno_capabilities/*.json",
 ]
 
 [tool.pytest.ini_options]

@@ -723,18 +723,18 @@ def test_unknown_agno_tool_fails_instead_of_being_silently_dropped(tmp_path):
         adapter._map_tools(["unknown_toolkit.operation"])
 
 
-def test_cataloged_but_unimplemented_agno_family_fails_clearly():
+def test_unreviewed_agno_sdk_toolkit_fails_clearly(monkeypatch):
     from bauer.core.runtime.adapters.base import RuntimeAdapterError
-    from bauer.core.runtime.agno_catalog import AgnoCapabilityCatalog
+    from bauer.core.runtime.agno_capabilities import catalog
+    from bauer.core.runtime.agno_capabilities.discovery import SdkToolkitModule
 
+    fake = SdkToolkitModule(id="agno.fake_unreviewed", module="agno.tools.fake_unreviewed",
+                            toolkit_classes=("FakeTools",))
+    monkeypatch.setattr(catalog, "sdk_modules_by_id", lambda: {fake.id: fake})
     adapter = AgnoRuntimeAdapter()
-    families = AgnoCapabilityCatalog().list()
-    family = next((item for item in families if item["id"].startswith("agno.family.")), None)
-    if family is None:
-        pytest.skip("Agno SDK extra is not installed")
 
-    with pytest.raises(RuntimeAdapterError, match="cataloged but has no Bauer adapter yet"):
-        adapter._map_tools([family["id"]])
+    with pytest.raises(RuntimeAdapterError, match="ainda não foi revisada"):
+        adapter._map_tools(["agno.fake_unreviewed"])
 
 
 def test_agno_bauer_tool_fallback_respects_tool_policy(tmp_path):

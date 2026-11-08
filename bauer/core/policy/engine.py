@@ -46,6 +46,12 @@ DEFAULT_RULES: list[dict[str, Any]] = [
 ]
 
 
+#: Operations whose effect is external and irreversible enough that no policy
+#: file may lower them below "ask" (plano 057: no external write without
+#: approval). A rule may still *deny* them.
+ALWAYS_ASK_OPERATIONS: frozenset[str] = frozenset({"integration.write"})
+
+
 class PolicyEngine:
     def __init__(
         self,
@@ -105,13 +111,25 @@ class PolicyEngine:
             matched_rules.append(rule_id)
             action = str(rule.get("action") or "allow").lower()
             reason = str(rule.get("reason") or f"matched policy rule {rule_id}")
-            return PolicyDecision(action=action, reason=reason, risk_level=risk_level, matched_rules=matched_rules)
-        return PolicyDecision(
+            return self._floor(PolicyDecision(action=action, reason=reason, risk_level=risk_level,
+                                              matched_rules=matched_rules), operation)
+        return self._floor(PolicyDecision(
             action="allow",
             reason="no blocking policy rule matched",
             risk_level=risk_level,
             matched_rules=matched_rules,
-        )
+        ), operation)
+
+    @staticmethod
+    def _floor(decision: PolicyDecision, operation: str) -> PolicyDecision:
+        if operation in ALWAYS_ASK_OPERATIONS and decision.action not in {"deny", "ask"}:
+            return PolicyDecision(
+                action="ask",
+                reason="escrita externa sempre exige aprovação humana",
+                risk_level="high",
+                matched_rules=[*decision.matched_rules, f"{operation}.floor.ask"],
+            )
+        return decision
 
     def _load_rules(self, rules_path: str | Path | None) -> list[dict[str, Any]]:
         candidates = []

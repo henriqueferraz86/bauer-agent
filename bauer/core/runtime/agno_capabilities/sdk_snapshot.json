@@ -1,0 +1,2739 @@
+{
+ "agno_version": "3.0.10",
+ "modules": {
+  "agno.adanos": {
+   "classes": [
+    "AdanosTools"
+   ],
+   "env_vars": [
+    "ADANOS_API_KEY"
+   ],
+   "functions": [
+    "aget_crypto_sentiment",
+    "aget_market_sentiment",
+    "aget_stock_sentiment",
+    "aget_trending",
+    "get_crypto_sentiment",
+    "get_market_sentiment",
+    "get_stock_sentiment",
+    "get_trending"
+   ],
+   "optional_imports": []
+  },
+  "agno.advisor": {
+   "classes": [
+    "AdvisorTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "aask_advisor",
+    "aask_all_advisors",
+    "ask_advisor",
+    "ask_all_advisors"
+   ],
+   "optional_imports": []
+  },
+  "agno.agentos": {
+   "classes": [
+    "AgentOSTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "aget_eval_history",
+    "aget_platform_metrics",
+    "aget_run_activity",
+    "aget_schedule_history",
+    "aget_tool_activity",
+    "alist_pending_approvals",
+    "alist_platform_components",
+    "alist_schedules",
+    "get_eval_history",
+    "get_platform_metrics",
+    "get_run_activity",
+    "get_schedule_history",
+    "get_tool_activity",
+    "list_pending_approvals",
+    "list_platform_components",
+    "list_schedules"
+   ],
+   "optional_imports": []
+  },
+  "agno.agentql": {
+   "classes": [
+    "AgentQLTools"
+   ],
+   "env_vars": [
+    "AGENTQL_API_KEY"
+   ],
+   "functions": [
+    "custom_scrape_website",
+    "scrape_website"
+   ],
+   "optional_imports": [
+    "agentql",
+    "playwright"
+   ]
+  },
+  "agno.airflow": {
+   "classes": [
+    "AirflowTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "read_dag_file",
+    "save_dag_file"
+   ],
+   "optional_imports": []
+  },
+  "agno.annotations": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.antigravity": {
+   "classes": [
+    "AntigravityTools"
+   ],
+   "env_vars": [
+    "GEMINI_API_KEY"
+   ],
+   "functions": [
+    "create_custom_antigravity_agent",
+    "delete_antigravity_agent",
+    "download_antigravity_environment_snapshot",
+    "get_custom_antigravity_agent",
+    "list_antigravity_agent_versions",
+    "list_antigravity_agents",
+    "run_antigravity_task",
+    "run_custom_antigravity_agent",
+    "update_custom_antigravity_agent"
+   ],
+   "optional_imports": []
+  },
+  "agno.api": {
+   "classes": [
+    "CustomApiTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "make_request"
+   ],
+   "optional_imports": [
+    "requests"
+   ]
+  },
+  "agno.apify": {
+   "classes": [
+    "ApifyTools"
+   ],
+   "env_vars": [
+    "APIFY_API_TOKEN"
+   ],
+   "functions": [
+    "register_actor"
+   ],
+   "optional_imports": [
+    "apify_client"
+   ]
+  },
+  "agno.arxiv": {
+   "classes": [
+    "ArxivTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "read_arxiv_papers",
+    "search_arxiv_and_return_articles"
+   ],
+   "optional_imports": [
+    "arxiv",
+    "pypdf"
+   ]
+  },
+  "agno.atomic_mail": {
+   "classes": [
+    "AtomicMailTools"
+   ],
+   "env_vars": [
+    "ATOMIC_MAIL_CREDENTIALS_DIR"
+   ],
+   "functions": [
+    "alist_inbox",
+    "aregister_inbox",
+    "asend_email",
+    "list_inbox",
+    "register_inbox",
+    "send_email"
+   ],
+   "optional_imports": []
+  },
+  "agno.aws_lambda": {
+   "classes": [
+    "AWSLambdaTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "invoke_function",
+    "list_functions"
+   ],
+   "optional_imports": [
+    "boto3"
+   ]
+  },
+  "agno.aws_ses": {
+   "classes": [
+    "AWSSESTool"
+   ],
+   "env_vars": [],
+   "functions": [
+    "send_email"
+   ],
+   "optional_imports": [
+    "boto3"
+   ]
+  },
+  "agno.baidusearch": {
+   "classes": [
+    "BaiduSearchTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "baidu_search"
+   ],
+   "optional_imports": [
+    "baidusearch",
+    "pycountry"
+   ]
+  },
+  "agno.bitbucket": {
+   "classes": [
+    "BitbucketTools"
+   ],
+   "env_vars": [
+    "BITBUCKET_PASSWORD",
+    "BITBUCKET_TOKEN",
+    "BITBUCKET_USERNAME"
+   ],
+   "functions": [
+    "create_repository",
+    "get_pull_request_changes",
+    "get_pull_request_details",
+    "get_repository_details",
+    "list_all_pull_requests",
+    "list_issues",
+    "list_repositories",
+    "list_repository_commits"
+   ],
+   "optional_imports": []
+  },
+  "agno.brandfetch": {
+   "classes": [
+    "BrandfetchTools"
+   ],
+   "env_vars": [
+    "BRANDFETCH_API_KEY",
+    "BRANDFETCH_CLIENT_ID"
+   ],
+   "functions": [
+    "asearch_by_brand",
+    "asearch_by_identifier",
+    "search_by_brand",
+    "search_by_identifier"
+   ],
+   "optional_imports": [
+    "httpx"
+   ]
+  },
+  "agno.bravesearch": {
+   "classes": [
+    "BraveSearchTools"
+   ],
+   "env_vars": [
+    "BRAVE_API_KEY"
+   ],
+   "functions": [
+    "brave_search"
+   ],
+   "optional_imports": [
+    "brave"
+   ]
+  },
+  "agno.brightdata": {
+   "classes": [
+    "BrightDataTools"
+   ],
+   "env_vars": [
+    "BRIGHT_DATA_API_KEY",
+    "BRIGHT_DATA_SERP_ZONE",
+    "BRIGHT_DATA_WEB_UNLOCKER_ZONE"
+   ],
+   "functions": [
+    "get_screenshot",
+    "scrape_as_markdown",
+    "search_engine",
+    "web_data_feed"
+   ],
+   "optional_imports": [
+    "requests"
+   ]
+  },
+  "agno.browserbase": {
+   "classes": [
+    "BrowserbaseTools"
+   ],
+   "env_vars": [
+    "BROWSERBASE_API_KEY",
+    "BROWSERBASE_BASE_URL",
+    "BROWSERBASE_PROJECT_ID"
+   ],
+   "functions": [
+    "aclose_session",
+    "aget_page_content",
+    "anavigate_to",
+    "ascreenshot",
+    "close_session",
+    "get_page_content",
+    "navigate_to",
+    "screenshot"
+   ],
+   "optional_imports": [
+    "browserbase"
+   ]
+  },
+  "agno.calcom": {
+   "classes": [
+    "CalComTools"
+   ],
+   "env_vars": [
+    "CALCOM_API_KEY",
+    "CALCOM_EVENT_TYPE_ID"
+   ],
+   "functions": [
+    "cancel_booking",
+    "create_booking",
+    "get_available_slots",
+    "get_upcoming_bookings",
+    "reschedule_booking"
+   ],
+   "optional_imports": [
+    "pytz",
+    "requests"
+   ]
+  },
+  "agno.calculator": {
+   "classes": [
+    "CalculatorTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "add",
+    "divide",
+    "exponentiate",
+    "factorial",
+    "is_prime",
+    "multiply",
+    "square_root",
+    "subtract"
+   ],
+   "optional_imports": []
+  },
+  "agno.cartesia": {
+   "classes": [
+    "CartesiaTools"
+   ],
+   "env_vars": [
+    "CARTESIA_API_KEY"
+   ],
+   "functions": [
+    "list_voices",
+    "localize_voice",
+    "text_to_speech"
+   ],
+   "optional_imports": [
+    "cartesia"
+   ]
+  },
+  "agno.clickup": {
+   "classes": [
+    "ClickUpTools"
+   ],
+   "env_vars": [
+    "CLICKUP_API_KEY",
+    "MASTER_SPACE_ID"
+   ],
+   "functions": [
+    "create_task",
+    "delete_task",
+    "get_task",
+    "list_lists",
+    "list_spaces",
+    "list_tasks",
+    "update_task"
+   ],
+   "optional_imports": [
+    "requests"
+   ]
+  },
+  "agno.code.bridge": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.code.code_mode": {
+   "classes": [
+    "CodeMode"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.code.errors": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.code.kernel": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "jupyter_client"
+   ]
+  },
+  "agno.code.naming": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.code.snapshot": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.code.types": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.coding": {
+   "classes": [
+    "CodingTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "edit_file",
+    "find",
+    "grep",
+    "ls",
+    "read_file",
+    "run_shell",
+    "write_file"
+   ],
+   "optional_imports": []
+  },
+  "agno.component": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.confluence": {
+   "classes": [
+    "ConfluenceTools"
+   ],
+   "env_vars": [
+    "CONFLUENCE_API_KEY",
+    "CONFLUENCE_PASSWORD",
+    "CONFLUENCE_URL",
+    "CONFLUENCE_USERNAME"
+   ],
+   "functions": [
+    "create_page",
+    "get_all_page_from_space",
+    "get_all_space_detail",
+    "get_page_content",
+    "get_space_key",
+    "update_page"
+   ],
+   "optional_imports": [
+    "atlassian"
+   ]
+  },
+  "agno.crawl4ai": {
+   "classes": [
+    "Crawl4aiTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "crawl"
+   ],
+   "optional_imports": [
+    "crawl4ai"
+   ]
+  },
+  "agno.csv_toolkit": {
+   "classes": [
+    "CsvTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "get_columns",
+    "list_csv_files",
+    "query_csv_file",
+    "read_csv_file"
+   ],
+   "optional_imports": []
+  },
+  "agno.dalle": {
+   "classes": [
+    "DalleTools"
+   ],
+   "env_vars": [
+    "OPENAI_API_KEY"
+   ],
+   "functions": [
+    "create_image"
+   ],
+   "optional_imports": [
+    "openai"
+   ]
+  },
+  "agno.daytona": {
+   "classes": [
+    "DaytonaTools"
+   ],
+   "env_vars": [
+    "DAYTONA_API_KEY",
+    "DAYTONA_API_URL"
+   ],
+   "functions": [
+    "change_directory",
+    "create_file",
+    "delete_file",
+    "list_files",
+    "read_file",
+    "run_code",
+    "run_shell_command"
+   ],
+   "optional_imports": [
+    "daytona"
+   ]
+  },
+  "agno.decorator": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.desi_vocal": {
+   "classes": [
+    "DesiVocalTools"
+   ],
+   "env_vars": [
+    "DESI_VOCAL_API_KEY"
+   ],
+   "functions": [
+    "get_voices",
+    "text_to_speech"
+   ],
+   "optional_imports": []
+  },
+  "agno.discord": {
+   "classes": [
+    "DiscordTools"
+   ],
+   "env_vars": [
+    "DISCORD_BOT_TOKEN"
+   ],
+   "functions": [
+    "delete_message",
+    "get_channel_info",
+    "get_channel_messages",
+    "list_channels",
+    "send_message"
+   ],
+   "optional_imports": []
+  },
+  "agno.docker": {
+   "classes": [
+    "DockerTools"
+   ],
+   "env_vars": [
+    "DOCKER_CONFIG"
+   ],
+   "functions": [
+    "build_image",
+    "connect_container_to_network",
+    "create_network",
+    "create_volume",
+    "disconnect_container_from_network",
+    "exec_in_container",
+    "get_container_logs",
+    "inspect_container",
+    "inspect_image",
+    "inspect_network",
+    "inspect_volume",
+    "list_containers",
+    "list_images",
+    "list_networks",
+    "list_volumes",
+    "pull_image",
+    "remove_container",
+    "remove_image",
+    "remove_network",
+    "remove_volume",
+    "run_container",
+    "start_container",
+    "stop_container",
+    "tag_image"
+   ],
+   "optional_imports": [
+    "docker"
+   ]
+  },
+  "agno.docling": {
+   "classes": [
+    "DoclingTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "convert_string_content",
+    "convert_to_doctags",
+    "convert_to_html",
+    "convert_to_html_split_page",
+    "convert_to_json",
+    "convert_to_markdown",
+    "convert_to_text",
+    "convert_to_vtt",
+    "convert_to_yaml",
+    "list_supported_parsers"
+   ],
+   "optional_imports": [
+    "docling"
+   ]
+  },
+  "agno.duckdb": {
+   "classes": [
+    "DuckDbTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "create_fts_index",
+    "create_table_from_path",
+    "describe_table",
+    "export_table_to_path",
+    "full_text_search",
+    "inspect_query",
+    "load_local_csv_to_table",
+    "load_local_path_to_table",
+    "load_s3_csv_to_table",
+    "load_s3_path_to_table",
+    "run_query",
+    "show_tables",
+    "summarize_table"
+   ],
+   "optional_imports": [
+    "duckdb"
+   ]
+  },
+  "agno.duckduckgo": {
+   "classes": [
+    "DuckDuckGoTools"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.e2b": {
+   "classes": [
+    "E2BTools"
+   ],
+   "env_vars": [
+    "E2B_API_KEY"
+   ],
+   "functions": [
+    "download_chart_data",
+    "download_file_from_sandbox",
+    "download_png_result",
+    "get_public_url",
+    "get_sandbox_status",
+    "kill_background_command",
+    "list_files",
+    "list_running_sandboxes",
+    "read_file_content",
+    "run_background_command",
+    "run_command",
+    "run_python_code",
+    "run_server",
+    "set_sandbox_timeout",
+    "shutdown_sandbox",
+    "stream_command",
+    "upload_file",
+    "watch_directory",
+    "write_file_content"
+   ],
+   "optional_imports": [
+    "e2b_code_interpreter"
+   ]
+  },
+  "agno.eleven_labs": {
+   "classes": [
+    "ElevenLabsTools"
+   ],
+   "env_vars": [
+    "ELEVEN_LABS_API_KEY"
+   ],
+   "functions": [
+    "generate_sound_effect",
+    "get_voices",
+    "text_to_speech"
+   ],
+   "optional_imports": [
+    "elevenlabs"
+   ]
+  },
+  "agno.email": {
+   "classes": [
+    "EmailTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "email_user"
+   ],
+   "optional_imports": []
+  },
+  "agno.evm": {
+   "classes": [
+    "EvmTools"
+   ],
+   "env_vars": [
+    "EVM_PRIVATE_KEY",
+    "EVM_RPC_URL"
+   ],
+   "functions": [
+    "send_transaction"
+   ],
+   "optional_imports": [
+    "eth_account",
+    "hexbytes",
+    "web3"
+   ]
+  },
+  "agno.exa": {
+   "classes": [
+    "ExaTools"
+   ],
+   "env_vars": [
+    "EXA_API_KEY"
+   ],
+   "functions": [
+    "exa_answer",
+    "find_similar",
+    "get_contents",
+    "research",
+    "search_exa"
+   ],
+   "optional_imports": [
+    "exa_py"
+   ]
+  },
+  "agno.fal": {
+   "classes": [
+    "FalTools"
+   ],
+   "env_vars": [
+    "FAL_API_KEY"
+   ],
+   "functions": [
+    "generate_media",
+    "image_to_image"
+   ],
+   "optional_imports": [
+    "fal_client"
+   ]
+  },
+  "agno.file": {
+   "classes": [
+    "FileTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "delete_file",
+    "list_files",
+    "read_file",
+    "read_file_chunk",
+    "replace_file_chunk",
+    "save_file",
+    "search_content",
+    "search_files"
+   ],
+   "optional_imports": []
+  },
+  "agno.file.generation": {
+   "classes": [
+    "FileGenerationTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "generate_code_file",
+    "generate_csv_file",
+    "generate_docx_file",
+    "generate_html_file",
+    "generate_json_file",
+    "generate_pdf_file",
+    "generate_text_file"
+   ],
+   "optional_imports": [
+    "docx",
+    "reportlab"
+   ]
+  },
+  "agno.file_generation": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.finance": {
+   "classes": [
+    "FinanceTools"
+   ],
+   "env_vars": [
+    "FINANCIAL_DATASETS_API_KEY"
+   ],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.finance.base": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.financial_datasets": {
+   "classes": [
+    "FinancialDatasetsTools"
+   ],
+   "env_vars": [
+    "FINANCIAL_DATASETS_API_KEY"
+   ],
+   "functions": [
+    "get_balance_sheets",
+    "get_cash_flow_statements",
+    "get_company_info",
+    "get_crypto_prices",
+    "get_earnings",
+    "get_financial_metrics",
+    "get_income_statements",
+    "get_insider_trades",
+    "get_institutional_ownership",
+    "get_news",
+    "get_sec_filings",
+    "get_segmented_financials",
+    "get_stock_prices",
+    "search_tickers"
+   ],
+   "optional_imports": []
+  },
+  "agno.firecrawl": {
+   "classes": [
+    "FirecrawlTools"
+   ],
+   "env_vars": [
+    "FIRECRAWL_API_KEY"
+   ],
+   "functions": [
+    "crawl_website",
+    "map_website",
+    "scrape_website",
+    "search_web"
+   ],
+   "optional_imports": [
+    "firecrawl"
+   ]
+  },
+  "agno.function": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.gandr": {
+   "classes": [
+    "GandrTools"
+   ],
+   "env_vars": [
+    "GANDR_API_KEY"
+   ],
+   "functions": [
+    "text_to_speech"
+   ],
+   "optional_imports": []
+  },
+  "agno.giphy": {
+   "classes": [
+    "GiphyTools"
+   ],
+   "env_vars": [
+    "GIPHY_API_KEY"
+   ],
+   "functions": [
+    "search_gifs"
+   ],
+   "optional_imports": []
+  },
+  "agno.github": {
+   "classes": [
+    "GithubTools"
+   ],
+   "env_vars": [
+    "GITHUB_ACCESS_TOKEN"
+   ],
+   "functions": [
+    "assign_issue",
+    "authenticate",
+    "close_issue",
+    "comment_on_issue",
+    "create_branch",
+    "create_file",
+    "create_issue",
+    "create_pull_request",
+    "create_pull_request_comment",
+    "create_repository",
+    "create_review_request",
+    "delete_file",
+    "delete_repository",
+    "edit_issue",
+    "edit_pull_request_comment",
+    "get_branch_content",
+    "get_directory_content",
+    "get_file_content",
+    "get_issue",
+    "get_pull_request",
+    "get_pull_request_changes",
+    "get_pull_request_comments",
+    "get_pull_request_count",
+    "get_pull_request_with_details",
+    "get_pull_requests",
+    "get_repository",
+    "get_repository_languages",
+    "get_repository_stars",
+    "get_repository_with_stats",
+    "label_issue",
+    "list_branches",
+    "list_issue_comments",
+    "list_issues",
+    "list_repositories",
+    "reopen_issue",
+    "search_code",
+    "search_issues_and_prs",
+    "search_repositories",
+    "set_default_branch",
+    "update_file"
+   ],
+   "optional_imports": [
+    "github"
+   ]
+  },
+  "agno.gitlab": {
+   "classes": [
+    "GitlabTools"
+   ],
+   "env_vars": [
+    "GITLAB_ACCESS_TOKEN",
+    "GITLAB_BASE_URL"
+   ],
+   "functions": [
+    "aget_merge_request",
+    "aget_project",
+    "alist_issues",
+    "alist_merge_requests",
+    "alist_projects",
+    "get_merge_request",
+    "get_project",
+    "list_issues",
+    "list_merge_requests",
+    "list_projects"
+   ],
+   "optional_imports": [
+    "gitlab",
+    "httpx"
+   ]
+  },
+  "agno.google.base": {
+   "classes": [
+    "GoogleToolkit"
+   ],
+   "env_vars": [
+    "GOOGLE_API_TIMEOUT",
+    "GOOGLE_PROJECT_ID"
+   ],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.google.bigquery": {
+   "classes": [
+    "GoogleBigQueryTools"
+   ],
+   "env_vars": [
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_PROJECT"
+   ],
+   "functions": [
+    "describe_table",
+    "list_tables",
+    "run_sql_query"
+   ],
+   "optional_imports": [
+    "google"
+   ]
+  },
+  "agno.google.calendar": {
+   "classes": [
+    "GoogleCalendarTools"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "google",
+    "googleapiclient"
+   ]
+  },
+  "agno.google.drive": {
+   "classes": [
+    "GoogleDriveTools"
+   ],
+   "env_vars": [
+    "GOOGLE_CLOUD_QUOTA_PROJECT_ID"
+   ],
+   "functions": [],
+   "optional_imports": [
+    "google",
+    "googleapiclient"
+   ]
+  },
+  "agno.google.gmail": {
+   "classes": [
+    "GmailTools"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "google",
+    "googleapiclient"
+   ]
+  },
+  "agno.google.maps": {
+   "classes": [
+    "GoogleMapTools"
+   ],
+   "env_vars": [
+    "GOOGLE_MAPS_API_KEY"
+   ],
+   "functions": [
+    "geocode_address",
+    "get_directions",
+    "get_distance_matrix",
+    "get_elevation",
+    "get_timezone",
+    "reverse_geocode",
+    "search_places",
+    "validate_address"
+   ],
+   "optional_imports": [
+    "google",
+    "googlemaps"
+   ]
+  },
+  "agno.google.sheets": {
+   "classes": [
+    "GoogleSheetsTools"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "google"
+   ]
+  },
+  "agno.google.slides": {
+   "classes": [
+    "GoogleSlidesTools"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "google"
+   ]
+  },
+  "agno.hackernews": {
+   "classes": [
+    "HackerNewsTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "get_top_hackernews_stories",
+    "get_user_details"
+   ],
+   "optional_imports": []
+  },
+  "agno.jina": {
+   "classes": [
+    "JinaReaderTools"
+   ],
+   "env_vars": [
+    "JINA_API_KEY"
+   ],
+   "functions": [
+    "read_url",
+    "search_query"
+   ],
+   "optional_imports": []
+  },
+  "agno.jira": {
+   "classes": [
+    "JiraTools"
+   ],
+   "env_vars": [
+    "JIRA_PASSWORD",
+    "JIRA_SERVER_URL",
+    "JIRA_TOKEN",
+    "JIRA_USERNAME"
+   ],
+   "functions": [
+    "add_comment",
+    "add_worklog",
+    "create_issue",
+    "get_issue",
+    "search_issues"
+   ],
+   "optional_imports": [
+    "jira"
+   ]
+  },
+  "agno.knowledge": {
+   "classes": [
+    "KnowledgeTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "analyze",
+    "search_knowledge",
+    "think"
+   ],
+   "optional_imports": []
+  },
+  "agno.knowledge.management": {
+   "classes": [
+    "KnowledgeManagementTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "aingest_path",
+    "aingest_status",
+    "aingest_text",
+    "aingest_url",
+    "alist_content",
+    "aremove_content",
+    "ingest_path",
+    "ingest_status",
+    "ingest_text",
+    "ingest_url",
+    "list_content",
+    "remove_content"
+   ],
+   "optional_imports": []
+  },
+  "agno.linear": {
+   "classes": [
+    "LinearTools"
+   ],
+   "env_vars": [
+    "LINEAR_API_KEY"
+   ],
+   "functions": [
+    "create_issue",
+    "get_high_priority_issues",
+    "get_issue_details",
+    "get_teams_details",
+    "get_user_assigned_issues",
+    "get_user_details",
+    "get_workflow_issues",
+    "update_issue"
+   ],
+   "optional_imports": []
+  },
+  "agno.linkup": {
+   "classes": [
+    "LinkupTools"
+   ],
+   "env_vars": [
+    "LINKUP_API_KEY"
+   ],
+   "functions": [
+    "web_search_with_linkup"
+   ],
+   "optional_imports": [
+    "linkup"
+   ]
+  },
+  "agno.llms_txt": {
+   "classes": [
+    "LLMsTxtTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "aget_llms_txt_index",
+    "aread_llms_txt_and_load_knowledge",
+    "aread_llms_txt_url",
+    "get_llms_txt_index",
+    "read_llms_txt_and_load_knowledge",
+    "read_llms_txt_url"
+   ],
+   "optional_imports": []
+  },
+  "agno.local_file_system": {
+   "classes": [
+    "LocalFileSystemTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "read_file",
+    "write_file"
+   ],
+   "optional_imports": []
+  },
+  "agno.lumalab": {
+   "classes": [
+    "LumaLabTools"
+   ],
+   "env_vars": [
+    "LUMAAI_API_KEY"
+   ],
+   "functions": [
+    "generate_video",
+    "image_to_video"
+   ],
+   "optional_imports": [
+    "lumaai"
+   ]
+  },
+  "agno.mcp": {
+   "classes": [
+    "MCPTools"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "mcp"
+   ]
+  },
+  "agno.mcp.params": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.mcp_toolbox": {
+   "classes": [
+    "MCPToolbox"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": [
+    "toolbox_core"
+   ]
+  },
+  "agno.mem0": {
+   "classes": [
+    "Mem0Tools"
+   ],
+   "env_vars": [
+    "MEM0_API_KEY",
+    "MEM0_ORG_ID",
+    "MEM0_PROJECT_ID"
+   ],
+   "functions": [
+    "add_memory",
+    "delete_all_memories",
+    "get_all_memories",
+    "search_memory"
+   ],
+   "optional_imports": [
+    "mem0"
+   ]
+  },
+  "agno.memory": {
+   "classes": [
+    "MemoryTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "add_memory",
+    "analyze",
+    "delete_memory",
+    "get_memories",
+    "think",
+    "update_memory"
+   ],
+   "optional_imports": []
+  },
+  "agno.minimax": {
+   "classes": [
+    "MiniMaxTools"
+   ],
+   "env_vars": [
+    "MINIMAX_API_KEY"
+   ],
+   "functions": [
+    "agenerate_video",
+    "generate_video"
+   ],
+   "optional_imports": []
+  },
+  "agno.mlx_transcribe": {
+   "classes": [
+    "MLXTranscribeTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "read_files",
+    "transcribe"
+   ],
+   "optional_imports": [
+    "mlx_whisper"
+   ]
+  },
+  "agno.models_labs": {
+   "classes": [
+    "ModelsLabTools"
+   ],
+   "env_vars": [
+    "MODELS_LAB_API_KEY"
+   ],
+   "functions": [
+    "generate_media"
+   ],
+   "optional_imports": [
+    "requests"
+   ]
+  },
+  "agno.moviepy_video": {
+   "classes": [
+    "MoviePyVideoTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "create_srt",
+    "embed_captions",
+    "extract_audio"
+   ],
+   "optional_imports": [
+    "moviepy"
+   ]
+  },
+  "agno.nano_banana": {
+   "classes": [
+    "NanoBananaTools"
+   ],
+   "env_vars": [
+    "GOOGLE_API_KEY"
+   ],
+   "functions": [
+    "create_image"
+   ],
+   "optional_imports": [
+    "PIL",
+    "google"
+   ]
+  },
+  "agno.neo4j": {
+   "classes": [
+    "Neo4jTools"
+   ],
+   "env_vars": [
+    "NEO4J_PASSWORD",
+    "NEO4J_URI",
+    "NEO4J_USERNAME"
+   ],
+   "functions": [
+    "get_schema",
+    "list_labels",
+    "list_relationship_types",
+    "run_cypher_query"
+   ],
+   "optional_imports": [
+    "neo4j"
+   ]
+  },
+  "agno.newspaper": {
+   "classes": [
+    "NewspaperTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "get_article_text"
+   ],
+   "optional_imports": [
+    "newspaper"
+   ]
+  },
+  "agno.newspaper4k": {
+   "classes": [
+    "Newspaper4kTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "read_article"
+   ],
+   "optional_imports": [
+    "newspaper"
+   ]
+  },
+  "agno.notion": {
+   "classes": [
+    "NotionTools"
+   ],
+   "env_vars": [
+    "NOTION_API_KEY",
+    "NOTION_DATABASE_ID"
+   ],
+   "functions": [
+    "create_page",
+    "search_pages",
+    "update_page"
+   ],
+   "optional_imports": [
+    "notion_client"
+   ]
+  },
+  "agno.openai": {
+   "classes": [
+    "OpenAITools"
+   ],
+   "env_vars": [
+    "OPENAI_API_KEY"
+   ],
+   "functions": [
+    "generate_image",
+    "generate_speech",
+    "transcribe_audio"
+   ],
+   "optional_imports": [
+    "openai"
+   ]
+  },
+  "agno.openbb": {
+   "classes": [
+    "OpenBBTools"
+   ],
+   "env_vars": [
+    "OPENBB_PAT"
+   ],
+   "functions": [
+    "get_company_news",
+    "get_company_profile",
+    "get_price_targets",
+    "get_stock_price",
+    "search_company_symbol"
+   ],
+   "optional_imports": [
+    "openbb"
+   ]
+  },
+  "agno.opencv": {
+   "classes": [
+    "OpenCVTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "capture_image",
+    "capture_video"
+   ],
+   "optional_imports": [
+    "cv2"
+   ]
+  },
+  "agno.openrouteservice": {
+   "classes": [
+    "OpenRouteServiceTools"
+   ],
+   "env_vars": [
+    "ORS_API_KEY"
+   ],
+   "functions": [
+    "ageocode_location",
+    "aget_directions",
+    "aget_distance_matrix",
+    "geocode_location",
+    "get_directions",
+    "get_distance_matrix"
+   ],
+   "optional_imports": [
+    "httpx"
+   ]
+  },
+  "agno.openweather": {
+   "classes": [
+    "OpenWeatherTools"
+   ],
+   "env_vars": [
+    "OPENWEATHER_API_KEY"
+   ],
+   "functions": [
+    "geocode_location",
+    "get_air_pollution",
+    "get_current_weather",
+    "get_forecast"
+   ],
+   "optional_imports": [
+    "requests"
+   ]
+  },
+  "agno.oxylabs": {
+   "classes": [
+    "OxylabsTools"
+   ],
+   "env_vars": [
+    "OXYLABS_PASSWORD",
+    "OXYLABS_USERNAME"
+   ],
+   "functions": [
+    "get_amazon_product",
+    "scrape_website",
+    "search_amazon_products",
+    "search_google"
+   ],
+   "optional_imports": [
+    "oxylabs"
+   ]
+  },
+  "agno.pandas": {
+   "classes": [
+    "PandasTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "create_pandas_dataframe",
+    "run_dataframe_operation"
+   ],
+   "optional_imports": [
+    "pandas"
+   ]
+  },
+  "agno.parallel": {
+   "classes": [
+    "ParallelTools"
+   ],
+   "env_vars": [
+    "PARALLEL_API_KEY"
+   ],
+   "functions": [
+    "cancel_monitor",
+    "create_monitor",
+    "create_task",
+    "get_monitor",
+    "get_monitor_events",
+    "get_task_result",
+    "get_task_status",
+    "list_monitors",
+    "parallel_extract",
+    "parallel_search",
+    "update_monitor"
+   ],
+   "optional_imports": [
+    "parallel"
+   ]
+  },
+  "agno.perplexity": {
+   "classes": [
+    "PerplexitySearch"
+   ],
+   "env_vars": [
+    "PERPLEXITY_API_KEY"
+   ],
+   "functions": [
+    "asearch",
+    "search"
+   ],
+   "optional_imports": [
+    "httpx"
+   ]
+  },
+  "agno.plivo": {
+   "classes": [
+    "PlivoTools"
+   ],
+   "env_vars": [
+    "PLIVO_AUTH_ID",
+    "PLIVO_AUTH_TOKEN"
+   ],
+   "functions": [
+    "get_call_details",
+    "list_calls",
+    "list_messages",
+    "lookup_number",
+    "make_call",
+    "send_sms"
+   ],
+   "optional_imports": [
+    "plivo"
+   ]
+  },
+  "agno.postgres": {
+   "classes": [
+    "PostgresTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "describe_table",
+    "export_table_to_path",
+    "inspect_query",
+    "run_query",
+    "show_tables",
+    "summarize_table"
+   ],
+   "optional_imports": [
+    "psycopg"
+   ]
+  },
+  "agno.pubmed": {
+   "classes": [
+    "PubmedTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "search_pubmed"
+   ],
+   "optional_imports": []
+  },
+  "agno.python": {
+   "classes": [
+    "PythonTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "list_files",
+    "pip_install_package",
+    "read_file",
+    "run_python_code",
+    "run_python_file_return_variable",
+    "save_to_file_and_run",
+    "uv_pip_install_package"
+   ],
+   "optional_imports": []
+  },
+  "agno.reasoning": {
+   "classes": [
+    "ReasoningTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "analyze",
+    "think"
+   ],
+   "optional_imports": []
+  },
+  "agno.reddit": {
+   "classes": [
+    "RedditTools"
+   ],
+   "env_vars": [
+    "REDDIT_CLIENT_ID",
+    "REDDIT_CLIENT_SECRET",
+    "REDDIT_PASSWORD",
+    "REDDIT_USERNAME",
+    "REDDIT_USER_AGENT"
+   ],
+   "functions": [
+    "create_post",
+    "get_subreddit_info",
+    "get_subreddit_stats",
+    "get_top_posts",
+    "get_trending_subreddits",
+    "get_user_info",
+    "reply_to_comment",
+    "reply_to_post"
+   ],
+   "optional_imports": [
+    "praw"
+   ]
+  },
+  "agno.redmine": {
+   "classes": [
+    "RedmineTools"
+   ],
+   "env_vars": [
+    "REDMINE_PASSWORD",
+    "REDMINE_SERVER_URL",
+    "REDMINE_TOKEN",
+    "REDMINE_USERNAME"
+   ],
+   "functions": [
+    "add_comment",
+    "create_issue",
+    "get_issue",
+    "list_project_members",
+    "list_projects",
+    "list_users",
+    "list_versions",
+    "log_time",
+    "search_issues",
+    "update_issue"
+   ],
+   "optional_imports": [
+    "redminelib"
+   ]
+  },
+  "agno.redshift": {
+   "classes": [
+    "RedshiftTools"
+   ],
+   "env_vars": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "REDSHIFT_CLUSTER_IDENTIFIER",
+    "REDSHIFT_DATABASE",
+    "REDSHIFT_DB_USER",
+    "REDSHIFT_HOST"
+   ],
+   "functions": [
+    "describe_table",
+    "export_table_to_path",
+    "inspect_query",
+    "run_query",
+    "show_tables",
+    "summarize_table"
+   ],
+   "optional_imports": [
+    "redshift_connector"
+   ]
+  },
+  "agno.replicate": {
+   "classes": [
+    "ReplicateTools"
+   ],
+   "env_vars": [
+    "REPLICATE_API_KEY"
+   ],
+   "functions": [
+    "generate_media"
+   ],
+   "optional_imports": [
+    "replicate"
+   ]
+  },
+  "agno.resend": {
+   "classes": [
+    "ResendTools"
+   ],
+   "env_vars": [
+    "RESEND_API_KEY"
+   ],
+   "functions": [
+    "send_email"
+   ],
+   "optional_imports": [
+    "resend"
+   ]
+  },
+  "agno.salesforce": {
+   "classes": [
+    "SalesforceTools"
+   ],
+   "env_vars": [
+    "SALESFORCE_DOMAIN",
+    "SALESFORCE_PASSWORD",
+    "SALESFORCE_SECURITY_TOKEN",
+    "SALESFORCE_USERNAME"
+   ],
+   "functions": [
+    "create_record",
+    "delete_record",
+    "describe_object",
+    "get_record",
+    "get_report",
+    "list_objects",
+    "query",
+    "search",
+    "update_record"
+   ],
+   "optional_imports": [
+    "simple_salesforce"
+   ]
+  },
+  "agno.scavio": {
+   "classes": [
+    "ScavioTools"
+   ],
+   "env_vars": [
+    "SCAVIO_API_KEY"
+   ],
+   "functions": [
+    "amazon_product",
+    "amazon_search",
+    "google_search",
+    "instagram_comment_replies",
+    "instagram_post",
+    "instagram_post_comments",
+    "instagram_profile",
+    "instagram_search_hashtags",
+    "instagram_search_users",
+    "instagram_user_followers",
+    "instagram_user_followings",
+    "instagram_user_posts",
+    "instagram_user_reels",
+    "instagram_user_stories",
+    "instagram_user_tagged",
+    "reddit_post",
+    "reddit_search",
+    "tiktok_comment_replies",
+    "tiktok_hashtag",
+    "tiktok_hashtag_videos",
+    "tiktok_profile",
+    "tiktok_search_users",
+    "tiktok_search_videos",
+    "tiktok_user_followers",
+    "tiktok_user_followings",
+    "tiktok_user_posts",
+    "tiktok_video",
+    "tiktok_video_comments",
+    "walmart_product",
+    "walmart_search",
+    "youtube_metadata",
+    "youtube_search"
+   ],
+   "optional_imports": [
+    "scavio"
+   ]
+  },
+  "agno.scheduler": {
+   "classes": [
+    "SchedulerTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "acreate_schedule",
+    "adelete_schedule",
+    "adisable_schedule",
+    "aenable_schedule",
+    "aget_schedule",
+    "aget_schedule_runs",
+    "alist_schedules",
+    "atrigger_schedule",
+    "create_schedule",
+    "delete_schedule",
+    "disable_schedule",
+    "enable_schedule",
+    "get_schedule",
+    "get_schedule_runs",
+    "list_schedules",
+    "trigger_schedule"
+   ],
+   "optional_imports": []
+  },
+  "agno.scrapegraph": {
+   "classes": [
+    "ScrapeGraphTools"
+   ],
+   "env_vars": [
+    "SGAI_API_KEY"
+   ],
+   "functions": [
+    "crawl",
+    "markdownify",
+    "scrape",
+    "searchscraper",
+    "smartscraper"
+   ],
+   "optional_imports": [
+    "scrapegraph_py"
+   ]
+  },
+  "agno.searchapi": {
+   "classes": [
+    "SearchApiTools"
+   ],
+   "env_vars": [
+    "SEARCHAPI_API_KEY"
+   ],
+   "functions": [
+    "search_google",
+    "search_images",
+    "search_news",
+    "search_youtube"
+   ],
+   "optional_imports": []
+  },
+  "agno.searxng": {
+   "classes": [
+    "Searxng"
+   ],
+   "env_vars": [],
+   "functions": [
+    "image_search",
+    "it_search",
+    "map_search",
+    "music_search",
+    "news_search",
+    "science_search",
+    "search_web",
+    "video_search"
+   ],
+   "optional_imports": []
+  },
+  "agno.seltz": {
+   "classes": [
+    "SeltzTools"
+   ],
+   "env_vars": [
+    "SELTZ_API_KEY"
+   ],
+   "functions": [
+    "search_seltz"
+   ],
+   "optional_imports": [
+    "seltz"
+   ]
+  },
+  "agno.serpapi": {
+   "classes": [
+    "SerpApiTools"
+   ],
+   "env_vars": [
+    "SERP_API_KEY"
+   ],
+   "functions": [
+    "search_google",
+    "search_youtube"
+   ],
+   "optional_imports": [
+    "serpapi"
+   ]
+  },
+  "agno.serper": {
+   "classes": [
+    "SerperTools"
+   ],
+   "env_vars": [
+    "SERPER_API_KEY"
+   ],
+   "functions": [
+    "scrape_webpage",
+    "search_news",
+    "search_scholar",
+    "search_web"
+   ],
+   "optional_imports": []
+  },
+  "agno.serply": {
+   "classes": [
+    "SerplyTools"
+   ],
+   "env_vars": [
+    "SERPLY_API_KEY"
+   ],
+   "functions": [
+    "search_news",
+    "search_scholar",
+    "search_web"
+   ],
+   "optional_imports": []
+  },
+  "agno.shell": {
+   "classes": [
+    "ShellTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "run_shell_command"
+   ],
+   "optional_imports": []
+  },
+  "agno.shopify": {
+   "classes": [
+    "ShopifyTools"
+   ],
+   "env_vars": [
+    "SHOPIFY_ACCESS_TOKEN",
+    "SHOPIFY_SHOP_NAME"
+   ],
+   "functions": [
+    "get_average_order_value",
+    "get_customer_order_history",
+    "get_inventory_levels",
+    "get_low_stock_products",
+    "get_order_analytics",
+    "get_orders",
+    "get_product_sales_breakdown",
+    "get_products",
+    "get_products_bought_together",
+    "get_repeat_customers",
+    "get_sales_by_date_range",
+    "get_sales_trends",
+    "get_shop_info",
+    "get_top_selling_products"
+   ],
+   "optional_imports": []
+  },
+  "agno.slack": {
+   "classes": [
+    "SlackTools"
+   ],
+   "env_vars": [
+    "SLACK_TOKEN",
+    "SLACK_USER_TOKEN"
+   ],
+   "functions": [
+    "download_file",
+    "get_channel_history",
+    "get_channel_info",
+    "get_thread",
+    "get_user_info",
+    "list_channels",
+    "list_users",
+    "search_messages",
+    "search_workspace",
+    "send_message",
+    "send_message_thread",
+    "upload_file"
+   ],
+   "optional_imports": [
+    "slack_sdk"
+   ]
+  },
+  "agno.sleep": {
+   "classes": [
+    "SleepTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "sleep"
+   ],
+   "optional_imports": []
+  },
+  "agno.smallest": {
+   "classes": [
+    "SmallestTools"
+   ],
+   "env_vars": [
+    "SMALLEST_API_KEY"
+   ],
+   "functions": [
+    "get_voices",
+    "text_to_speech"
+   ],
+   "optional_imports": []
+  },
+  "agno.sofya": {
+   "classes": [
+    "SofyaTools"
+   ],
+   "env_vars": [
+    "SOFYA_API_KEY",
+    "SOFYA_BASE_URL"
+   ],
+   "functions": [
+    "extract_url_content",
+    "research",
+    "search_web"
+   ],
+   "optional_imports": []
+  },
+  "agno.spider": {
+   "classes": [
+    "SpiderTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "crawl",
+    "scrape",
+    "search_web"
+   ],
+   "optional_imports": [
+    "spider"
+   ]
+  },
+  "agno.spotify": {
+   "classes": [
+    "SpotifyTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "add_tracks_to_playlist",
+    "create_playlist",
+    "get_album_tracks",
+    "get_artist_top_tracks",
+    "get_current_user",
+    "get_currently_playing",
+    "get_my_top_artists",
+    "get_my_top_tracks",
+    "get_playlist",
+    "get_track_recommendations",
+    "get_user_playlists",
+    "play_track",
+    "remove_tracks_from_playlist",
+    "search_albums",
+    "search_artists",
+    "search_playlists",
+    "search_tracks",
+    "update_playlist_details"
+   ],
+   "optional_imports": []
+  },
+  "agno.sql": {
+   "classes": [
+    "SQLTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "describe_table",
+    "list_tables",
+    "run_sql_query"
+   ],
+   "optional_imports": [
+    "sqlalchemy"
+   ]
+  },
+  "agno.streamlit.components": {
+   "classes": [],
+   "env_vars": [
+    "OPENAI_API_KEY"
+   ],
+   "functions": [],
+   "optional_imports": [
+    "streamlit"
+   ]
+  },
+  "agno.studio": {
+   "classes": [
+    "StudioTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "aarchive_component",
+    "acreate_agent",
+    "acreate_schedule",
+    "acreate_team",
+    "acreate_workflow",
+    "adelete_version",
+    "aedit_agent",
+    "aedit_team",
+    "aedit_workflow",
+    "aget_component",
+    "alist_components",
+    "alist_functions",
+    "alist_knowledge",
+    "alist_learning",
+    "alist_models",
+    "alist_schemas",
+    "alist_tools",
+    "alist_versions",
+    "apublish_component",
+    "archive_component",
+    "arestore_component",
+    "arun_agent",
+    "arun_team",
+    "arun_workflow",
+    "aset_current_version",
+    "aupdate_schedule",
+    "avalidate_component",
+    "create_agent",
+    "create_schedule",
+    "create_team",
+    "create_workflow",
+    "delete_version",
+    "edit_agent",
+    "edit_team",
+    "edit_workflow",
+    "get_component",
+    "list_components",
+    "list_functions",
+    "list_knowledge",
+    "list_learning",
+    "list_models",
+    "list_schemas",
+    "list_tools",
+    "list_versions",
+    "publish_component",
+    "restore_component",
+    "run_agent",
+    "run_team",
+    "run_workflow",
+    "set_current_version",
+    "update_schedule",
+    "validate_component"
+   ],
+   "optional_imports": []
+  },
+  "agno.studio_runner": {
+   "classes": [
+    "StudioRunnerTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "alist_agents",
+    "alist_teams",
+    "alist_workflows",
+    "arun_agent",
+    "arun_team",
+    "arun_workflow",
+    "list_agents",
+    "list_teams",
+    "list_workflows",
+    "run_agent",
+    "run_team",
+    "run_workflow"
+   ],
+   "optional_imports": []
+  },
+  "agno.studio_schema": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.superserve": {
+   "classes": [
+    "SuperserveTools"
+   ],
+   "env_vars": [
+    "SUPERSERVE_API_KEY",
+    "SUPERSERVE_BASE_URL"
+   ],
+   "functions": [
+    "aattach_secret",
+    "acreate_file",
+    "adelete_file",
+    "adetach_secret",
+    "adownload_directory",
+    "aget_preview_url",
+    "aget_sandbox_info",
+    "alist_files",
+    "alist_sandboxes",
+    "apause_sandbox",
+    "aread_file",
+    "aresume_sandbox",
+    "arun_command",
+    "arun_python_code",
+    "ashutdown_sandbox",
+    "ashutdown_sandbox_by_id",
+    "attach_secret",
+    "create_file",
+    "delete_file",
+    "detach_secret",
+    "download_directory",
+    "get_preview_url",
+    "get_sandbox_info",
+    "list_files",
+    "list_sandboxes",
+    "pause_sandbox",
+    "read_file",
+    "resume_sandbox",
+    "run_command",
+    "run_python_code",
+    "shutdown_sandbox",
+    "shutdown_sandbox_by_id"
+   ],
+   "optional_imports": [
+    "superserve"
+   ]
+  },
+  "agno.tavily": {
+   "classes": [
+    "TavilyTools"
+   ],
+   "env_vars": [
+    "TAVILY_API_BASE_URL",
+    "TAVILY_API_KEY"
+   ],
+   "functions": [
+    "extract_url_content",
+    "web_search_using_tavily",
+    "web_search_with_tavily"
+   ],
+   "optional_imports": [
+    "tavily"
+   ]
+  },
+  "agno.telegram": {
+   "classes": [
+    "TelegramTools"
+   ],
+   "env_vars": [
+    "TELEGRAM_CHAT_ID",
+    "TELEGRAM_TOKEN"
+   ],
+   "functions": [
+    "delete_message",
+    "edit_message",
+    "get_chat",
+    "get_file",
+    "pin_message",
+    "react_with_emoji",
+    "send_animation",
+    "send_audio",
+    "send_document",
+    "send_message",
+    "send_photo",
+    "send_sticker",
+    "send_video"
+   ],
+   "optional_imports": [
+    "telebot"
+   ]
+  },
+  "agno.todoist": {
+   "classes": [
+    "TodoistTools"
+   ],
+   "env_vars": [
+    "TODOIST_API_TOKEN"
+   ],
+   "functions": [
+    "close_task",
+    "create_task",
+    "delete_task",
+    "get_active_tasks",
+    "get_projects",
+    "get_task",
+    "update_task"
+   ],
+   "optional_imports": [
+    "todoist_api_python"
+   ]
+  },
+  "agno.tool_registry": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.toolkit": {
+   "classes": [],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.trafilatura": {
+   "classes": [
+    "TrafilaturaTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "crawl_website",
+    "extract_batch",
+    "extract_metadata_only",
+    "extract_text",
+    "html_to_text"
+   ],
+   "optional_imports": [
+    "trafilatura"
+   ]
+  },
+  "agno.trello": {
+   "classes": [
+    "TrelloTools"
+   ],
+   "env_vars": [
+    "TRELLO_API_KEY",
+    "TRELLO_API_SECRET",
+    "TRELLO_TOKEN"
+   ],
+   "functions": [
+    "create_board",
+    "create_card",
+    "create_list",
+    "get_board_lists",
+    "get_cards",
+    "list_boards",
+    "move_card"
+   ],
+   "optional_imports": [
+    "trello"
+   ]
+  },
+  "agno.twelvelabs": {
+   "classes": [
+    "TwelveLabsTools"
+   ],
+   "env_vars": [
+    "TWELVELABS_API_KEY"
+   ],
+   "functions": [
+    "analyze_video",
+    "embed_text",
+    "embed_video"
+   ],
+   "optional_imports": [
+    "twelvelabs"
+   ]
+  },
+  "agno.twilio": {
+   "classes": [
+    "TwilioTools"
+   ],
+   "env_vars": [
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_API_KEY",
+    "TWILIO_API_SECRET",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_EDGE",
+    "TWILIO_REGION"
+   ],
+   "functions": [
+    "get_call_details",
+    "list_messages",
+    "send_sms"
+   ],
+   "optional_imports": [
+    "twilio"
+   ]
+  },
+  "agno.unsplash": {
+   "classes": [
+    "UnsplashTools"
+   ],
+   "env_vars": [
+    "UNSPLASH_ACCESS_KEY"
+   ],
+   "functions": [
+    "download_photo",
+    "get_photo",
+    "get_random_photo",
+    "search_photos"
+   ],
+   "optional_imports": []
+  },
+  "agno.user_control_flow": {
+   "classes": [
+    "UserControlFlowTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "get_user_input"
+   ],
+   "optional_imports": []
+  },
+  "agno.user_feedback": {
+   "classes": [
+    "UserFeedbackTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "ask_user"
+   ],
+   "optional_imports": []
+  },
+  "agno.valyu": {
+   "classes": [
+    "ValyuTools"
+   ],
+   "env_vars": [
+    "VALYU_API_KEY"
+   ],
+   "functions": [
+    "search_academic_sources",
+    "search_web",
+    "search_within_paper"
+   ],
+   "optional_imports": [
+    "valyu"
+   ]
+  },
+  "agno.visualization": {
+   "classes": [
+    "VisualizationTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "create_bar_chart",
+    "create_histogram",
+    "create_line_chart",
+    "create_pie_chart",
+    "create_scatter_plot"
+   ],
+   "optional_imports": []
+  },
+  "agno.wavespeed": {
+   "classes": [
+    "WaveSpeedTools"
+   ],
+   "env_vars": [
+    "WAVESPEED_API_KEY"
+   ],
+   "functions": [
+    "generate_image",
+    "generate_video"
+   ],
+   "optional_imports": [
+    "wavespeed"
+   ]
+  },
+  "agno.webbrowser": {
+   "classes": [
+    "WebBrowserTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "open_page"
+   ],
+   "optional_imports": []
+  },
+  "agno.webex": {
+   "classes": [
+    "WebexTools"
+   ],
+   "env_vars": [
+    "WEBEX_ACCESS_TOKEN"
+   ],
+   "functions": [
+    "list_rooms",
+    "send_message"
+   ],
+   "optional_imports": [
+    "webexpythonsdk"
+   ]
+  },
+  "agno.websearch": {
+   "classes": [
+    "WebSearchTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "search_news",
+    "web_search"
+   ],
+   "optional_imports": [
+    "ddgs"
+   ]
+  },
+  "agno.website": {
+   "classes": [
+    "WebsiteTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "add_website_to_knowledge",
+    "read_url"
+   ],
+   "optional_imports": []
+  },
+  "agno.webtools": {
+   "classes": [
+    "WebTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "expand_url"
+   ],
+   "optional_imports": []
+  },
+  "agno.whatsapp": {
+   "classes": [
+    "WhatsAppTools"
+   ],
+   "env_vars": [
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID",
+    "WHATSAPP_RECIPIENT_WAID",
+    "WHATSAPP_VERSION"
+   ],
+   "functions": [
+    "send_document",
+    "send_image",
+    "send_list_message",
+    "send_location",
+    "send_reaction",
+    "send_reply_buttons",
+    "send_template_message",
+    "send_text_message"
+   ],
+   "optional_imports": []
+  },
+  "agno.wikipedia": {
+   "classes": [
+    "WikipediaTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "search_wikipedia",
+    "search_wikipedia_and_update_knowledge_base"
+   ],
+   "optional_imports": [
+    "wikipedia"
+   ]
+  },
+  "agno.workflow": {
+   "classes": [
+    "WorkflowTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "analyze",
+    "async_analyze",
+    "async_run_workflow",
+    "async_think",
+    "run_workflow",
+    "think"
+   ],
+   "optional_imports": []
+  },
+  "agno.workspace": {
+   "classes": [
+    "Workspace"
+   ],
+   "env_vars": [],
+   "functions": [],
+   "optional_imports": []
+  },
+  "agno.x": {
+   "classes": [
+    "XTools"
+   ],
+   "env_vars": [
+    "X_ACCESS_TOKEN",
+    "X_ACCESS_TOKEN_SECRET",
+    "X_BEARER_TOKEN",
+    "X_CONSUMER_KEY",
+    "X_CONSUMER_SECRET"
+   ],
+   "functions": [
+    "create_post",
+    "get_home_timeline",
+    "get_user_info",
+    "reply_to_post",
+    "search_posts",
+    "send_dm"
+   ],
+   "optional_imports": [
+    "tweepy"
+   ]
+  },
+  "agno.xai_auth": {
+   "classes": [
+    "XAIAuth"
+   ],
+   "env_vars": [
+    "XAI_TOKEN_ENCRYPTION_KEY"
+   ],
+   "functions": [
+    "acheck_supergrok_login",
+    "asign_in_with_supergrok",
+    "check_supergrok_login",
+    "sign_in_with_supergrok"
+   ],
+   "optional_imports": []
+  },
+  "agno.yfinance": {
+   "classes": [
+    "YFinanceTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "get_analyst_recommendations",
+    "get_company_info",
+    "get_company_news",
+    "get_current_stock_price",
+    "get_historical_stock_prices",
+    "get_income_statements",
+    "get_key_financial_ratios",
+    "get_stock_fundamentals",
+    "get_technical_indicators"
+   ],
+   "optional_imports": [
+    "yfinance"
+   ]
+  },
+  "agno.youcom": {
+   "classes": [
+    "YouTools"
+   ],
+   "env_vars": [
+    "YDC_API_KEY",
+    "YDC_BASE_URL"
+   ],
+   "functions": [
+    "you_search"
+   ],
+   "optional_imports": []
+  },
+  "agno.youtube": {
+   "classes": [
+    "YouTubeTools"
+   ],
+   "env_vars": [],
+   "functions": [
+    "get_video_timestamps",
+    "get_youtube_video_captions",
+    "get_youtube_video_data"
+   ],
+   "optional_imports": [
+    "youtube_transcript_api"
+   ]
+  },
+  "agno.zendesk": {
+   "classes": [
+    "ZendeskTools"
+   ],
+   "env_vars": [
+    "ZENDESK_COMPANY_NAME",
+    "ZENDESK_PASSWORD",
+    "ZENDESK_USERNAME"
+   ],
+   "functions": [
+    "search_zendesk"
+   ],
+   "optional_imports": [
+    "requests"
+   ]
+  },
+  "agno.zep": {
+   "classes": [
+    "ZepAsyncTools",
+    "ZepTools"
+   ],
+   "env_vars": [
+    "ZEP_API_KEY"
+   ],
+   "functions": [
+    "add_zep_message",
+    "get_zep_memory",
+    "initialize",
+    "search_zep_memory"
+   ],
+   "optional_imports": [
+    "zep_cloud"
+   ]
+  },
+  "agno.zoom": {
+   "classes": [
+    "ZoomTools"
+   ],
+   "env_vars": [
+    "ZOOM_ACCOUNT_ID",
+    "ZOOM_CLIENT_ID",
+    "ZOOM_CLIENT_SECRET"
+   ],
+   "functions": [
+    "delete_meeting",
+    "get_access_token",
+    "get_meeting",
+    "get_meeting_recordings",
+    "get_upcoming_meetings",
+    "list_meetings",
+    "schedule_meeting"
+   ],
+   "optional_imports": []
+  }
+ }
+}
