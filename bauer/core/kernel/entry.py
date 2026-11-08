@@ -167,8 +167,10 @@ def continue_governed(
         return _sem_kernel(executor, dict(extra_input or {}))
 
     ultimo: dict[str, Any] = {}
+    rodou: list[int] = []
 
     def _wrapped(payload: dict[str, Any]) -> dict[str, Any]:
+        rodou.append(1)
         try:
             out = executor(payload) or {}
         except KeyboardInterrupt as exc:
@@ -182,6 +184,11 @@ def continue_governed(
     return GovernedResult(
         status=krun.status, run_id=krun.run_id, output=krun.output,
         error=krun.error, governed=True, result=dict(ultimo),
+        # K08: a continuação revalida kill-switch/policy antes do executor; o
+        # front-end precisa distinguir "barrado antes de começar" de "rodou".
+        blocked_before_start=not rodou,
+        policy_reason=getattr(krun, "policy_reason", None),
+        approval_id=getattr(krun, "approval_id", None),
     )
 
 
