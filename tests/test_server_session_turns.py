@@ -12,6 +12,13 @@ from bauer.server import create_app
 from bauer.session_store import SessionStore
 from bauer.tool_router import ToolRouter
 
+# Rede de segurança contra travamento, não asserção de velocidade (ver
+# DEADLINE_ANTI_TRAVAMENTO em conftest.py). O `/loop` governado termina com
+# os gates de qualidade (subprocessos git) antes de liberar a sessão, e no
+# runner Windows isso passou dos 5s. O 0.1s negativo abaixo continua: ele
+# prova que o segundo turno NÃO entra enquanto o primeiro é dono da sessão.
+ANTI_HANG = 30.0
+
 
 def make_app(tmp_path, monkeypatch, turn, *, governed=False):
     monkeypatch.setattr("bauer.agent.run_one_turn", turn)
@@ -38,7 +45,7 @@ def test_same_session_preserves_both_turns(tmp_path, monkeypatch, governed, firs
         content = ctx.messages[-1]["content"]
         if "FIRST" in content:
             first_entered.set()
-            assert release_first.wait(5)
+            assert release_first.wait(ANTI_HANG)
             answer = "answer-FIRST"
         else:
             second_entered.set()
@@ -62,14 +69,14 @@ def test_same_session_preserves_both_turns(tmp_path, monkeypatch, governed, firs
 
         a = pool.submit(first)
         try:
-            assert first_entered.wait(5)
+            assert first_entered.wait(ANTI_HANG)
             b = pool.submit(client.post, "/chat", json={"message": "SECOND", "session_id": "shared"})
             # The second executor cannot enter while the first owns the session.
             assert not second_entered.wait(0.1)
         finally:
             release_first.set()
-        assert a.result(timeout=5).status_code == 200
-        assert b.result(timeout=5).status_code == 200
+        assert a.result(timeout=ANTI_HANG).status_code == 200
+        assert b.result(timeout=ANTI_HANG).status_code == 200
 
     messages = SessionStore(tmp_path / "sessions").load("shared")
     assert any(m["content"] == "answer-FIRST" for m in messages)
@@ -86,7 +93,7 @@ def test_distinct_sessions_remain_parallel(tmp_path, monkeypatch):
     def turn(ctx, *_args, **_kwargs):
         if ctx.messages[-1]["content"] == "FIRST":
             first_entered.set()
-            assert release_first.wait(5)
+            assert release_first.wait(ANTI_HANG)
         else:
             second_entered.set()
         ctx.add_assistant("ok")
@@ -96,13 +103,13 @@ def test_distinct_sessions_remain_parallel(tmp_path, monkeypatch):
     with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(client.post, "/chat", json={"message": "FIRST", "session_id": "a"})
         try:
-            assert first_entered.wait(5)
+            assert first_entered.wait(ANTI_HANG)
             b = pool.submit(client.post, "/chat", json={"message": "SECOND", "session_id": "b"})
-            assert second_entered.wait(5)
-            assert b.result(timeout=5).status_code == 200
+            assert second_entered.wait(ANTI_HANG)
+            assert b.result(timeout=ANTI_HANG).status_code == 200
         finally:
             release_first.set()
-        assert a.result(timeout=5).status_code == 200
+        assert a.result(timeout=ANTI_HANG).status_code == 200
 
 
 def test_session_save_is_atomic_on_serialization_failure(tmp_path, monkeypatch):
