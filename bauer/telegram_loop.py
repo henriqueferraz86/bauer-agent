@@ -415,7 +415,8 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
             max_wall_seconds=limits.max_minutes * 60,
             max_tool_calls=limits.max_tool_calls,
         )
-        stop_reason, last_text, all_tools, rounds_done = "error", "", [], 0
+        all_tools: list[dict] = []
+        stop_reason, last_text, rounds_done = "error", "", 0
 
         def _turn():
             return run_one_turn_with_fallback(
