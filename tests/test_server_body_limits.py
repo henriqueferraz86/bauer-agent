@@ -1,8 +1,9 @@
 """Endpoint validation limits for ``bauer serve`` request bodies.
 
 These tests exercise FastAPI's 422 response at the HTTP boundary. They cover
-Pydantic validation limits only; the raw request body is still materialized by
-the ASGI stack before validation.
+Pydantic validation limits only. The raw byte limit, applied before any parser,
+lives in ``bauer/server_body_limit.py`` (WEB-10) and is tested in
+``test_server_body_limit_asgi.py``.
 """
 
 from __future__ import annotations
