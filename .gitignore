@@ -133,3 +133,5 @@ graphify-out/
 !specs/sprint-46-telegram-approval/**
 !specs/sprint-59-security-confinement/
 !specs/sprint-59-security-confinement/**
+!specs/sprint-61-security-execution-boundaries/
+!specs/sprint-61-security-execution-boundaries/**

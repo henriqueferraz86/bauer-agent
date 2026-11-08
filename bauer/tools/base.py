@@ -7,6 +7,22 @@ para preservar `from bauer.tool_router import ToolError, SandboxError, DryRunRes
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
+# T01 (sprint 61): chamada governada interna (ex.: cronjob run → run_command/
+# execute_code). Passa por TODOS os gates do ToolRouter.execute, mas não conta
+# de novo no max_tool_calls — a tool externa que a originou já contou.
+INNER_GOVERNED_CALL: ContextVar[bool] = ContextVar("inner_governed_call", default=False)
+
+
+def execute_governed(router, name: str, args: dict) -> str:
+    """Executa ``name`` pelo dispatcher completo como chamada interna."""
+    token = INNER_GOVERNED_CALL.set(True)
+    try:
+        return router.execute({"action": name, "args": args})
+    finally:
+        INNER_GOVERNED_CALL.reset(token)
+
 
 class ToolError(Exception):
     """Erro de execução de tool com mensagem legível."""

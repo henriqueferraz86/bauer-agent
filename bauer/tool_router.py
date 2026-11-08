@@ -67,6 +67,7 @@ from pathlib import Path
 
 from .tool_policy import load_tool_policy
 from .tool_schema import parameters_from_descriptions
+from .tool_effects import call_has_side_effects as _call_has_side_effects
 from .runtime_ids import get_runtime_ids
 from .runtime_ids import reset_runtime_ids, set_runtime_ids  # noqa: F401 - API pública legada
 from .tools.agent_misc import MiscToolsMixin
@@ -122,6 +123,7 @@ except ImportError:
 # circular com os mixins. Re-exportadas aqui — `from bauer.tool_router import
 # ToolError, SandboxError, DryRunResult` continua funcionando.
 from .tools.base import DryRunResult, SandboxError, ToolError  # noqa: E402
+from .tools.base import INNER_GOVERNED_CALL as _INNER_GOVERNED_CALL  # noqa: E402
 
 # Níveis de permissão: do menos ao mais privilegiado
 _PERMISSION_LEVELS = ("read", "write", "execute", "network", "system")
@@ -148,11 +150,11 @@ _TOOL_SECURITY: dict[str, dict] = {
     "skill_view":     {"permission": "read",    "risk": "low",    "approval": False},
     "app_factory_status": {"permission": "read", "risk": "low",   "approval": False},
     "app_factory_score":  {"permission": "read", "risk": "low",   "approval": False},
-    "verify_app":     {"permission": "shell",   "risk": "medium", "approval": False},
-    "memory":         {"permission": "read",    "risk": "low",    "approval": False},
+    "verify_app":     {"permission": "execute", "risk": "medium", "approval": False},
+    # memory set/delete grava .bauer_memory.json (impacto máximo = write).
+    "memory":         {"permission": "write",   "risk": "low",    "approval": False},
     "session_search": {"permission": "read",    "risk": "low",    "approval": False},
-    "kanban_list":    {"permission": "read",    "risk": "low",    "approval": False},
-    "kanban_show":    {"permission": "read",    "risk": "low",    "approval": False},
+    "kanban_read":    {"permission": "read",    "risk": "low",    "approval": False},
     # process START executa comando arbitrário → gate via command-guards +
     # ShellRunner.validate (ver execute()). approval LLM fica False p/ não
     # disparar em list/poll/kill/log (inofensivos); o start já é barrado pelos
@@ -175,14 +177,12 @@ _TOOL_SECURITY: dict[str, dict] = {
     "delete_file":    {"permission": "write",   "risk": "high",   "approval": True},
     "skill_manage":   {"permission": "write",   "risk": "low",    "approval": False},
     "app_factory_init": {"permission": "write", "risk": "low",    "approval": False},
-    "kanban_create":  {"permission": "write",   "risk": "low",    "approval": False},
-    "kanban_complete":{"permission": "write",   "risk": "low",    "approval": False},
-    "kanban_block":   {"permission": "write",   "risk": "low",    "approval": False},
-    "kanban_unblock": {"permission": "write",   "risk": "low",    "approval": False},
-    "kanban_heartbeat":{"permission":"write",   "risk": "low",    "approval": False},
-    "kanban_comment": {"permission": "write",   "risk": "low",    "approval": False},
-    "kanban_link":    {"permission": "write",   "risk": "low",    "approval": False},
-    "cronjob":        {"permission": "write",   "risk": "medium", "approval": False},
+    # Plano 043 consolidou os nove kanban_* em kanban_read/kanban_write; as
+    # entradas antigas eram órfãs e kanban_write caía no fallback read/low.
+    "kanban_write":   {"permission": "write",   "risk": "low",    "approval": False},
+    # cronjob run executa o comando do job: o gate real é o da tool interna
+    # (run_command/execute_code), aplicado pela chamada governada (T01).
+    "cronjob":        {"permission": "execute", "risk": "high",   "approval": False},
     # Execução de código — isolada mas com efeitos
     "execute_code":   {"permission": "execute", "risk": "medium", "approval": False},
     "run_command":    {"permission": "execute", "risk": "high",   "approval": True},
@@ -223,8 +223,6 @@ _TOOL_SECURITY: dict[str, dict] = {
     # Redes sociais (Postiz) — publicação é pública e praticamente irreversível
     "social_list_channels": {"permission": "network", "risk": "low",  "approval": False},
     "social_post":          {"permission": "network", "risk": "high", "approval": True},
-    # Sistema
-    "video_generate": {"permission": "network", "risk": "low",    "approval": False},
 }
 
 # Per-tool hard timeout in seconds (enforced via ThreadPoolExecutor).
@@ -1382,9 +1380,10 @@ class ToolRouter(
                     "name": name,
                     "description": ext_def.description,
                     "args": ext_def.args,
-                    "permission_level": ext_def.permission,
-                    "risk_level": ext_def.risk,
-                    "requires_approval": ext_def.requires_approval,
+                    "permission_level": self.tool_security(name)["permission"],
+                    "risk_level": self.tool_security(name)["risk"],
+                    "requires_approval": self.tool_security(name)["approval"],
+                    "side_effects": ext_def.side_effects,
                     "source": "external",
                     "allowed_contexts": self._allowed_contexts_for_tool(name),
                     "context_allowed": self._is_tool_allowed_in_context(name),
@@ -1396,7 +1395,7 @@ class ToolRouter(
         if name not in self._tools:
             raise ToolError(f"Tool desconhecida: '{name}'")
         info = self._tools[name]
-        sec = _TOOL_SECURITY.get(name, {"permission": "read", "risk": "low", "approval": False})
+        sec = self.tool_security(name)
         return {
             "name": name,
             "description": info["description"],
@@ -1411,8 +1410,13 @@ class ToolRouter(
         }
 
     def tool_security(self, name: str) -> dict:
-        """Retorna metadados de segurança de uma tool."""
-        return _TOOL_SECURITY.get(name, {"permission": "read", "risk": "low", "approval": False})
+        """Segurança efetiva de uma tool — a mesma usada pelo dispatcher (T08).
+
+        Extensão do ``ToolRegistry`` usa a própria declaração. Override de
+        built-in nunca rebaixa: vale o maior nível de cada campo e a aprovação
+        de qualquer um dos dois.
+        """
+        return _effective_security(name)
 
     def has_capability_tool(self, name: str) -> bool:
         """Whether an Agno capability action is registered on THIS router."""
@@ -1523,7 +1527,7 @@ class ToolRouter(
             and getattr(control, "channel", None) == "telegram"
             and getattr(control, "private_chat", False) is True
         )
-        operation = _policy_operation_for_tool(tool_name)
+        operation = _policy_operation_for_tool(tool_name) or _extension_approval_operation(tool_name)
         if operation is None:
             return
         approval_id = str(args.get("approval_id") or "")
@@ -1761,6 +1765,7 @@ class ToolRouter(
 
         # Resolve função — registry externo tem prioridade sobre built-ins
         _ext_fn = None
+        _ext_def = None
         try:
             from .tool_registry import ToolRegistry as _ToolRegistry
             _ext_def = _ToolRegistry.get().get_tool(name)
@@ -1823,8 +1828,10 @@ class ToolRouter(
         )
         approved_command = args.get("command") if approved_call and approved_shell_tool else None
 
-        # LIMITS-001: enforça max_tool_calls por sessão
-        self._tool_call_count += 1
+        # LIMITS-001: enforça max_tool_calls por sessão (chamada interna
+        # governada já foi contada pela tool externa que a originou).
+        if not _INNER_GOVERNED_CALL.get():
+            self._tool_call_count += 1
         if self._tool_call_count > self._max_tool_calls:
             raise ToolError(
                 f"Limite de {self._max_tool_calls} chamadas de tool por sessão atingido. "
@@ -1846,17 +1853,16 @@ class ToolRouter(
                         f"[BLOCKED] {_guard_dec.scope.upper()}: {_guard_dec.reason}"
                     )
 
-        # SAFETY-002: modo dry_run — não executa side effects
-        _DRY_RUN_SIDE_EFFECTS = frozenset({
-            "write_file", "append_file", "patch", "delete_file", "move_file", "create_dir",
-            "run_command", "execute_code", "web_fetch", "http_request",
-            "browser_navigate", "browser_click", "browser_type", "browser_press",
-            "browser_dialog", "browser_cdp",
-            "image_generate", "text_to_speech", "delegate_task",
-            "cronjob",  # apenas action=run
-        })
-        if self._dry_run and name in _DRY_RUN_SIDE_EFFECTS:
-            sec = _TOOL_SECURITY.get(name, {})
+        # SAFETY-002 / T06: dry_run simula TODA chamada com efeito, decidida por
+        # tool e por ação em tool_effects (default seguro p/ extensões), antes
+        # do handler e antes de qualquer gate que dependa de "não dry_run".
+        if self._dry_run and _call_has_side_effects(
+            name, args, external=_ext_def,
+            capability_permission=(
+                _TOOL_SECURITY.get(name, {}).get("permission") if name in _CAPABILITY_TOOLS else None
+            ),
+        ):
+            sec = self.tool_security(name)
             return str(DryRunResult(
                 tool=name,
                 summary=(
@@ -1910,7 +1916,7 @@ class ToolRouter(
         # (retornando string em vez de levantar ToolError). Era a raiz de um
         # flake de CI onde delete_file/run_command "DID NOT RAISE ToolError"
         # dependendo do config.yaml ambiente e da resposta do modelo.
-        _sec = _TOOL_SECURITY.get(name, {})
+        _sec = self.tool_security(name)
         if _sec.get("approval") and not self._dry_run and self._llm_client is not None:
             try:
                 checkpoint_execution()
@@ -2123,10 +2129,11 @@ class ToolRouter(
     ) -> None:
         if self._event_bus is None:
             return
+        _security = self.tool_security(tool_name)
         data = {
             "args": _telemetry_args(tool_name, args),
-            "permission": _TOOL_SECURITY.get(tool_name, {}).get("permission"),
-            "risk": _TOOL_SECURITY.get(tool_name, {}).get("risk"),
+            "permission": _security.get("permission"),
+            "risk": _security.get("risk"),
         }
         capability_meta = _CAPABILITY_TOOLS.get(tool_name)
         if capability_meta is not None:
@@ -2252,6 +2259,48 @@ class ToolRouter(
             raise ToolError("A action JSON deve ser um objeto ({{...}}), nao lista ou valor simples.")
 
         return result
+
+
+_DEFAULT_SECURITY = {"permission": "read", "risk": "low", "approval": False}
+
+
+def _level(order: tuple[str, ...], value: str) -> int:
+    # Nível desconhecido conta como o mais alto (nunca rebaixa por typo).
+    return order.index(value) if value in order else len(order)
+
+
+def _effective_security(name: str) -> dict:
+    """Segurança efetiva (built-in, extensão ou override) — sprint 61, T08."""
+    builtin = _TOOL_SECURITY.get(name)
+    try:
+        from .tool_registry import ToolRegistry as _ToolRegistry
+        ext = _ToolRegistry.get().get_tool(name)
+    except ImportError:
+        ext = None
+    if ext is None:
+        return dict(builtin or _DEFAULT_SECURITY)
+    declared = {"permission": str(ext.permission), "risk": str(ext.risk),
+                "approval": bool(ext.requires_approval)}
+    if builtin is None:
+        return declared
+    return {
+        "permission": max(builtin["permission"], declared["permission"],
+                          key=lambda v: _level(_PERMISSION_LEVELS, v)),
+        "risk": max(builtin["risk"], declared["risk"], key=lambda v: _level(_RISK_LEVELS, v)),
+        "approval": bool(builtin["approval"]) or declared["approval"],
+    }
+
+
+def _extension_approval_operation(tool_name: str) -> str | None:
+    """T08: extensão do ToolRegistry com ``requires_approval=True`` (ou override
+    que herda aprovação) passa pela policy ``tool.approval`` (default ``ask``)."""
+    try:
+        from .tool_registry import ToolRegistry as _ToolRegistry
+        if _ToolRegistry.get().get_tool(tool_name) is None:
+            return None
+    except ImportError:
+        return None
+    return "tool.approval" if _effective_security(tool_name).get("approval") else None
 
 
 def _policy_operation_for_tool(tool_name: str) -> str | None:

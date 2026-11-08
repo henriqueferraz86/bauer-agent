@@ -1,14 +1,15 @@
 """Cronjob tools: agenda e roda jobs recorrentes (.bauer_cron.json).
 
-Mixin herdado por ToolRouter. _cronjob (action=run) dispara via
-self._execute_code, resolvido por heranca de ExecToolsMixin.
+Mixin herdado por ToolRouter. _cronjob (action=run) executa o comando pelo
+dispatcher governado (``execute_governed`` → run_command/execute_code), com
+os mesmos gates de uma chamada direta (sprint 61, T01).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .base import ToolError, load_internal_json, save_internal_json
+from .base import ToolError, execute_governed, load_internal_json, save_internal_json
 
 
 class CronjobToolsMixin:
@@ -73,6 +74,11 @@ class CronjobToolsMixin:
                 raise ToolError("cronjob create requer 'schedule'.")
             if mode not in ("python", "shell"):
                 raise ToolError("cronjob: 'mode' deve ser 'python' ou 'shell'.")
+            if mode == "shell" and "run_command" not in getattr(self, "_tools", {}):
+                raise ToolError(
+                    "cronjob: modo 'shell' exige shell habilitado (tools.shell_enabled); "
+                    "use mode='python' ou habilite o shell."
+                )
             if name in jobs:
                 raise ToolError(
                     f"Job '{name}' ja existe. Use delete primeiro ou escolha outro nome."
@@ -140,39 +146,12 @@ class CronjobToolsMixin:
             job = jobs[name]
             now = datetime.now(_tz.utc).isoformat()
 
-            if job["mode"] == "python":
-                result = self._execute_code({"code": job["command"], "timeout": 60})
-            else:
-                # shell mode — aplica denylist antes de executar
-                import subprocess
-                import shlex as _shlex
-                from ..shell_runner import _DENYLIST as _SR_DENYLIST
-                cmd_str = job["command"]
-                for pattern in _SR_DENYLIST:
-                    if pattern.search(cmd_str):
-                        raise ToolError(
-                            f"cronjob run: comando bloqueado por denylist — padrão '{pattern.pattern}'. "
-                            f"Edite o job para remover o comando perigoso."
-                        )
-                try:
-                    proc = subprocess.run(
-                        _shlex.split(cmd_str),
-                        capture_output=True, text=True,
-                        encoding="utf-8", errors="replace",
-                        timeout=60, cwd=str(self.workspace),
-                    )
-                    _out = proc.stdout or ""
-                    _err = proc.stderr or ""
-                    result = f"exit: {proc.returncode}\n"
-                    if _out.strip():
-                        result += f"--- stdout ---\n{_out.strip()}"
-                    if _err.strip():
-                        result += f"\n--- stderr ---\n{_err.strip()}"
-                except subprocess.TimeoutExpired:
-                    result = "Timeout: comando excedeu 60s."
-                except Exception as exc:
-                    result = f"Erro: {exc}"
+            result = self._cronjob_run_governed(job, args)
 
+            # Recarrega: a chamada governada pode ter demorado (aprovação).
+            jobs = self._cronjob_load()
+            if name not in jobs:
+                return f"[{name}] Executado em {now[:19]}Z (job removido durante a execução)\n{result}"
             jobs[name]["last_run"] = now
             jobs[name]["last_result"] = result[:500]
             jobs[name]["run_count"] = jobs[name].get("run_count", 0) + 1
@@ -197,6 +176,39 @@ class CronjobToolsMixin:
             raise ToolError(
                 f"Acao '{action}' desconhecida. Use: create | list | delete | run | pause | resume."
             )
+
+    def _cronjob_run_governed(self, job: dict, args: dict) -> str:
+        """Roda o comando persistido pelo MESMO caminho de run_command/execute_code (T01).
+
+        ``ToolRouter.execute`` aplica contexto/allowlist da tool, HARDLINE,
+        policy ``shell.execute`` (ask/deny/aprovação), command guards, dry-run,
+        aprovação por LLM, ShellRunner (allowlist + denylist + safe_mode),
+        timeout e auditoria. O budget não conta a chamada interna de novo.
+        ``approval_id`` do cronjob é repassado para retomar a chamada aprovada.
+        """
+        command = str(job.get("command", ""))
+        if job.get("mode") == "python":
+            inner, inner_args = "execute_code", {"code": command, "timeout": 60}
+        elif job.get("mode") == "shell":
+            from ..shell_runner import _DENYLIST as _SR_DENYLIST
+
+            for pattern in _SR_DENYLIST:
+                if pattern.search(command):
+                    raise ToolError(
+                        f"cronjob run: comando bloqueado por denylist — padrão '{pattern.pattern}'. "
+                        f"Edite o job para remover o comando perigoso."
+                    )
+            if "run_command" not in getattr(self, "_tools", {}):
+                raise ToolError(
+                    "cronjob run: modo 'shell' exige shell habilitado (tools.shell_enabled); "
+                    "o job não foi executado."
+                )
+            inner, inner_args = "run_command", {"command": command}
+        else:
+            raise ToolError(f"cronjob run: modo inválido {job.get('mode')!r}.")
+        if args.get("approval_id"):
+            inner_args["approval_id"] = args["approval_id"]
+        return execute_governed(self, inner, inner_args)
 
     def _parse_schedule(self, schedule: str) -> dict:
         """Parseia schedule string para dict normalizado.

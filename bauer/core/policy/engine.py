@@ -36,6 +36,8 @@ DEFAULT_RULES: list[dict[str, Any]] = [
     {"id": "social.publish.ask", "operation": "social.publish", "action": "ask"},
     {"id": "production.deploy.ask", "operation": "production.deploy", "action": "ask"},
     {"id": "os.ui_control.ask", "operation": "os.ui_control", "action": "ask"},
+    # Extensão (ToolRegistry) que declara requires_approval=True (sprint 61, T08).
+    {"id": "tool.approval.ask", "operation": "tool.approval", "action": "ask"},
     {"id": "filesystem.read.allow", "operation": "filesystem.read", "action": "allow"},
     {
         "id": "filesystem.write.outside_workspace.ask",
@@ -50,6 +52,12 @@ DEFAULT_RULES: list[dict[str, Any]] = [
 #: file may lower them below "ask" (plano 057: no external write without
 #: approval). A rule may still *deny* them.
 ALWAYS_ASK_OPERATIONS: frozenset[str] = frozenset({"integration.write"})
+
+#: Operations that ask when NO rule matches (instead of allowing). A policy
+#: file written before the operation existed must not silently drop the
+#: approval an extension declared (sprint 61, T08); an explicit rule — allow,
+#: ask or deny — still wins.
+ASK_WHEN_UNMATCHED_OPERATIONS: frozenset[str] = frozenset({"tool.approval"})
 
 
 class PolicyEngine:
@@ -113,6 +121,13 @@ class PolicyEngine:
             reason = str(rule.get("reason") or f"matched policy rule {rule_id}")
             return self._floor(PolicyDecision(action=action, reason=reason, risk_level=risk_level,
                                               matched_rules=matched_rules), operation)
+        if operation in ASK_WHEN_UNMATCHED_OPERATIONS:
+            return PolicyDecision(
+                action="ask",
+                reason="extensão declara requires_approval; requer aprovação humana",
+                risk_level=risk_level,
+                matched_rules=[f"{operation}.default.ask"],
+            )
         return self._floor(PolicyDecision(
             action="allow",
             reason="no blocking policy rule matched",
