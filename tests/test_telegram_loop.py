@@ -201,6 +201,7 @@ def test_happy_path_admits_persists_before_reply_and_delivers_report(tmp_path, m
     assert final.delivered is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="permissões POSIX não se aplicam no Windows")
 def test_record_file_has_restrictive_permissions(tmp_path, monkeypatch):
     backend = backend_at(tmp_path)
     kernel = FakeKernel()

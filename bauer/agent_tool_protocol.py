@@ -65,7 +65,8 @@ def normalize_native_pseudo_call(text: str, available: set[str]) -> dict | None:
             index = text.find("{", index + 1)
             continue
         if isinstance(obj, dict):
-            function = obj.get("function") if isinstance(obj.get("function"), dict) else obj
+            nested = obj.get("function")
+            function = nested if isinstance(nested, dict) else obj
             name = function.get("name")
             raw_args = function.get("arguments", function.get("args", {}))
             if isinstance(name, str) and name in available:
