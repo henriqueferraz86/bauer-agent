@@ -1,6 +1,7 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, AUTH_REQUIRED_EVENT, clearLegacyApiKey } from "../api/client";
 import { AuthState, EMPTY_AUTH_STATE } from "../auth";
+import { clearLocalSession, listenForRemoteLogout, logoutAndClear } from "../localSession";
 
 interface AuthContextValue {
   state: AuthState;
@@ -21,6 +22,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(EMPTY_AUTH_STATE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const refresh = useCallback(async () => {
     setError("");
@@ -37,10 +40,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
-    const onRequired = () => setState((current) => ({ ...current, authenticated: false, user: null }));
+    // WEB-08: sessão expirada no servidor (401 depois de autenticado) encerra
+    // também a cópia local — mesma política do logout explícito.
+    const onRequired = () => {
+      const current = stateRef.current;
+      if (current.enabled && current.authenticated) clearLocalSession();
+      setState((latest) => ({ ...latest, authenticated: false, user: null }));
+    };
     window.addEventListener(AUTH_REQUIRED_EVENT, onRequired);
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onRequired);
   }, []);
+  useEffect(() => listenForRemoteLogout(() => {
+    // outra aba saiu: o cookie é compartilhado, esta aba também está deslogada
+    setState((current) => ({ ...current, authenticated: false, user: null }));
+    refresh();
+  }), [refresh]);
 
   const afterAuth = useCallback(async () => {
     clearLegacyApiKey();
@@ -73,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await afterAuth();
     },
     logout: async () => {
-      await api.post("/auth/logout");
+      await logoutAndClear(() => api.post("/auth/logout"));
       await refresh();
     },
   }), [afterAuth, error, loading, refresh, state]);
