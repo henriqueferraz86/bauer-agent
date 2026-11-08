@@ -475,6 +475,11 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
         validacao_reprovou = False
         try:
             gov = continue_governed(kernel, run_id, _rodar_rodadas)
+            if kernel is not None and gov.blocked_before_start and gov.status == "cancelled":
+                # K08: a continuação foi barrada (kill-switch/cancelamento entre
+                # a admissão e a thread) — o relatório diz isso, não "erro".
+                stop_reason = ("kill_switch" if "kill switch" in (gov.error or "")
+                               else "cancelled")
             if kernel is not None and not gov.ok and stop_reason == "completed":
                 validacao_reprovou = True
                 stop_reason = "validacao_reprovou"

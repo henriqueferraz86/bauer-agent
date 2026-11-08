@@ -30,6 +30,10 @@ from .states import KERNEL_ONLY_STATES, KernelStateError, ensure_transition
 #: sentinela p/ _open_run não resolver adapter (admissão sem custódia — admit())
 _NO_EXECUTION = object()
 
+#: chave reservada em ``run.input`` com o contexto de governança da admissão
+#: (operation + metadata). Nunca é repassada ao executor.
+_GOVERNANCA = "_kernel_governance"
+
 
 def _persistable(data: dict[str, Any]) -> dict[str, Any]:
     """Cópia JSON-serializável do payload — objetos vivos (client, callables)
@@ -135,6 +139,13 @@ class BauerKernel:
         if request.autonomous:
             stored_input["autonomous"] = True
             stored_input["task_contract"] = self.contract is not None
+        # K08: o que a policy avaliou na admissão precisa sobreviver ao processo
+        # para ser REAVALIADO antes de continuar (continue_run/approve, outra
+        # thread ou outro processo) e antes de cada retry/replan.
+        stored_input[_GOVERNANCA] = {
+            "operation": request.operation,
+            "metadata": _persistable(dict(request.metadata)),
+        }
         run = self.runs.create_run(
             session_id=session_id,
             agent_id=str((decision or {}).get("agent_id") or request.agent_id),
@@ -461,11 +472,17 @@ class BauerKernel:
         """
         run = self._require_run(run_id)
         ensure_transition(run.status, "running")
-        payload = {**(run.input or {}), **(extra_input or {}), "run_id": run.id}
+        stored = {k: v for k, v in (run.input or {}).items() if k != _GOVERNANCA}
+        payload = {**stored, **(extra_input or {}), "run_id": run.id}
         with self._pulso(run.id):
+            # K08: admissão e continuação são momentos diferentes — o operador
+            # pode ter ligado o kill-switch ou mudado a policy entre os dois
+            # (o /loop, o /v1 e o /loop do Telegram admitem numa thread e
+            # continuam noutra). Revalida antes da primeira tentativa.
             return self._run_to_completion(run, payload, run.session_id, [run.status],
                                            executor=executor, adapter=None,
-                                           decision=None, request=None)
+                                           decision=None, request=None,
+                                           revalidar_inicio=True)
 
     # ── aprovações (Sprint 3) ────────────────────────────────────────────────
 
@@ -556,6 +573,13 @@ class BauerKernel:
         from ..runtime.adapters.base import adapter_resume
         run = self._require_run(run_id)
         ensure_transition(run.status, "queued")
+        if run.status == "waiting_approval" and self.approvals is None:
+            # Sem ApprovalManager, retomar um run em waiting_approval É a
+            # decisão humana. Registrada para a revalidação da continuação
+            # (K08) não pedir de novo a mesma aprovação.
+            gov = dict((run.input or {}).get(_GOVERNANCA) or {})
+            gov["approved_by_resume"] = True
+            self.runs.update_run(run.id, input={**(run.input or {}), _GOVERNANCA: gov})
         self._transition(run, "queued", [])
         self._publish("run.state.changed", run, status="queued",
                       message=f"resumed from {run.status}")
@@ -612,8 +636,13 @@ class BauerKernel:
 
     def _run_to_completion(self, run: Any, payload: dict[str, Any], session_id: str,
                            trajectory: list[str], *, executor: Any | None,
-                           adapter: Any | None, decision: Any, request: Any) -> KernelRun:
+                           adapter: Any | None, decision: Any, request: Any,
+                           revalidar_inicio: bool = False) -> KernelRun:
         started_monotonic = time.monotonic()
+        #: K08 — True quando a PRÓXIMA tentativa precisa reconferir kill-switch
+        #: e policy antes de chamar o executor. Falso só na primeira tentativa
+        #: de execute(), que acabou de passar pelo preflight.
+        precisa_revalidar = revalidar_inicio
         max_retries = max(0, int(getattr(request, "max_retries", 0) or 0))
         backoff_s = max(0.0, float(getattr(request, "retry_backoff_s", 0.0) or 0.0))
         fallbacks = list(getattr(request, "fallback_adapters", None) or [])
@@ -650,6 +679,15 @@ class BauerKernel:
                                                  started_monotonic=started_monotonic)
                 if terminal is not None:
                     return terminal
+                if precisa_revalidar:
+                    # continuação, retry ou fallback: reconfere a governança
+                    # imediatamente antes de chamar o executor de novo
+                    bloqueio = self._revalidar_governanca(
+                        run, request, session_id, trajectory,
+                        started_monotonic=started_monotonic)
+                    if bloqueio is not None:
+                        return bloqueio
+                precisa_revalidar = True
                 alvo = self._nome_do_executor(executor, adapter)
                 if (self.breaker is not None and executor is None
                         and self.breaker.is_open(alvo)):
@@ -798,6 +836,16 @@ class BauerKernel:
                                                      "runtime.execute"),
                                 "replan": True, "attempt": replans_used})
             self._transition(run, "policy_check", trajectory)
+            # K08: este policy_check era só uma transição de estado — o replan
+            # renovava trabalho sem conferir kill-switch nem policy. Agora é a
+            # mesma revalidação de continuação/retry, feita aqui, no estado que
+            # a auditoria diz que ela acontece.
+            bloqueio = self._revalidar_governanca(
+                run, request, session_id, trajectory,
+                started_monotonic=started_monotonic)
+            if bloqueio is not None:
+                return bloqueio
+            precisa_revalidar = False  # acabou de ser revalidado acima
             self._transition(run, "queued", trajectory)
             payload = {**payload, "replan_feedback": reason,
                        "replan_attempt": replans_used}
@@ -978,6 +1026,88 @@ class BauerKernel:
                   "matched_rules": list(decision.matched_rules)},
         )
         return decision
+
+    def _request_de_governanca(self, run: Any) -> KernelRequest:
+        """Reconstrói, do run persistido, o que a policy avaliou na admissão.
+
+        ``continue_run`` não recebe o ``KernelRequest`` original (o run foi
+        admitido noutra thread ou noutro processo). Runs anteriores a K08 não
+        têm o bloco persistido: caem na operação padrão, que é a mesma que o
+        preflight usa por default — nunca numa operação mais branda.
+        """
+        atual = self.runs.get_run(run.id) or run
+        stored = dict(getattr(atual, "input", None) or {})
+        gov = stored.pop(_GOVERNANCA, None) or {}
+        metadata = gov.get("metadata") if isinstance(gov.get("metadata"), dict) else {}
+        return KernelRequest(
+            session_id=str(getattr(atual, "session_id", "") or ""),
+            agent_id=str(getattr(atual, "agent_id", "") or "default"),
+            input=stored,
+            operation=str(gov.get("operation") or "runtime.execute"),
+            metadata=dict(metadata),
+        )
+
+    def _aprovacao_vigente(self, run: Any, operation: str) -> bool:
+        """O run já tem aprovação humana para ``operation``?
+
+        A revalidação de K08 não pode transformar uma aprovação já concedida
+        em um segundo pedido: aprovar e ver o run parar de novo pedindo a
+        mesma coisa ensinaria o operador a aprovar sem ler. Vale o registro
+        ``approved`` do próprio run no ApprovalManager — ou, sem manager, a
+        retomada explícita de ``waiting_approval``. Um ``deny`` posterior da
+        policy continua vencendo: este helper só é consultado para ``ask``.
+        """
+        if self.approvals is None:
+            atual = self.runs.get_run(run.id) or run
+            gov = (getattr(atual, "input", None) or {}).get(_GOVERNANCA) or {}
+            return bool(gov.get("approved_by_resume"))
+        try:
+            registros = self.approvals.list("approved")
+        except Exception as exc:  # noqa: BLE001 — sem prova de aprovação = não aprovado
+            from ...logging_config import log_suppressed
+            log_suppressed("kernel.approval_lookup", exc)
+            return False
+        return any(r.run_id == run.id and r.tool_name == "kernel"
+                   and r.operation == operation for r in registros)
+
+    def _revalidar_governanca(self, run: Any, request: Any, session_id: str,
+                              trajectory: list[str], *,
+                              started_monotonic: float) -> KernelRun | None:
+        """K08 — kill-switch e policy MUTÁVEL antes de continuar/retry/replan.
+
+        Mesma ordem do preflight (kill-switch, depois policy, que inclui o gate
+        de orçamento de ``runtime.execute``). Devolve o KernelRun quando a
+        governança barrou — o executor NÃO deve ser chamado —, ou None para
+        prosseguir. ``ask`` com aprovação já concedida para este run prossegue.
+
+        O contrato da tarefa (``requires_approval``) NÃO é reavaliado: é um
+        snapshot de propósito (ver ``__init__``), já conferido na admissão.
+        """
+        if self.control is not None and self.control.kill_switch_enabled():
+            self._record_elapsed_since(run.id, started_monotonic)
+            self._cancelar_se_nao_terminal(run.id, "runtime kill switch ativo")
+            terminal = self._terminal_result(run.id, session_id, trajectory)
+            return terminal or self._result(run.id, session_id, trajectory)
+
+        req = request if isinstance(request, KernelRequest) else self._request_de_governanca(run)
+        decision = self._evaluate_policy(req, run)
+        # mesma leitura do preflight: só deny e ask barram
+        if decision is None or decision.action not in {"deny", "ask"}:
+            return None
+        if decision.action == "ask" and self._aprovacao_vigente(run, req.operation):
+            return None
+        self._record_elapsed_since(run.id, started_monotonic)
+        if decision.action == "ask":
+            if not self._transition(run, "waiting_approval", trajectory):
+                return self._terminal_result(run.id, session_id, trajectory,
+                                             decision=decision) or self._result(
+                    run.id, session_id, trajectory, decision=decision)
+            approval_id = self._request_approval(req, run, decision)
+            return self._result(run.id, session_id, trajectory, decision=decision,
+                                approval_id=approval_id)
+        # deny: falha fechada, antes do executor
+        self._fail_se_nao_terminal(run.id, f"policy deny: {decision.reason}", trajectory)
+        return self._result(run.id, session_id, trajectory, decision=decision)
 
     def _pedir_aprovacao_do_contrato(self, request: KernelRequest, run: Any,
                                      motivo: str) -> "str | None":

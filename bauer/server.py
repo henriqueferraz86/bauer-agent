@@ -2803,6 +2803,12 @@ def create_app(
             "Desktop API não montada: %s", exc
         )
 
+    # WEB-10: o ÚLTIMO add_middleware é o mais externo — o corte de bytes
+    # acontece antes de qualquer outro middleware, parser JSON/multipart ou
+    # dependência de rota ler o corpo.
+    from .server_body_limit import BodySizeLimitMiddleware
+    app.add_middleware(BodySizeLimitMiddleware)
+
     return app
 
 

@@ -4,6 +4,7 @@ import { streamSSE, SSEEvent } from "./api/client";
 import { parseToolActivityEvent, ToolActivity } from "./toolActivity";
 import { ChatProjectContext, parseChatProjectContext } from "./chatProjectContext";
 import { ChatActivitySnapshot, chatActivityStore, parseChatActivity } from "./chatActivity";
+import { onLocalSessionCleared } from "./localSession";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -34,7 +35,25 @@ export interface ChatTurnState {
 }
 
 let active: ChatTurnState | null = null;
+/** Muda a cada logout: um turno iniciado antes não escreve mais nada depois. */
+let generation = 0;
 const listeners = new Set<(state: ChatTurnState) => void>();
+
+/**
+ * WEB-08: logout/expiração esquece o turno em memória. O SSE pode continuar
+ * chegando (o servidor termina o turno), mas o turno antigo perde o direito de
+ * publicar e persistir: senão ele regravaria no localStorage a conversa que o
+ * logout acabou de apagar.
+ */
+export function resetChatTurn(): void {
+  generation += 1;
+  active = null;
+}
+
+onLocalSessionCleared(() => {
+  resetChatTurn();
+  chatActivityStore.selectSession("", true);
+});
 chatActivityStore.subscribe((state) => {
   if (active && state.sessionId === active.sessionId) active = { ...active, activity: state.snapshot ?? undefined };
 });
@@ -62,6 +81,8 @@ export async function runChatTurn(
   stream: typeof streamSSE = streamSSE,
 ): Promise<string> {
   if (active?.busy) throw new Error("A chat turn is already running");
+  const turnGeneration = generation;
+  const stale = () => turnGeneration !== generation;
   chatActivityStore.selectSession(state.sessionId);
   active = {
     ...state, busy: true,
@@ -72,7 +93,7 @@ export async function runChatTurn(
   let chars = 0;
   let started = 0;
   const publish = () => {
-    if (!active) return;
+    if (!active || stale()) return;
     // Storage and mounted views are auxiliary; neither can strand a turn.
     try { persist(active); } catch { /* storage unavailable/full */ }
     listeners.forEach((listener) => {
@@ -80,7 +101,7 @@ export async function runChatTurn(
     });
   };
   const updateLast = (update: (message: ChatMessage) => void) => {
-    if (!active) return;
+    if (!active || stale()) return;
     const messages = [...active.messages];
     const last = { ...messages[messages.length - 1] };
     update(last);
@@ -92,7 +113,7 @@ export async function runChatTurn(
   if (state.sessionId) query.set("session_id", state.sessionId);
   try {
     await stream(`/stream?${query}`, (event: SSEEvent) => {
-      if (!active) return;
+      if (!active || stale()) return;
       if (event.event === "context") {
         const context = parseChatProjectContext(event.data);
         if (!context) return;
@@ -148,10 +169,12 @@ export async function runChatTurn(
     chatActivityStore.unavailable();
     updateLast((last) => { last.text += "\nNão foi possível concluir a resposta. Tente novamente."; });
   } finally {
-    updateLast((last) => { last.streaming = false; last.approvalTurnEnded = true; });
-    active = { ...active!, busy: false };
-    publish();
-    active = null;
+    if (!stale()) {
+      updateLast((last) => { last.streaming = false; last.approvalTurnEnded = true; });
+      active = { ...active!, busy: false };
+      publish();
+      active = null;
+    }
   }
   return responseText;
 }
