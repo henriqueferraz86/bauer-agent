@@ -488,12 +488,12 @@ def test_navigation_disconnect_can_approve_and_recover_result(environment):
     serving = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     serving.start()
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + ANTI_HANG
         while not server.started and time.monotonic() < deadline:
             time.sleep(0.025)
         assert server.started
         url = f"http://127.0.0.1:{sock.getsockname()[1]}/stream"
-        with httpx.Client(verify=shared_ssl_context(), timeout=6) as browser:
+        with httpx.Client(verify=shared_ssl_context(), timeout=ANTI_HANG) as browser:
             with browser.stream("GET", url, params={"message": "execute test", "session_id": "navigation"}) as response:
                 for line in response.iter_lines():
                     if line == "event: approval":
@@ -506,7 +506,7 @@ def test_navigation_disconnect_can_approve_and_recover_result(environment):
             assert control.post(f"/api/approvals/{record.id}/approve").status_code == 200
             record = pending(approvals, exclude={record.id})
         assert control.post(f"/api/approvals/{record.id}/approve", json={"scope": "run"}).status_code == 200
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + ANTI_HANG
         while time.monotonic() < deadline and runs.get_run(record.run_id).status not in {"completed", "failed", "cancelled"}:
             time.sleep(0.05)
         run = runs.get_run(record.run_id)
