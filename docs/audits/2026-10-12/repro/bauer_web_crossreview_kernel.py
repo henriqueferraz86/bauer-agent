@@ -31,8 +31,11 @@ with ThreadPoolExecutor(max_workers=2) as pool:
     first=pool.submit(client2.post,'/chat',json={'message':'A','session_id':'shared'})
     assert a_started.wait(10)
     second=pool.submit(client2.post,'/chat',json={'message':'B','session_id':'shared'})
-    assert b_started.wait(10)
+    # WEB-04 (sprint 27) serializa load->execute->save por sessão: B só entra
+    # depois que A salvar. Antes da correção B entrava em paralelo.
+    print('CONCURRENT_B_OVERLAPPED_A',b_started.wait(2))
     release_a.set();ra=first.result(10)
+    assert b_started.wait(10)
     release_b.set();rb=second.result(10)
     print('CONCURRENT_REQUESTS',ra.status_code,rb.status_code)
     print('CONCURRENT_HISTORY',SessionStore(root/'concurrent-sessions').load('shared'))
