@@ -19,7 +19,7 @@ from typing import Any
 
 
 ACTIVE_JOB_STATUSES = {"active"}
-TERMINAL_RUN_STATUSES = {"queued", "skipped", "failed"}
+TERMINAL_RUN_STATUSES = {"queued", "skipped", "failed", "completed"}
 
 
 @dataclass(frozen=True)

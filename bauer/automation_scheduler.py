@@ -50,7 +50,8 @@ class AutomationScheduler:
                     continue
                 try:
                     run = self.enqueue_job(job, due_at=now)
-                    result.queued.append(run.task_id)
+                    # Jobs internos (consolidação de memória) não criam task.
+                    result.queued.append(run.task_id or run.run_id)
                 except Exception:
                     result.failed.append(job.name)
                     self.store.update_job(job.job_id, fail_count_delta=1)
@@ -67,6 +68,8 @@ class AutomationScheduler:
     def enqueue_job(self, job: AutomationJob, *, due_at: str, manual: bool = False) -> AutomationRun:
         if job.status != "active" and not manual:
             raise ValueError(f"automation job is not active: {job.name}")
+        if job.metadata.get("kind") == "memory_consolidation":
+            return self._run_memory_consolidation(job, due_at=due_at, manual=manual)
         if not self.wm.tasks_file.exists():
             self.wm.init_project("Bauer Automations", "Workspace initialized by automation scheduler.")
 
@@ -118,6 +121,39 @@ class AutomationScheduler:
             next_run_at=next_run_at,
             last_run_at=due_at,
             run_count_delta=1,
+        )
+        return run
+
+    def _run_memory_consolidation(self, job: AutomationJob, *, due_at: str, manual: bool) -> AutomationRun:
+        """Job interno (plano 065): roda a consolidação sob o Kernel, sem Kanban.
+
+        Kill-switch, opt-in, budget diário e governança ficam em
+        ``memory_consolidation_schedule.run_scheduled_consolidation``; aqui só
+        o ciclo de vida do job (run auditável, próximo horário e backoff).
+        """
+        from .memory_consolidation_schedule import (
+            next_run_after_result,
+            run_scheduled_consolidation,
+        )
+
+        run = self.store.create_run(
+            job_id=job.job_id, due_at=due_at, status="running",
+            metadata={"manual": manual, "schedule": job.schedule_str, "kind": "memory_consolidation"},
+        )
+        sessions_dir = str(job.metadata.get("sessions_dir") or self.workspace / "memory" / "sessions")
+        outcome = run_scheduled_consolidation(self.workspace, sessions_dir=sessions_dir)
+        status = {"failed": "failed", "skipped": "skipped"}.get(str(outcome.get("status")), "completed")
+        run = self.store.update_run(
+            run.run_id, status=status,
+            error=str(outcome.get("error") or outcome.get("reason") or "") or None,
+            metadata={"outcome": outcome},
+        ) or run
+        next_run_at, failures = next_run_after_result(job, due_at, outcome)
+        next_status = "completed" if not next_run_at and not manual else job.status
+        self.store.update_job(
+            job.job_id, status=next_status, next_run_at=next_run_at, last_run_at=due_at,
+            run_count_delta=1, fail_count_delta=1 if status == "failed" else 0,
+            metadata={"consecutive_failures": failures},
         )
         return run
 

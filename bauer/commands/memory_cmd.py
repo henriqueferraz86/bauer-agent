@@ -743,3 +743,35 @@ def consolidate_status_cmd(
                           str(run["sessions_ok"]), str(run["sessions_failed"]),
                           str(run["records_written"]), str(run["tokens_used"]))
         console.print(table)
+
+
+@consolidate_app.command("schedule")
+def consolidate_schedule_cmd(
+    workspace: Path | None = typer.Option(None, "--workspace"),
+    sessions_dir: Path = typer.Option(_DEFAULT_SESSIONS_DIR, "--sessions-dir"),
+    every: str = typer.Option("daily 03:00", "--schedule", "-s",
+                              help="every 6h | daily 03:00 | cron: 0 3 * * *"),
+    name: str = typer.Option("memory-consolidation", "--name"),
+):
+    """Agenda a consolidação no cron durável do workspace (roda sob o Kernel).
+
+    Execute com `bauer cron daemon --workspace <workspace>` (ou `cron tick`).
+    O job só consolida com o opt-in ligado e respeita o budget diário.
+    """
+    from ..memory_consolidation import ConsolidationSettings
+    from ..memory_consolidation_schedule import schedule_consolidation
+
+    scope = _scope_or_exit(workspace)
+    try:
+        job = schedule_consolidation(scope.path, sessions_dir=sessions_dir, schedule=every, name=name)
+    except Exception as exc:  # noqa: BLE001 — erro de schedule/nome duplicado vira mensagem
+        console.print(f"[red]Erro agendando consolidação:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"[green]consolidação agendada[/green] {job.name} schedule={job.schedule_str} "
+        f"next={job.next_run_at}"
+    )
+    if not ConsolidationSettings.load(scope).enabled:
+        console.print("[yellow]Opt-in desligado: o job vai pular até "
+                      "'bauer memory consolidate enable'.[/yellow]")
+    console.print(f"[dim]Rode: bauer cron daemon --workspace {scope.path}[/dim]")

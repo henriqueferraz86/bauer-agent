@@ -145,3 +145,5 @@ graphify-out/
 !specs/sprint-65-memory-scope-feedback/**
 !specs/sprint-66-memory-consolidate/
 !specs/sprint-66-memory-consolidate/**
+!specs/sprint-67-memory-consolidation-schedule/
+!specs/sprint-67-memory-consolidation-schedule/**
