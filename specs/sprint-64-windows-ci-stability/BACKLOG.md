@@ -46,7 +46,23 @@ o mesmo padrão e não foi alterado aqui. A regressão está em
 
 ### 5. Validar no CI da branch
 
-Status: em andamento (ver notas de entrega)
+Status: concluído (runs listados abaixo)
+
+Iterações (workflow_dispatch; jobs `Tests (3.11/3.12 / windows-latest)`):
+
+| Run | Commit | Windows | O que revelou |
+|---|---|---|---|
+| 42467767343 | 0db5acb | vermelho | canal/approval/accounting verdes; sobraram `session_turns[loop-True]` (5s) e a corrida do stream-approval |
+| 42483569748 | b65d827 | **verde/verde** | primeiro run todo verde, antes do merge de #164/#165 |
+| 42484846415 | 25f1899 | vermelho | diagnóstico: run `queued` com aprovação concedida, o que expôs a corrida admissão × aprovador |
+| 42488352273 | 4b2a063 | 3.12 verde, 3.11 vermelho | `navigation_disconnect` (httpx read timeout de 6s) |
+| 42519154399 | 9973d58 | **verde/verde** | |
+| 42521458809 | 9973d58 | 3.11 verde, 3.12 vermelho | esperas de 3 a 5s nos testes de canal Agno/governado |
+| 42525316354 | 08497e4 | 3.11 verde, 3.12 vermelho | `kanban_server` urlopen de 5s |
+| 42527595980 | 8d3c962 | 3.11 verde, 3.12 vermelho | `pending()` sem diagnóstico no caminho deny do `/v1` |
+| 42544510927 | dc6310d | **verde/verde** | |
+
+Os runs de confirmação depois do merge de #166 estão nas notas de entrega.
 
 ## Notas de entrega
 
