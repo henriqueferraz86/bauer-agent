@@ -474,7 +474,17 @@ def test_waiting_for_human_does_not_exhaust_stream_execution_timeout(environment
         assert control.post(f"/api/approvals/{record.id}/approve", json={"scope": "run"}).status_code == 200
         thread.join(ANTI_HANG)
         assert not thread.is_alive(), result
+        # The property under test: the human wait was not charged, so the
+        # stream did not hit its execution budget.
+        assert "Essa tarefa passou de" not in result["response"].text, result["response"].text
+        # The run's terminal record is written by the worker right after the
+        # last SSE frame; on the Windows runner that write can land after the
+        # client has already read `done`. Poll (anti-hang) instead of racing it.
+        deadline = time.monotonic() + ANTI_HANG
         completed = runs.get_run(record.run_id)
+        while completed.status not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+            time.sleep(0.05)
+            completed = runs.get_run(record.run_id)
         assert completed.status == "completed", (completed.error, result)
         assert (workspace / "effects.txt").read_text().splitlines() == ["1", "2"]
     finally:
