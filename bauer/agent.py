@@ -3622,8 +3622,13 @@ def run_agent_session(
             continue
 
         # L7: feedback de usuário — /thumbsup / /thumbsdown
-        if user_input.lower() in _THUMBSUP_CMDS or user_input.lower() in _THUMBSDOWN_CMDS:
-            _rating = "positivo" if user_input.lower() in _THUMBSUP_CMDS else "negativo"
+        # `/thumbsup <motivo>` / `/thumbsdown <motivo>`: o motivo opcional vira o
+        # fingerprint do padrão (plano 065); aliases curtos seguem exatos.
+        _fb_cmd, _, _fb_reason = user_input.partition(" ")
+        if _fb_cmd.lower() not in ("/thumbsup", "/thumbsdown"):
+            _fb_cmd, _fb_reason = user_input, ""
+        if _fb_cmd.lower() in _THUMBSUP_CMDS or _fb_cmd.lower() in _THUMBSDOWN_CMDS:
+            _rating = "positivo" if _fb_cmd.lower() in _THUMBSUP_CMDS else "negativo"
             _last_msgs = ctx.messages
             _last_user = next(
                 (m["content"] for m in reversed(_last_msgs) if m.get("role") == "user"),
@@ -3634,6 +3639,7 @@ def run_agent_session(
                 "",
             )
             try:
+                from .privacy import redact_text as _redact_fb
                 from .learning_engine import LearningEngine as _LE7
                 _le7 = _LE7()
                 _le7.mm.append_entry(
@@ -3645,14 +3651,26 @@ def run_agent_session(
                         "machine_id": stats.machine_id,
                     },
                     body=(
-                        f"**Pergunta:**\n{_last_user[:300]}\n\n"
-                        f"**Resposta:**\n{_last_asst[:500]}"
+                        f"**Pergunta:**\n{_redact_fb(_last_user)[:300]}\n\n"
+                        f"**Resposta:**\n{_redact_fb(_last_asst)[:500]}"
                     ),
                 )
                 _icon = "👍" if _rating == "positivo" else "👎"
                 console.print(f"[dim]{_icon} Feedback registrado.[/dim]")
             except Exception:
                 console.print("[dim]Feedback não pôde ser salvo.[/dim]")
+
+            # Sinal estruturado, redigido e com escopo do workspace (plano 065).
+            try:
+                from .memory_feedback import record_turn_feedback as _rec_turn_fb
+                _rec_turn_fb(
+                    getattr(router, "workspace", None), rating=_rating, messages=_last_msgs,
+                    session_id=session_id, model=model_name,
+                    machine_id=str(getattr(stats, "machine_id", "") or ""), reason=_fb_reason,
+                )
+            except Exception as _fb_exc:  # sinal estruturado é best-effort
+                from .logging_config import log_suppressed as _log_fb
+                _log_fb("agent.feedback.structured", _fb_exc)
 
             # Fecha o loop de qualidade: o 👍/👎 vira o veredito humano da última
             # decisão da sessão (sobrescreve o score heurístico do gravador

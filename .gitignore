@@ -143,3 +143,11 @@ graphify-out/
 !specs/sprint-60-security-kernel-gates/**
 !specs/sprint-63-security-web-lifecycle/
 !specs/sprint-63-security-web-lifecycle/**
+!specs/sprint-65-memory-scope-feedback/
+!specs/sprint-65-memory-scope-feedback/**
+!specs/sprint-66-memory-consolidate/
+!specs/sprint-66-memory-consolidate/**
+!specs/sprint-67-memory-consolidation-schedule/
+!specs/sprint-67-memory-consolidation-schedule/**
+!specs/sprint-68-memory-feedback-directives/
+!specs/sprint-68-memory-feedback-directives/**

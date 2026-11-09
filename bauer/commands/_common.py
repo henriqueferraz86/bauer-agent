@@ -83,4 +83,5 @@ _FILE_ALIASES = {
     "experience": "MODEL_EXPERIENCE.md",
     "prefs": "USER_PREFERENCES.md",
     "lessons": "RUNTIME_LESSONS.md",
+    "consolidated": "CONSOLIDATED.md",
 }
