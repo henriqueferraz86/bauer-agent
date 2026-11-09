@@ -184,8 +184,14 @@ class SqliteSessionStore:
         semantic_indexing_enabled: bool | None = None,
         semantic_indexing_debounce_s: float | None = None,
         semantic_indexing_batch_size: int | None = None,
+        workspace: str | Path | None = None,
     ) -> None:
         self.dir = Path(sessions_dir)
+        # Proveniência de workspace (plano 065, sprint 65): sessões NOVAS
+        # gravadas por este store recebem o escopo do workspace; sem
+        # workspace, a linha fica sem proveniência e nunca é consolidada.
+        from .memory_scope import resolve_workspace_scope
+        self._workspace_scope = resolve_workspace_scope(workspace) if workspace is not None else None
         self.dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.dir / "sessions.db"
         self._has_fts5: bool = False
@@ -263,6 +269,8 @@ class SqliteSessionStore:
                     if stmt:
                         conn.execute(stmt)
 
+            self._migrate_provenance_columns(conn)
+
             has_fts5 = _fts5_available(conn)
             self._has_fts5 = has_fts5
             if has_fts5:
@@ -270,6 +278,24 @@ class SqliteSessionStore:
                 conn.executescript(_DDL_FTS5)
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate_provenance_columns(conn: sqlite3.Connection) -> None:
+        """Adiciona as colunas de proveniência de workspace (idempotente).
+
+        Linhas existentes ficam com ``workspace_id`` NULL — sessão histórica,
+        sem proveniência verificável, inelegível para consolidação.
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        with conn:
+            if "workspace_id" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN workspace_id TEXT")
+            if "workspace_path" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN workspace_path TEXT")
+            if "workspace_conflict" not in columns:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN workspace_conflict INTEGER NOT NULL DEFAULT 0"
+                )
 
     # ------------------------------------------------------------------
     # Migração de JSONL legados
@@ -395,6 +421,74 @@ class SqliteSessionStore:
             return dict(row) if row else None
         finally:
             conn.close()
+
+    @property
+    def workspace_id(self) -> str | None:
+        return self._workspace_scope.workspace_id if self._workspace_scope else None
+
+    def get_provenance(self, session_id: str) -> dict | None:
+        """Proveniência de workspace de uma sessão (``None`` se não existe)."""
+        validate_session_id(session_id)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT session_id, workspace_id, workspace_path, workspace_conflict, "
+                "message_count, created_at, updated_at FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def list_sessions_for_workspace(
+        self,
+        workspace_id: str,
+        *,
+        updated_before: str | None = None,
+    ) -> list[dict]:
+        """Sessões com proveniência ÚNICA e verificável deste workspace.
+
+        Fail closed: sessões sem ``workspace_id`` (históricas) ou marcadas com
+        conflito (gravadas por outro workspace/store sem workspace) nunca
+        entram. ``updated_before`` filtra sessões ainda ativas.
+        """
+        if not isinstance(workspace_id, str) or not workspace_id:
+            return []
+        sql = (
+            "SELECT session_id, workspace_id, message_count, created_at, updated_at "
+            "FROM sessions WHERE workspace_id=? AND workspace_conflict=0"
+        )
+        params: list[Any] = [workspace_id]
+        if updated_before:
+            sql += " AND updated_at <= ?"
+            params.append(updated_before)
+        sql += " ORDER BY updated_at ASC, session_id ASC"
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows if is_valid_session_id(r["session_id"])]
+        finally:
+            conn.close()
+
+    def provenance_summary(self, workspace_id: str) -> dict[str, int]:
+        """Contagens para relatório: elegíveis, sem proveniência, em conflito."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT "
+                " SUM(CASE WHEN workspace_id=? AND workspace_conflict=0 THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN workspace_id IS NULL THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN workspace_id=? AND workspace_conflict!=0 THEN 1 ELSE 0 END)"
+                " FROM sessions",
+                (workspace_id, workspace_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        return {
+            "eligible": int(row[0] or 0),
+            "no_provenance": int(row[1] or 0),
+            "conflict": int(row[2] or 0),
+        }
 
     def update_summary(self, session_id: str, summary: str) -> None:
         conn = self._connect()
@@ -632,16 +726,30 @@ class SqliteSessionStore:
         messages: list[dict],
     ) -> None:
         now = _now_iso()
+        scope = getattr(self, "_workspace_scope", None)
+        ws_id = scope.workspace_id if scope else None
+        ws_path = scope.path if scope else None
         with conn:
+            # Proveniência: só o INSERT carimba o workspace. Uma sessão
+            # histórica (NULL) nunca ganha proveniência retroativa; uma
+            # sessão carimbada salva por outro workspace (ou por store sem
+            # workspace) é marcada em conflito — inelegível, fail closed.
             conn.execute(
                 """
-                INSERT INTO sessions(session_id, created_at, updated_at, message_count)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO sessions(session_id, created_at, updated_at, message_count,
+                                     workspace_id, workspace_path)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     updated_at    = excluded.updated_at,
-                    message_count = excluded.message_count
+                    message_count = excluded.message_count,
+                    workspace_conflict = CASE
+                        WHEN sessions.workspace_id IS NULL THEN sessions.workspace_conflict
+                        WHEN excluded.workspace_id IS NULL
+                             OR excluded.workspace_id != sessions.workspace_id THEN 1
+                        ELSE sessions.workspace_conflict
+                    END
                 """,
-                (session_id, now, now, len(messages)),
+                (session_id, now, now, len(messages), ws_id, ws_path),
             )
             # Apaga mensagens antigas (triggers cuidam do FTS5)
             conn.execute(

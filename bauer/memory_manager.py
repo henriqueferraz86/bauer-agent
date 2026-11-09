@@ -12,6 +12,7 @@ Regras:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ MEMORY_FILES = {
     "USER_PREFERENCES": "USER_PREFERENCES.md",
     "RUNTIME_LESSONS": "RUNTIME_LESSONS.md",
     "SKILLS_LEARNED": "SKILLS_LEARNED.md",
+    "CONSOLIDATED": "CONSOLIDATED.md",
 }
 
 _HEADERS: dict[str, str] = {
@@ -62,6 +64,12 @@ _HEADERS: dict[str, str] = {
         "# SKILLS_LEARNED.md — Skills sugeridas por frequencia\n\n"
         "Tarefas repetidas que podem virar skill. Sugestoes apenas — nada e executado automaticamente.\n"
         "Aprovacao manual necessaria antes de virar skill disponivel.\n\n---\n"
+    ),
+    "CONSOLIDATED.md": (
+        "# CONSOLIDATED.md — Fatos consolidados de sessoes deste workspace\n\n"
+        "Gerado por: bauer memory consolidate (opt-in por workspace).\n"
+        "Cada entrada traz proveniencia, confidence e valid_until; entradas\n"
+        "vencidas deixam de ser injetadas. Edite ou apague livremente.\n\n---\n"
     ),
 }
 
@@ -237,6 +245,7 @@ class MemoryManager:
         target_files = files or list(MEMORY_FILES.values())
         blocks: list[dict] = []  # {file, title, text}
 
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         for fname in target_files:
             p = self.memory_dir / fname
             if not p.exists():
@@ -246,7 +255,7 @@ class MemoryManager:
             parts = re.split(r"(?=^## )", content, flags=re.MULTILINE)
             for part in parts:
                 part = part.strip()
-                if not part:
+                if not part or entry_expired(part, today=today):
                     continue
                 # Extrai título da primeira linha se for cabeçalho de seção
                 lines = part.splitlines()
@@ -366,6 +375,21 @@ class MemoryManager:
         if not filename.endswith(".md"):
             filename = MEMORY_FILES.get(filename.upper(), filename + ".md")
         return self.memory_dir / filename
+
+
+_VALID_UNTIL_RE = re.compile(r"^- valid_until:\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+
+
+def entry_expired(block: str, *, today: str | None = None) -> bool:
+    """True quando a entrada tem ``- valid_until: AAAA-MM-DD`` já vencido.
+
+    Entradas sem ``valid_until`` nunca expiram (comportamento de sempre).
+    """
+    match = _VALID_UNTIL_RE.search(block)
+    if match is None:
+        return False
+    today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return match.group(1) < today
 
 
 def _now_utc() -> str:

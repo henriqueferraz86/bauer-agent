@@ -8,12 +8,16 @@
 
 ## Status
 
-**BLOCKED (2026-08-25):** the investigation confirmed that the session store has
-no tenant/company identity while runtime memory exposes a `company` scope. The
-design is recorded in [`docs/architecture/memory-consolidation-loop.yaml`](../docs/architecture/memory-consolidation-loop.yaml),
-but implementation must wait for a scope decision. Options are workspace-only,
-explicit company identity with schema propagation, or user/project-only with
-company memory kept manual.
+**DONE (2026-11-09):** spike concluído e decisão de escopo tomada. O bloqueio
+de 2026-08-25 (o session store não tinha identidade de tenant/empresa enquanto
+a memória runtime expõe o escopo `company`) foi resolvido pelo coordenador, por
+delegação do usuário, com a opção `workspace_only`: consolidar só para a
+memória Markdown do workspace atual, rejeitar `company` até existir contrato de
+identidade e adiar `user`. Sessões sem proveniência de workspace verificável
+nunca são consolidadas. A decisão completa e as respostas às open questions
+estão em [`docs/architecture/memory-consolidation-loop.yaml`](../docs/architecture/memory-consolidation-loop.yaml)
+(`decision:`). O build foi movido para o plano
+[065](065-memory-consolidation-build.md) (sprints 65–68 = fatias 0–3).
 
 - **Priority**: P2
 - **Effort**: M para o spike (build M-L — grosseiro)

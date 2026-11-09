@@ -425,6 +425,9 @@ def agent(
             semantic_indexing_enabled=cfg.memory.semantic_indexing_enabled,
             semantic_indexing_debounce_s=cfg.memory.semantic_indexing_debounce_s,
             semantic_indexing_batch_size=cfg.memory.semantic_indexing_batch_size,
+            # Proveniência de workspace (plano 065): o mesmo workspace cuja
+            # memória o MemoryProvider injeta (agent.py usa router.workspace).
+            workspace=getattr(router, "workspace", workspace),
         )
     except Exception:
         from ..session_store import SessionStore
@@ -1008,6 +1011,9 @@ def agent_run(
             semantic_indexing_enabled=cfg.memory.semantic_indexing_enabled,
             semantic_indexing_debounce_s=cfg.memory.semantic_indexing_debounce_s,
             semantic_indexing_batch_size=cfg.memory.semantic_indexing_batch_size,
+            # Proveniência de workspace (plano 065): o mesmo workspace cuja
+            # memória o MemoryProvider injeta (agent.py usa router.workspace).
+            workspace=getattr(router, "workspace", workspace),
         )
     except Exception:
         from ..session_store import SessionStore
