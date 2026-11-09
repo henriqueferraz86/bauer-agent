@@ -189,3 +189,27 @@ def test_admission_keeps_terminal_status_when_denied_before_reread(tmp_path):
     run, early = kernel.admit(KernelRequest(task="x", session_id="s"))
     assert early is not None
     assert early.status == runs.get_run(run.id).status == "failed"
+
+
+def test_memory_worker_releases_the_slot_it_acquired(monkeypatch):
+    """A worker that outlives a swap of the slot pool must not free a slot
+    of the NEW pool (it never held one there). Flake seen only on Windows,
+    where a previous test's memory worker finished inside the next test."""
+    import threading
+
+    from bauer import memory_context as mc
+
+    old_pool = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(mc, "_MEMORY_WORKER_SLOTS", old_pool)
+    release = threading.Event()
+    worker = mc._start_memory_worker(lambda: release.wait(timeout=30))
+    assert worker is not None
+
+    new_pool = threading.BoundedSemaphore(1)
+    assert new_pool.acquire(blocking=False)  # saturated by someone else
+    monkeypatch.setattr(mc, "_MEMORY_WORKER_SLOTS", new_pool)
+    release.set()
+    worker.join(timeout=30)
+
+    assert not new_pool.acquire(blocking=False), "foreign release unsaturated the new pool"
+    assert old_pool.acquire(blocking=False), "the acquired slot was never returned"

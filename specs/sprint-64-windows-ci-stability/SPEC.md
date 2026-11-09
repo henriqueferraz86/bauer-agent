@@ -61,6 +61,15 @@ de `4b799cb` a `415c56a`):
    `waiting_approval`, e o fluxo de aprovação lê o estado vivo e inicia o
    worker. Negação ou cancelamento concorrente continua terminal.
 
+5. **Um worker de memória devolvia um slot que não era dele (bug de
+   produto).** O `_start_memory_worker` relia o global
+   `_MEMORY_WORKER_SLOTS` na hora de liberar. Um worker que sobrevivia a uma
+   troca do pool liberava um slot do pool novo e "dessaturava" a capacidade.
+   No CI Windows, um worker de um teste anterior terminava dentro do
+   `test_prefetch_saturation...`, e o teste via `decision: 2`. Agora o worker
+   libera o semáforo que adquiriu. A regressão é
+   `test_memory_worker_releases_the_slot_it_acquired`.
+
 Nenhuma das falhas era semântica POSIX, e nenhuma ganhou skip. O alvo do
 monkeypatch (`bauer.agent.run_one_turn_with_fallback`) funciona no Windows:
 o teste de cancelamento, que usa o mesmo helper sem budget curto, passava.
