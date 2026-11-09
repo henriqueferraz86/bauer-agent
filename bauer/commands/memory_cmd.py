@@ -521,3 +521,52 @@ def memory_cleanup(
     console.print(f"[bold]{total}[/bold] entradas {action} no total.")
     if dry_run:
         console.print("[dim]Rode sem --dry-run para aplicar.[/dim]")
+
+
+# ── Feedback estruturado (plano 065, sprint 65) ──────────────────────────────
+
+feedback_app = typer.Typer(
+    help="Feedback estruturado (/thumbsup, /thumbsdown) do workspace — "
+         "redigido e com escopo de workspace."
+)
+memory_app.add_typer(feedback_app, name="feedback")
+
+
+def _workspace_or_cwd(workspace: Path | None) -> Path:
+    return workspace if workspace is not None else Path.cwd()
+
+
+@feedback_app.command("list")
+def feedback_list_cmd(
+    workspace: Path | None = typer.Option(None, "--workspace", help="Workspace (padrão: pasta atual)"),
+    rating: str | None = typer.Option(None, "--rating", help="positive | negative"),
+    limit: int = typer.Option(50, "--limit"),
+):
+    """Lista o feedback gravado neste workspace (trechos já redigidos)."""
+    from ..memory_feedback import FeedbackStore
+
+    store = FeedbackStore.for_workspace(_workspace_or_cwd(workspace))
+    if store is None:
+        console.print("[red]Workspace inválido.[/red]")
+        raise typer.Exit(code=1)
+    try:
+        records = store.list(rating=rating, limit=limit)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if not records:
+        console.print("[dim]Nenhum feedback registrado neste workspace.[/dim]")
+        return
+    table = Table(title=f"Feedback — {store.scope.workspace_id}")
+    table.add_column("id", style="cyan")
+    table.add_column("rating")
+    table.add_column("sessão")
+    table.add_column("turno", justify="right")
+    table.add_column("tools")
+    table.add_column("motivo/pergunta")
+    for rec in records:
+        table.add_row(
+            rec.feedback_id, rec.rating, rec.session_id or "-", str(rec.turn_index),
+            ", ".join(rec.tool_names)[:40], (rec.reason or rec.user_excerpt)[:80],
+        )
+    console.print(table)

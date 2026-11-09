@@ -1,18 +1,19 @@
 schema: bauer.architecture/v1
 id: memory-consolidation-loop
-status: blocked_pending_memory_scope_decision
+status: decided_build_in_plan_065
 plan: "017"
-updated: "2026-08-25"
+updated: "2026-11-09"
+build_plan: "065"
 
 summary: >-
   Design-only spike for turning finished SQLite sessions into durable semantic
   memory and for promoting repeated human feedback into reviewable directives.
-  Production implementation is intentionally blocked until the tenant/company
-  scope is chosen.
+  The scope decision was taken on 2026-11-09 (workspace_only, see `decision:`);
+  the build runs in plan 065, sprints 65-68 (slices 0-3).
 
 evidence:
   feedback_capture:
-    source: bauer/agent.py:5022-5077
+    source: bauer/agent.py:3624-3677  # re-verified 2026-11-09 (was 5022-5077)
     current_behavior:
       - '"/thumbsup" and "/thumbsdown" read the latest user and assistant messages.'
       - 'FEEDBACK.md receives only rating, model, machine_id, and truncated question/answer.'
@@ -22,29 +23,41 @@ evidence:
       There is no stable pattern fingerprint, tenant/company identifier, full-turn
       provenance, or explicit approval queue in the feedback record.
   durable_memory:
-    source: bauer/memory_provider.py:172-260
+    source: bauer/memory_provider.py:172-255  # re-verified 2026-11-09
     current_behavior:
       - LocalMemoryProvider reads workspace/memory/*.md and injects a 2000-character block.
-      - MemoryManager appends timestamped Markdown entries (bauer/memory_manager.py:69-145).
+      - MemoryManager appends timestamped Markdown entries (bauer/memory_manager.py:109-145).
       - The nudge mechanism asks the model to write memory; it is not a consolidator.
   episodic_store:
-    source: bauer/sqlite_session_store.py:81-100
+    source: bauer/sqlite_session_store.py:110-127  # re-verified 2026-11-09
     current_behavior:
       - sessions is keyed only by session_id and stores timestamps, count, and summary.
       - messages stores role/content/index/timestamp and is FTS5/vector indexed.
       - There is no company_id, user_id, agent_id, or consolidated_at column.
   runtime_memory:
-    source: bauer/core/runtime/memory.py:14-16,42-122
+    source: bauer/core/runtime/memory.py:14,42-122  # re-verified 2026-11-09
     current_behavior:
       - RuntimeMemoryManager supports user/company/project/agent/skill scopes.
       - It is a separate JSONL backend and is not automatically injected by the agent loop.
+  memory_injection:
+    source: bauer/agent.py:2851-2868, bauer/memory_facade.py:49-85
+    current_behavior:
+      - The memory block is built once at session start (prefetch + system_prompt_block).
+      - UnifiedMemory.on_turn_start searches every MEMORY_FILES entry but does not re-inject.
+  later_changes_reused:
+    - "bauer/privacy.py:68-112 redact_text/redact_data (plan 064) for redaction before distillation."
+    - "bauer/secrets_scanner.py:139 has_secrets to drop records that still look sensitive."
+    - "bauer/session_ids.py:26 validate_session_id (sprint 59) for every session id read from feedback/ledger."
+    - "bauer/confined_files.py:69 write_text_atomic (sprint 59) for atomic, symlink-safe Markdown and JSON writes."
+    - "bauer/core/runtime/agno_evals.py:164-260 (sprint 56) scope + expiry pattern for decision memory, mirrored by directives."
+    - "bauer/core/kernel/entry.py:54 run_governed for the scheduled run (kill-switch, policy, budget)."
   scheduling:
-    source: bauer/commands/cron_cmd.py:84-203
+    source: bauer/commands/cron_cmd.py:14-203, bauer/automation_scheduler.py:26-131  # re-verified 2026-11-09
     current_behavior:
       - Durable cron can enqueue and run a scheduled task.
       - A consolidator should be an explicit task/command first, then an opt-in cron job.
   auxiliary_model:
-    source: bauer/config_loader.py:843-884
+    source: bauer/config_loader.py:1013-1060  # re-verified 2026-11-09
     current_behavior:
       - auxiliary.compression_model is the existing auxiliary slot.
       - A dedicated consolidation_model is not yet defined.
@@ -79,6 +92,43 @@ stop_condition:
     Choose one scope before implementation. Recommended initial choice is
     user_and_project (or workspace_only for a minimal MVP), with company scope
     explicitly rejected until identity propagation is complete.
+  resolved: true
+  resolved_at: "2026-11-09"
+
+decision:
+  taken_at: "2026-11-09"
+  taken_by: "coordinator, by delegation of the user"
+  scope: workspace_only
+  details:
+    - >-
+      Consolidate only into the current workspace memory: the MemoryManager Markdown
+      files under <workspace>/memory/ that LocalMemoryProvider injects. Scope id is
+      "ws-" + sha256(normcase(resolved workspace path))[:16] (bauer/memory_scope.py).
+    - company scope is explicitly rejected until an identity contract exists.
+    - user scope is deferred (sessions have no user_id).
+    - >-
+      Sessions without verifiable workspace provenance (historic rows, rows saved by a
+      store without workspace, rows saved from two different workspaces) are never
+      consolidated (fail closed). Slice 0 stamps provenance on new sessions and feedback.
+    - Opt-in per workspace, off by default.
+    - >-
+      Never consolidate secrets, credentials, tokens or provider payloads: tool/system
+      messages are excluded, text is redacted with privacy.redact_text before
+      distillation, and records that still look sensitive are dropped.
+    - Raw episodic sessions are not deleted or altered by consolidation.
+    - >-
+      Failed/partial runs retry on the next run within budget; idempotent via a ledger
+      keyed by session_id + scope; records are written atomically before the session is
+      marked consolidated.
+    - >-
+      Each feedback-derived directive is approved individually, never auto-activated,
+      has expiry and revoke, and keeps provenance to the supporting feedback.
+    - machine_id does not partition (scope is the workspace); it stays as metadata.
+    - >-
+      Consolidated facts carry provenance ("consolidado de sessão X em DATA"),
+      confidence and valid_until, live in CONSOLIDATED.md and are editable/removable
+      with the existing bauer memory md tooling.
+    - LLM is auxiliary.compression_model; no new config field.
 
 pipeline_after_scope_decision:
   trigger: "manual bauer memory consolidate [first]; opt-in cron later"
@@ -144,11 +194,30 @@ build_slices:
       only after explicit human approval with expiry/revocation.
 
 open_questions:
-  - Is consolidation opt-in per installation, workspace, or company?
-  - Which identity source supplies user_id and company_id for CLI, serve, and desktop?
-  - What data must never be consolidated (secrets, credentials, regulated/company data)?
-  - How long are raw episodic sessions retained after successful consolidation?
-  - Should a failed or partial consolidation be retried automatically, and under what budget?
-  - Does the user approve each directive or only a batch of proposed directives?
-  - How are model-generated facts corrected, expired, and audited?
-  - Should machine_id partition feedback, or may the same user span machines?
+  - question: Is consolidation opt-in per installation, workspace, or company?
+    answer: Per workspace, off by default (memory/consolidation/settings.json).
+  - question: Which identity source supplies user_id and company_id for CLI, serve, and desktop?
+    answer: >-
+      None yet. company is rejected and user deferred; the only identity used is the
+      workspace scope id. Revisit when an identity contract exists.
+  - question: What data must never be consolidated (secrets, credentials, regulated/company data)?
+    answer: >-
+      Secrets, credentials, tokens and provider payloads. Only user/assistant text is
+      read, redacted before distillation, and any record still flagged by the secrets
+      scanner is dropped. Company data is out of scope with the company scope.
+  - question: How long are raw episodic sessions retained after successful consolidation?
+    answer: Unchanged. Consolidation never deletes or edits sessions.
+  - question: Should a failed or partial consolidation be retried automatically, and under what budget?
+    answer: >-
+      Yes, on the next run (manual or scheduled), counted against the run budget and,
+      when scheduled, the per-day token budget, with exponential backoff between
+      failed scheduled runs and a per-session attempt cap.
+  - question: Does the user approve each directive or only a batch of proposed directives?
+    answer: Each directive individually (bauer memory directives approve <id>).
+  - question: How are model-generated facts corrected, expired, and audited?
+    answer: >-
+      Facts live in CONSOLIDATED.md with provenance, confidence and valid_until;
+      expired entries stop being injected; the file is edited/cleaned with
+      bauer memory md; the ledger records which sessions produced which records.
+  - question: Should machine_id partition feedback, or may the same user span machines?
+    answer: It does not partition; the workspace is the scope. machine_id stays as metadata.
