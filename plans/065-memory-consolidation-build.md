@@ -1,6 +1,6 @@
 # Plano 065 — Build da consolidação de memória + loop de feedback
 
-**Status:** IN PROGRESS
+**Status:** DONE (sprints 65–68, 2026-11-09)
 
 **Prioridade:** P2
 
@@ -61,7 +61,7 @@ sobre a anterior, com gates completos antes do commit.
 | 65 | 0 `enrich_feedback_and_scope_contract` | Contrato de escopo de workspace, proveniência nas sessões novas, feedback estruturado e redigido | `codex/sprint-65-memory-scope-feedback` | DONE |
 | 66 | 1 `manual_batch_consolidator` | `bauer memory consolidate` com `--dry-run`, budget, ledger determinístico, saída de revisão, sem ativação de prompt | `codex/sprint-66-memory-consolidate` | DONE |
 | 67 | 2 `opt_in_scheduled_consolidation` | Execução agendada pelo cron durável, sob o Kernel (kill-switch, policy, budget), com budget diário de tokens, métricas e retry/backoff | `codex/sprint-67-memory-consolidation-schedule` | DONE |
-| 68 | 3 `feedback_directives` | Fingerprint, rascunhos revisáveis, aprovação explícita, expiração/revogação, injeção só depois de aprovar | `codex/sprint-68-memory-feedback-directives` | PENDING |
+| 68 | 3 `feedback_directives` | Fingerprint, rascunhos revisáveis, aprovação explícita, expiração/revogação, injeção só depois de aprovar | `codex/sprint-68-memory-feedback-directives` | DONE |
 
 ### Critérios de aceite (todas as sprints)
 
@@ -78,6 +78,25 @@ sobre a anterior, com gates completos antes do commit.
   rejeita esses escopos.
 - Se a execução agendada precisar contornar o Kernel (kill-switch, policy,
   budget), pare: trabalho autônomo passa pelo Kernel.
+
+## Entregue em
+
+| Sprint | Entrega principal | Specs |
+|---|---|---|
+| 65 | `bauer/memory_scope.py`, proveniência em `SqliteSessionStore`, `bauer/memory_feedback.py`, `/thumbsdown <motivo>`, `bauer memory feedback list` | `specs/sprint-65-memory-scope-feedback/` |
+| 66 | `bauer/memory_consolidation.py`, `CONSOLIDATED.md`, `bauer memory consolidate [--dry-run] enable/disable/status` | `specs/sprint-66-memory-consolidate/` |
+| 67 | `bauer/memory_consolidation_schedule.py`, job interno no `AutomationScheduler` sob `run_governed`, `bauer memory consolidate schedule` | `specs/sprint-67-memory-consolidation-schedule/` |
+| 68 | `bauer/memory_directives.py`, injeção só de diretivas aprovadas, `bauer memory directives …` | `specs/sprint-68-memory-feedback-directives/` |
+
+Limitações conhecidas (registradas nas SPECs):
+
+- Só sessões do `bauer agent` ganham proveniência de workspace. As do
+  `serve`/web e dos canais continuam inelegíveis (fail closed).
+- As diretivas entram no bloco de memória do `bauer agent`
+  (`LocalMemoryProvider`), montado na abertura da sessão. Uma revogação vale a
+  partir da próxima montagem.
+- O fingerprint v1 é lexical (motivo ou tools + palavras-chave), não
+  semântico.
 
 ## Validação obrigatória por sprint
 

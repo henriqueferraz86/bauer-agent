@@ -775,3 +775,145 @@ def consolidate_schedule_cmd(
         console.print("[yellow]Opt-in desligado: o job vai pular até "
                       "'bauer memory consolidate enable'.[/yellow]")
     console.print(f"[dim]Rode: bauer cron daemon --workspace {scope.path}[/dim]")
+
+
+# ── Diretivas de feedback com aprovação humana (plano 065, sprint 68) ────────
+
+directives_app = typer.Typer(
+    help="Diretivas derivadas de /thumbsup e /thumbsdown: rascunhos revisáveis, "
+         "aprovação individual, expiração e revogação."
+)
+memory_app.add_typer(directives_app, name="directives")
+
+
+def _directive_store_or_exit(workspace: Path | None):
+    from ..memory_directives import DirectiveStore
+
+    scope = _scope_or_exit(workspace)
+    return DirectiveStore(scope)
+
+
+@directives_app.command("propose")
+def directives_propose_cmd(workspace: Path | None = typer.Option(None, "--workspace")):
+    """Aplica a regra de promoção ao feedback e cria/atualiza RASCUNHOS."""
+    store = _directive_store_or_exit(workspace)
+    changed = store.propose()
+    if not changed:
+        console.print("[dim]Nenhum padrão atingiu a regra (≥3 sinais em ≥2 sessões, 30 dias).[/dim]")
+        return
+    for d in changed:
+        console.print(f"[cyan]{d.directive_id}[/cyan] ({d.status}) {d.text} "
+                      f"— {len(d.supporting_feedback_ids)} sinais em {len(d.supporting_sessions)} sessões")
+    console.print("[dim]Revise e aprove UMA por vez: bauer memory directives approve <id>[/dim]")
+
+
+@directives_app.command("list")
+def directives_list_cmd(
+    workspace: Path | None = typer.Option(None, "--workspace"),
+    status: str | None = typer.Option(None, "--status", help="draft | approved | rejected | revoked"),
+):
+    """Lista diretivas do workspace (inclui histórico)."""
+    from datetime import datetime, timezone
+
+    store = _directive_store_or_exit(workspace)
+    items = [d for d in store.load() if status is None or d.status == status]
+    if not items:
+        console.print("[dim]Nenhuma diretiva.[/dim]")
+        return
+    now = datetime.now(timezone.utc)
+    table = Table(title=f"Diretivas — {store.scope.workspace_id}")
+    for col in ("id", "tipo", "status", "no prompt", "expira", "sinais", "texto"):
+        table.add_column(col)
+    for d in items:
+        table.add_row(d.directive_id, d.kind, d.status, "sim" if d.is_active(now) else "não",
+                      d.expires_at[:10] or "-", str(len(d.supporting_feedback_ids)), d.text[:80])
+    console.print(table)
+
+
+@directives_app.command("show")
+def directives_show_cmd(
+    directive_id: str = typer.Argument(...),
+    workspace: Path | None = typer.Option(None, "--workspace"),
+):
+    """Mostra a diretiva e o feedback que a sustenta (proveniência)."""
+    from ..memory_feedback import FeedbackStore
+
+    store = _directive_store_or_exit(workspace)
+    d = store.get(directive_id)
+    if d is None:
+        console.print(f"[red]Diretiva não encontrada:[/red] {directive_id}")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]{d.directive_id}[/bold] {d.kind} {d.status} fingerprint={d.fingerprint}")
+    console.print(d.text)
+    console.print(f"[dim]criada={d.created_at} aprovada={d.approved_at or '-'} "
+                  f"expira={d.expires_at or '-'} encerrada={d.closed_at or '-'}[/dim]")
+    feedback = FeedbackStore(store.scope)
+    for fid in d.supporting_feedback_ids:
+        rec = feedback.get(fid)
+        if rec is not None:
+            console.print(f"  - {fid} {rec.rating} sessão={rec.session_id} {rec.created_at[:19]} "
+                          f"{(rec.reason or rec.user_excerpt)[:80]}")
+
+
+@directives_app.command("approve")
+def directives_approve_cmd(
+    directive_id: str = typer.Argument(..., help="Uma diretiva por vez"),
+    workspace: Path | None = typer.Option(None, "--workspace"),
+    ttl_days: int = typer.Option(90, "--ttl-days", min=1, max=365, help="Expiração obrigatória"),
+    text: str | None = typer.Option(None, "--text", help="Reescreve o texto antes de aprovar"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Não pedir confirmação"),
+):
+    """Aprova UM rascunho: só então ele entra no prompt (até expirar/revogar)."""
+    from ..memory_directives import DirectiveError
+
+    store = _directive_store_or_exit(workspace)
+    d = store.get(directive_id)
+    if d is None:
+        console.print(f"[red]Diretiva não encontrada:[/red] {directive_id}")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]{d.directive_id}[/bold]: {text or d.text}")
+    if not yes and not typer.confirm(
+        f"Injetar esta diretiva no prompt por {ttl_days} dias?", default=False
+    ):
+        console.print("[dim]Cancelado.[/dim]")
+        return
+    try:
+        approved = store.approve(directive_id, ttl_days=ttl_days, text=text)
+    except DirectiveError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]aprovada[/green] {approved.directive_id} até {approved.expires_at[:10]}")
+
+
+@directives_app.command("reject")
+def directives_reject_cmd(
+    directive_id: str = typer.Argument(...),
+    workspace: Path | None = typer.Option(None, "--workspace"),
+):
+    """Recusa um rascunho (só volta com sinais novos)."""
+    from ..memory_directives import DirectiveError
+
+    store = _directive_store_or_exit(workspace)
+    try:
+        store.reject(directive_id)
+    except DirectiveError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[yellow]recusada[/yellow] {directive_id}")
+
+
+@directives_app.command("revoke")
+def directives_revoke_cmd(
+    directive_id: str = typer.Argument(...),
+    workspace: Path | None = typer.Option(None, "--workspace"),
+):
+    """Revoga uma diretiva aprovada: sai do prompt na próxima montagem."""
+    from ..memory_directives import DirectiveError
+
+    store = _directive_store_or_exit(workspace)
+    try:
+        store.revoke(directive_id)
+    except DirectiveError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[yellow]revogada[/yellow] {directive_id}")

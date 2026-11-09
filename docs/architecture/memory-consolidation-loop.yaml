@@ -1,6 +1,6 @@
 schema: bauer.architecture/v1
 id: memory-consolidation-loop
-status: decided_build_in_plan_065
+status: implemented
 plan: "017"
 updated: "2026-11-09"
 build_plan: "065"
@@ -177,21 +177,39 @@ build_slices:
     deliverable: >-
       Persist full-turn provenance, digest, session/scope identity, and a redaction
       decision; add tests proving company boundaries cannot be crossed.
+    sprint: 65
+    branch: codex/sprint-65-memory-scope-feedback
+    status: done
+    note: >-
+      Decision workspace_only: the tests prove workspace boundaries (sessions,
+      feedback, ledger, directives) cannot be crossed; company scope is rejected.
   - id: 1
     name: manual_batch_consolidator
     deliverable: >-
       Add bauer memory consolidate with dry-run, budget, deterministic ledger,
       review output, and no automatic prompt activation.
+    sprint: 66
+    branch: codex/sprint-66-memory-consolidate
+    status: done
   - id: 2
     name: opt_in_scheduled_consolidation
     deliverable: >-
       Run the approved batch through the durable cron/runtime scheduler with
       kill-switch, per-day token budget, metrics, and retry/backoff.
+    sprint: 67
+    branch: codex/sprint-67-memory-consolidation-schedule
+    status: done
+    note: >-
+      Uses the durable cron (AutomationScheduler) with an internal job kind; the run
+      goes through core.kernel.entry.run_governed(autonomous=True).
   - id: 3
     name: feedback_directives
     deliverable: >-
       Fingerprint repeated feedback, generate reviewable directives, and activate
       only after explicit human approval with expiry/revocation.
+    sprint: 68
+    branch: codex/sprint-68-memory-feedback-directives
+    status: done
 
 open_questions:
   - question: Is consolidation opt-in per installation, workspace, or company?
