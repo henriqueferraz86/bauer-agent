@@ -164,7 +164,18 @@ def pending(approvals, *, exclude=(), timeout=ANTI_HANG):
         if records:
             return records[0]
         time.sleep(0.025)
-    pytest.fail("No approval reached the persisted queue")
+    # Diagnóstico (falha intermitente vista só no Windows): o que existe no
+    # store quando nenhum pedido novo apareceu.
+    seen = [(a.id[-8:], a.status, a.tool_name, (a.run_id or "")[-8:]) for a in approvals.list()]
+    runs = []
+    try:
+        from bauer.core.runtime.run_manager import RunManager
+
+        runs = [(r.id[-8:], r.session_id, r.status, r.error)
+                for r in RunManager(root=approvals.root).list_runs()]
+    except Exception as exc:  # noqa: BLE001 - diagnostic only
+        runs = [repr(exc)]
+    pytest.fail(f"No approval reached the persisted queue; approvals={seen} runs={runs}")
 
 
 @pytest.mark.parametrize("environment", ["audit", "enforce"], indirect=True)
