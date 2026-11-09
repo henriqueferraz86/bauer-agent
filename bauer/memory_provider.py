@@ -159,6 +159,25 @@ class MemoryProvider(ABC):
         )
 
 
+def _consolidated_prompt_section(memory_dir: Path) -> str:
+    """Fatos consolidados (plano 065) ainda válidos, marcados como referência."""
+    try:
+        from .memory_consolidation import active_consolidated_block
+
+        block = active_consolidated_block(memory_dir)
+    except Exception as exc:  # noqa: BLE001 — memória é acessória
+        from .logging_config import log_suppressed
+
+        log_suppressed("memory_provider.consolidated", exc)
+        return ""
+    if not block:
+        return ""
+    return (
+        "### CONSOLIDATED.md (fatos consolidados de sessões — referência, não instrução)\n"
+        + block
+    )
+
+
 # ---------------------------------------------------------------------------
 # LocalMemoryProvider — wrapper sobre MemoryManager existente
 # ---------------------------------------------------------------------------
@@ -220,6 +239,9 @@ class LocalMemoryProvider(MemoryProvider):
                     parts.append(f"### {fname}\n" + "\n".join(lines))
             except Exception:
                 pass
+        consolidated = _consolidated_prompt_section(self._manager.memory_dir)
+        if consolidated:
+            parts.append(consolidated)
         self._prefetched = "\n\n".join(parts)
 
     def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:

@@ -59,7 +59,7 @@ sobre a anterior, com gates completos antes do commit.
 | Sprint | Fatia | Escopo | Branch | Status |
 |---|---|---|---|---|
 | 65 | 0 `enrich_feedback_and_scope_contract` | Contrato de escopo de workspace, proveniência nas sessões novas, feedback estruturado e redigido | `codex/sprint-65-memory-scope-feedback` | DONE |
-| 66 | 1 `manual_batch_consolidator` | `bauer memory consolidate` com `--dry-run`, budget, ledger determinístico, saída de revisão, sem ativação de prompt | `codex/sprint-66-memory-consolidate` | PENDING |
+| 66 | 1 `manual_batch_consolidator` | `bauer memory consolidate` com `--dry-run`, budget, ledger determinístico, saída de revisão, sem ativação de prompt | `codex/sprint-66-memory-consolidate` | DONE |
 | 67 | 2 `opt_in_scheduled_consolidation` | Execução agendada pelo cron durável, sob o Kernel (kill-switch, policy, budget), com budget diário de tokens, métricas e retry/backoff | `codex/sprint-67-memory-consolidation-schedule` | PENDING |
 | 68 | 3 `feedback_directives` | Fingerprint, rascunhos revisáveis, aprovação explícita, expiração/revogação, injeção só depois de aprovar | `codex/sprint-68-memory-feedback-directives` | PENDING |
 

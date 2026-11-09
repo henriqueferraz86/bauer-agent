@@ -58,6 +58,11 @@ class UnifiedMemory(MemoryProvider):
                     parts.append(f"### {filename}\n" + "\n".join(content.splitlines()[-40:]))
             except Exception as exc:  # noqa: BLE001 - memória é acessória
                 _log.debug("unified memory prefetch failed: %s", exc)
+        from .memory_provider import _consolidated_prompt_section
+
+        consolidated = _consolidated_prompt_section(self.markdown.memory_dir)
+        if consolidated:
+            parts.append(consolidated)
         self._prefetched = "\n\n".join(parts)
 
     def on_turn_start(self, turn_index: int, messages: list[dict]) -> None:

@@ -570,3 +570,176 @@ def feedback_list_cmd(
             ", ".join(rec.tool_names)[:40], (rec.reason or rec.user_excerpt)[:80],
         )
     console.print(table)
+
+
+# ── Consolidação episódica→semântica (plano 065, sprint 66) ──────────────────
+
+consolidate_app = typer.Typer(
+    help="Consolida sessões deste workspace em CONSOLIDATED.md (opt-in por "
+         "workspace; escopo só workspace; segredos redigidos)."
+)
+memory_app.add_typer(consolidate_app, name="consolidate")
+
+_DEFAULT_SESSIONS_DIR = Path("memory/sessions")
+
+
+def _scope_or_exit(workspace: Path | None):
+    from ..memory_scope import resolve_workspace_scope
+
+    scope = resolve_workspace_scope(_workspace_or_cwd(workspace))
+    if scope is None or not scope.root.is_dir():
+        console.print("[red]Workspace inválido ou inexistente.[/red]")
+        raise typer.Exit(code=1)
+    return scope
+
+
+def _print_consolidation_report(report, *, as_json: bool) -> None:
+    import json as _json
+
+    if as_json:
+        console.print_json(_json.dumps(report.to_dict(), ensure_ascii=False, default=str))
+        return
+    mode = "[yellow]dry-run[/yellow]" if report.dry_run else f"run {report.run_id}"
+    console.print(
+        f"[bold]memory consolidate[/bold] {mode} status={report.status} "
+        f"workspace={report.workspace_id}"
+    )
+    prov = report.provenance or {}
+    console.print(
+        f"[dim]sessões com proveniência deste workspace: {prov.get('eligible', 0)} · "
+        f"sem proveniência (nunca consolidadas): {prov.get('no_provenance', 0)} · "
+        f"em conflito: {prov.get('conflict', 0)}[/dim]"
+    )
+    if report.selected:
+        table = Table(title="Sessões selecionadas")
+        table.add_column("sessão", style="cyan")
+        table.add_column("mensagens", justify="right")
+        table.add_column("tokens (est.)", justify="right")
+        table.add_column("msgs descartadas (sensíveis)", justify="right")
+        for plan in report.selected:
+            table.add_row(plan.session_id, str(plan.message_count),
+                          str(plan.estimated_tokens), str(plan.dropped_messages))
+        console.print(table)
+    if report.skipped:
+        console.print("[dim]puladas: " + ", ".join(
+            f"{k}={v}" for k, v in sorted(report.skipped.items())) + "[/dim]")
+    for sid, error in report.failed.items():
+        console.print(f"[red]falhou[/red] {sid}: {error} (re-tenta na próxima execução)")
+    if report.records:
+        table = Table(title="Registros gravados em CONSOLIDATED.md (revise)")
+        table.add_column("record_id", style="cyan")
+        table.add_column("tipo")
+        table.add_column("sessão")
+        table.add_column("conf.", justify="right")
+        table.add_column("válido até")
+        table.add_column("texto")
+        for rec in report.records:
+            table.add_row(rec.record_id, rec.kind, rec.session_id,
+                          f"{rec.confidence:.2f}", rec.valid_until, rec.text[:80])
+        console.print(table)
+        console.print(
+            "[dim]Edite/remova em memory/CONSOLIDATED.md "
+            "(bauer memory md show consolidated --dir <workspace>/memory).[/dim]"
+        )
+    if not report.dry_run:
+        console.print(f"[dim]tokens usados (est.): {report.tokens_used}"
+                      f"{' · budget esgotado' if report.budget_exhausted else ''}[/dim]")
+
+
+@consolidate_app.callback(invoke_without_command=True)
+def consolidate_cmd(
+    ctx: typer.Context,
+    workspace: Path | None = typer.Option(None, "--workspace", help="Workspace (padrão: pasta atual)"),
+    sessions_dir: Path = typer.Option(_DEFAULT_SESSIONS_DIR, "--sessions-dir",
+                                      help="Diretório de sessões (o mesmo do bauer agent)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Só seleciona e estima; sem LLM nem escrita"),
+    max_sessions: int | None = typer.Option(None, "--max-sessions", min=0),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", min=0, help="Budget de tokens desta execução"),
+    min_age_hours: float | None = typer.Option(None, "--min-age-hours", min=0),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Consolida sessões encerradas deste workspace (exige opt-in, exceto --dry-run)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from ..memory_consolidation import ConsolidationError, MemoryConsolidator
+
+    scope = _scope_or_exit(workspace)
+    try:
+        report = MemoryConsolidator(scope.path, sessions_dir).run(
+            dry_run=dry_run, max_sessions=max_sessions, max_tokens=max_tokens,
+            min_age_hours=min_age_hours,
+        )
+    except ConsolidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    _print_consolidation_report(report, as_json=as_json)
+    if report.status == "failed":
+        raise typer.Exit(code=1)
+
+
+@consolidate_app.command("enable")
+def consolidate_enable_cmd(
+    workspace: Path | None = typer.Option(None, "--workspace"),
+    daily_token_budget: int | None = typer.Option(None, "--daily-token-budget", min=0),
+    max_sessions: int | None = typer.Option(None, "--max-sessions", min=0),
+    min_age_hours: float | None = typer.Option(None, "--min-age-hours", min=0),
+):
+    """Opt-in deste workspace (desligado por padrão)."""
+    from ..memory_consolidation import ConsolidationSettings
+
+    scope = _scope_or_exit(workspace)
+    settings = ConsolidationSettings.load(scope)
+    settings.enabled = True
+    if daily_token_budget is not None:
+        settings.daily_token_budget = daily_token_budget
+    if max_sessions is not None:
+        settings.max_sessions_per_run = max_sessions
+    if min_age_hours is not None:
+        settings.min_session_age_hours = min_age_hours
+    settings.save(scope)
+    console.print(f"[green]consolidação ligada[/green] em {scope.workspace_id} ({scope.path})")
+
+
+@consolidate_app.command("disable")
+def consolidate_disable_cmd(workspace: Path | None = typer.Option(None, "--workspace")):
+    """Desliga a consolidação deste workspace (manual e agendada)."""
+    from ..memory_consolidation import ConsolidationSettings
+
+    scope = _scope_or_exit(workspace)
+    settings = ConsolidationSettings.load(scope)
+    settings.enabled = False
+    settings.save(scope)
+    console.print(f"[yellow]consolidação desligada[/yellow] em {scope.workspace_id}")
+
+
+@consolidate_app.command("status")
+def consolidate_status_cmd(
+    workspace: Path | None = typer.Option(None, "--workspace"),
+    limit: int = typer.Option(10, "--limit"),
+):
+    """Opt-in, budget e últimas execuções (métricas do ledger)."""
+    from ..memory_consolidation import ConsolidationLedger, ConsolidationSettings
+
+    scope = _scope_or_exit(workspace)
+    settings = ConsolidationSettings.load(scope)
+    ledger = ConsolidationLedger(scope)
+    console.print(
+        f"workspace={scope.workspace_id} enabled={settings.enabled} "
+        f"daily_token_budget={settings.daily_token_budget} "
+        f"max_sessions_per_run={settings.max_sessions_per_run} "
+        f"min_session_age_hours={settings.min_session_age_hours}"
+    )
+    entries = ledger.entries()
+    done = sum(1 for e in entries.values() if e["status"] == "consolidated")
+    failed = sum(1 for e in entries.values() if e["status"] == "failed")
+    console.print(f"sessões consolidadas={done} com falha={failed}")
+    runs = ledger.recent_runs(limit=limit)
+    if runs:
+        table = Table(title="Execuções recentes")
+        for col in ("run_id", "trigger", "status", "started_at", "sessões ok", "falhas", "registros", "tokens"):
+            table.add_column(col)
+        for run in runs:
+            table.add_row(run["run_id"], run["trigger"], run["status"], run["started_at"][:19],
+                          str(run["sessions_ok"]), str(run["sessions_failed"]),
+                          str(run["records_written"]), str(run["tokens_used"]))
+        console.print(table)
