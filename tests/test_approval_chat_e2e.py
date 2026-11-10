@@ -175,7 +175,23 @@ def pending(approvals, *, exclude=(), timeout=ANTI_HANG):
                 for r in RunManager(root=approvals.root).list_runs()]
     except Exception as exc:  # noqa: BLE001 - diagnostic only
         runs = [repr(exc)]
-    pytest.fail(f"No approval reached the persisted queue; approvals={seen} runs={runs}")
+    # Where is each bauer thread stuck? (Windows-only: run seen frozen in
+    # `policy_check` for the whole deadline.)
+    import os
+    import sys
+    import traceback
+
+    stacks = []
+    for frame in sys._current_frames().values():
+        walked = list(traceback.walk_stack(frame))
+        if not any(f"{os.sep}bauer{os.sep}" in f.f_code.co_filename for f, _ in walked):
+            continue
+        stacks.append(" <- ".join(
+            f"{os.path.basename(f.f_code.co_filename)}:{lineno}:{f.f_code.co_name}"
+            for f, lineno in walked[:12]
+        ))
+    pytest.fail(f"No approval reached the persisted queue; approvals={seen} runs={runs} "
+                f"stacks={stacks}")
 
 
 @pytest.mark.parametrize("environment", ["audit", "enforce"], indirect=True)
