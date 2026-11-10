@@ -271,6 +271,26 @@ PROVIDERS_LOCAIS = frozenset({"ollama", "lmstudio"})
 #: Hosts que caracterizam "esta máquina" para o provider `custom`.
 _HOSTS_LOCAIS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")
 
+#: Marca de processo `--local` (sprint 69). `bauer agent --local` e
+#: `bauer serve --local` a gravam depois de validar o boot; o subprocess
+#: `bauer agent run-one` de `delegate_task` a herda pelo ambiente e a verifica
+#: antes de construir client. Só liga a garantia, nunca a desliga.
+LOCAL_ONLY_ENV = "BAUER_LOCAL_ONLY"
+
+
+def local_only_active() -> bool:
+    """True se este processo (ou quem o criou) rodou com `--local`."""
+    import os
+
+    return os.environ.get(LOCAL_ONLY_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def mark_local_only() -> None:
+    """Liga a marca `--local` neste processo e nos subprocessos dele."""
+    import os
+
+    os.environ[LOCAL_ONLY_ENV] = "1"
+
 
 def provider_e_local(provider: str, cfg: Any = None) -> bool:
     """O provider roda nesta máquina?

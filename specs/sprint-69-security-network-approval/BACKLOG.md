@@ -48,6 +48,19 @@ Critérios:
   `fallback_models_local`.
 - A sessão não troca para client de nuvem. Sem `--local`, a troca continua.
 
+### 4b. `--local` na delegação (`delegate_task` e `run-one`)
+
+Status: concluído (pedido do coordenador antes do merge)
+
+Critérios:
+- Numa sessão `--local` com client local falhando, a delegação só chega ao
+  `run-one --local`. O client de nuvem da sessão não é usado.
+- Um agente remoto fora da máquina é recusado antes do POST. O fallback do
+  despacho remoto continua local.
+- O `run-one --local` (ou com a marca `BAUER_LOCAL_ONLY` herdada) recusa
+  config de nuvem antes de construir client.
+- Sem `--local`, nada muda.
+
 ### 5. Gates e revisão de segurança
 
 Status: concluído
@@ -66,12 +79,12 @@ estilo e mypy (420 arquivos, sem issues). Revisão do diff:
 
 - Branch: `codex/sprint-69-security-network-approval`, base `origin/master`
   `e6a8c66`.
+- O vazamento de `--local` pela delegação foi fechado nesta mesma sprint
+  (tarefa 4b).
 - Pendências fora do escopo:
-  - o fallback `subprocess` do `delegate_task` (`bauer agent run-one`) não
-    herda o `--local` da sessão. Hoje o operador fecha isso por política
-    (`agent.delegate` com `when: {dispatch: subprocess}`). Propagar o
-    `--local` ao `run-one` muda o contrato dele;
   - se o despacho remoto do `delegate_task` falhar com exceção inesperada, a
-    tarefa cai no provider local (comportamento anterior). A regra avalia o
-    despacho primário, mas um `deny` de `agent.delegate` bloqueia todos os
-    caminhos.
+    tarefa cai no client da sessão (comportamento anterior). Em `--local`,
+    esse fallback continua local. A regra avalia o despacho primário, mas um
+    `deny` de `agent.delegate` bloqueia todos os caminhos;
+  - o aprovador LLM e os clientes auxiliares de uma sessão `--local` não
+    foram auditados. Não fazem parte da delegação.

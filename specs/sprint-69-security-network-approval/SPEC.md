@@ -19,11 +19,19 @@ falsos:
 | 2 `lsp_rename` | `approval=True` em `_TOOL_SECURITY`, mas sem operação: uma regra `deny` de `tool.approval` não bloqueia e nenhum approval humano é criado | reproduz |
 | 3 `/model --local` | `run_agent_session` não sabe que a sessão é `--local`; o seletor oferece e grava qualquer provider; o rebuild aceita config de nuvem e volta a usar `fallback_models` (não `fallback_models_local`). O turno seguinte vai para o client de nuvem | reproduz |
 
-`tests/test_sprint69_network_approval_boundaries.py`: 30 casos. Sem o código
-da correção, 26 falham. Os 4 restantes são controles positivos (`allow`
-continua passando; regra dirigida a `lsp_rename` por nome) e passam nas duas
-versões. O controle "modo default continua trocando para a nuvem" falha sem a
-correção só porque `run_agent_session` ainda não aceita `local_only`.
+`tests/test_sprint69_network_approval_boundaries.py` tem 38 casos. Os 30
+primeiros cobrem os itens 1 a 3: sem o código da correção, 26 falham. Os 4
+restantes são controles positivos (`allow` continua passando; regra dirigida
+a `lsp_rename` por nome) e passam nas duas versões. O controle "modo default
+continua trocando para a nuvem" falha sem a correção só porque
+`run_agent_session` ainda não aceita `local_only`.
+
+Os 8 casos da decisão 8 (delegação em `--local`) falham sem a correção. A
+lacuna se reproduz: com a marca ligada e o client local falhando, o
+subprocess saía sem `--local`, o client de nuvem da sessão era usado, o POST
+ia para o agente remoto e o `run-one` construía o client de nuvem. O
+controle "subprocess sem `--local` no modo default" falha antes só porque
+`LOCAL_ONLY_ENV` ainda não existia.
 
 ## Objetivo
 
@@ -122,14 +130,40 @@ passa pela aprovação humana da política, e não só pelo aprovador LLM. O
 7. **Modo default não muda.** Sem `--local`, o `/model` continua trocando para
    a nuvem (controle positivo no teste).
 
+8. **`--local` na delegação (pedido do coordenador, fechado nesta sprint).**
+   Antes, o fallback `subprocess` do `delegate_task` (`bauer agent run-one`)
+   carregava o config canônico sem `--local`. Numa sessão `--local` com o
+   client local falhando, a delegação caía num modelo de nuvem. A garantia
+   agora tem três peças:
+   - **Marca de processo `BAUER_LOCAL_ONLY=1`.** O `bauer agent --local` e o
+     `bauer serve --local` a gravam depois de validar o boot. Os subprocessos
+     a herdam pelo ambiente. A marca só liga a garantia, nunca a desliga.
+   - **`run-one --local`.** O flag é passado explicitamente pelo
+     `delegate_task`, e a marca herdada tem o mesmo efeito. Antes de
+     construir client, o `run-one` verifica `provider_e_local` do config
+     resolvido. Sendo nuvem, recusa iniciar (exit 1, nada enviado). Sendo
+     local, regrava a marca, e delegações aninhadas herdam a garantia. A
+     checagem é a do provider que o `run-one` de fato usa, não
+     `validar_execucao_local` inteiro: o `run-one` não roteia por tier nem
+     usa fallback, então exigir `profiles_local` recusaria sem motivo.
+   - **`delegate_task` em sessão `--local`:**
+     - agente remoto cujo host não é desta máquina → `ToolError` antes do
+       POST;
+     - agente em localhost é aceito, porque é outro processo desta máquina;
+     - o client da sessão só é usado se for local. Para isso conta o rótulo
+       `_provider`, a classe Ollama ou o host local. Desconhecido conta como
+       não local;
+     - o subprocess sempre recebe `--local`, inclusive quando o despacho
+       remoto falha de forma inesperada e cai no fallback.
+   - **Isolamento de testes.** `tests/conftest.py` registra
+     `BAUER_LOCAL_ONLY` no `monkeypatch` de cada teste, e a marca gravada por
+     um teste não vaza para o seguinte no mesmo worker do xdist.
+
 ## Fora de escopo
 
-- O fallback `subprocess` do `delegate_task` (`bauer agent run-one`) carrega o
-  config canônico sem `--local`. Numa sessão `--local`, se o client local
-  falhar, a delegação pode cair num modelo de nuvem do config canônico. O
-  operador consegue fechar isso por política (`agent.delegate` com
-  `when: {dispatch: subprocess}`), mas propagar `--local` ao sub-agente é
-  mudança de contrato do `run-one` e fica registrada como pendência.
+- O aprovador LLM (`auxiliary.approval_model`) e outros clientes auxiliares
+  de uma sessão `--local` não fazem parte da delegação e não foram
+  auditados aqui. O `validar_execucao_local` do boot não os cobre.
 - `bauer agent run` (agente nomeado) não tem `--local`. O rebuild dele não
   mudou.
 - Modo `audit` da política: um `ask` continua sendo auto-aprovado com trilha,
@@ -151,6 +185,12 @@ passa pela aprovação humana da política, e não só pelo aprovador LLM. O
   rebuild recusa config de nuvem antes de construir client e usa a cadeia
   local, e a sessão não troca para um client de nuvem. Sem `--local`, a troca
   continua.
+- [x] Numa sessão `--local` com client local falhando, o `delegate_task` só
+  chega ao `run-one --local`, nunca a um client de nuvem. Um client de nuvem
+  na sessão não é usado. Um agente remoto fora da máquina é recusado antes do
+  POST. O fallback do despacho remoto continua local. O `run-one` (flag ou
+  marca herdada) recusa config de nuvem antes de construir client. Sem
+  `--local`, o subprocess não muda.
 
 ## Plano de validação
 

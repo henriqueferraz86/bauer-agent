@@ -626,6 +626,9 @@ def agent(
             console.print(f"[dim]Config: {_loaded_config_path(config)}[/dim]")
             console.print("[dim]Rode sem --local para usar a configuração atual.[/dim]")
             raise typer.Exit(code=1)
+        # Sprint 69: delegate_task e o subprocess `run-one` herdam a garantia.
+        from ..model_router import mark_local_only
+        mark_local_only()
 
     _route_profiles, _route_client_fn = heuristic_route_kit(
         cfg, conjunto="local" if local else "default")
@@ -1180,6 +1183,11 @@ def agent_run_one(
         "", "--agent", help="Nome do agent especialista (agents.yaml) — aplica o system prompt dele"
     ),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
+    local: bool = typer.Option(
+        False, "--local",
+        help="Só modelo desta máquina: recusa iniciar se o config apontar para a nuvem "
+             "(também ligado pela marca BAUER_LOCAL_ONLY herdada de uma sessão --local)",
+    ),
 ):
     """Executa uma única tarefa e imprime o resultado (usado por delegate_task).
 
@@ -1187,6 +1195,19 @@ def agent_run_one(
     isso, é um LLM genérico sem nenhuma especialização.
     """
     cfg, _ = _load_or_die(config, models)
+    from ..model_router import local_only_active, mark_local_only, provider_e_local
+    if local or local_only_active():
+        # Sprint 69: o sub-agente de uma sessão `--local` carrega o config
+        # canônico, que pode apontar para a nuvem. Verifica ANTES de construir
+        # client e recusa iniciar — "quase local" não cumpre a garantia.
+        _prov = str(getattr(cfg.model, "provider", "") or "")
+        if not provider_e_local(_prov, cfg):
+            console_err.print(
+                f"[red]run-one --local recusado:[/red] o config resolve para o provider "
+                f"'{_prov}', que não roda nesta máquina. Nada foi enviado."
+            )
+            raise typer.Exit(code=1)
+        mark_local_only()  # delegações aninhadas herdam a garantia
     client = _build_client(cfg)
     from ..core.runtime.adapters import get_runtime_adapter
 

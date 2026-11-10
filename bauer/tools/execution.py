@@ -151,6 +151,37 @@ def _find_bauer_python(workspace: Path) -> str:
     return result
 
 
+def _delegate_local_only(router: Any) -> bool:
+    """A sessão roda com `--local` (atributo do router ou marca de processo)?"""
+    from ..model_router import local_only_active
+
+    return bool(getattr(router, "_local_only", False)) or local_only_active()
+
+
+def _url_is_local(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    from ..model_router import _HOSTS_LOCAIS
+
+    try:
+        host = (urlparse(str(url or "")).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    return host in _HOSTS_LOCAIS
+
+
+def _client_is_local(client: Any) -> bool:
+    """O client LLM fala com um modelo desta máquina? Desconhecido = não (falha fechado)."""
+    from ..model_router import provider_e_local
+
+    provider = str(getattr(client, "_provider", "") or "")
+    if provider and provider_e_local(provider):
+        return True
+    if "ollama" in type(client).__name__.lower():
+        return True
+    return _url_is_local(str(getattr(client, "host", "") or getattr(client, "base_url", "") or ""))
+
+
 class ExecToolsMixin:
     """run_command (shell), execute_code (sandbox Python) e delegate_task (sub-agente)."""
 
@@ -605,8 +636,16 @@ class ExecToolsMixin:
         import subprocess
 
         checkpoint_execution()
+        # Sprint 69: numa sessão `--local`, nenhum caminho da delegação chega a
+        # um modelo fora desta máquina — remoto, client da sessão ou subprocess.
+        local_only = _delegate_local_only(self)
         # ── Dispatch remoto via agent registry ────────────────────────────────
         if _ag and _ag.url:
+            if local_only and not _url_is_local(_ag.url):
+                raise ToolError(
+                    f"delegate_task --local recusado: o agente '{_resolved_name}' fica em "
+                    f"{_ag.url}, fora desta máquina. Nada foi enviado."
+                )
             try:
                 import httpx as _httpx
 
@@ -648,7 +687,12 @@ class ExecToolsMixin:
         # Especialista LOCAL (agent resolvido, sem url): aplica o system prompt
         # dele — sem isto, "especialista" não fazia diferença nenhuma na
         # resposta, era só um rótulo.
-        if self._llm_client is not None:
+        _client_ok = self._llm_client is not None and (
+            not local_only or _client_is_local(self._llm_client))
+        if self._llm_client is not None and not _client_ok:
+            logger.warning("delegate_task --local: client da sessão não é local; "
+                           "usando o sub-agente verificado (run-one --local)")
+        if _client_ok:
             try:
                 _model = (
                     (_ag.model if _ag and _ag.model else "")
@@ -680,6 +724,10 @@ class ExecToolsMixin:
         cmd = [python, "-m", "bauer.cli", "agent", "run-one", full_task]
         if _resolved_name:
             cmd += ["--agent", _resolved_name, "--agents", _agents_file]
+        if local_only:
+            # O run-one verifica o config ANTES de construir client e recusa
+            # iniciar se ele apontar para a nuvem (também herda BAUER_LOCAL_ONLY).
+            cmd.append("--local")
         try:
             result = run_process(
                 cmd,

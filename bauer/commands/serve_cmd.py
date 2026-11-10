@@ -137,6 +137,9 @@ def serve(
             for _p in _probs:
                 console.print(f"  [yellow]*[/yellow] {_p}")
             raise typer.Exit(code=1)
+        # Sprint 69: delegate_task e o subprocess `run-one` herdam a garantia.
+        from ..model_router import mark_local_only
+        mark_local_only()
         console.print("[green]--local: nada sai desta maquina[/green]")
 
     from ..agent import _build_system_prompt

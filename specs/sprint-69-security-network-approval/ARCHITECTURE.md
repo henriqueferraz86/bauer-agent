@@ -56,6 +56,21 @@ bauer agent --local
 `LocalSwitchRefused` cai no `except Exception` que já existia no `/model` e
 aparece como "Erro ao trocar modelo: --local recusado: …".
 
+## Item 3b — `delegate_task` numa sessão `--local`
+
+```text
+bauer agent --local | bauer serve --local
+  └─ validar_execucao_local ok → model_router.mark_local_only()   (os.environ BAUER_LOCAL_ONLY=1)
+
+delegate_task → _execute_delegated_task
+  local_only = router._local_only or local_only_active()
+  ├─ agente com url: host fora da máquina → ToolError (antes do POST)
+  ├─ client da sessão: usado só se _client_is_local (_provider | classe Ollama | host local)
+  └─ subprocess: bauer agent run-one ... --local   (+ BAUER_LOCAL_ONLY herdado)
+        run-one: --local ou marca → provider_e_local(cfg) antes de _build_client
+                 nuvem → exit 1 | local → mark_local_only() (aninhado herda)
+```
+
 ## Arquivos
 
 - `bauer/tool_router.py`: quatro entradas no mapa e `_runtime_policy_payload`.
@@ -72,4 +87,12 @@ aparece como "Erro ao trocar modelo: --local recusado: …".
 - `bauer/commands/agent_cmd.py`: `LocalSwitchRefused` e
   `_rebuild_client_from_config`. O `bauer agent` passa `local_only`.
 - `bauer/agent.py`: o kwarg `local_only` e a terceira camada no `/model`.
+- `bauer/model_router.py`: `LOCAL_ONLY_ENV`, `local_only_active` e
+  `mark_local_only`.
+- `bauer/commands/serve_cmd.py`: o `serve --local` grava a marca.
+- `bauer/commands/agent_cmd.py`: o `agent --local` grava a marca, e o
+  `run-one --local` verifica o config e recusa iniciar se ele for de nuvem.
+- `bauer/tools/execution.py`: os helpers `_delegate_local_only`,
+  `_url_is_local` e `_client_is_local`, e as três guardas no despacho.
+- `tests/conftest.py`: a marca é isolada por teste.
 - `tests/test_sprint69_network_approval_boundaries.py`: regressões.

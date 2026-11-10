@@ -402,3 +402,130 @@ def test_rebuild_client_for_local_uses_local_fallback_chain(tmp_path):
     assert out == ("client", "qwen", [])
     build.assert_called_once_with(cfg)
     assert build_fb.call_args.kwargs["conjunto"] == "local"
+
+
+# ─── 3b. delegate_task numa sessão --local ──────────────────────────────────
+
+
+def _failing_local_router(tmp_path, monkeypatch, *, client=None):
+    from bauer.model_router import LOCAL_ONLY_ENV
+
+    monkeypatch.setenv(LOCAL_ONLY_ENV, "1")
+    if client is None:
+        client = MagicMock()
+        client._provider = "ollama"
+        client.chat_stream.side_effect = RuntimeError("ollama caiu")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    return ToolRouter(workspace=ws, audit_enabled=False, llm_client=client, model_name="qwen")
+
+
+def _completed(stdout="ok-sub"):
+    proc = MagicMock()
+    proc.returncode, proc.stdout, proc.stderr = 0, stdout, ""
+    return proc
+
+
+def test_local_session_failing_local_client_delegates_only_to_local_verified_subprocess(tmp_path, monkeypatch):
+    router = _failing_local_router(tmp_path, monkeypatch)
+    with patch.object(type(router), "_resolve_delegate_agent", return_value=(None, False, "agents.yaml")), \
+            patch("bauer.tools.execution.run_process", return_value=_completed()) as proc:
+        router.execute({"action": "delegate_task", "args": {"task": "resuma"}})
+    cmd = proc.call_args.args[0]
+    assert cmd[3:5] == ["agent", "run-one"]
+    assert "--local" in cmd
+
+
+def test_local_session_never_uses_cloud_session_client(tmp_path, monkeypatch):
+    cloud = MagicMock()
+    cloud._provider = "openai"
+    cloud.host = "https://api.openai.com"
+    router = _failing_local_router(tmp_path, monkeypatch, client=cloud)
+    with patch.object(type(router), "_resolve_delegate_agent", return_value=(None, False, "agents.yaml")), \
+            patch("bauer.tools.execution.run_process", return_value=_completed()) as proc:
+        router.execute({"action": "delegate_task", "args": {"task": "resuma"}})
+    cloud.chat_stream.assert_not_called()
+    assert "--local" in proc.call_args.args[0]
+
+
+def test_local_session_refuses_remote_agent_outside_machine(tmp_path, monkeypatch):
+    router = _failing_local_router(tmp_path, monkeypatch)
+    agent = MagicMock(url="https://agente.example:9000", model="", system="", api_key="")
+    agent.name = "pesquisador"
+    with patch.object(type(router), "_resolve_delegate_agent", return_value=(agent, True, "agents.yaml")), \
+            patch("httpx.post") as post, patch("bauer.tools.execution.run_process") as proc, \
+            pytest.raises(ToolError, match="--local recusado"):
+        router.execute({"action": "delegate_task", "args": {"task": "resuma", "agent_name": "pesquisador"}})
+    post.assert_not_called()
+    proc.assert_not_called()
+
+
+def test_local_session_remote_fallback_stays_local(tmp_path, monkeypatch):
+    """Agente em localhost cujo dispatch falha de forma inesperada: o fallback
+    (client local que também falha → subprocess) continua preso ao --local."""
+    router = _failing_local_router(tmp_path, monkeypatch)
+    agent = MagicMock(url="http://127.0.0.1:7770", model="", system="", api_key="")
+    agent.name = "vizinho"
+    with patch.object(type(router), "_resolve_delegate_agent", return_value=(agent, True, "agents.yaml")), \
+            patch("httpx.post", side_effect=ValueError("resposta estranha")), \
+            patch("bauer.tools.execution.run_process", return_value=_completed()) as proc:
+        router.execute({"action": "delegate_task", "args": {"task": "resuma", "agent_name": "vizinho"}})
+    assert "--local" in proc.call_args.args[0]
+
+
+def test_default_session_subprocess_has_no_local_flag(tmp_path, monkeypatch):
+    """Controle positivo: fora do --local, o subprocess não muda."""
+    from bauer.model_router import LOCAL_ONLY_ENV
+
+    monkeypatch.delenv(LOCAL_ONLY_ENV, raising=False)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    router = ToolRouter(workspace=ws, audit_enabled=False)
+    with patch.object(type(router), "_resolve_delegate_agent", return_value=(None, False, "agents.yaml")), \
+            patch("bauer.tools.execution.run_process", return_value=_completed()) as proc:
+        router.execute({"action": "delegate_task", "args": {"task": "resuma"}})
+    assert "--local" not in proc.call_args.args[0]
+
+
+def _cloud_cfg():
+    cfg = MagicMock()
+    cfg.model.provider = "openai"
+    cfg.model.name = "gpt-cloud"
+    return cfg
+
+
+@pytest.mark.parametrize("via", ["flag", "env"])
+def test_run_one_local_refuses_cloud_config_before_building_client(monkeypatch, via):
+    import typer
+
+    from bauer.commands import agent_cmd
+    from bauer.model_router import LOCAL_ONLY_ENV
+
+    if via == "env":
+        monkeypatch.setenv(LOCAL_ONLY_ENV, "1")
+    else:
+        monkeypatch.delenv(LOCAL_ONLY_ENV, raising=False)
+    kwargs = {"local": True} if via == "flag" else {}
+    with patch.object(agent_cmd, "_load_or_die", return_value=(_cloud_cfg(), None)), \
+            patch.object(agent_cmd, "_build_client") as build, \
+            pytest.raises(typer.Exit) as exc:
+        agent_cmd.agent_run_one(task="oi", config=Path("config.yaml"), models=Path("models.yaml"),
+                                agent="", agents_file=Path("agents.yaml"), **kwargs)
+    assert exc.value.exit_code == 1
+    build.assert_not_called()
+
+
+def test_run_one_local_with_local_config_marks_nested_delegations(monkeypatch):
+    from bauer.commands import agent_cmd
+    from bauer.model_router import LOCAL_ONLY_ENV, local_only_active
+
+    monkeypatch.delenv(LOCAL_ONLY_ENV, raising=False)
+    cfg = MagicMock()
+    cfg.model.provider = "ollama"
+    cfg.model.name = "qwen"
+    with patch.object(agent_cmd, "_load_or_die", return_value=(cfg, None)), \
+            patch.object(agent_cmd, "_build_client", side_effect=RuntimeError("parar aqui")), \
+            pytest.raises(RuntimeError, match="parar aqui"):
+        agent_cmd.agent_run_one(task="oi", config=Path("config.yaml"), models=Path("models.yaml"),
+                                agent="", agents_file=Path("agents.yaml"), local=True)
+    assert local_only_active()
