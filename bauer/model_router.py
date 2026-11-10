@@ -370,6 +370,53 @@ def validar_execucao_local(cfg, model_name: str = "") -> "list[str]":
         problemas.append(
             f"`model.fallback_models_local` tem {len(remotos)} destino(s) na nuvem "
             f"({', '.join(remotos[:3])}) — uma falha do modelo local cairia lá")
+    problemas.extend(problemas_auxiliares_locais(cfg))
+    return problemas
+
+
+#: Valores de `STT_PROVIDER` que não saem da máquina (`auto` sob `--local`
+#: fica restrito ao local — ver `transcription.transcribe_audio`).
+STT_LOCAIS = frozenset({"", "auto", "local", "faster-whisper", "faster_whisper"})
+#: Idem para `TTS_PROVIDER`/`BAUER_TTS_PROVIDER` (`tts.synthesize_speech`).
+TTS_LOCAIS = frozenset({"", "auto", "local", "coqui", "xtts", "kokoro"})
+
+
+def problemas_auxiliares_locais(cfg) -> "list[str]":
+    """Clients auxiliares que iriam para a nuvem num processo `--local` (sprint 72).
+
+    - cada slot `auxiliary.*` com provider explícito que não é local. Slot
+      sem provider herda `model.provider`, já verificado por
+      `validar_execucao_local`;
+    - `STT_PROVIDER` e `TTS_PROVIDER`/`BAUER_TTS_PROVIDER` explícitos de
+      nuvem. Sem a variável, o default de nuvem da transcrição não derruba o
+      boot: a criação é recusada em runtime e só o caminho local fica.
+    """
+    import os
+
+    problemas: list[str] = []
+    aux = getattr(cfg, "auxiliary", None)
+    fields = getattr(type(aux), "model_fields", None) or {}
+    for slot in sorted(fields):
+        spec = getattr(aux, slot, None)
+        prov = str(getattr(spec, "provider", "") or "").strip()
+        if prov and not provider_e_local(prov, cfg):
+            model = str(getattr(spec, "model", "") or "").strip()
+            problemas.append(
+                f"`auxiliary.{slot}` usa provider '{prov}' ({model or '(modelo principal)'}), "
+                "que não é local — o client auxiliar iria para fora")
+
+    stt = os.environ.get("STT_PROVIDER", "").strip().lower()
+    if stt not in STT_LOCAIS:
+        problemas.append(
+            f"`STT_PROVIDER` = {stt} não é local — a transcrição iria para fora "
+            "(use STT_PROVIDER=local)")
+    # Mesma precedência de `tts._tts_provider_pref`.
+    tts_var = "BAUER_TTS_PROVIDER" if "BAUER_TTS_PROVIDER" in os.environ else "TTS_PROVIDER"
+    tts = os.environ.get(tts_var, "").strip().lower()
+    if tts not in TTS_LOCAIS:
+        problemas.append(
+            f"`{tts_var}` = {tts} não é local — a síntese de voz iria para fora "
+            "(use TTS_PROVIDER=local ou kokoro)")
     return problemas
 
 

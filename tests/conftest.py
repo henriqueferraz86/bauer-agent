@@ -108,6 +108,10 @@ def _isolate_local_only_mark(monkeypatch):
     variável aqui faz o monkeypatch restaurá-la ao fim de cada teste.
     """
     monkeypatch.setenv("BAUER_LOCAL_ONLY", "")
+    # Sprint 72: o boot do `--local` também lê STT_PROVIDER/TTS_PROVIDER. Um
+    # valor de nuvem no ambiente de quem roda a suíte não pode decidir teste.
+    for _var in ("STT_PROVIDER", "TTS_PROVIDER", "BAUER_TTS_PROVIDER"):
+        monkeypatch.delenv(_var, raising=False)
 
 
 # ── Deadline anti-travamento para testes assíncronos ────────────────────────

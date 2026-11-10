@@ -76,6 +76,20 @@ VALID_SLOTS: frozenset[str] = frozenset({
 })
 
 
+class AuxiliaryLocalOnlyRefused(ValueError):
+    """Client auxiliar de nuvem pedido num processo `--local` (sprint 72)."""
+
+
+def _local_only_refusal(provider: str, cfg) -> str | None:
+    """Motivo da recusa se o processo é `--local` e `provider` não é local."""
+    from .model_router import local_only_active, provider_e_local
+
+    if not local_only_active() or provider_e_local(provider, cfg):
+        return None
+    return (f"--local ativo: provider auxiliar '{provider}' não roda nesta "
+            "máquina; client recusado antes de qualquer request")
+
+
 # ---------------------------------------------------------------------------
 # Resolution
 # ---------------------------------------------------------------------------
@@ -142,6 +156,14 @@ def get_text_auxiliary_client(
         logger.info("auxiliary_client: slot %r unconfigured (provider=%r, "
                     "model=%r) — caller should fall back",
                     slot, provider, model)
+        return None, None
+
+    # Sprint 72: o boot do `--local` valida o config canônico, mas este cfg
+    # pode ter vindo do autoload (BAUER_CONFIG/config.yaml do CWD) ou de um
+    # config relido em runtime. A recusa é aqui, antes de construir o client.
+    refusal = _local_only_refusal(provider, cfg)
+    if refusal is not None:
+        logger.warning("auxiliary_client: slot %r: %s", slot, refusal)
         return None, None
 
     try:
@@ -283,6 +305,13 @@ def _build_client_for_provider(provider: str, model: str, cfg) -> TextLLMClient:
     Provider names follow the same conventions as the main config sections.
     """
     p = provider.lower().strip()
+
+    # Sprint 72: defesa em profundidade. O server chama esta fábrica direto
+    # (troca de modelo, restauração do modelo salvo, OAuth). Sob a marca
+    # `--local`, nenhum client de nuvem nasce aqui, nem o do `bauer auth`.
+    refusal = _local_only_refusal(p, cfg)
+    if refusal is not None:
+        raise AuxiliaryLocalOnlyRefused(refusal)
 
     # --- Token-store providers (bauer auth login) ---------------------------
     # Tenta reusar um token que o usuário já autenticou (copilot, chatgpt via
