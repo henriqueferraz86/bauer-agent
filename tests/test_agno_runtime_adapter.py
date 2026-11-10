@@ -17,6 +17,7 @@ from bauer.core.runtime.adapters import get_runtime_adapter, list_runtime_adapte
 from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter, _ACTIVE_AGNO_SESSION_ID
 from bauer.core.runtime.adapters.chatgpt_oauth_model import build_chatgpt_oauth_model
 from bauer.tool_router import ToolError
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 def add_numbers(a: int, b: int) -> str:
@@ -498,7 +499,7 @@ def test_agno_bauer_tool_cancellation_stops_the_run(tmp_path):
             self.calls += 1
             self.active_controls.append(current_control())
             self.approval_started.set()
-            assert self.approval_released.wait(timeout=5)
+            assert self.approval_released.wait(timeout=ANTI_HANG)
             checkpoint_execution()
             raise AssertionError("checkpoint must interrupt before tool dispatch")
 
@@ -514,7 +515,7 @@ def test_agno_bauer_tool_cancellation_stops_the_run(tmp_path):
     router = CancellingRouter()
 
     def cancel_after_approval_wait_starts():
-        assert router.approval_started.wait(timeout=5)
+        assert router.approval_started.wait(timeout=ANTI_HANG)
         control.request_cancel()
         router.approval_released.set()
 

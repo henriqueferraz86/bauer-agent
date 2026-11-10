@@ -16,6 +16,7 @@ from bauer.cost_meter import cost_sink
 from bauer.execution_control import current_control
 from bauer.sqlite_session_store import SqliteSessionStore
 from bauer.tool_router import ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 def message(text="work", user="42", chat="42", private=True):
@@ -360,7 +361,7 @@ def test_cancel_during_quality_gate_reports_validation_without_false_stop(tmp_pa
 
         def check(self, *, request, result):
             entered.set()
-            assert release.wait(timeout=5)
+            assert release.wait(timeout=ANTI_HANG)
             return GateResult(self.name, True)
 
     kernel.evaluator = Evaluator([BlockingGate()], max_replans=0)

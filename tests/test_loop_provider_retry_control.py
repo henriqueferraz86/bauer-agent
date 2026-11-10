@@ -11,6 +11,7 @@ from bauer.core.runtime.resilience import RuntimeControl
 from bauer.core.runtime.run_manager import RunManager
 from bauer.openai_client import OpenAIClient, OpenAIClientError
 from tests.test_serve_loop import _app, _cfg, _wait_done
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 class OverloadedClient(OpenAIClient):
@@ -35,7 +36,7 @@ def test_stop_during_cooldown_never_makes_another_provider_call(tmp_path, monkey
 
     def controlled_wait(delay, **kwargs):
         waiting.set()
-        assert resume.wait(timeout=10)
+        assert resume.wait(timeout=ANTI_HANG)
         provider_retry.check_provider_retry_interrupt(**kwargs)
 
     monkeypatch.setattr(provider_retry, "wait_provider_retry", controlled_wait)
@@ -45,7 +46,7 @@ def test_stop_during_cooldown_never_makes_another_provider_call(tmp_path, monkey
         assert started.status_code == 200
         run_id = started.json()["run_id"]
         try:
-            assert waiting.wait(timeout=10)
+            assert waiting.wait(timeout=ANTI_HANG)
             status = client.get(f"/loop/{run_id}").json()
             assert "nova tentativa" in status["activity"]
             if stop == "cancelled":

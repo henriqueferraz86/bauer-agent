@@ -7,6 +7,7 @@ import pytest
 
 from bauer.server_shell_approval import ShellApprovalManager
 from bauer.shell_runner import BlockedCommandError, SafeModeError, ShellRunner, load_learned_commands
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture
@@ -180,7 +181,7 @@ def test_observer_is_scoped_to_execution_context_and_is_reset(approval_chat):
     with manager.capture("session", router.workspace, "task"), ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(router._shell_runner.validate, "customtool")
         with pytest.raises(BlockedCommandError):
-            future.result(timeout=5)
+            future.result(timeout=ANTI_HANG)
     assert manager.prompt("session", router.workspace) is None
     with pytest.raises(BlockedCommandError):
         router._shell_runner.validate("customtool")

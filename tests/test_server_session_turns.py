@@ -129,7 +129,7 @@ def test_session_locks_shared_between_store_instances(tmp_path):
         with a.turn("same"):
             future = pool.submit(b.serialized("same")(entered.set))
             assert not entered.wait(0.1)
-        future.result(timeout=5)
+        future.result(timeout=ANTI_HANG)
     assert entered.is_set()
 
 
@@ -148,14 +148,14 @@ def test_session_lock_coordinates_processes(tmp_path):
     with SessionStore(tmp_path).turn("same"):
         process.start()
         try:
-            assert waiting.wait(5)
+            assert waiting.wait(timeout=ANTI_HANG)
             assert not entered.wait(0.1)
         except BaseException:
             process.terminate()
             process.join(5)
             raise
     try:
-        assert entered.wait(5)
+        assert entered.wait(timeout=ANTI_HANG)
         process.join(5)
         assert process.exitcode == 0
     finally:

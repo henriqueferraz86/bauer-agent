@@ -103,7 +103,7 @@ class AgnoRuntimeAdapter:
         self.mode = str(self.adapter_config.get("mode") or "sdk").strip().lower()
         self.base_url = str(self.adapter_config.get("base_url") or "http://localhost:7777")
         self.timeout_s = int(self.adapter_config.get("timeout_s") or self.adapter_config.get("timeout_seconds") or 120)
-        self.db_file = Path(str(self.adapter_config.get("db_file") or "memory/runtime/agno/sessions.db"))
+        self.db_file = self._default_db_file(runtime_policy_root)
         workspace = (
             self.adapter_config.get("workspace")
             or getattr(getattr(config, "agent", None), "workspace", None)
@@ -567,6 +567,28 @@ class AgnoRuntimeAdapter:
     @classmethod
     def from_config(cls, config: Any | None = None) -> "AgnoRuntimeAdapter":
         return cls(config=config)
+
+    def _default_db_file(self, runtime_root: str | Path | None) -> Path:
+        """Where the Agno SDK keeps its session history.
+
+        An explicit ``runtime.adapters.agno.db_file`` wins. Otherwise the
+        history lives next to the runtime state of the caller (the same root
+        that holds runs/approvals), or under ``$BAUER_HOME/memory/runtime``.
+        Sprint 64: the previous default was the cwd-relative
+        ``memory/runtime/agno/sessions.db``; every serve/channel started from
+        a different directory shared (or split) history by accident, and the
+        test suite wrote one DB into the repository that all xdist workers and
+        all tests reused — session history (and SQLite lock contention) grew
+        across unrelated runs.
+        """
+        configured = self.adapter_config.get("db_file")
+        if configured:
+            return Path(str(configured))
+        if isinstance(runtime_root, (str, Path)) and str(runtime_root):
+            return Path(runtime_root) / "agno" / "sessions.db"
+        from ....paths import get_bauer_home
+
+        return get_bauer_home() / "memory" / "runtime" / "agno" / "sessions.db"
 
     @staticmethod
     def _adapter_config_from(config: Any | None) -> dict[str, Any]:

@@ -213,3 +213,42 @@ def test_memory_worker_releases_the_slot_it_acquired(monkeypatch):
 
     assert not new_pool.acquire(blocking=False), "foreign release unsaturated the new pool"
     assert old_pool.acquire(blocking=False), "the acquired slot was never returned"
+
+
+# ─── Histórico Agno fora do cwd (sprint 64) ──────────────────────────────────
+# O default era `memory/runtime/agno/sessions.db` RELATIVO ao cwd: a suíte
+# gravava um único banco no repositório, compartilhado por todos os testes e
+# workers xdist (e entre execuções). A sessão `tg:42` acumulava o histórico de
+# todos os testes; o modelo offline ecoa o histórico e um turno simples chegou
+# a 44 mil eventos (84s no Linux), além da disputa de lock SQLite no Windows.
+
+
+def test_agno_history_defaults_next_to_the_callers_runtime_root(tmp_path):
+    pytest.importorskip("agno")
+    from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+
+    adapter = AgnoRuntimeAdapter(adapter_config={"workspace": str(tmp_path)},
+                                 runtime_policy_root=tmp_path / "runtime")
+    assert adapter.db_file == tmp_path / "runtime" / "agno" / "sessions.db"
+
+
+def test_agno_history_without_runtime_root_lives_under_bauer_home(tmp_path, monkeypatch):
+    pytest.importorskip("agno")
+    from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+
+    monkeypatch.setenv("BAUER_HOME", str(tmp_path / "home"))
+    adapter = AgnoRuntimeAdapter(adapter_config={"workspace": str(tmp_path)})
+    assert adapter.db_file.is_absolute()
+    assert adapter.db_file == tmp_path / "home" / "memory" / "runtime" / "agno" / "sessions.db"
+
+
+def test_agno_history_explicit_db_file_wins(tmp_path):
+    pytest.importorskip("agno")
+    from bauer.core.runtime.adapters.agno_adapter import AgnoRuntimeAdapter
+
+    explicit = tmp_path / "custom.db"
+    adapter = AgnoRuntimeAdapter(
+        adapter_config={"workspace": str(tmp_path), "db_file": str(explicit)},
+        runtime_policy_root=tmp_path / "runtime",
+    )
+    assert adapter.db_file == explicit

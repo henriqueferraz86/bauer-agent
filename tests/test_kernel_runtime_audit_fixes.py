@@ -12,6 +12,7 @@ from bauer.core.kernel.evaluator import Evaluator, GateResult
 from bauer.core.runtime.run_manager import RunManager
 from bauer.core.runtime.autonomy import BudgetExceededError, BudgetManager
 from bauer.core.runtime.resilience import RunHeartbeat, RuntimeRecovery
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.mark.parametrize("with_gates", [False, True])
@@ -96,7 +97,7 @@ def test_two_managers_publish_only_one_terminal(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(finish), pool.submit(cancel)]
-        statuses = [future.result(timeout=10) for future in futures]
+        statuses = [future.result(timeout=ANTI_HANG) for future in futures]
 
     assert statuses[0] == statuses[1] == first.get_run(run.id).status
     terminals = [event for event in first.event_bus.list_events(run_id=run.id)

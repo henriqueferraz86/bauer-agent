@@ -70,6 +70,28 @@ de `4b799cb` a `415c56a`):
    libera o semáforo que adquiriu. A regressão é
    `test_memory_worker_releases_the_slot_it_acquired`.
 
+6. **O histórico do Agno ficava num banco relativo ao cwd (bug de produto
+   e de hermeticidade).** O default do `AgnoRuntimeAdapter.db_file` era
+   `memory/runtime/agno/sessions.db`, relativo ao diretório atual. A suíte,
+   rodando da raiz do repo, gravava um único banco compartilhado por todos
+   os testes, todos os workers xdist e todas as execuções. A sessão `tg:42`
+   acumulava histórico, e o `OfflineAgnoModel` ecoa o histórico: um turno
+   simples de `test_agno_happy_path...` chegou a 44.151 eventos e 88.307
+   checagens de governança (84s, e depois timeout de 120s, no Linux). No
+   Windows isso ainda somava contenção de lock SQLite entre 4 workers. Esta
+   é a causa sistêmica das falhas "Agno lento" que variavam de teste a
+   teste. Agora o default fica ao lado do runtime root do chamador
+   (`<runtime>/agno/sessions.db`) ou em `$BAUER_HOME/memory/runtime/...`,
+   e um `db_file` explícito continua valendo. **Decisão:** instalações que
+   rodavam `bauer serve` fora de `~/.bauer` deixam de ler o banco Agno
+   antigo do cwd, e só o histórico interno do SDK Agno recomeça. O
+   histórico de conversa do Bauer (session store) não muda.
+7. **Esperas positivas curtas em toda a suíte.** O helper
+   `tests/_deadlines.py` (`ANTI_HANG = 30`) substituiu, de forma mecânica,
+   todo `assert evento.wait(N)` e todo `future.result(timeout=N)` com N
+   abaixo de 30s em 19 arquivos. Esperas negativas (`assert not ...wait(0.1)`)
+   não mudaram.
+
 Nenhuma das falhas era semântica POSIX, e nenhuma ganhou skip. O alvo do
 monkeypatch (`bauer.agent.run_one_turn_with_fallback`) funciona no Windows:
 o teste de cancelamento, que usa o mesmo helper sem budget curto, passava.

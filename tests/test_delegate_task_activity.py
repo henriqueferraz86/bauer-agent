@@ -10,6 +10,7 @@ import pytest
 from bauer.core.events import EventBus
 from bauer.runtime_ids import reset_runtime_ids, set_runtime_ids
 from bauer.tool_router import ToolError, ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture
@@ -129,8 +130,8 @@ def test_parallel_delegations_keep_parent_session_and_run_separate(delegated_rou
     with ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(delegate, router, "task-a", session="session-a", run="run-a")
         b = pool.submit(delegate, router, "task-b", session="session-b", run="run-b")
-        assert "private result" in a.result(timeout=5)
-        assert "private result" in b.result(timeout=5)
+        assert "private result" in a.result(timeout=ANTI_HANG)
+        assert "private result" in b.result(timeout=ANTI_HANG)
     events = router._event_bus.list_events()
     for event in events:
         assert (event.session_id, event.run_id, event.data["task"]) in {

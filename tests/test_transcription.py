@@ -10,6 +10,7 @@ import pytest
 
 from bauer import transcription
 from bauer.transcription import available_stt_provider, transcribe_audio
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture()
@@ -302,4 +303,4 @@ class TestPreload:
             lambda m=None: carregou.set(),
         )
         assert transcription.preload_local_model() is True
-        assert carregou.wait(timeout=2.0), "preload deveria ter chamado _load_local_model em background"
+        assert carregou.wait(timeout=ANTI_HANG), "preload deveria ter chamado _load_local_model em background"

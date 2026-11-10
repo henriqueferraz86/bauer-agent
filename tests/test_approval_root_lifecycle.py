@@ -14,6 +14,7 @@ from bauer.core.runtime.run_manager import RunManager
 from bauer.core.runtime.state_store import SqliteStateStore
 from bauer.tool_router import ToolError, ToolRouter
 import bauer.core.policy.approvals as approvals_module
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture
@@ -183,7 +184,7 @@ def test_competing_decisions_are_serialized_across_manager_instances(kit):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(decide, status) for status in ("approved", "denied")]
-        results = [future.result(timeout=10) for future in futures]
+        results = [future.result(timeout=ANTI_HANG) for future in futures]
     assert results.count("conflict") == 1
     assert approvals.get(record.id).status in {"approved", "denied"}
     assert runs.get_run(run.id).status == (
@@ -206,7 +207,7 @@ def test_competing_claims_only_consume_once(kit):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [pool.submit(claim) for _ in range(4)]
-        assert sum(future.result(timeout=10) for future in futures) == 1
+        assert sum(future.result(timeout=ANTI_HANG) for future in futures) == 1
 
 
 def test_approved_event_never_exposes_waiting_run(kit, monkeypatch):
