@@ -515,6 +515,57 @@ class ExecToolsMixin:
         else:
             publish("agent.completed", "completed")
 
+    def _delegate_policy_payload(self, args: dict) -> dict:
+        """Payload que a política `agent.delegate` avalia para `delegate_task` (sprint 69).
+
+        "Rede" na delegação é para onde a tarefa vai, e o despacho decide isso:
+
+        - `remote`: agente do registry com `url` → POST para outro `bauer serve`;
+        - `provider`: chamada ao client LLM da sessão (o mesmo provider do turno);
+        - `subprocess`: `bauer agent run-one`, que carrega o config canônico.
+
+        O agente é resolvido do mesmo jeito que `_delegate_task` resolve, sem
+        nenhum I/O de rede. `remote` só é verdadeiro quando o host do agente não
+        é desta máquina. O runtime procura segredo na tarefa + contexto; a flag
+        `contains_secret` do modelo só pode aumentar o risco.
+        """
+        from urllib.parse import urlparse
+
+        from ..model_router import _HOSTS_LOCAIS, provider_e_local
+        from ..secrets_scanner import has_secrets
+
+        task = str(args.get("task") or "").strip()
+        context = str(args.get("context") or "").strip()
+        agent_name = str(args.get("agent_name", "") or "").strip()
+        # Mesma normalização de `_delegate_task`: o auto-select resolve o mesmo agente.
+        full_task = (f"{context}\n\n{task}".strip() if context else task).replace("\x00", "").strip()
+        agent, _, _ = self._resolve_delegate_agent(agent_name, full_task[:4096])
+        url = str(getattr(agent, "url", "") or "") if agent is not None else ""
+        host = ""
+        if url:
+            dispatch = "remote"
+            try:
+                host = (urlparse(url).hostname or "").rstrip(".").lower()
+            except ValueError:
+                host = ""
+        elif self._llm_client is not None:
+            dispatch = "provider"
+        else:
+            dispatch = "subprocess"
+        provider = str(getattr(self._llm_client, "_provider", "") or "") if dispatch == "provider" else ""
+        payload = dict(args)
+        payload.update({
+            "task": task,
+            "agent_name": str(getattr(agent, "name", "") or agent_name) if agent is not None else agent_name,
+            "dispatch": dispatch,
+            "host": host,
+            "remote": dispatch == "remote" and host not in _HOSTS_LOCAIS,
+            "provider": provider,
+            "provider_local": bool(provider) and provider_e_local(provider),
+            "contains_secret": bool(args.get("contains_secret")) or has_secrets(full_task),
+        })
+        return payload
+
     def _delegate_task(self, args: dict) -> str:
         """Delega subtarefa a sub-agente local ou remoto.
 

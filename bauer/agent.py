@@ -2766,6 +2766,7 @@ def run_agent_session(
     kernel: "Any | None" = None,
     render_header: "Any | None" = None,
     decision_config: "Any | None" = None,
+    local_only: bool = False,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -3389,16 +3390,36 @@ def run_agent_session(
                 _cfg = _Path("config.yaml")
                 if not _cfg.exists():
                     _cfg = _cfg_path()
-                _rms(_cfg)
+                _rms(_cfg, local_only=local_only)
 
                 if rebuild_client_fn is not None:
                     _rebuilt = rebuild_client_fn()
                     # Aceita 2-tupla (legado) ou 3-tupla (com fallbacks renovados).
+                    _new_fallbacks = None
                     if isinstance(_rebuilt, tuple) and len(_rebuilt) == 3:
                         _new_client, _new_model, _new_fallbacks = _rebuilt
-                        fallback_clients = _new_fallbacks  # renova cadeia do novo modelo
                     else:
                         _new_client, _new_model = _rebuilt
+                    if local_only:
+                        # Sprint 69: `--local` vale depois do boot. Segunda
+                        # camada (a primeira: seletor e rebuild recusam config
+                        # de nuvem) — client não local nunca entra na sessão.
+                        # A cadeia de fallback já vem de `fallback_models_local`,
+                        # validada pelo rebuild do `--local`.
+                        from .cost_meter import provider_from_client as _pfc_sw
+                        from .model_router import provider_e_local as _e_local_sw
+
+                        _novo_prov = str(getattr(_new_client, "_provider", None)
+                                         or _pfc_sw(_new_client))
+                        if not _e_local_sw(_novo_prov, decision_config):
+                            console.print(
+                                f"[red]✗ --local recusado:[/red] provider "
+                                f"'{_novo_prov}' não roda nesta máquina. "
+                                f"A sessão continua em [cyan]{model_name}[/cyan]."
+                            )
+                            continue
+                    if _new_fallbacks is not None:
+                        fallback_clients = _new_fallbacks  # renova cadeia do novo modelo
                     # Novo modelo escolhido → recomeça a cadeia de fallback do topo
                     _fb_idx = 0
                     # Rebind ao vivo — próximo turno já usa o novo modelo
