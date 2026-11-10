@@ -466,6 +466,12 @@ def preload_local_tts_model() -> bool:
     return True
 
 
+def _local_only() -> bool:
+    from .model_router import local_only_active
+
+    return local_only_active()
+
+
 def available_tts_provider() -> str | None:
     """Qual provider TTS está disponível agora.
 
@@ -474,6 +480,13 @@ def available_tts_provider() -> str | None:
     para OpenAI se coqui-tts não estiver instalado.
     """
     pref = _tts_provider_pref()
+    if _local_only():
+        # Sprint 72: sob `--local` só os providers desta máquina contam.
+        if pref == "kokoro":
+            return "kokoro" if _kokoro_available() else None
+        if pref in ("local", "coqui", "xtts", "auto"):
+            return "local" if _coqui_tts_available() else None
+        return None
     if pref == "kokoro":
         return "kokoro" if _kokoro_available() else None
     if pref in ("local", "coqui", "xtts"):
@@ -541,6 +554,23 @@ def synthesize_speech(
             attempts.append("openai")
         if _google_tts_api_key():
             attempts.append("google")
+
+    if _local_only():
+        # Sprint 72: sob `--local`, OpenAI/Google TTS são recusados antes de
+        # qualquer request; só kokoro/coqui (nesta máquina) sobrevivem.
+        attempts = [a for a in attempts if a in ("local", "kokoro")]
+        if not attempts:
+            with suppress(OSError):
+                if output_path is None and dest.exists():
+                    dest.unlink()
+            return {
+                "success": False,
+                "path": "",
+                "error": (
+                    "--local ativo: a síntese de voz só pode rodar nesta máquina. "
+                    "Use TTS_PROVIDER=kokoro ou local (coqui-tts)."
+                ),
+            }
 
     if not attempts:
         return {

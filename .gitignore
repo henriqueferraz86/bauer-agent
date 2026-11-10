@@ -155,3 +155,5 @@ graphify-out/
 !specs/sprint-71-hygiene/**
 !specs/sprint-69-security-network-approval/
 !specs/sprint-69-security-network-approval/**
+!specs/sprint-72-local-auxiliary-clients/
+!specs/sprint-72-local-auxiliary-clients/**

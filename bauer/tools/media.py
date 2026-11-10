@@ -500,7 +500,21 @@ class MediaToolsMixin:
         # Sem env nenhuma: caminho legado openai (llm_client pode ter .images).
         return "openai"
 
+    @staticmethod
+    def _refuse_cloud_media_under_local(tool: str) -> None:
+        """Sprint 72: geração de imagem e TTS da tool só existem na nuvem
+        (OpenAI/xAI/OpenRouter). Num processo `--local`, recusa antes de
+        construir qualquer client ou request."""
+        from ..model_router import local_only_active
+
+        if local_only_active():
+            raise ToolError(
+                f"{tool}: --local ativo — este recurso só existe em providers de "
+                "nuvem e foi recusado. Rode sem --local para usá-lo."
+            )
+
     def _image_generate(self, args: dict) -> str:
+        self._refuse_cloud_media_under_local("image_generate")
         prompt = str(args.get("prompt", "")).strip()
         if not prompt:
             raise ToolError("image_generate: 'prompt' é obrigatório.")
@@ -664,6 +678,7 @@ class MediaToolsMixin:
             raise ToolError(f"image_generate: falha na API openrouter — {exc}") from exc
 
     def _text_to_speech(self, args: dict) -> str:
+        self._refuse_cloud_media_under_local("text_to_speech")
         text = str(args.get("text", "")).strip()
         if not text:
             raise ToolError("text_to_speech: 'text' é obrigatório.")
