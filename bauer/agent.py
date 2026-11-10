@@ -2868,6 +2868,10 @@ def run_agent_session(
         except Exception:
             pass
     _mem_turn_idx = 0
+    # Sprint 70: diretivas aprovadas relidas a CADA payload (não no bloco da
+    # abertura) — revogar/vencer tira o efeito já no próximo turno.
+    from .memory_injection import attach_workspace_memory, strip_persisted_directives
+    attach_workspace_memory(ctx, getattr(router, "workspace", None), include_consolidated=False)
 
     # P2.2: Task Ledger — injeta tarefas pendentes do TASKS.md no contexto de início de sessão
     _ledger = _ledger_block(getattr(router, "workspace", None))
@@ -2878,7 +2882,9 @@ def run_agent_session(
     if session_store is not None and session_id is not None:
         saved = session_store.load(session_id)
         if saved:
-            ctx.messages = saved
+            # Sessões gravadas antes da sprint 70 trazem as diretivas no
+            # histórico; sem isto, uma revogada voltaria ao retomar.
+            ctx.messages = strip_persisted_directives(saved)
 
     # `provider` is needed for cost lookup in usage_pricing. Derive from the
     # ContextManager's `_provider` (set above from cfg) — falls back to "" which

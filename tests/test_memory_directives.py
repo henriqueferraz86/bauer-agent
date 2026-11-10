@@ -15,7 +15,6 @@ from bauer.memory_directives import (
     fingerprint,
 )
 from bauer.memory_feedback import FeedbackStore
-from bauer.memory_provider import LocalMemoryProvider
 
 NOW = datetime.now(timezone.utc)
 SECRET = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX1234567890"
@@ -44,10 +43,11 @@ def _store(workspace: Path) -> DirectiveStore:
 
 
 def _prompt(workspace: Path) -> str:
-    provider = LocalMemoryProvider()
-    provider.initialize(workspace)
-    provider.prefetch()
-    return provider.system_prompt_block()
+    # Sprint 70: as diretivas saíram do bloco de abertura do
+    # LocalMemoryProvider e são relidas a cada payload (memory_injection).
+    from bauer.memory_injection import workspace_memory_block
+
+    return workspace_memory_block(workspace)
 
 
 def test_fingerprint_is_stable_for_same_reason(ws):

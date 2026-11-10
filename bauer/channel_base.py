@@ -377,6 +377,26 @@ class AgentBackend:
         context = self.project_context(msg)
         return context.session_key if context is not None else msg.session_key
 
+    def _memory_workspace(self) -> Path | None:
+        """Workspace da memória desta conversa: só o do projeto vinculado.
+
+        Sprint 70: a proveniência de sessão e a injeção de memória seguem o
+        vínculo explícito de projeto (sprint 33). Sem vínculo, ``None`` — a
+        sessão fica sem proveniência e sem memória de workspace.
+        """
+        context = self._active_project()
+        return context.workspace if context is not None else None
+
+    def _attach_memory(self, ctx: Any) -> None:
+        """Liga (a cada turno) a memória do workspace vinculado ao contexto.
+
+        Diretivas aprovadas + fatos consolidados, relidos a cada payload. Sem
+        projeto vinculado (Discord, grupos, Telegram sem /projetos), desliga —
+        fail closed.
+        """
+        from .memory_injection import attach_workspace_memory
+        attach_workspace_memory(ctx, self._memory_workspace())
+
     def _effective_router(self) -> Any:
         context = self._active_project()
         return context.router if context is not None else self._router
@@ -1071,6 +1091,7 @@ class AgentBackend:
             token = set_sink(on_delta)
         recorded_tools = False
         try:
+            self._attach_memory(ctx)
             ctx.add_user(text)
             from .chat_team_routing import resolve_team_intent
             from .core.runtime.team_registry import TeamRegistry
@@ -1095,7 +1116,7 @@ class AgentBackend:
             raise
         finally:
             try:
-                self._store.save(key, ctx.messages)
+                self._store.save(key, ctx.messages, workspace=self._memory_workspace())
             except Exception:
                 logger.warning("Falha ao persistir sessão %s", key)
             if token is not None:
@@ -1150,6 +1171,7 @@ class AgentBackend:
         recorded_tools = False
         response = ""
         try:
+            self._attach_memory(ctx)
             ctx.add_user(text)
             kernel = self._resolver_kernel()
             cfg = load_config(self.config_path)
@@ -1223,7 +1245,7 @@ class AgentBackend:
             raise
         finally:
             try:
-                self._store.save(key, ctx.messages)
+                self._store.save(key, ctx.messages, workspace=self._memory_workspace())
             except Exception:
                 logger.warning("Falha ao persistir sessão %s", key)
             if token is not None:

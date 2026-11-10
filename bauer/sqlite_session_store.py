@@ -161,6 +161,10 @@ END;
 """
 
 
+#: Sentinela: "use o workspace do construtor" (``None`` explícito = sem workspace).
+_STORE_WORKSPACE: Any = object()
+
+
 # ---------------------------------------------------------------------------
 # SqliteSessionStore
 # ---------------------------------------------------------------------------
@@ -345,11 +349,30 @@ class SqliteSessionStore:
     def new_id(self) -> str:
         return str(uuid.uuid4())[:8]
 
-    def save(self, session_id: str, messages: list[dict]) -> None:
+    def save(
+        self,
+        session_id: str,
+        messages: list[dict],
+        *,
+        workspace: object = _STORE_WORKSPACE,
+    ) -> None:
+        """Grava a sessão.
+
+        ``workspace`` (sprint 70) substitui o workspace do store NESTA gravação:
+        um store compartilhado por vários workspaces (gateway, ``serve``) diz a
+        cada turno de qual workspace a sessão é. ``None`` ou um valor que não é
+        caminho real grava sem proveniência (e marca conflito numa sessão já
+        carimbada). Omitido, vale o workspace do construtor.
+        """
         validate_session_id(session_id)
+        if workspace is _STORE_WORKSPACE:
+            scope = getattr(self, "_workspace_scope", None)
+        else:
+            from .memory_scope import resolve_workspace_scope
+            scope = resolve_workspace_scope(workspace) if workspace is not None else None
         conn = self._connect()
         try:
-            self._save_to_conn(conn, session_id, messages)
+            self._save_to_conn(conn, session_id, messages, scope=scope)
         finally:
             conn.close()
 
@@ -724,9 +747,12 @@ class SqliteSessionStore:
         conn: sqlite3.Connection,
         session_id: str,
         messages: list[dict],
+        *,
+        scope: Any = _STORE_WORKSPACE,
     ) -> None:
         now = _now_iso()
-        scope = getattr(self, "_workspace_scope", None)
+        if scope is _STORE_WORKSPACE:
+            scope = getattr(self, "_workspace_scope", None)
         ws_id = scope.workspace_id if scope else None
         ws_path = scope.path if scope else None
         with conn:

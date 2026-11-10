@@ -178,20 +178,6 @@ def _consolidated_prompt_section(memory_dir: Path) -> str:
     )
 
 
-def _directives_prompt_section(workspace: Path | None) -> str:
-    if workspace is None:
-        return ""
-    try:
-        from .memory_directives import directives_prompt_block
-
-        return directives_prompt_block(workspace)
-    except Exception as exc:  # noqa: BLE001 — memória é acessória
-        from .logging_config import log_suppressed
-
-        log_suppressed("memory_provider.directives", exc)
-        return ""
-
-
 # ---------------------------------------------------------------------------
 # LocalMemoryProvider — wrapper sobre MemoryManager existente
 # ---------------------------------------------------------------------------
@@ -307,11 +293,11 @@ class LocalMemoryProvider(MemoryProvider):
         if self._prefetched:
             truncated = self._prefetched[: self._MAX_SYSTEM_BLOCK_CHARS]
             parts.append(f"## Memória do Projeto\n\n{truncated}")
-        # Diretivas de feedback (plano 065): só as APROVADAS e vigentes, lidas a
-        # cada montagem — revogar/vencer tira do prompt na próxima chamada.
-        directives = _directives_prompt_section(self._workspace)
-        if directives:
-            parts.append(directives)
+        # Diretivas de feedback (plano 065) NÃO entram aqui desde a sprint 70:
+        # este bloco é montado uma vez na abertura da sessão e gravado no
+        # histórico, o que mantinha viva uma diretiva revogada. Elas vêm de
+        # ``memory_injection`` (``ContextManager.memory_block``), relidas a
+        # cada payload.
         return "\n\n".join(parts)
 
     def get_tool_schemas(self) -> list[dict]:
