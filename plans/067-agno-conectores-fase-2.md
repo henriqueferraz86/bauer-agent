@@ -1,6 +1,6 @@
 # Plano 067 — Catálogo Agno, fase 2: dependências opcionais e conectores de escrita
 
-**Status:** IN PROGRESS
+**Status:** DONE (sprints 73–75; PRs #171 e #172). Pendente fora do código: passo de CI dos extras, que exige token com escopo `workflow` (texto no BACKLOG da sprint 73).
 
 **Prioridade:** P2
 
@@ -29,7 +29,7 @@ GitHub, sempre com aprovação da chamada exata.
 
 ## Sprints
 
-### Sprint 73 — Pesquisa somente leitura instalável
+### Sprint 73 — Pesquisa somente leitura instalável — DONE (PR #172)
 
 - Criar extras opcionais no `pyproject.toml`, com versões travadas no
   `uv.lock`, para os toolkits de leitura que hoje são `dependency_missing`:
@@ -46,14 +46,14 @@ GitHub, sempre com aprovação da chamada exata.
 - Nenhuma dependência nova entra no install padrão. Versões com menos de 2
   semanas de publicação não entram.
 
-### Sprint 74 — DevOps e GitHub instaláveis
+### Sprint 74 — DevOps e GitHub instaláveis — DONE (PR #172)
 
 - O mesmo tratamento para `bauer.aws` (`boto3`), `bauer.kubernetes`
   (`kubernetes`) e `agno.github` (`pygithub`), num extra próprio.
 - Os testes provam que os guards de leitura das sprints 51 e 54 valem com a
   biblioteca real instalada. Um transporte falso substitui a rede.
 
-### Sprint 75 — Conectores de escrita sob aprovação
+### Sprint 75 — Conectores de escrita sob aprovação — DONE (PR #171)
 
 - Seguir o padrão da sprint 57 em três conectores de escrita de alto valor:
   - postar mensagem no Slack;
