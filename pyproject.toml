@@ -77,6 +77,24 @@ web = [
     "ddgs>=6.0",             # DuckDuckGo (MIT) — busca web geral open-source
     "beautifulsoup4>=4.12",  # extração de conteúdo limpo no web_fetch
 ]
+agno-research = [
+    # Toolkits Agno de pesquisa SOMENTE LEITURA (plano 067, sprint 73).
+    # Nada daqui entra no install padrão; cada ação foi revisada em
+    # bauer/core/runtime/agno_capabilities/families/ (research.py e
+    # catalog_coverage.py). Versões travadas no uv.lock; nenhuma com menos
+    # de 14 dias de publicação no momento do lock.
+    # Sem credencial (ficam `ready` com o extra instalado):
+    "wikipedia>=1.4.0",               # MIT
+    "arxiv>=2.1",                     # MIT
+    "pypdf>=5.0",                     # BSD-3-Clause (texto do PDF do arXiv, em memória)
+    "yfinance>=0.2.54",               # Apache-2.0
+    "youtube-transcript-api>=1.0",    # MIT (API de instância usada pelo Agno 3)
+    # Com credencial (ficam `needs_configuration` até haver a chave):
+    "tavily-python>=0.7",             # MIT
+    "exa-py>=1.14",                   # MIT
+    "google-search-results>=2.4.2",   # MIT (módulo `serpapi`)
+    "linkup-sdk>=0.2.4",              # MIT
+]
 voice = [
     # Captura de microfone + STT local offline (`bauer voice listen/ask/chat`).
     # sounddevice/numpy/soundfile já eram exigidos em runtime por
