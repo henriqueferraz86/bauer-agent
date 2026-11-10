@@ -81,8 +81,11 @@ register_policy(
         module="agno.tools.wikipedia",
         class_name="WikipediaTools",
         requires=("wikipedia",),
-        install_hint="uv pip install wikipedia",
-        notes="search_wikipedia_and_update_knowledge_base fica fora: escreve em knowledge base.",
+        install_hint="uv pip install 'bauer-agent[agno-research]'",
+        notes=(
+            "search_wikipedia_and_update_knowledge_base fica fora: escreve em knowledge base. "
+            "A API é forçada para HTTPS a cada chamada (sprint 73)."
+        ),
     )
 )
 register_policy(
@@ -90,13 +93,16 @@ register_policy(
         id="agno.arxiv",
         title="arXiv",
         category="Pesquisa e conteúdo web",
-        description="Busca de artigos no arXiv (metadados).",
-        actions=(_search("search_arxiv_and_return_articles"),),
+        description="Busca de artigos no arXiv e leitura do texto de artigos por id.",
+        actions=(_search("search_arxiv_and_return_articles"), _search("read_arxiv_papers")),
         module="agno.tools.arxiv",
         class_name="ArxivTools",
         requires=("arxiv", "pypdf"),
-        install_hint="uv pip install arxiv pypdf",
-        notes="read_arxiv_papers fica fora: baixa PDFs para disco local.",
+        install_hint="uv pip install 'bauer-agent[agno-research]'",
+        notes=(
+            "read_arxiv_papers é implementação Bauer (sprint 73): ids validados, PDF só de "
+            "https://arxiv.org com tamanho limitado e lido em memória, sem gravar em disco."
+        ),
     )
 )
 register_policy(

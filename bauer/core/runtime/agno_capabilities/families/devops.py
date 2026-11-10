@@ -633,7 +633,7 @@ register_policy(ToolkitPolicy(
     source="bauer",
     actions=tuple(_read(n) for n in ("caller_identity", "list_eks_clusters", "describe_eks_cluster", "list_eks_nodegroups", "describe_ec2_instances")),
     requires=("boto3",),
-    install_hint="uv pip install boto3",
+    install_hint="uv pip install 'bauer-agent[agno-devops]' (boto3)",
     settings_section="bauer.aws",
     notes="Conta verificada via STS antes de cada sessão; cliente só expõe operações de leitura listadas.",
 ))
@@ -648,7 +648,7 @@ register_policy(ToolkitPolicy(
     source="bauer",
     actions=tuple(_read(n) for n in ("list_pods", "list_deployments", "pod_logs")),
     requires=("kubernetes",),
-    install_hint="uv pip install kubernetes",
+    install_hint="uv pip install 'bauer-agent[agno-devops]' (kubernetes)",
     settings_section="bauer.kubernetes",
     notes="Sem contexto padrão: cada contexto é nomeado e mapeado explicitamente.",
 ))
