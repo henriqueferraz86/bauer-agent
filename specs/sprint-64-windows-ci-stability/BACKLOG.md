@@ -62,7 +62,50 @@ Iterações (workflow_dispatch; jobs `Tests (3.11/3.12 / windows-latest)`):
 | 42527595980 | 8d3c962 | 3.11 verde, 3.12 vermelho | `pending()` sem diagnóstico no caminho deny do `/v1` |
 | 42544510927 | dc6310d | **verde/verde** | |
 
-Os runs de confirmação depois do merge de #166 estão nas notas de entrega.
+Depois do merge de #166 a #172:
+
+| Run | Commit | Windows | O que revelou |
+|---|---|---|---|
+| 42699016047 | 04b45a8 | 3.12 verde, 3.11 vermelho | registro terminal do run gravado depois do `done` do SSE (teste do budget) |
+| 42704475754 | 807ba59 | 3.11 verde, 3.12 vermelho | worker de memória liberando slot alheio (corrigido no produto) |
+| 42709717081 | 8d4b118 | **verde/verde** | |
+| 42713245840 | 8d4b118 | vermelho | esperas positivas curtas espalhadas pela suíte, e histórico Agno no cwd (44 mil eventos) |
+| 42741683859 | 5fc52d7 | **verde/verde** | |
+| 42772715239 | ddfee5c | 3.11 verde, 3.12 vermelho | budget de 15s estourado: estado de runtime compartilhado no checkout |
+| 42777493025 | caac398 | **verde/verde** | cwd dos testes fora do checkout + guard |
+| 42871846639 | caac398 | 3.11 verde, 3.12 vermelho | run parado em `policy_check` por 30s sem aprovação (diagnóstico de stacks adicionado) |
+| **42878237260** | **1156d77** | **verde/verde** | |
+| **42919782235** | **1156d77** | **verde/verde** | segundo run consecutivo verde no mesmo commit |
+
+### 6. Hermeticidade do checkout
+
+Status: concluído
+
+Cada teste roda com o cwd num diretório temporário do worker, e o fixture
+`_repo_root_stays_clean` falha o teste que criar entrada na raiz do repo.
+O histórico Agno foi corrigido no produto (item 6 do SPEC).
+
+## Pendências (com evidência)
+
+- **Congelamento em `policy_check` no Windows (run 42871846639,
+  `test_cancel_while_waiting_never_executes_or_resurrects`):** o run ficou
+  em `policy_check` por 30s, sem pedido de aprovação persistido. Não se
+  repetiu nos dois runs seguintes. Quando voltar, `pending()` imprime as
+  stacks das threads `bauer`. Suspeita ainda não confirmada: espera de
+  lock SQLite (`busy_timeout = 30000` em `SqliteStateStore._connect`) entre
+  conexões do mesmo processo.
+- **Custo por evento da governança do canal:** `governance_stop_reason`
+  abre várias conexões SQLite (kill-switch, run, budget diário/semanal/
+  mensal) a cada evento do stream Agno, cerca de 0,75ms no Linux e mais no
+  Windows. Para respostas longas, vale limitar a frequência da checagem de
+  budget/kill-switch, mantendo o `cancel_event` imediato.
+- **Defaults do produto relativos ao cwd** (`memory/runtime` em
+  RunManager, ApprovalManager, BudgetManager e PolicyEngine,
+  `memory/*.md`): a suíte agora é isolada deles, mas mover os defaults para
+  `$BAUER_HOME` exige migração de dados.
+- **Testes lentos que não falham** (retry/backoff real de 15 a 47s em
+  `test_turn_partial_accounting`, `test_server_openai_turns` e
+  `test_channel_base`).
 
 ## Notas de entrega
 

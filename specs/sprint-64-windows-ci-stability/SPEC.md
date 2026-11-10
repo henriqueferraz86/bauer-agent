@@ -166,5 +166,5 @@ o teste de cancelamento, que usa o mesmo helper sem budget curto, passava.
   chamadas).
 - [x] A falha determinística do teste de timeout é reproduzida localmente com
   setup lento e corrigida.
-- [ ] Os dois jobs Windows ficam verdes em duas execuções consecutivas na
+- [x] Os dois jobs Windows ficam verdes em duas execuções consecutivas na
   branch (IDs no `BACKLOG.md`).
