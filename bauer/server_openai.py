@@ -237,7 +237,8 @@ def build_openai_router(deps: OpenAIRouteDependencies) -> APIRouter:
                     outcome.update(status="failed", error="Erro interno durante a geração.")
                 turn["tool_log"] = tool_log
                 try:
-                    deps.store.save(sid, ctx.messages)
+                    deps.store.save(sid, ctx.messages,
+                                    workspace=deps.effective_workspace(deps.router))
                     deps.session_manager.touch_session(sid, state={"last_run_id": run.id})
                 except Exception as exc:  # noqa: BLE001 - persistence belongs to executor
                     deps.logger.exception("Falha ao salvar sessão /v1/chat/completions: %s", exc)

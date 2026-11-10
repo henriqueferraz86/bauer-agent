@@ -211,6 +211,19 @@ build_slices:
     branch: codex/sprint-68-memory-feedback-directives
     status: done
 
+follow_up:
+  - plan: "066"
+    sprint: 70
+    branch: codex/sprint-70-memory-all-paths
+    note: >-
+      serve/web (/chat, /stream, /loop), /v1 and channels record workspace
+      provenance per save (SqliteSessionStore.save(workspace=...); the serve
+      mirrors its redacted JSONL into sessions.db). Channels use only the
+      operator's bound project (sprint 33); without a binding nothing is recorded
+      or injected (fail closed). Approved directives and scoped consolidated facts
+      are injected through ContextManager.memory_block, recomputed on every payload
+      and never persisted, so a revocation applies on the next turn of an open session.
+
 open_questions:
   - question: Is consolidation opt-in per installation, workspace, or company?
     answer: Per workspace, off by default (memory/consolidation/settings.json).

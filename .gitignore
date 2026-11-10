@@ -149,5 +149,9 @@ graphify-out/
 !specs/sprint-67-memory-consolidation-schedule/**
 !specs/sprint-68-memory-feedback-directives/
 !specs/sprint-68-memory-feedback-directives/**
+!specs/sprint-70-memory-all-paths/
+!specs/sprint-70-memory-all-paths/**
+!specs/sprint-71-hygiene/
+!specs/sprint-71-hygiene/**
 !specs/sprint-69-security-network-approval/
 !specs/sprint-69-security-network-approval/**

@@ -270,15 +270,21 @@ class VectorStore:
             self._dim = -1
         return cur.rowcount
 
-    def list_source_ids(self, source_type: str) -> list[str]:
-        """Todos os source_id de um source_type (para manutenção/limpeza)."""
+    def list_source_ids(self, source_type: str, *, prefix: str | None = None) -> list[str]:
+        """Todos os source_id de um source_type (para manutenção/limpeza).
+
+        ``prefix`` só ESTREITA a consulta (LIKE escapado); quem precisa de
+        identidade exata filtra o resultado — um prefixo sozinho não basta
+        quando o próprio id contém o separador (ver sprint 71).
+        """
+        sql = "SELECT source_id FROM vectors WHERE source_type = ?"
+        params: tuple[str, ...] = (source_type,)
+        if prefix:
+            like = prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+            sql += r" AND source_id LIKE ? ESCAPE '\'"
+            params = (source_type, like)
         with self._connect() as conn:
-            return [
-                row[0] for row in conn.execute(
-                    "SELECT source_id FROM vectors WHERE source_type = ?",
-                    (source_type,),
-                )
-            ]
+            return [row[0] for row in conn.execute(sql, params)]
 
     def count(self, source_type: str | None = None) -> int:
         """Return total number of stored vectors, optionally filtered by source_type."""

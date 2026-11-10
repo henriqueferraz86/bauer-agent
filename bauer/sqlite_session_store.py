@@ -161,6 +161,22 @@ END;
 """
 
 
+def _parse_vector_source_id(source_id: str) -> tuple[str, str] | None:
+    """``"{session_id}:{role}:{idx}"`` → ``(session_id, role)``, pela direita.
+
+    O ``session_id`` pode conter ':' (``tg:123``, ``agent:x:1``); ``role`` e
+    ``idx`` nunca contêm. Formato inesperado → ``None``.
+    """
+    parts = source_id.rsplit(":", 2)
+    if len(parts) != 3 or not parts[0] or not parts[1] or not parts[2].isdigit():
+        return None
+    return parts[0], parts[1]
+
+
+#: Sentinela: "use o workspace do construtor" (``None`` explícito = sem workspace).
+_STORE_WORKSPACE: Any = object()
+
+
 # ---------------------------------------------------------------------------
 # SqliteSessionStore
 # ---------------------------------------------------------------------------
@@ -345,11 +361,30 @@ class SqliteSessionStore:
     def new_id(self) -> str:
         return str(uuid.uuid4())[:8]
 
-    def save(self, session_id: str, messages: list[dict]) -> None:
+    def save(
+        self,
+        session_id: str,
+        messages: list[dict],
+        *,
+        workspace: object = _STORE_WORKSPACE,
+    ) -> None:
+        """Grava a sessão.
+
+        ``workspace`` (sprint 70) substitui o workspace do store NESTA gravação:
+        um store compartilhado por vários workspaces (gateway, ``serve``) diz a
+        cada turno de qual workspace a sessão é. ``None`` ou um valor que não é
+        caminho real grava sem proveniência (e marca conflito numa sessão já
+        carimbada). Omitido, vale o workspace do construtor.
+        """
         validate_session_id(session_id)
+        if workspace is _STORE_WORKSPACE:
+            scope = getattr(self, "_workspace_scope", None)
+        else:
+            from .memory_scope import resolve_workspace_scope
+            scope = resolve_workspace_scope(workspace) if workspace is not None else None
         conn = self._connect()
         try:
-            self._save_to_conn(conn, session_id, messages)
+            self._save_to_conn(conn, session_id, messages, scope=scope)
         finally:
             conn.close()
 
@@ -389,12 +424,20 @@ class SqliteSessionStore:
             conn.close()
         # Remove também do índice vetorial (RAG) — sem isto a busca semântica
         # continuava retornando a sessão deletada (source_id "{sid}:{role}:{idx}").
+        # Por IDENTIDADE exata, não por prefixo (sprint 71): IDs de sessão
+        # podem conter ':' ("tg:1", "agent:x:1"), então o prefixo "a:" também
+        # pegava os vetores da sessão "a:b" — e o LIKE do SQLite ignora caixa.
         if deleted:
             try:
                 from .vector_store import get_default_store as _get_store
-                _get_store().delete_prefix(f"{session_id}:", "session_msg")
-            except Exception:
-                pass  # índice vetorial é best-effort; FTS5 já está consistente
+                store = _get_store()
+                for source_id in store.list_source_ids("session_msg", prefix=f"{session_id}:"):
+                    parsed = _parse_vector_source_id(source_id)
+                    if parsed is not None and parsed[0] == session_id:
+                        store.delete(source_id, "session_msg")
+            except Exception as exc:  # noqa: BLE001 — índice vetorial é best-effort
+                from .logging_config import log_suppressed
+                log_suppressed("sqlite_session_store.delete_vectors", exc)
         return deleted
 
     def exists(self, session_id: str) -> bool:
@@ -586,11 +629,12 @@ class SqliteSessionStore:
         try:
             seen: dict[str, dict] = {}
             for r in results:
-                # source_id format: "{session_id}:{role}:{idx}"
-                parts = r.source_id.split(":", 2)
-                if len(parts) < 3:
+                # source_id format: "{session_id}:{role}:{idx}" — o session_id
+                # pode conter ':' ("tg:123"), então o parse é pela direita.
+                parsed = _parse_vector_source_id(r.source_id)
+                if parsed is None:
                     continue
-                sid, role, _ = parts
+                sid, role = parsed
                 if role_filter and role != role_filter:
                     continue
                 if sid in seen:
@@ -724,9 +768,12 @@ class SqliteSessionStore:
         conn: sqlite3.Connection,
         session_id: str,
         messages: list[dict],
+        *,
+        scope: Any = _STORE_WORKSPACE,
     ) -> None:
         now = _now_iso()
-        scope = getattr(self, "_workspace_scope", None)
+        if scope is _STORE_WORKSPACE:
+            scope = getattr(self, "_workspace_scope", None)
         ws_id = scope.workspace_id if scope else None
         ws_path = scope.path if scope else None
         with conn:

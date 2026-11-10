@@ -477,6 +477,12 @@ def create_app(
                            provider=str(_state["provider"] or "ollama"))
             .instrucao("seguranca", _current_system_prompt(active_router))
             .montar())
+        # Sprint 70: diretivas aprovadas + fatos consolidados do workspace
+        # efetivo deste turno, relidos a cada payload (revogar vale no próximo).
+        from .memory_injection import attach_workspace_memory
+        attach_workspace_memory(
+            ctx, _effective_ws(active_router if active_router is not None else router),
+        )
         return ctx
 
     def _project_brief_block(effective_workspace: Path) -> "str | None":
@@ -1988,7 +1994,7 @@ def create_app(
                             tool_calls_count=len(_tlog), llm_calls_count=_cost.calls, usage_known=bool(_cost.calls) and _cost.usage_known,
                         )
                         try:
-                            store.save(sid, ctx.messages)
+                            store.save(sid, ctx.messages, workspace=_effective_ws(active_router))
                             session_manager.touch_session(sid, state={"last_run_id": run.id})
                             formatted = _format_server_response(str(result.get("response", "")))
                         except Exception as exc:  # noqa: BLE001 - settle completed work on save failure
@@ -2588,7 +2594,7 @@ def create_app(
                 state_obj.cost_usd = round(cost.total_usd, 6)
                 state_obj.last_text = (text or state_obj.last_text)[-2000:]
                 state_obj.activity = ""  # rodada terminou; próxima começa em "pensando"
-                store.save(sid, ctx.messages)
+                store.save(sid, ctx.messages, workspace=_effective_ws(active_router))
                 try:
                     event_bus.publish(
                         "loop.round.completed", run_id=run.id, session_id=sid,
@@ -2622,7 +2628,7 @@ def create_app(
                 total_tool_calls += len(all_tools)
                 state_obj.tool_calls = total_tool_calls
                 try:
-                    store.save(sid, ctx.messages)
+                    store.save(sid, ctx.messages, workspace=_effective_ws(active_router))
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
                 except Exception as exc:  # noqa: BLE001 - persistence belongs to executor
                     stop_reason, last_text = "error", redact_text(str(exc))

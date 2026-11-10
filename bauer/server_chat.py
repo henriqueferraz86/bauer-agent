@@ -197,7 +197,10 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                     captured["effective_message"],
                 )
                 formatted = deps.format_response(response)
-                deps.store.save(session_id, ctx.messages)
+                deps.store.save(
+                    session_id, ctx.messages,
+                    workspace=deps.effective_workspace(active_router),
+                )
                 deps.session_manager.touch_session(session_id, state={"last_run_id": run_id})
                 captured["tool_log"] = tool_log
                 return {"status": "completed", "output": formatted,
@@ -322,7 +325,10 @@ def build_chat_router(deps: ChatRouteDependencies) -> APIRouter:
                 req, session_id, run.id, active_router, turn_model, resolved, ctx, turn_client,
             )
             response = deps.format_response(response)
-            deps.store.save(session_id, ctx.messages)
+            deps.store.save(
+                session_id, ctx.messages,
+                workspace=deps.effective_workspace(active_router),
+            )
             deps.session_manager.touch_session(session_id, state={"last_run_id": run.id})
             deps.run_manager.complete_run(
                 run.id, output={"response": response}, tool_calls_count=len(tool_log),
