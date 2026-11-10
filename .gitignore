@@ -151,3 +151,5 @@ graphify-out/
 !specs/sprint-68-memory-feedback-directives/**
 !specs/sprint-70-memory-all-paths/
 !specs/sprint-70-memory-all-paths/**
+!specs/sprint-71-hygiene/
+!specs/sprint-71-hygiene/**

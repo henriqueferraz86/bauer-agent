@@ -601,25 +601,32 @@ MINIMAL_CODE_LADDER = (
 
 # Protocolo de execução de task — injetado SOMENTE quando o agent roda como
 # worker do kanban (env BAUER_KANBAN_TASK). Espelha o KANBAN_GUIDANCE do Hermes,
-# adaptado às tools reais do Bauer (kanban_show/complete/block/comment/create).
+# adaptado às tools reais do Bauer: kanban_read (mode=show|list) e kanban_write
+# (action=complete|block|comment|heartbeat). Worker não cria cards (o gate de
+# kanban_write nega create/unblock/link no contexto worker): follow-up vira
+# comentário para o supervisor.
 KANBAN_WORKER_GUIDANCE = (
     "# PROTOCOLO DE EXECUCAO DE TASK (KANBAN WORKER)\n"
     "Voce foi spawnado como worker de UMA task do board. O ID esta em\n"
     "$BAUER_KANBAN_TASK; seu workspace em $BAUER_KANBAN_WORKSPACE.\n"
     "\n"
-    "1. ORIENTE-SE. Chame kanban_show (sua task) para ler titulo, corpo, os\n"
-    "   handoffs das tasks-pai (resumo + artefatos) e o thread de comentarios.\n"
+    "1. ORIENTE-SE. Chame kanban_read(mode=\"show\", task_id=...) para ler\n"
+    "   titulo, corpo, os handoffs das tasks-pai (resumo + artefatos) e o\n"
+    "   thread de comentarios.\n"
     "2. TRABALHE produzindo ARTEFATOS CONCRETOS dentro do workspace: arquivos\n"
     "   escritos, codigo, um relatorio .md com o conteudo real. Um 'proximo\n"
     "   passo' nao e entrega — a entrega e o arquivo/diff/relatorio em si.\n"
-    "3. CONCLUA com handoff util: kanban_complete(task_id, result=...) onde\n"
-    "   result NOMEIA os artefatos concretos (caminhos de arquivo, contagem de\n"
-    "   testes, decisoes tomadas). Quem pega a proxima task le esse resultado.\n"
-    "4. BLOQUEIE em ambiguidade real: kanban_block(task_id, reason=...). Voce\n"
-    "   roda headless — NAO use clarify (vai dar timeout sem ninguem responder).\n"
-    "   Comente o contexto antes com kanban_comment.\n"
-    "5. FOLLOW-UP: se surgir trabalho extra, CRIE, nao faca — kanban_create(\n"
-    "   title=..., parent_id=<sua task>) para o especialista certo. Nao estoure\n"
+    "3. CONCLUA com handoff util: kanban_write(action=\"complete\", task_id=...,\n"
+    "   result=...) onde result NOMEIA os artefatos concretos (caminhos de\n"
+    "   arquivo, contagem de testes, decisoes tomadas). Quem pega a proxima\n"
+    "   task le esse resultado.\n"
+    "4. BLOQUEIE em ambiguidade real: kanban_write(action=\"block\", task_id=...,\n"
+    "   reason=...). Voce roda headless — NAO use clarify (vai dar timeout sem\n"
+    "   ninguem responder). Comente o contexto antes com\n"
+    "   kanban_write(action=\"comment\", task_id=..., comment=...).\n"
+    "5. FOLLOW-UP: se surgir trabalho extra, NAO faca — registre a proposta\n"
+    "   com kanban_write(action=\"comment\", task_id=<sua task>, comment=...)\n"
+    "   para o supervisor criar o card. Worker nao cria cards. Nao estoure\n"
     "   o escopo desta task.\n"
     "\n"
     "NUNCA marque como done uma task que voce nao terminou de verdade — bloqueie.\n"
@@ -2036,8 +2043,9 @@ def _maybe_planning_checkpoint(
         except Exception:
             pass
     _kanban_hint = (
-        "Trabalhe pelos cards do kanban: kanban_list para ver o board e "
-        "kanban_complete(task_id, result=...) ao terminar cada card. "
+        "Trabalhe pelos cards do kanban: kanban_read(mode=\"list\") para ver o "
+        "board e kanban_write(action=\"complete\", task_id=..., result=...) ao "
+        "terminar cada card. "
         if _seeded else ""
     )
     task = (
@@ -2075,8 +2083,8 @@ def _ledger_block(workspace_dir: str | None) -> str:
         for t in pending:
             lines.append(f"- [{t.status}] #{t.id} {t.title}")
         lines.append(
-            "\nAtualize o status das tarefas via tools kanban_update_task / "
-            "kanban_mark_done à medida que completar cada item."
+            "\nAtualize o status das tarefas via kanban_write (action=\"complete\" "
+            "ao concluir, action=\"block\" se travar) à medida que completar cada item."
         )
         return "\n".join(lines)
     except Exception:

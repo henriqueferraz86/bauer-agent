@@ -161,6 +161,18 @@ END;
 """
 
 
+def _parse_vector_source_id(source_id: str) -> tuple[str, str] | None:
+    """``"{session_id}:{role}:{idx}"`` → ``(session_id, role)``, pela direita.
+
+    O ``session_id`` pode conter ':' (``tg:123``, ``agent:x:1``); ``role`` e
+    ``idx`` nunca contêm. Formato inesperado → ``None``.
+    """
+    parts = source_id.rsplit(":", 2)
+    if len(parts) != 3 or not parts[0] or not parts[1] or not parts[2].isdigit():
+        return None
+    return parts[0], parts[1]
+
+
 #: Sentinela: "use o workspace do construtor" (``None`` explícito = sem workspace).
 _STORE_WORKSPACE: Any = object()
 
@@ -412,12 +424,20 @@ class SqliteSessionStore:
             conn.close()
         # Remove também do índice vetorial (RAG) — sem isto a busca semântica
         # continuava retornando a sessão deletada (source_id "{sid}:{role}:{idx}").
+        # Por IDENTIDADE exata, não por prefixo (sprint 71): IDs de sessão
+        # podem conter ':' ("tg:1", "agent:x:1"), então o prefixo "a:" também
+        # pegava os vetores da sessão "a:b" — e o LIKE do SQLite ignora caixa.
         if deleted:
             try:
                 from .vector_store import get_default_store as _get_store
-                _get_store().delete_prefix(f"{session_id}:", "session_msg")
-            except Exception:
-                pass  # índice vetorial é best-effort; FTS5 já está consistente
+                store = _get_store()
+                for source_id in store.list_source_ids("session_msg", prefix=f"{session_id}:"):
+                    parsed = _parse_vector_source_id(source_id)
+                    if parsed is not None and parsed[0] == session_id:
+                        store.delete(source_id, "session_msg")
+            except Exception as exc:  # noqa: BLE001 — índice vetorial é best-effort
+                from .logging_config import log_suppressed
+                log_suppressed("sqlite_session_store.delete_vectors", exc)
         return deleted
 
     def exists(self, session_id: str) -> bool:
@@ -609,11 +629,12 @@ class SqliteSessionStore:
         try:
             seen: dict[str, dict] = {}
             for r in results:
-                # source_id format: "{session_id}:{role}:{idx}"
-                parts = r.source_id.split(":", 2)
-                if len(parts) < 3:
+                # source_id format: "{session_id}:{role}:{idx}" — o session_id
+                # pode conter ':' ("tg:123"), então o parse é pela direita.
+                parsed = _parse_vector_source_id(r.source_id)
+                if parsed is None:
                     continue
-                sid, role, _ = parts
+                sid, role = parsed
                 if role_filter and role != role_filter:
                     continue
                 if sid in seen:
