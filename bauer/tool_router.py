@@ -1538,13 +1538,7 @@ class ToolRouter(
             approvals = ApprovalManager(root=root, event_bus=self._event_bus)
             engine = PolicyEngine(workspace=self.workspace, rules_path=self._policy_rules_path,
                                   runtime_root=root)
-            policy_payload = args
-            if operation == "network.http":
-                # Sprint 62 (T02): URL/método/host normalizados e detecção de
-                # segredo feita pelo runtime, não só pela flag do modelo.
-                from .tools.web import network_policy_payload
-
-                policy_payload = network_policy_payload(args)
+            policy_payload = _runtime_policy_payload(self, operation, tool_name, args)
             decision = engine.evaluate(operation, policy_payload)
             if self._event_bus is not None:
                 self._event_bus.publish(
@@ -2310,6 +2304,31 @@ def _extension_approval_operation(tool_name: str) -> str | None:
     return "tool.approval" if _effective_security(tool_name).get("approval") else None
 
 
+def _runtime_policy_payload(router: "ToolRouter", operation: str, tool_name: str, args: dict) -> dict:
+    """Payload que a regra avalia. Só a avaliação o usa: a autorização e o
+    digest da aprovação continuam presos aos `args` originais da chamada."""
+    if operation == "network.http":
+        # Sprint 62 (T02): URL/método/host normalizados e detecção de segredo
+        # feita pelo runtime, não só pela flag do modelo.
+        from .tools.web import network_policy_payload
+
+        return network_policy_payload(args)
+    if operation == "network.search" and tool_name == "web_search":
+        from .tools.web import search_policy_payload
+
+        return search_policy_payload(router, args)
+    if operation == "mcp.call" and tool_name in {"mcp_call", "mcp_list_tools"}:
+        from .tools.mcp import mcp_policy_payload
+
+        return mcp_policy_payload(router, tool_name, args)
+    if operation == "agent.delegate" and tool_name == "delegate_task":
+        return router._delegate_policy_payload(args)
+    if operation == "tool.approval":
+        # O nome vem do runtime (depois dos args) para o modelo não forjá-lo.
+        return {**args, "tool_name": tool_name}
+    return args
+
+
 def _policy_operation_for_tool(tool_name: str) -> str | None:
     mapping = {
         "run_command": "shell.execute",
@@ -2327,10 +2346,19 @@ def _policy_operation_for_tool(tool_name: str) -> str | None:
         "regex_search": "filesystem.read",
         "search_text": "filesystem.read",
         # Sprint 62 (T02): tools que fazem request para URL escolhida pelo
-        # modelo. web_search (provider configurado), mcp_call e delegate_task
-        # têm contrato próprio e ficam fora deste mapeamento.
+        # modelo.
         "http_request": "network.http",
         "web_fetch": "network.http",
+        # Sprint 69: destino vem do config (backend de busca, servidor MCP,
+        # registry de agentes); o modelo escolhe só o conteúdo. Contrato
+        # próprio por operação — ver _runtime_policy_payload.
+        "web_search": "network.search",
+        "mcp_call": "mcp.call",
+        "mcp_list_tools": "mcp.call",
+        "delegate_task": "agent.delegate",
+        # Sprint 69: built-in com approval=True sem operação própria passa
+        # pela mesma aprovação humana das extensões (default ask).
+        "lsp_rename": "tool.approval",
         "social_post": "social.publish",
         "channel_send": "social.publish",
         "send_message": "social.publish",

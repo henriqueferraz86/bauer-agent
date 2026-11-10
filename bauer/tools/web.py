@@ -324,3 +324,26 @@ def network_policy_payload(args: dict) -> dict:
         "contains_secret": bool(args.get("contains_secret")) or has_secrets(scanned),
     })
     return payload
+
+
+def search_policy_payload(router, args: dict) -> dict:
+    """Payload que a política `network.search` avalia para `web_search` (sprint 69).
+
+    A busca manda a query para o backend configurado (Brave, SearXNG, DDG,
+    Wikipedia). O modelo escolhe só a query; o destino vem do config. Por isso o
+    payload descreve a query, o backend configurado (sem auto-detecção, que
+    poderia tocar a rede) e o `contains_secret` detectado pelo runtime. A flag
+    do modelo só pode aumentar o risco, como em `network.http`.
+    """
+    from ..secrets_scanner import has_secrets
+
+    query = str(args.get("query") or "")
+    web = getattr(router, "_web", None)
+    backend = str(getattr(web, "_raw_search_backend", "") or "auto").lower() if web is not None else ""
+    payload = dict(args)
+    payload.update({
+        "query": query,
+        "backend": backend,
+        "contains_secret": bool(args.get("contains_secret")) or has_secrets(query),
+    })
+    return payload

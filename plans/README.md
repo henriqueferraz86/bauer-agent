@@ -60,6 +60,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [046](046-fix-stale-tools-yaml.md) | Deletar `tools.yaml` — cobre 7 de 84 tools, efeito zero em runtime hoje | DX | P3 | S | — | DONE (commit `3089c49`) |
 | [047](047-merge-channel-social-mixins.md) | Fundir `SocialToolsMixin` em `ChannelToolsMixin` — dois mixins pequenos pro mesmo domínio (mensageria) | P6 | P4 | S | — | DONE (commit `3b5398b`) |
 | [048](048-cli-visual-2.md) | Bauer CLI Visual 2.0 — linguagem textual, resultados e fluxos principais | DX | P2 | M | 028 | DONE |
+| 049 | Fechar bypasses P0 de processo e de roteamento local (documento perdido; ver nota da Rodada 7) | Segurança | P0 | — | — | DONE (merge `c2d3e4e`; commit `13093dd`; o documento não existe mais) |
 | [050](050-p1-governance-hard-limits.md) | Tornar efetivos os limites de governança e aprovações | Segurança/correção | P1 | L | 049 | DONE (merge `af40d4b`; commit `74af4c4`) |
 | [051](051-p2-resource-boundaries.md) | Impor limites a timeout de tools e tarefas de memória | Confiabilidade | P2 | M | 050 | DONE (merge `0bb8ae4`; commit `98932ac`) |
 | [052](052-p3-docs-command-parity.md) | Alinhar roteiro beta e setup de desenvolvimento | Documentação/DX | P3 | S | 051 | DONE (merge `c1f75d2`; commit `ad2b59b`) |
@@ -76,21 +77,23 @@ de STOP, e atualize sua linha de status ao concluir.
 | [063](063-telegram-entrega-tarefas-background.md) | Entregar no Telegram o resultado de tarefas iniciadas em background (hoje o bot inicia e nunca avisa), inspirado na arquitetura de push/idempotência do hermes-agent | Gateway/execução governada | P1 | L (sprint 43, consolidada) | Reutiliza contratos do plano 061; compatível com 062 | DONE (sprint 43: callback+captura de origem+ponto único de entrega+idempotência+retry+testes, ver "Entregue em" no plano) |
 | [064](064-seguranca-auditoria-2026-10-12.md) | Fechar os achados de segurança da auditoria de 2026-10-12 (confinamento, kill-switch, aprovação, rede, web) e estabilizar o CI no Windows | Segurança, execução governada | P1 | L (sprints 59–64) | Planos 057 e 061 mesclados | IN PROGRESS |
 | [065](065-memory-consolidation-build.md) | Build da consolidação de memória episódica→semântica e do loop de feedback com aprovação humana (escopo workspace) | Memória | P2 | L (sprints 65–68) | Plano 017 (spike) | DONE (sprints 65–68: escopo de workspace + feedback estruturado, consolidador manual, consolidação agendada sob o Kernel, diretivas com aprovação) |
-| [066](066-pendencias-pos-064-065.md) | Fechar as lacunas registradas pelos planos 064 e 065: contrato de rede para `web_search`/`mcp_call`/`delegate_task`, política do `lsp_rename`, guarda `--local` no `/model`, memória em todos os caminhos e higiene | Segurança, memória | P1/P2 | M (sprints 69–71) | 064 e 065 mesclados | IN PROGRESS |
+| [066](066-pendencias-pos-064-065.md) | Fechar as lacunas registradas pelos planos 064 e 065: contrato de rede para `web_search`/`mcp_call`/`delegate_task`, política do `lsp_rename`, guarda `--local` no `/model`, memória em todos os caminhos e higiene | Segurança, memória | P1/P2 | M (sprints 69–72) | 064 e 065 mesclados | IN PROGRESS (69–71 entregues: PRs #168 e #169; 72 em andamento) |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
 **Rodada 7 (2026-08-25) — P0→P4, endurecimento pós-auditoria**: planos 049–053,
 executados em série (cada um depende do anterior). Todos DONE.
 
-Duas pendências de índice ficam registradas aqui em vez de silenciosamente
-resolvidas:
+Duas pendências de índice ficaram registradas aqui em vez de silenciosamente
+resolvidas (as duas já reconciliadas):
 
 - O plano **049** (`049-p0-security-boundaries.md`) foi escrito na branch
-  `codex/cli-visual-2` e **nunca chegou ao master** — só o código dele veio
-  (`13093dd`, merge `c2d3e4e`). A tabela cita "049" como dependência do 050,
-  mas não há linha nem arquivo para ele. Quem for reconciliar a numeração:
-  trazer o documento junto.
+  `codex/cli-visual-2` e **nunca chegou ao master**. Só o código dele veio
+  (`13093dd`, merge `c2d3e4e`). Na sprint 71 (plano 066), o documento foi
+  procurado em todos os refs e objetos do repositório, e a branch já não
+  existe no remoto. O texto está perdido. A linha 049 da tabela registra o que
+  foi entregue e fecha a dependência citada pelo 050. O escopo pode ser lido no
+  commit `13093dd`.
 - O **053** entrou pelo merge `9c94778` sem passar por esta tabela; a linha
   acima é a correção.
 

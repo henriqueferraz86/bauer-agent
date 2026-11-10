@@ -601,25 +601,32 @@ MINIMAL_CODE_LADDER = (
 
 # Protocolo de execução de task — injetado SOMENTE quando o agent roda como
 # worker do kanban (env BAUER_KANBAN_TASK). Espelha o KANBAN_GUIDANCE do Hermes,
-# adaptado às tools reais do Bauer (kanban_show/complete/block/comment/create).
+# adaptado às tools reais do Bauer: kanban_read (mode=show|list) e kanban_write
+# (action=complete|block|comment|heartbeat). Worker não cria cards (o gate de
+# kanban_write nega create/unblock/link no contexto worker): follow-up vira
+# comentário para o supervisor.
 KANBAN_WORKER_GUIDANCE = (
     "# PROTOCOLO DE EXECUCAO DE TASK (KANBAN WORKER)\n"
     "Voce foi spawnado como worker de UMA task do board. O ID esta em\n"
     "$BAUER_KANBAN_TASK; seu workspace em $BAUER_KANBAN_WORKSPACE.\n"
     "\n"
-    "1. ORIENTE-SE. Chame kanban_show (sua task) para ler titulo, corpo, os\n"
-    "   handoffs das tasks-pai (resumo + artefatos) e o thread de comentarios.\n"
+    "1. ORIENTE-SE. Chame kanban_read(mode=\"show\", task_id=...) para ler\n"
+    "   titulo, corpo, os handoffs das tasks-pai (resumo + artefatos) e o\n"
+    "   thread de comentarios.\n"
     "2. TRABALHE produzindo ARTEFATOS CONCRETOS dentro do workspace: arquivos\n"
     "   escritos, codigo, um relatorio .md com o conteudo real. Um 'proximo\n"
     "   passo' nao e entrega — a entrega e o arquivo/diff/relatorio em si.\n"
-    "3. CONCLUA com handoff util: kanban_complete(task_id, result=...) onde\n"
-    "   result NOMEIA os artefatos concretos (caminhos de arquivo, contagem de\n"
-    "   testes, decisoes tomadas). Quem pega a proxima task le esse resultado.\n"
-    "4. BLOQUEIE em ambiguidade real: kanban_block(task_id, reason=...). Voce\n"
-    "   roda headless — NAO use clarify (vai dar timeout sem ninguem responder).\n"
-    "   Comente o contexto antes com kanban_comment.\n"
-    "5. FOLLOW-UP: se surgir trabalho extra, CRIE, nao faca — kanban_create(\n"
-    "   title=..., parent_id=<sua task>) para o especialista certo. Nao estoure\n"
+    "3. CONCLUA com handoff util: kanban_write(action=\"complete\", task_id=...,\n"
+    "   result=...) onde result NOMEIA os artefatos concretos (caminhos de\n"
+    "   arquivo, contagem de testes, decisoes tomadas). Quem pega a proxima\n"
+    "   task le esse resultado.\n"
+    "4. BLOQUEIE em ambiguidade real: kanban_write(action=\"block\", task_id=...,\n"
+    "   reason=...). Voce roda headless — NAO use clarify (vai dar timeout sem\n"
+    "   ninguem responder). Comente o contexto antes com\n"
+    "   kanban_write(action=\"comment\", task_id=..., comment=...).\n"
+    "5. FOLLOW-UP: se surgir trabalho extra, NAO faca — registre a proposta\n"
+    "   com kanban_write(action=\"comment\", task_id=<sua task>, comment=...)\n"
+    "   para o supervisor criar o card. Worker nao cria cards. Nao estoure\n"
     "   o escopo desta task.\n"
     "\n"
     "NUNCA marque como done uma task que voce nao terminou de verdade — bloqueie.\n"
@@ -2036,8 +2043,9 @@ def _maybe_planning_checkpoint(
         except Exception:
             pass
     _kanban_hint = (
-        "Trabalhe pelos cards do kanban: kanban_list para ver o board e "
-        "kanban_complete(task_id, result=...) ao terminar cada card. "
+        "Trabalhe pelos cards do kanban: kanban_read(mode=\"list\") para ver o "
+        "board e kanban_write(action=\"complete\", task_id=..., result=...) ao "
+        "terminar cada card. "
         if _seeded else ""
     )
     task = (
@@ -2075,8 +2083,8 @@ def _ledger_block(workspace_dir: str | None) -> str:
         for t in pending:
             lines.append(f"- [{t.status}] #{t.id} {t.title}")
         lines.append(
-            "\nAtualize o status das tarefas via tools kanban_update_task / "
-            "kanban_mark_done à medida que completar cada item."
+            "\nAtualize o status das tarefas via kanban_write (action=\"complete\" "
+            "ao concluir, action=\"block\" se travar) à medida que completar cada item."
         )
         return "\n".join(lines)
     except Exception:
@@ -2766,6 +2774,7 @@ def run_agent_session(
     kernel: "Any | None" = None,
     render_header: "Any | None" = None,
     decision_config: "Any | None" = None,
+    local_only: bool = False,
 ) -> None:
     """Loop do agente com Tool Bridge, roteamento inteligente e sessao persistente.
 
@@ -2868,6 +2877,10 @@ def run_agent_session(
         except Exception:
             pass
     _mem_turn_idx = 0
+    # Sprint 70: diretivas aprovadas relidas a CADA payload (não no bloco da
+    # abertura) — revogar/vencer tira o efeito já no próximo turno.
+    from .memory_injection import attach_workspace_memory, strip_persisted_directives
+    attach_workspace_memory(ctx, getattr(router, "workspace", None), include_consolidated=False)
 
     # P2.2: Task Ledger — injeta tarefas pendentes do TASKS.md no contexto de início de sessão
     _ledger = _ledger_block(getattr(router, "workspace", None))
@@ -2878,7 +2891,9 @@ def run_agent_session(
     if session_store is not None and session_id is not None:
         saved = session_store.load(session_id)
         if saved:
-            ctx.messages = saved
+            # Sessões gravadas antes da sprint 70 trazem as diretivas no
+            # histórico; sem isto, uma revogada voltaria ao retomar.
+            ctx.messages = strip_persisted_directives(saved)
 
     # `provider` is needed for cost lookup in usage_pricing. Derive from the
     # ContextManager's `_provider` (set above from cfg) — falls back to "" which
@@ -3389,16 +3404,36 @@ def run_agent_session(
                 _cfg = _Path("config.yaml")
                 if not _cfg.exists():
                     _cfg = _cfg_path()
-                _rms(_cfg)
+                _rms(_cfg, local_only=local_only)
 
                 if rebuild_client_fn is not None:
                     _rebuilt = rebuild_client_fn()
                     # Aceita 2-tupla (legado) ou 3-tupla (com fallbacks renovados).
+                    _new_fallbacks = None
                     if isinstance(_rebuilt, tuple) and len(_rebuilt) == 3:
                         _new_client, _new_model, _new_fallbacks = _rebuilt
-                        fallback_clients = _new_fallbacks  # renova cadeia do novo modelo
                     else:
                         _new_client, _new_model = _rebuilt
+                    if local_only:
+                        # Sprint 69: `--local` vale depois do boot. Segunda
+                        # camada (a primeira: seletor e rebuild recusam config
+                        # de nuvem) — client não local nunca entra na sessão.
+                        # A cadeia de fallback já vem de `fallback_models_local`,
+                        # validada pelo rebuild do `--local`.
+                        from .cost_meter import provider_from_client as _pfc_sw
+                        from .model_router import provider_e_local as _e_local_sw
+
+                        _novo_prov = str(getattr(_new_client, "_provider", None)
+                                         or _pfc_sw(_new_client))
+                        if not _e_local_sw(_novo_prov, decision_config):
+                            console.print(
+                                f"[red]✗ --local recusado:[/red] provider "
+                                f"'{_novo_prov}' não roda nesta máquina. "
+                                f"A sessão continua em [cyan]{model_name}[/cyan]."
+                            )
+                            continue
+                    if _new_fallbacks is not None:
+                        fallback_clients = _new_fallbacks  # renova cadeia do novo modelo
                     # Novo modelo escolhido → recomeça a cadeia de fallback do topo
                     _fb_idx = 0
                     # Rebind ao vivo — próximo turno já usa o novo modelo

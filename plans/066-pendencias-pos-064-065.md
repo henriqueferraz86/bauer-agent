@@ -4,7 +4,7 @@
 
 **Prioridade:** P1 (sprint 69) / P2 (sprints 70–71)
 
-**Esforço total estimado:** M, dividido em sprints 69–71
+**Esforço total estimado:** M, dividido em sprints 69–72
 
 **Referências:** notas "Left open" e "Pendências" dos BACKLOGs das sprints
 59–68 (`specs/sprint-59-*` a `specs/sprint-68-*`) e `plans/README.md`.
@@ -19,7 +19,7 @@ execução. Este plano fecha essas lacunas sem abrir funcionalidade nova.
 
 ## Sprints
 
-### Sprint 69 — Fronteiras de rede e aprovação restantes (P1)
+### Sprint 69 — Fronteiras de rede e aprovação restantes (P1) — DONE (PR #168)
 
 - `web_search`, `mcp_call` e `delegate_task` ganham contrato de operação de
   rede na política, como `http_request` e `web_fetch` ganharam na sprint 62.
@@ -30,7 +30,7 @@ execução. Este plano fecha essas lacunas sem abrir funcionalidade nova.
   a guarda `--local`. A mesma garantia da sprint 62 passa a valer aqui.
 - **Aceite:** um teste de regressão por item, falhando sem a correção.
 
-### Sprint 70 — Memória em todos os caminhos de execução (P2)
+### Sprint 70 — Memória em todos os caminhos de execução (P2) — DONE (PR #169)
 
 - Sessões criadas por serve/web, OpenAI-compat e canais (Telegram, Discord)
   registram a origem de workspace, como já fazem as sessões do
@@ -42,7 +42,7 @@ execução. Este plano fecha essas lacunas sem abrir funcionalidade nova.
 - **Aceite:** sem leitura nem escrita cruzada entre workspaces. Sessões
   antigas sem origem continuam fora. Testes herméticos cobrem cada caminho.
 
-### Sprint 71 — Higiene (P2)
+### Sprint 71 — Higiene (P2) — DONE (PR #169)
 
 - O prompt de Kanban em `agent.py` ainda usa os nomes antigos `kanban_*`.
   Ele passa a usar `kanban_read` e `kanban_write`.
@@ -52,6 +52,22 @@ execução. Este plano fecha essas lacunas sem abrir funcionalidade nova.
 - O documento do plano 049, que nunca chegou ao `master`, é reconciliado na
   tabela de `plans/README.md`. Ou traz o documento da branch
   `codex/cli-visual-2`, ou registra que ele não existe mais.
+
+### Sprint 72 — `--local` nos clients auxiliares (P1)
+
+A sprint 69 fechou o `--local` na delegação. Ficou aberto o resto: numa
+sessão `--local`, os clients auxiliares não são verificados. São eles o juiz
+de aprovação (`auxiliary.approval_model`), a compressão de contexto, a
+consolidação de memória, a transcrição e qualquer outro slot `auxiliary.*`.
+A checagem de início não cobre esses clients.
+
+- Todo client auxiliar criado num processo marcado com `BAUER_LOCAL_ONLY`
+  precisa ser local. Se não for, a criação é recusada antes de qualquer
+  request.
+- Se um slot auxiliar apontar para cloud, o `--local` recusa subir, como já
+  faz com o modelo principal.
+- **Aceite:** um teste por slot auxiliar, falhando sem a correção, e um teste
+  que trava o inventário dos slots, para que um slot novo não escape.
 
 ## Fora de escopo
 

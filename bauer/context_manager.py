@@ -97,6 +97,12 @@ class ContextManager:
     _previous_summary: str | None = field(default=None, repr=False)
     _summary_failure_cooldown_until: float = field(default=0.0, repr=False)
 
+    # ── Memória do workspace (sprint 70) ────────────────────────────────────
+    # Callable recalculado a cada ``get_payload`` (diretivas aprovadas + fatos
+    # consolidados do workspace). Nunca entra em ``messages``: não é persistido
+    # e uma revogação vale já no próximo payload. Ver ``memory_injection``.
+    memory_block: Any = field(default=None, repr=False, compare=False)
+
     def __post_init__(self) -> None:
         # Determina budget real:
         # 1. Se applied_context foi calibrado pelo preflight, usa ele
@@ -186,10 +192,27 @@ class ContextManager:
         """
         self.messages = _strip_orphan_tool_messages(self.messages)
         result: list[dict] = []
-        if self.system_prompt:
-            result.append({"role": "system", "content": self.system_prompt})
+        system = self.system_prompt or ""
+        memory = self._memory_block_text()
+        if memory:
+            system = f"{system}\n\n{memory}" if system else memory
+        if system:
+            result.append({"role": "system", "content": system})
         result.extend(self.messages)
         return result
+
+    def _memory_block_text(self) -> str:
+        provider = self.memory_block
+        if not callable(provider):
+            return ""
+        try:
+            text = provider()
+        except Exception as exc:  # noqa: BLE001 — memória é acessória
+            from .logging_config import log_suppressed
+
+            log_suppressed("context_manager.memory_block", exc)
+            return ""
+        return text if isinstance(text, str) else ""
 
     def clear(self) -> None:
         self.messages.clear()

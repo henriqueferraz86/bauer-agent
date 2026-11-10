@@ -30,13 +30,38 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "when": {"contains_secret": True},
     },
     {"id": "network.http.allow", "operation": "network.http", "action": "allow"},
+    # Sprint 69: web_search, mcp_call/mcp_list_tools e delegate_task.
+    {
+        "id": "network.search.secret_exfiltration.deny",
+        "operation": "network.search",
+        "action": "deny",
+        "reason": "search query contains secret material",
+        "when": {"contains_secret": True},
+    },
+    {"id": "network.search.allow", "operation": "network.search", "action": "allow"},
+    {
+        "id": "mcp.call.secret_exfiltration.deny",
+        "operation": "mcp.call",
+        "action": "deny",
+        "reason": "MCP arguments contain secret material",
+        "when": {"contains_secret": True},
+    },
+    {"id": "mcp.call.allow", "operation": "mcp.call", "action": "allow"},
+    {
+        "id": "agent.delegate.remote_secret.deny",
+        "operation": "agent.delegate",
+        "action": "deny",
+        "reason": "delegated task to a remote agent contains secret material",
+        "when": {"remote": True, "contains_secret": True},
+    },
     {"id": "agent.delegate.allow", "operation": "agent.delegate", "action": "allow"},
     {"id": "shell.execute.ask", "operation": "shell.execute", "action": "ask"},
     {"id": "filesystem.delete.ask", "operation": "filesystem.delete", "action": "ask"},
     {"id": "social.publish.ask", "operation": "social.publish", "action": "ask"},
     {"id": "production.deploy.ask", "operation": "production.deploy", "action": "ask"},
     {"id": "os.ui_control.ask", "operation": "os.ui_control", "action": "ask"},
-    # Extensão (ToolRegistry) que declara requires_approval=True (sprint 61, T08).
+    # Extensão (ToolRegistry) que declara requires_approval=True (sprint 61, T08)
+    # e built-in com approval=True sem operação própria (sprint 69: lsp_rename).
     {"id": "tool.approval.ask", "operation": "tool.approval", "action": "ask"},
     {"id": "filesystem.read.allow", "operation": "filesystem.read", "action": "allow"},
     {

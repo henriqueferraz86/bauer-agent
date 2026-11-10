@@ -36,6 +36,46 @@ agent_app = typer.Typer(
 )
 
 
+class LocalSwitchRefused(Exception):
+    """`/model` numa sessão `--local` levaria a um client que não é desta máquina."""
+
+
+def _rebuild_client_from_config(config: Path, models: Path, *, local: bool, console=None):
+    """Reconstrói client + model_name + fallbacks a partir do config.yaml atual.
+
+    Usado pelo `/model` ao vivo. Retorna 3-tupla — o `/model` precisa renovar a
+    cadeia de fallback, senão ela apontaria para os fallbacks do modelo anterior.
+
+    Com `local` (sprint 69): a mesma garantia do boot do `--local`. O config
+    relido passa por `validar_execucao_local` ANTES de qualquer client ser
+    construído, e a cadeia de fallback vem de `fallback_models_local`. Sem
+    isso, um `config.yaml` de nuvem (escrito pelo `/model` ou por outro
+    processo) virava o client da sessão, e o fallback voltava a ser o da nuvem.
+    """
+    from ..env_loader import load_dotenv as _lenv
+    _lenv()
+    new_cfg, _ = _load_or_die(config, models)
+    if local:
+        from ..model_router import validar_execucao_local
+        problemas = validar_execucao_local(new_cfg, new_cfg.model.name)
+        if problemas:
+            raise LocalSwitchRefused(
+                "--local recusado: o config.yaml atual sairia desta máquina — "
+                + "; ".join(problemas)
+                + ". A sessão continua no modelo anterior."
+            )
+    new_client = _build_client(new_cfg)
+    try:
+        # Rótulo do provider para o `/model` (HUD, custo e a 2ª camada do --local).
+        new_client._provider = new_cfg.model.provider
+    except AttributeError as exc:
+        from ..logging_config import log_suppressed
+        log_suppressed("agent.rebuild_client.provider_label", exc)
+    new_fallbacks = _build_fallback_clients(new_cfg, console=console,
+                                            conjunto="local" if local else "default")
+    return new_client, new_cfg.model.name, new_fallbacks
+
+
 def _build_fallback_clients(cfg, *, console=None, conjunto: str = "default") -> list:
     """Constrói clientes de fallback a partir de cfg.model.fallback_models.
 
@@ -545,17 +585,8 @@ def agent(
                                             conjunto="local" if local else "default")
 
     def _rebuild_client_chat():
-        """Reconstrói client + model_name + fallbacks a partir do config.yaml atual.
-
-        Retorna 3-tupla — o /model ao vivo precisa renovar a cadeia de fallback,
-        senão ela ficaria apontando para os fallbacks do modelo anterior.
-        """
-        from ..env_loader import load_dotenv as _lenv
-        _lenv()
-        _new_cfg, _ = _load_or_die(config, models)
-        _new_client = _build_client(_new_cfg)
-        _new_fallbacks = _build_fallback_clients(_new_cfg, console=console)
-        return _new_client, _new_cfg.model.name, _new_fallbacks
+        """`/model` ao vivo — com `--local`, recusa config que sairia da máquina."""
+        return _rebuild_client_from_config(config, models, local=local, console=console)
 
     # L6: injeta recomendações do LearningEngine no system prompt
     _learning_hints: str | None = None
@@ -595,6 +626,9 @@ def agent(
             console.print(f"[dim]Config: {_loaded_config_path(config)}[/dim]")
             console.print("[dim]Rode sem --local para usar a configuração atual.[/dim]")
             raise typer.Exit(code=1)
+        # Sprint 69: delegate_task e o subprocess `run-one` herdam a garantia.
+        from ..model_router import mark_local_only
+        mark_local_only()
 
     _route_profiles, _route_client_fn = heuristic_route_kit(
         cfg, conjunto="local" if local else "default")
@@ -677,6 +711,7 @@ def agent(
             route_client_fn=_route_client_fn,
             route_profiles_by_provider=_route_profiles_by_provider,
             decision_config=cfg,
+            local_only=bool(local),
             kernel=_kernel_inst,
             render_header=_render_cabecalho,
         )
@@ -1148,6 +1183,11 @@ def agent_run_one(
         "", "--agent", help="Nome do agent especialista (agents.yaml) — aplica o system prompt dele"
     ),
     agents_file: Path = typer.Option(Path("agents.yaml"), "--agents"),
+    local: bool = typer.Option(
+        False, "--local",
+        help="Só modelo desta máquina: recusa iniciar se o config apontar para a nuvem "
+             "(também ligado pela marca BAUER_LOCAL_ONLY herdada de uma sessão --local)",
+    ),
 ):
     """Executa uma única tarefa e imprime o resultado (usado por delegate_task).
 
@@ -1155,6 +1195,19 @@ def agent_run_one(
     isso, é um LLM genérico sem nenhuma especialização.
     """
     cfg, _ = _load_or_die(config, models)
+    from ..model_router import local_only_active, mark_local_only, provider_e_local
+    if local or local_only_active():
+        # Sprint 69: o sub-agente de uma sessão `--local` carrega o config
+        # canônico, que pode apontar para a nuvem. Verifica ANTES de construir
+        # client e recusa iniciar — "quase local" não cumpre a garantia.
+        _prov = str(getattr(cfg.model, "provider", "") or "")
+        if not provider_e_local(_prov, cfg):
+            console_err.print(
+                f"[red]run-one --local recusado:[/red] o config resolve para o provider "
+                f"'{_prov}', que não roda nesta máquina. Nada foi enviado."
+            )
+            raise typer.Exit(code=1)
+        mark_local_only()  # delegações aninhadas herdam a garantia
     client = _build_client(cfg)
     from ..core.runtime.adapters import get_runtime_adapter
 

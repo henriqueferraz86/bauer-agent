@@ -104,6 +104,18 @@ def _isolate_kanban_board(request, monkeypatch):
     monkeypatch.setenv("BAUER_KANBAN_BOARD", f"t-{digest}")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_local_only_mark(monkeypatch):
+    """Marca `--local` (BAUER_LOCAL_ONLY, sprint 69) isolada por teste.
+
+    `bauer agent --local`/`serve --local`/`run-one --local` gravam a marca em
+    `os.environ` para os subprocessos herdarem. Num worker do xdist, um teste
+    que suba esses comandos deixaria a marca para os seguintes. Registrar a
+    variável aqui faz o monkeypatch restaurá-la ao fim de cada teste.
+    """
+    monkeypatch.setenv("BAUER_LOCAL_ONLY", "")
+
+
 # ── Deadline anti-travamento para testes assíncronos ────────────────────────
 #
 # Flake real (CI do master, Windows/3.12, 2026-07-25):

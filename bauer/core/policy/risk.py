@@ -17,13 +17,15 @@ class RiskClassifier:
             return "high"
         if operation in {"production.deploy", "data.exfiltrate"}:
             return "high"
-        if operation == "network.http" and bool(payload.get("contains_secret")):
+        if operation in {"network.http", "network.search", "mcp.call"} and bool(payload.get("contains_secret")):
+            return "high"
+        if operation == "agent.delegate" and bool(payload.get("remote")) and bool(payload.get("contains_secret")):
             return "high"
         if operation == "agent.delegate":
             return "medium"
         if operation == "filesystem.write" and self._outside_workspace(payload.get("path")):
             return "high"
-        if operation in {"filesystem.write", "network.request", "network.http"}:
+        if operation in {"filesystem.write", "network.request", "network.http", "mcp.call"}:
             return "medium"
         if operation == "os.open_app":
             return "low"
