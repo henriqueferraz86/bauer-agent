@@ -856,15 +856,15 @@ def test_self_tuner_tune_insufficient_ram(tmp_path: Path):
 # ─── server.py uncovered ─────────────────────────────────────────────────────
 
 
-def test_server_delete_session_success():
+def test_server_delete_session_success(tmp_path):
     """DELETE /sessions/{sid} com sessão existente → 200."""
     from bauer.server import create_app
     from bauer.tool_router import ToolRouter
     from starlette.testclient import TestClient
 
-    tmp_path = Path(__file__).parent.parent / "tmp_server_test"
-    tmp_path.mkdir(exist_ok=True)
-
+    # tmp_path do pytest: o ToolRouter grava o EventBus em
+    # `<workspace>.parent/runtime`, e um diretório na raiz do repo levava esse
+    # estado para dentro do checkout (sprint 64).
     mock_client = MagicMock()
     mock_client.chat_stream.return_value = iter(["ok"])
     mock_client.list_models.return_value = ["phi4-mini"]
@@ -895,6 +895,3 @@ def test_server_delete_session_success():
     resp = client.delete("/sessions/test-sid-123")
     # Pode ser 200 ou 404 dependendo se foi salva
     assert resp.status_code in (200, 404)
-
-    import shutil
-    shutil.rmtree(tmp_path, ignore_errors=True)

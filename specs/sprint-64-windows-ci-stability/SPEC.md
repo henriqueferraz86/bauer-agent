@@ -92,6 +92,27 @@ de `4b799cb` a `415c56a`):
    abaixo de 30s em 19 arquivos. Esperas negativas (`assert not ...wait(0.1)`)
    não mudaram.
 
+8. **A suíte escrevia estado de runtime no checkout.** Muitos defaults são
+   relativos ao cwd: `memory/runtime` de RunManager, ApprovalManager,
+   BudgetManager e PolicyEngine, os `memory/*.md` do MemoryManager e o
+   `runtime/` do EventBus derivado do workspace. Com a suíte rodando da raiz,
+   todos os testes e workers gravavam os mesmos bancos SQLite dentro do repo
+   (`memory/runtime/{runtime_state,budget_ledger}.sqlite3`, `runtime/`,
+   `memory/sessions/sessions.db`). O estado acumulava entre testes e entre
+   execuções, e no Windows os workers disputavam o lock desses arquivos.
+   **Correção na suíte, não nos defaults:** cada teste roda com o cwd num
+   diretório temporário do worker (`_repo_root_stays_clean` em
+   `conftest.py`, via `monkeypatch.chdir`; a coleta continua na raiz). O
+   mesmo fixture falha o teste que criar uma entrada nova na raiz do repo.
+   Ele achou um escritor por caminho absoluto
+   (`test_server_delete_session_success` usava
+   `Path(__file__).parent.parent / "tmp_server_test"`) e um leitor que
+   dependia do cwd (`test_g19_g24_sprint`, `Path("bauer/data/skills")`).
+   Mudar os defaults do produto para `$BAUER_HOME` seria uma migração de
+   dados para quem roda o serve de outro diretório, e fica como pendência.
+   O caso do Agno (item 6) foi corrigido no produto porque o histórico do
+   SDK não tem migração a preservar.
+
 Nenhuma das falhas era semântica POSIX, e nenhuma ganhou skip. O alvo do
 monkeypatch (`bauer.agent.run_one_turn_with_fallback`) funciona no Windows:
 o teste de cancelamento, que usa o mesmo helper sem budget curto, passava.

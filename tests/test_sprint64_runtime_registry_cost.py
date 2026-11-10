@@ -252,3 +252,15 @@ def test_agno_history_explicit_db_file_wins(tmp_path):
         runtime_policy_root=tmp_path / "runtime",
     )
     assert adapter.db_file == explicit
+
+
+def test_tests_run_outside_the_checkout():
+    """Defaults relativos ao cwd (`memory/runtime`, `memory/*.md`, `runtime/`)
+    não podem cair no repositório durante a suíte (ver tests/conftest.py)."""
+    import os
+
+    from tests.conftest import REPO_ROOT, _root_entries
+
+    cwd = Path(os.getcwd()).resolve()
+    assert REPO_ROOT not in (cwd, *cwd.parents)
+    assert not {"memory", "runtime", "workspace"} & _root_entries()
