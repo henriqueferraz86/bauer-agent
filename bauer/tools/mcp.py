@@ -368,3 +368,51 @@ class McpToolsMixin:
             "             command: [\"python\", \"-m\", \"meu_servidor\"]\n"
             "             timeout: 30"
         )
+
+
+def mcp_policy_payload(router, tool_name: str, args: dict) -> dict:
+    """Payload que a política `mcp.call` avalia para `mcp_call`/`mcp_list_tools` (sprint 69).
+
+    O modelo escolhe servidor, tool e argumentos; o transporte vem do config ou
+    do env. O payload diz para onde a chamada iria (`transport` stdio/http,
+    `host`, `remote`) sem iniciar o servidor, e o runtime procura material
+    secreto nos argumentos. A flag `contains_secret` do modelo só pode aumentar
+    o risco. Servidor não configurado vira `transport: unconfigured`: a chamada
+    falharia depois, mas a regra é avaliada antes, do mesmo jeito.
+    """
+    from urllib.parse import urlparse
+
+    from ..model_router import _HOSTS_LOCAIS
+    from ..secrets_scanner import has_secrets
+
+    server = str(args.get("server") or "").strip()
+    arguments = args.get("arguments", {})
+    try:
+        text = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = str(arguments)
+    transport, host = "unconfigured", ""
+    info: dict | None = None
+    if server:
+        try:
+            info = router._resolve_mcp_transport(server)
+        except ToolError:
+            info = None  # servidor desconhecido: a chamada falha depois, a regra vale antes
+    if info is not None:
+        transport = str(info.get("kind") or "unconfigured")
+        if transport == "http":
+            try:
+                host = (urlparse(str(info.get("url") or "")).hostname or "").rstrip(".").lower()
+            except ValueError:
+                host = ""
+    payload = dict(args)
+    payload.update({
+        "server": server,
+        "tool": str(args.get("tool") or "").strip(),
+        "kind": "list_tools" if tool_name == "mcp_list_tools" else "call",
+        "transport": transport,
+        "host": host,
+        "remote": transport == "http" and host not in _HOSTS_LOCAIS,
+        "contains_secret": bool(args.get("contains_secret")) or has_secrets(text),
+    })
+    return payload
