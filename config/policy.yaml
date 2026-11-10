@@ -11,6 +11,31 @@ rules:
   - id: network.http.allow
     operation: network.http
     action: allow
+  - id: network.search.secret_exfiltration.deny
+    operation: network.search
+    action: deny
+    reason: search query contains secret material
+    when:
+      contains_secret: true
+  - id: network.search.allow
+    operation: network.search
+    action: allow
+  - id: mcp.call.secret_exfiltration.deny
+    operation: mcp.call
+    action: deny
+    reason: MCP arguments contain secret material
+    when:
+      contains_secret: true
+  - id: mcp.call.allow
+    operation: mcp.call
+    action: allow
+  - id: agent.delegate.remote_secret.deny
+    operation: agent.delegate
+    action: deny
+    reason: delegated task to a remote agent contains secret material
+    when:
+      remote: true
+      contains_secret: true
   - id: agent.delegate.allow
     operation: agent.delegate
     action: allow
