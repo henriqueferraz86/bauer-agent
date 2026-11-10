@@ -157,3 +157,5 @@ graphify-out/
 !specs/sprint-69-security-network-approval/**
 !specs/sprint-72-local-auxiliary-clients/
 !specs/sprint-72-local-auxiliary-clients/**
+!specs/sprint-75-agno-write-connectors/
+!specs/sprint-75-agno-write-connectors/**

@@ -288,8 +288,9 @@ def _refuse_secret_material(call_args: dict[str, Any]) -> None:
 
         text = json.dumps(call_args, ensure_ascii=False, default=str)
         found = scan(text, redact=False).found
-    except Exception:  # noqa: BLE001 - scanner failure must not open the gate silently
-        found = False
+    except Exception as exc:  # noqa: BLE001 - scanner failure must not open the gate silently
+        logger.debug("secret scan failed: %s", type(exc).__name__)
+        found = True
     if found:
         raise ToolError("argumentos contêm material secreto; envio externo bloqueado")
 
@@ -310,8 +311,13 @@ def _governed_entrypoint(
     """Closure (no defaulted kwargs a model could override) routing via ToolRouter."""
 
     outbound = str(registration.get("operation") or "") in _OUTBOUND_OPERATIONS
+    always_ask = str(registration.get("operation") or "") in _always_ask_operations()
 
     def invoke(call_args: dict[str, Any]) -> str:
+        if always_ask:
+            # ``approval_id`` is transport metadata already verified by the
+            # router (bound to the remaining arguments, single use).
+            call_args = {key: value for key, value in call_args.items() if key != "approval_id"}
         if outbound:
             _refuse_secret_material(call_args)
         try:
@@ -327,15 +333,19 @@ def _governed_entrypoint(
                 f"{tool_name} falhou ({type(exc).__name__}): {redact_text(str(exc))[:300]}"
             ) from None
 
-    always_ask = str(registration.get("operation") or "") in _always_ask_operations()
-
     def entrypoint(**kwargs: Any) -> str:
         router = router_factory()
         if always_ask and not getattr(router, "_policy_enabled", False):
             # Without the PolicyEngine there is no approval: refuse the write.
             raise ToolError("escrita externa exige policy habilitada (aprovação humana); chamada recusada")
         if preflight is not None:
-            preflight(dict(kwargs))
+            call = dict(kwargs)
+            if always_ask:
+                # Sprint 75: a write approved out of band (audit mode / UI) is
+                # retried with its approval_id; the preflight sees only the
+                # action arguments, the router checks the id against them.
+                call.pop("approval_id", None)
+            preflight(call)
         if not router.has_capability_tool(tool_name):
             router.register_capability_tool(tool_name, invoke, **registration)
         return router.execute_native_call(tool_name, kwargs)
