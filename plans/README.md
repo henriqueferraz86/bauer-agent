@@ -78,6 +78,7 @@ de STOP, e atualize sua linha de status ao concluir.
 | [064](064-seguranca-auditoria-2026-10-12.md) | Fechar os achados de segurança da auditoria de 2026-10-12 (confinamento, kill-switch, aprovação, rede, web) e estabilizar o CI no Windows | Segurança, execução governada | P1 | L (sprints 59–64) | Planos 057 e 061 mesclados | IN PROGRESS |
 | [065](065-memory-consolidation-build.md) | Build da consolidação de memória episódica→semântica e do loop de feedback com aprovação humana (escopo workspace) | Memória | P2 | L (sprints 65–68) | Plano 017 (spike) | DONE (sprints 65–68: escopo de workspace + feedback estruturado, consolidador manual, consolidação agendada sob o Kernel, diretivas com aprovação) |
 | [066](066-pendencias-pos-064-065.md) | Fechar as lacunas registradas pelos planos 064 e 065: contrato de rede para `web_search`/`mcp_call`/`delegate_task`, política do `lsp_rename`, guarda `--local` no `/model`, memória em todos os caminhos e higiene | Segurança, memória | P1/P2 | M (sprints 69–72) | 064 e 065 mesclados | DONE (sprints 69–72: PRs #168, #169 e #170) |
+| [067](067-agno-conectores-fase-2.md) | Catálogo Agno, fase 2: extras opcionais para os toolkits de leitura (Wikipedia, arXiv, yfinance, YouTube, busca com chave, SearXNG, AWS, Kubernetes) e conectores de escrita sob aprovação (Slack, Linear, GitLab) | Agentes, tools | P2 | M (sprints 73–75) | 057 e 064 mesclados | IN PROGRESS |
 
 Status válidos: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED (motivo)` | `REJECTED (motivo)`
 
