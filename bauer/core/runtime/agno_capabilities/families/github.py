@@ -397,7 +397,7 @@ register_policy(
         module="agno.tools.github",
         class_name="GithubTools",
         requires=("github",),
-        install_hint="uv pip install pygithub",
+        install_hint="uv pip install 'bauer-agent[agno-devops]' (pygithub)",
         settings_section="agno.github",
         notes="Escrita (create/edit/comment/delete) não é classificada: indisponível por construção.",
     )

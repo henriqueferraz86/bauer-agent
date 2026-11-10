@@ -95,6 +95,16 @@ agno-research = [
     "google-search-results>=2.4.2",   # MIT (módulo `serpapi`)
     "linkup-sdk>=0.2.4",              # MIT
 ]
+agno-devops = [
+    # Inventário DevOps/GitHub SOMENTE LEITURA (plano 067, sprint 74):
+    # bauer.aws (boto3), bauer.kubernetes (kubernetes) e agno.github
+    # (PyGithub). Os guards das sprints 51/54 (allowlist de operações AWS,
+    # contexto+namespace explícitos, allowlist de repositórios) continuam a
+    # autoridade. Versões travadas no uv.lock, nenhuma com menos de 14 dias.
+    "boto3>=1.35",          # Apache-2.0
+    "kubernetes>=31.0",     # Apache-2.0
+    "PyGithub>=2.4",        # LGPL-3.0 (import opcional, sem modificação)
+]
 voice = [
     # Captura de microfone + STT local offline (`bauer voice listen/ask/chat`).
     # sounddevice/numpy/soundfile já eram exigidos em runtime por
