@@ -1,6 +1,6 @@
 # Plano 066 — Pendências remanescentes dos planos 064 e 065
 
-**Status:** IN PROGRESS
+**Status:** DONE (sprints 69–72; PRs #168, #169 e #170)
 
 **Prioridade:** P1 (sprint 69) / P2 (sprints 70–71)
 
@@ -53,7 +53,7 @@ execução. Este plano fecha essas lacunas sem abrir funcionalidade nova.
   tabela de `plans/README.md`. Ou traz o documento da branch
   `codex/cli-visual-2`, ou registra que ele não existe mais.
 
-### Sprint 72 — `--local` nos clients auxiliares (P1)
+### Sprint 72 — `--local` nos clients auxiliares (P1) — DONE (PR #170)
 
 A sprint 69 fechou o `--local` na delegação. Ficou aberto o resto: numa
 sessão `--local`, os clients auxiliares não são verificados. São eles o juiz

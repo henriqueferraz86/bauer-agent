@@ -102,6 +102,8 @@ def openrouter_stt_setup_message() -> str:
 
 def stt_unavailable_message() -> str:
     """Retorna uma instrução específica para o provider STT selecionado."""
+    if _local_only():
+        return _local_only_message()
     pref = _stt_provider_pref()
     if pref in ("openrouter", "openrouter-stt"):
         return openrouter_stt_setup_message()
@@ -362,12 +364,35 @@ def preload_local_model() -> bool:
     return True
 
 
+_LOCAL_PREFS = ("local", "faster-whisper", "faster_whisper")
+
+
+def _local_only() -> bool:
+    from .model_router import local_only_active
+
+    return local_only_active()
+
+
+def _local_only_message() -> str:
+    return (
+        "--local ativo: a transcrição só pode rodar nesta máquina. "
+        "Use STT_PROVIDER=local (ou auto) com faster-whisper instalado "
+        "(`uv sync --extra voice`)."
+    )
+
+
 def available_stt_provider() -> str | None:
     """Qual provider STT está disponível agora.
 
     Sem STT_PROVIDER, exige OpenRouter. ``auto`` preserva a cadeia de fallback.
+    Num processo `--local` (sprint 72) só o local conta, e só quando a
+    preferência é ``local`` ou ``auto``.
     """
     pref = _stt_provider_pref()
+    if _local_only():
+        if pref in _LOCAL_PREFS or pref == "auto":
+            return "local" if _faster_whisper_available() else None
+        return None
     if pref in ("openrouter", "openrouter-stt"):
         return "openrouter" if os.environ.get("OPENROUTER_API_KEY", "").strip() else None
     if pref in ("local", "faster-whisper", "faster_whisper"):
@@ -452,6 +477,14 @@ def transcribe_audio(file_path: str | Path, model: str | None = None) -> dict[st
         _add_openai()
         if _faster_whisper_available():
             _add_local()
+
+    if _local_only():
+        # Sprint 72: sob `--local`, nenhuma tentativa de nuvem sobrevive —
+        # nem o default (OpenRouter) nem as da cadeia `auto`. Recusa antes de
+        # qualquer request.
+        attempts = [a for a in attempts if a[0] == "local"]
+        if not attempts:
+            return {"success": False, "transcript": "", "error": _local_only_message()}
 
     if not attempts:
         return {
