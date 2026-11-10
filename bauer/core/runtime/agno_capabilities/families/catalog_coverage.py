@@ -68,11 +68,14 @@ _MEDIA = "Mídia e voz"
 _RUNTIME = "Runtime e memória do SDK"
 _EXEC = "Execução remota"
 _GEO = "Mapas e clima"
+#: Extra opcional que instala as dependências de pesquisa (plano 067, sprint 73).
+_RESEARCH_EXTRA = "uv pip install 'bauer-agent[agno-research]'"
 
 # ── read-only, fixed public APIs (reviewed) ──────────────────────────────────
 
 _sdk_read("agno.bravesearch", "Brave Search", _SEARCH, "Busca web Brave.", "agno.tools.bravesearch", "BraveSearchTools",
-          _read("brave_search"), requires=("brave",), install_hint="uv pip install brave-search",
+          _read("brave_search"), requires=("brave",),
+          install_hint="sem versão instalável: brave-search 0.2.0 tem metadados inválidos e fixa httpx<0.26/numpy<2",
           credentials=("BRAVE_API_KEY",), credential_kwargs=(("api_key", "BRAVE_API_KEY"),))
 _sdk_read("agno.baidusearch", "Baidu Search", _SEARCH, "Busca Baidu.", "agno.tools.baidusearch", "BaiduSearchTools",
           _read("baidu_search"), requires=("baidusearch", "pycountry"), install_hint="uv pip install baidusearch pycountry")
@@ -83,21 +86,21 @@ _sdk_read("agno.serper", "Serper", _SEARCH, "Busca Google via Serper (sem scrapi
 _sdk_read("agno.serply", "Serply", _SEARCH, "Busca web/notícias/acadêmica.", "agno.tools.serply", "SerplyTools",
           _read("search_web", "search_news", "search_scholar"), credentials=("SERPLY_API_KEY",))
 _sdk_read("agno.serpapi", "SerpApi", _SEARCH, "Busca Google/YouTube via SerpApi.", "agno.tools.serpapi", "SerpApiTools",
-          _read("search_google", "search_youtube"), requires=("serpapi",), install_hint="uv pip install google-search-results",
+          _read("search_google", "search_youtube"), requires=("serpapi",), install_hint=_RESEARCH_EXTRA,
           credentials=("SERP_API_KEY",), credential_kwargs=(("api_key", "SERP_API_KEY"),))
 _sdk_read("agno.searchapi", "SearchApi", _SEARCH, "Busca Google/notícias/imagens/YouTube.", "agno.tools.searchapi", "SearchApiTools",
           _read("search_google", "search_news", "search_images", "search_youtube"), credentials=("SEARCHAPI_API_KEY",),
           credential_kwargs=(("api_key", "SEARCHAPI_API_KEY"),))
 _sdk_read("agno.tavily", "Tavily", _SEARCH, "Busca Tavily (sem extração de URL).", "agno.tools.tavily", "TavilyTools",
-          _read("web_search_using_tavily", "web_search_with_tavily"), requires=("tavily",), install_hint="uv pip install tavily-python",
+          _read("web_search_using_tavily", "web_search_with_tavily"), requires=("tavily",), install_hint=_RESEARCH_EXTRA,
           credentials=("TAVILY_API_KEY",), credential_kwargs=(("api_key", "TAVILY_API_KEY"),),
           notes="extract_url_content fica fora: busca URL arbitrária.")
 _sdk_read("agno.exa", "Exa", _SEARCH, "Busca e similares Exa (sem leitura de URLs).", "agno.tools.exa", "ExaTools",
-          _read("search_exa", "find_similar", "exa_answer"), requires=("exa_py",), install_hint="uv pip install exa_py",
+          _read("search_exa", "find_similar", "exa_answer"), requires=("exa_py",), install_hint=_RESEARCH_EXTRA,
           credentials=("EXA_API_KEY",), credential_kwargs=(("api_key", "EXA_API_KEY"),),
           notes="get_contents/research ficam fora: buscam conteúdo de URLs arbitrárias / tarefas longas pagas.")
 _sdk_read("agno.linkup", "Linkup", _SEARCH, "Busca Linkup.", "agno.tools.linkup", "LinkupTools",
-          _read("web_search_with_linkup"), requires=("linkup",), install_hint="uv pip install linkup-sdk",
+          _read("web_search_with_linkup"), requires=("linkup",), install_hint=_RESEARCH_EXTRA,
           credentials=("LINKUP_API_KEY",), credential_kwargs=(("api_key", "LINKUP_API_KEY"),))
 _sdk_read("agno.perplexity", "Perplexity", _SEARCH, "Busca Perplexity.", "agno.tools.perplexity", "PerplexitySearch",
           _read("search"), credentials=("PERPLEXITY_API_KEY",), credential_kwargs=(("api_key", "PERPLEXITY_API_KEY"),))
@@ -117,7 +120,7 @@ _sdk_read("agno.unsplash", "Unsplash", _MEDIA, "Busca de fotos (sem download).",
           notes="download_photo fica fora: dispara contagem de download na API e grava arquivo.")
 _sdk_read("agno.youtube", "YouTube", _SEARCH, "Metadados, legendas e timestamps de vídeos.", "agno.tools.youtube", "YouTubeTools",
           _read("get_youtube_video_data", "get_youtube_video_captions", "get_video_timestamps"),
-          requires=("youtube_transcript_api",), install_hint="uv pip install youtube_transcript_api")
+          requires=("youtube_transcript_api",), install_hint=_RESEARCH_EXTRA)
 _sdk_read("agno.openweather", "OpenWeather", _GEO, "Clima atual, previsão e poluição.", "agno.tools.openweather", "OpenWeatherTools",
           _read("geocode_location", "get_current_weather", "get_forecast", "get_air_pollution"), requires=("requests",),
           credentials=("OPENWEATHER_API_KEY",), credential_kwargs=(("api_key", "OPENWEATHER_API_KEY"),))
@@ -134,7 +137,8 @@ _sdk_read("agno.yfinance", "Yahoo Finance", _DATA, "Cotações, fundamentos e no
           _read("get_current_stock_price", "get_company_info", "get_historical_stock_prices", "get_stock_fundamentals",
                 "get_income_statements", "get_key_financial_ratios", "get_analyst_recommendations", "get_company_news",
                 "get_technical_indicators"),
-          requires=("yfinance",), install_hint="uv pip install yfinance")
+          requires=("yfinance",), install_hint=_RESEARCH_EXTRA,
+          notes="Caches de cookie/fuso do yfinance ficam em $BAUER_HOME/cache/yfinance (sprint 73).")
 _sdk_read("agno.financial_datasets", "Financial Datasets", _DATA, "Demonstrativos, preços e filings.",
           "agno.tools.financial_datasets", "FinancialDatasetsTools",
           _read("get_income_statements", "get_balance_sheets", "get_cash_flow_statements", "get_segmented_financials",
@@ -159,12 +163,12 @@ _WRITE_REVIEW = (
     "exigirá policy própria por ação."
 )
 for _cid, _title, _cat in (
-    ("agno.slack", "Slack", _MSG), ("agno.discord", "Discord", _MSG), ("agno.telegram", "Telegram", _MSG),
+    ("agno.discord", "Discord", _MSG), ("agno.telegram", "Telegram", _MSG),
     ("agno.whatsapp", "WhatsApp", _MSG), ("agno.webex", "Webex", _MSG), ("agno.email", "E-mail SMTP", _MSG),
     ("agno.resend", "Resend", _MSG), ("agno.atomic_mail", "Atomic Mail", _MSG), ("agno.twilio", "Twilio", _MSG),
     ("agno.plivo", "Plivo", _MSG), ("agno.x", "X (Twitter)", _MSG), ("agno.reddit", "Reddit", _MSG),
     ("agno.notion", "Notion", _MSG), ("agno.confluence", "Confluence", _MSG), ("agno.jira", "Jira", _DEV),
-    ("agno.linear", "Linear", _DEV), ("agno.clickup", "ClickUp", _DEV), ("agno.trello", "Trello", _DEV),
+    ("agno.clickup", "ClickUp", _DEV), ("agno.trello", "Trello", _DEV),
     ("agno.todoist", "Todoist", _DEV), ("agno.redmine", "Redmine", _DEV), ("agno.bitbucket", "Bitbucket", _DEV),
     ("agno.salesforce", "Salesforce", _DATA), ("agno.calcom", "Cal.com", _MSG), ("agno.zoom", "Zoom", _MSG),
     ("agno.spotify", "Spotify", _MEDIA), ("agno.google.calendar", "Google Calendar", _MSG),
@@ -174,12 +178,22 @@ for _cid, _title, _cat in (
 ):
     _blocked(_cid, _title, _cat, _WRITE_REVIEW)
 
+# Sprint 75 opened one approved write action per connector as Bauer adapters;
+# the SDK toolkits (mixed read/write, no per-call approval) stay blocked.
+for _cid, _title, _cat, _adapter in (
+    ("agno.slack", "Slack", _MSG, "bauer.slack_messages"),
+    ("agno.linear", "Linear", _DEV, "bauer.linear_issues"),
+    ("agno.gitlab", "GitLab", _DEV, "bauer.gitlab_issues"),
+):
+    _blocked(_cid, _title, _cat, (
+        f"Toolkit do SDK mistura leitura com escrita sem aprovação por chamada. Use {_adapter} "
+        "(escrita sob aprovação humana da chamada exata, plano 067 sprint 75)."
+    ))
+
 for _cid, _title, _cat, _reason in (
-    ("agno.gitlab", "GitLab", _DEV, "Leitura de projetos/MRs: candidata a revisão read-only com allowlist de projetos (como bauer.github); ainda sem escopo por projeto."),
     ("agno.zendesk", "Zendesk", _MSG, "Busca em tickets de clientes (dados pessoais): exige política de privacidade/escopo antes de habilitar."),
     ("agno.shopify", "Shopify", _DATA, "Dados de pedidos/clientes (PII e financeiros): exige escopo por loja e redação antes de habilitar."),
     ("agno.scavio", "Scavio", _SEARCH, "Coleta perfis/seguidores de redes sociais (dados pessoais de terceiros): fora da política de privacidade."),
-    ("agno.searxng", "SearXNG", _SEARCH, "Exige URL de instância configurada; sem escopo/allowlist de host no toolkit — use bauer.web_search (suporta SearXNG)."),
     ("agno.sofya", "Sofya", _SEARCH, "Mistura busca com extração de URL arbitrária e tarefas de pesquisa pagas."),
 ):
     _blocked(_cid, _title, _cat, _reason)
