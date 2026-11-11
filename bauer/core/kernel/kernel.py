@@ -332,7 +332,7 @@ class BauerKernel:
             yield {"event": "final", "run": early}
             return
 
-        started_monotonic = time.monotonic()
+        started_monotonic = time.perf_counter()
         self.runs.start_run(run.id)
         terminal = self._terminal_result(run.id, session_id, trajectory, decision=decision,
                                          started_monotonic=started_monotonic)
@@ -638,7 +638,7 @@ class BauerKernel:
                            trajectory: list[str], *, executor: Any | None,
                            adapter: Any | None, decision: Any, request: Any,
                            revalidar_inicio: bool = False) -> KernelRun:
-        started_monotonic = time.monotonic()
+        started_monotonic = time.perf_counter()
         #: K08 — True quando a PRÓXIMA tentativa precisa reconferir kill-switch
         #: e policy antes de chamar o executor. Falso só na primeira tentativa
         #: de execute(), que acabou de passar pelo preflight.
@@ -950,7 +950,7 @@ class BauerKernel:
                 self._record_cost(updated, updated.cost_estimate)
 
     def _record_elapsed_since(self, run_id: str, started_monotonic: float) -> None:
-        elapsed = max(0.0, time.monotonic() - started_monotonic)
+        elapsed = max(0.0, time.perf_counter() - started_monotonic)
         run = self.runs.get_run(run_id)
         if run is not None:
             self.runs.update_run(

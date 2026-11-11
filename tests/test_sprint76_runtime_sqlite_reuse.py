@@ -381,3 +381,29 @@ def test_autopilot_attestation_lookup_releases_the_per_run_database(tmp_path):
     assert sqlite_connections.pool_for(
         root / "runtime_state.sqlite3", lambda conn: None
     ).open_connections() == 0
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="precisa de /proc")
+def test_scorecard_approval_probe_releases_its_temporary_runtime(monkeypatch):
+    """No Windows, handle aberto impede apagar o diretório temporário da medição."""
+    import tempfile
+
+    from evals.harness import medir
+
+    leaked: list[str] = []
+    real = tempfile.TemporaryDirectory
+
+    class Watched(real):  # type: ignore[misc, valid-type]
+        def cleanup(self):
+            for fd in os.listdir("/proc/self/fd"):
+                try:
+                    target = os.readlink(f"/proc/self/fd/{fd}")
+                except OSError:
+                    continue
+                if target.startswith(self.name):
+                    leaked.append(target)
+            super().cleanup()
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", Watched)
+    assert medir._aprovacao_humana_ligada() is True
+    assert leaked == []

@@ -181,7 +181,7 @@ def test_reported_elapsed_does_not_erase_gate_duration(tmp_path, monkeypatch, st
 
     runs = RunManager(root=tmp_path)
     clock = [0.0]
-    monkeypatch.setattr(kernel_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kernel_module.time, "perf_counter", lambda: clock[0])
 
     class Gate:
         name = "quality"
@@ -368,7 +368,7 @@ def test_stream_disconnect_preserves_known_usage_and_duration(tmp_path, monkeypa
     runs = RunManager(root=tmp_path)
     budget = BudgetManager(store=runs.store)
     clock = [0.0]
-    monkeypatch.setattr(kernel_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kernel_module.time, "perf_counter", lambda: clock[0])
 
     def executor(payload):
         yield {"event": "run.started", "cost_usd": 0.4, "tool_calls_count": 2}
