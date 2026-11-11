@@ -1,6 +1,6 @@
 # Plano 064 — Remediação de segurança da auditoria de 2026-10-12
 
-**Status:** IN PROGRESS
+**Status:** DONE (sprints 59–64; PRs #164, #165, #166 e #173). Resíduo: travamento intermitente de conexão SQLite no Windows, tratado no plano 068.
 
 **Prioridade:** P1
 
