@@ -1,6 +1,6 @@
 # Plano 068 — Reutilizar as conexões SQLite do runtime
 
-**Status:** IN PROGRESS
+**Status:** DONE (sprint 76, `specs/sprint-76-runtime-sqlite-reuse/`)
 
 **Prioridade:** P2
 

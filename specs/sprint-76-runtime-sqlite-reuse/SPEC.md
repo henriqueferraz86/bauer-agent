@@ -101,6 +101,14 @@ retry em `locked`, `busy_timeout` de 30s no store e de 5s no ledger.
   (de todos os stores desse arquivo); o próximo uso reabre. `atexit` fecha
   tudo no fim do processo. A âncora fecha por último, então o checkpoint de
   fechamento roda uma vez só e o `-wal`/`-shm` são removidos.
+- **Limite de arquivos abertos:** só os `MAX_OPEN_POOLS` (16) arquivos usados
+  mais recentemente mantêm conexões. Usar um 17º fecha o pool ocioso mais
+  antigo, que reabre sob demanda. Um pool com conexão emprestada não é
+  fechado. Sem esse limite, um processo que toca um banco novo por run (o
+  dispatcher do autopilot) acumulava cerca de 5 descritores por caminho.
+- **Quem cria um runtime num diretório temporário fecha os pools antes de
+  apagá-lo** (`close_all_state_stores()` ou `store.close()`). No Windows,
+  arquivo aberto não pode ser apagado.
 - **Manutenção:** `assert_runtime_writable` continua sendo checado a cada
   operação. O restore exige o Bauer parado (`--confirm-stopped`); no mesmo
   processo, ele fecha o pool antes do `os.replace`.
