@@ -114,6 +114,13 @@ def restore_snapshot(root: str | Path, destination: str | Path) -> dict:
             _copy_database(source / name, temporary)
             _integrity_check(temporary)
             replacements.append((temporary, target_root / name))
+        # As conexões reutilizadas deste processo apontam para o arquivo
+        # antigo (e no Windows impediriam o replace): fechá-las faz o último
+        # checkpoint e remove o -wal antes da troca.
+        from .sqlite_connections import close_pool
+
+        for _temporary, live in replacements:
+            close_pool(live)
         for temporary, live in replacements:
             os.replace(temporary, live)
     return manifest

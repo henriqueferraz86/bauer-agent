@@ -278,24 +278,30 @@ def _aprovacao_humana_ligada() -> bool:
     from bauer.core.events.bus import EventBus
     from bauer.core.kernel import BauerKernel, KernelRequest
     from bauer.core.runtime.run_manager import RunManager
-    from bauer.core.runtime.state_store import JsonlStateStore
+    from bauer.core.runtime.state_store import JsonlStateStore, close_all_state_stores
     from bauer.core.task import TaskContract
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            store = JsonlStateStore(str(Path(tmp) / "rt"))
-            bus = EventBus(store=store)
-            k = BauerKernel(
-                runs=RunManager(store=store, event_bus=bus), bus=bus,
-                contract=TaskContract.from_mapping(
-                    {"objective": "x", "requires_approval": True}),
-            )
-            rodou = []
-            out = k.execute(
-                KernelRequest(agent_id="m", operation="runtime.execute", input={}),
-                executor=lambda p: rodou.append(1) or {"output": "ok"})
-            # parou E não executou — as duas coisas, senão é notificação
-            return out.status == "waiting_approval" and not rodou
+            try:
+                store = JsonlStateStore(str(Path(tmp) / "rt"))
+                bus = EventBus(store=store)
+                k = BauerKernel(
+                    runs=RunManager(store=store, event_bus=bus), bus=bus,
+                    contract=TaskContract.from_mapping(
+                        {"objective": "x", "requires_approval": True}),
+                )
+                rodou = []
+                out = k.execute(
+                    KernelRequest(agent_id="m", operation="runtime.execute", input={}),
+                    executor=lambda p: rodou.append(1) or {"output": "ok"})
+                # parou E não executou — as duas coisas, senão é notificação
+                return out.status == "waiting_approval" and not rodou
+            finally:
+                # O runtime mantém conexões SQLite abertas (sprint 76): fechar
+                # antes de apagar o diretório temporário, senão o Windows não
+                # deixa e a medição cai no `except` abaixo.
+                close_all_state_stores()
     except Exception:  # noqa: BLE001 — não conseguiu medir = não conta como pronto
         return False
 

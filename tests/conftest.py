@@ -125,6 +125,23 @@ os.environ["BAUER_DOCKER_DISCOVERY"] = "0"
 
 
 @pytest.fixture(autouse=True)
+def _close_runtime_sqlite_connections():
+    """Fecha as conexões SQLite reutilizadas do runtime ao fim de cada teste.
+
+    Desde a sprint 76 o store de runtime e o ledger de budget mantêm conexões
+    abertas por processo (âncora + uma por thread). No Windows, arquivo aberto
+    não pode ser apagado: sem este fechamento, o `tmp_path` de um teste ficaria
+    preso pelo worker do xdist até o fim da sessão, e cada teste acumularia
+    handles dos anteriores. O pool reabre sob demanda, então threads órfãs de
+    um teste anterior continuam funcionando.
+    """
+    yield
+    from bauer.core.runtime.state_store import close_all_state_stores
+
+    close_all_state_stores()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_kanban_board(request, monkeypatch):
     """Board kanban_db próprio por teste.
 
