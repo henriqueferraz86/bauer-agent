@@ -36,6 +36,7 @@ from .channel_projects import (
     ChannelProjectContext, ChannelProjectError, ChannelProjectStore,
     context_key, operator_key, private_telegram,
 )
+from .channel_autonomous_handoff import take_goal_from
 from .channel_tool_honesty import unexecuted_tool_calls_note
 from .channel_execution import (
     ChannelExecution, ChannelExecutionRegistry, SessionWorker, governance_stop_reason,
@@ -57,6 +58,19 @@ _MAX_PENDING_PER_SESSION = 5
 # mantém contexto, lock e custódia do Kernel até a saída real.
 _TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_GATEWAY_TURN_TIMEOUT", "120"))
 
+
+
+_HANDOFF_DROPPED = (
+    "⚠️ O trabalho autônomo NÃO foi iniciado: havia outra mensagem em andamento "
+    "nesta conversa ou o turno passou do prazo. Peça de novo quando ela terminar."
+)
+
+
+def _update_id(msg: ChannelMessage) -> int:
+    try:
+        return int((msg.raw or {}).get("update_id") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _append_to_last_assistant(ctx: Any, note: str) -> None:
@@ -209,6 +223,11 @@ class AgentBackend:
         # a thread ativa drena ao terminar o turno corrente.
         self._pending: dict[str, deque] = {}
         self._pending_lock = threading.RLock()
+        # Sprint 77: objetivo que o modelo pediu para virar /loop, por sessão;
+        # o bridge consome depois que o turno libera a sessão.
+        # Chave: (sessão, update_id da mensagem que pediu) — só a thread que
+        # entrega a resposta daquela mensagem consome o pedido.
+        self._autonomous_handoffs: dict[tuple[str, int], tuple[str, Any, Any]] = {}
         self._executions = ChannelExecutionRegistry()
         # Rastreia quando cada sessão adquiriu o lock (monotonic seconds).
         # Permite detectar turno travado e resetar automaticamente.
@@ -631,6 +650,9 @@ class AgentBackend:
             self._persist_project_model(key)
             with self._pending_lock:
                 self._pending.pop(key, None)
+                self._autonomous_handoffs = {
+                    k: v for k, v in self._autonomous_handoffs.items() if k[0] != key
+                }
             try:
                 self._store.delete(key)
             except Exception:
@@ -805,6 +827,22 @@ class AgentBackend:
                     except BaseException:
                         current.done.set()
                         raise
+                    goal = take_goal_from(current.control)
+                    if goal:
+                        with self._pending_lock:
+                            # Só a 1ª mensagem do lote tem quem consuma o
+                            # pedido (o bridge, ao receber a resposta). Mensagem
+                            # da fila ou turno que estourou o prazo: não fica
+                            # pedido pendurado para outra mensagem disparar.
+                            if first and not batch.timed_out:
+                                self._autonomous_handoffs = {
+                                    k: v for k, v in self._autonomous_handoffs.items() if k[0] != key
+                                }
+                                self._autonomous_handoffs[(key, _update_id(msg))] = (
+                                    goal, current.control, batch,
+                                )
+                            else:
+                                response = f"{(response or '').rstrip()}\n\n{_HANDOFF_DROPPED}"
                     if first:
                         batch.response = response
                     elif current_send is not None:
@@ -882,6 +920,21 @@ class AgentBackend:
             session_key=key, workspace=Path(self._effective_router().workspace).resolve(),
             batch=batch, private_chat=private_telegram(msg),
         )
+
+    def pop_autonomous_handoff(self, msg: ChannelMessage) -> str | None:
+        """Objetivo que o turno DESTA mensagem pediu para virar /loop.
+
+        Descartado se o turno foi cancelado ou estourou o prazo depois de
+        registrar o pedido: o usuário já recebeu cancelamento/timeout.
+        """
+        with self._pending_lock:
+            entry = self._autonomous_handoffs.pop((self.session_key(msg), _update_id(msg)), None)
+        if entry is None:
+            return None
+        goal, control, batch = entry
+        if control.cancel_event.is_set() or batch.timed_out:
+            return None
+        return goal
 
     def _live_session_execution(self, key: str) -> ChannelExecution | None:
         return self._executions.active_for_session(key)
