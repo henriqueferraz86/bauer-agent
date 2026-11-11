@@ -49,7 +49,10 @@ def test_update_preserva_estado_e_reinstala_extras_com_uv(tmp_path: Path, monkey
 
     assert {p: p.read_bytes() for p in original} == original
     assert calls[0] == ["git", "rev-parse", "HEAD"]
-    assert calls[1] == ["git", "fetch", "--depth=1", "origin", "master"]
+    assert calls[1] == [
+        "git", "fetch", "--depth=1", "origin",
+        "+refs/heads/master:refs/remotes/origin/master",
+    ]
     assert calls[2] == ["git", "reset", "--hard", "origin/master"]
     assert calls[3] == [
         "uv-test", "sync", "--frozen",
@@ -126,3 +129,48 @@ def test_update_recusa_diretorio_sem_git(tmp_path: Path, monkeypatch):
         update_cmd.update()
 
     assert exc.value.exit_code == 1
+
+
+def test_update_em_clone_de_uma_branch_so_chega_ao_master_buscado(tmp_path: Path, monkeypatch):
+    """Clone `--single-branch` de outra branch: `fetch origin master` sozinho não
+    move `origin/master`, e o reset caía numa versão antiga anunciando sucesso."""
+
+    def git(*args: str, cwd: Path) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=str(cwd), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    git("init", "-q", "-b", "master", cwd=upstream)
+    (upstream / "VERSION").write_text("1\n", encoding="utf-8")
+    git("add", "VERSION", cwd=upstream)
+    git("commit", "-q", "-m", "v1", cwd=upstream)
+    git("branch", "feature", cwd=upstream)
+    root = tmp_path / "BauerAgent"
+    git("clone", "-q", "--branch", "feature", "--single-branch",
+        upstream.as_uri(), str(root), cwd=tmp_path)
+    # origin/master antigo existente, como na instalação real
+    git("fetch", "-q", "origin", "master:refs/remotes/origin/master", cwd=root)
+    (upstream / "VERSION").write_text("2\n", encoding="utf-8")
+    git("commit", "-q", "-am", "v2", cwd=upstream)
+    newest = git("rev-parse", "HEAD", cwd=upstream)
+
+    home = tmp_path / "home"
+    home.mkdir()
+
+    def run(command: list[str], *, cwd: Path):
+        if command[0] == "git":
+            return subprocess.run(command, cwd=str(cwd), capture_output=True, text=True)
+        return _result(command)  # uv sync e smoke: fora do escopo deste teste
+
+    monkeypatch.setenv("BAUER_HOME", str(home))
+    monkeypatch.setattr(update_cmd, "_repository_root", lambda: root)
+    monkeypatch.setattr(update_cmd, "_run", run)
+    monkeypatch.setattr(update_cmd, "_uv_command", lambda: "uv-test")
+
+    update_cmd.update(extras="gateway")
+
+    assert git("rev-parse", "HEAD", cwd=root) == newest
+    assert (root / "VERSION").read_text(encoding="utf-8") == "2\n"

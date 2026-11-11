@@ -23,6 +23,9 @@ _PRESERVED_FILES = (
 )
 
 
+_MASTER_REFSPEC = "+refs/heads/master:refs/remotes/origin/master"
+
+
 def _repository_root() -> Path:
     """Retorna a raiz da instalação que está executando o comando."""
     return Path(__file__).resolve().parents[2]
@@ -185,7 +188,11 @@ def update(
     console.print(
         f"[cyan]Atualizando Bauer (estado preservado: {len(preserved)} arquivo(s))...[/cyan]"
     )
-    fetched = _run(["git", "fetch", "--depth=1", "origin", "master"], cwd=root)
+    # Refspec explícito: num clone de uma branch só (`git clone --branch X
+    # --single-branch`), `git fetch origin master` atualiza apenas o
+    # FETCH_HEAD, e o reset abaixo cairia num `origin/master` antigo enquanto
+    # o comando anunciava sucesso.
+    fetched = _run(["git", "fetch", "--depth=1", "origin", _MASTER_REFSPEC], cwd=root)
     if fetched.returncode != 0:
         _abort_update(
             root=root,
