@@ -2649,7 +2649,11 @@ def create_app(
                     # funcionando, e o run continua `completed` (semântica que a
                     # UI usa para dizer "limite atingido", não "falhou").
                     return out
-                return {**out, "status": "failed", "error": f"loop parou: {stop_reason}"}
+                error = f"loop parou: {stop_reason}"
+                if stop_reason == "provider_error" and last_text.strip():
+                    # Sprint 78: o motivo real aparece no run (painel), não só no relatório.
+                    error = f"{error} — {last_text.strip()[:300]}"
+                return {**out, "status": "failed", "error": error}
 
             try:
                 from .core.kernel import continue_governed

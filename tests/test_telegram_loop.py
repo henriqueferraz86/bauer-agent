@@ -532,3 +532,26 @@ def test_loop_outside_private_chat_refuses_without_admitting(tmp_path):
 
     assert "privada" in reply.lower()
     assert len(kernel.admit_calls) == 0
+
+
+def test_provider_error_detail_reaches_the_run_error(tmp_path, monkeypatch):
+    """Sprint 78: o painel mostrava só "loop parou: provider_error"."""
+    backend = backend_at(tmp_path)
+    kernel = FakeKernel()
+    install_kernel(backend, kernel)
+
+    def failing_turn(ctx, router, client, model, fallback_clients=None, **kwargs):
+        raise RuntimeError("401 Unauthorized: token expirado")
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", failing_turn)
+    received: list[tuple[str, str]] = []
+    channel_execution.register_delivery_channel(
+        "tg:", lambda sid, text: received.append((sid, text)) or True,
+    )
+    telegram_loop.start_loop(backend, message(), update_id=71, goal="faça algo")
+    wait_for_delivery(received)
+    record = telegram_loop._store_for(backend).get_by_update_id(71)
+    run = kernel.runs.get_run(record.run_id)
+    assert run.status == "failed"
+    assert run.error.startswith("loop parou: provider_error — RuntimeError: 401")
+    assert "token expirado" in received[0][1]

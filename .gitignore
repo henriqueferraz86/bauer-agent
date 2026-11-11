@@ -169,3 +169,5 @@ graphify-out/
 !specs/sprint-76-runtime-sqlite-reuse/**
 !specs/sprint-77-telegram-autonomous-handoff/
 !specs/sprint-77-telegram-autonomous-handoff/**
+!specs/sprint-78-loop-transient-provider-errors/
+!specs/sprint-78-loop-transient-provider-errors/**
