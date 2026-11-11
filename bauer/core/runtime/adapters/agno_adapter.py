@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sqlite3
+import threading
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from functools import wraps
@@ -17,10 +19,39 @@ from .base import RuntimeAdapterError
 from ....cost_meter import report_llm_cost
 from ....delta_stream import emit_delta
 from ....execution_control import checkpoint_execution
+from ....logging_config import log_suppressed
 from ....provider_retry import ProviderRetryInterrupted
 
 
 _ACTIVE_AGNO_SESSION_ID: ContextVar[str] = ContextVar("bauer_agno_session_id", default="")
+
+# Agno's SqliteDb runs "PRAGMA journal_mode=WAL" on every new connection. On a
+# DELETE-mode file that switch needs the exclusive lock every commit takes, so
+# the new connection sits in sqlite3's 5s busy wait, fails, and the file never
+# leaves DELETE mode; on Windows, where commits fsync slowly, governed turns
+# stalled past their approval wait. Switching once per file, before Agno
+# connects, turns the SDK's pragma into a lock-free no-op.
+_WAL_READY: set[str] = set()
+_WAL_LOCK = threading.Lock()
+
+
+def _ensure_wal(db_file: Path) -> None:
+    key = str(db_file.resolve())
+    with _WAL_LOCK:
+        if key in _WAL_READY:
+            return
+        try:
+            conn = sqlite3.connect(key, timeout=30)
+            try:
+                mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            # Agno keeps working in DELETE mode; only the contention fix is lost.
+            log_suppressed("agno sqlite WAL switch", exc, logger_name="bauer.agno")
+            return
+        if mode and str(mode[0]).lower() == "wal":
+            _WAL_READY.add(key)
 
 
 def _in_agno_session(session_id: str, events: Iterator[Any]) -> Iterator[Any]:
@@ -1054,6 +1085,7 @@ class AgnoRuntimeAdapter:
     def _build_db(self) -> Any:
         _, SqliteDb, _ = self._require_agno()
         self.db_file.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_wal(self.db_file)
         return SqliteDb(db_file=str(self.db_file))
 
     def _require_agno(self) -> tuple[Any, Any, Any]:
