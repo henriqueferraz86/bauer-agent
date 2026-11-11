@@ -165,3 +165,5 @@ graphify-out/
 !specs/sprint-74-agno-devops-extras/**
 !specs/sprint-75-agno-write-connectors/
 !specs/sprint-75-agno-write-connectors/**
+!specs/sprint-76-runtime-sqlite-reuse/
+!specs/sprint-76-runtime-sqlite-reuse/**

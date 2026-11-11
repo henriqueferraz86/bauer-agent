@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from .sqlite_connections import pool_for
+
 
 class BudgetLedgerExceeded(RuntimeError):
     """An atomic reservation would exceed one of the configured limits."""
@@ -25,24 +27,31 @@ class BudgetLedger:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "budget_ledger.sqlite3"
+        # A governança do canal lê o ledger a cada evento do stream: conexões
+        # reutilizadas por thread + âncora, como o store de runtime (sprint 76).
+        self._pool = pool_for(self.path, self._configure, timeout=5.0)
         with self._connect() as conn:
             self._init(conn)
             self._migrate_jsonl_once(conn)
+
+    @staticmethod
+    def _configure(conn: sqlite3.Connection) -> None:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         from .snapshot import assert_runtime_writable
 
         assert_runtime_writable(self.root)
-        conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=5.0)
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode = WAL")
-            conn.execute("PRAGMA synchronous = NORMAL")
-            conn.execute("PRAGMA busy_timeout = 5000")
+        with self._pool.connection() as conn:
             yield conn
-        finally:
-            conn.close()
+
+    def close(self) -> None:
+        """Fecha as conexões deste processo para o ledger (reabre sob demanda)."""
+        self._pool.close()
 
     @staticmethod
     @contextmanager

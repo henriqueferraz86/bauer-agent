@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -10,6 +11,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
+
+from .sqlite_connections import close_all_pools, pool_for
 
 
 _SQLITE_LOCK_GUARD = threading.Lock()
@@ -21,8 +24,8 @@ _SQLITE_WRITE_LOCKS: dict[str, threading.RLock] = {}
 _SQLITE_WAL_READY: set[str] = set()
 
 
-def _sqlite_write_lock(path: Path) -> threading.RLock:
-    key = str(path.resolve())
+def _sqlite_write_lock(path: Path | str) -> threading.RLock:
+    key = path if isinstance(path, str) else str(path.resolve())
     with _SQLITE_LOCK_GUARD:
         return _SQLITE_WRITE_LOCKS.setdefault(key, threading.RLock())
 
@@ -61,6 +64,9 @@ class JsonlStateStore:
 
     def transaction(self):
         return self._store.transaction()
+
+    def close(self) -> None:
+        self._store.close()
 
     def upsert_unless_status(
         self, collection: str, record: Any, *, forbidden_statuses: set[str]
@@ -105,40 +111,55 @@ class SqliteStateStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "runtime_state.sqlite3"
+        self._lock_key = str(self.path.resolve())
+        # Conexões reutilizadas por thread + âncora por arquivo (sprint 76):
+        # abrir uma conexão por operação apagava e recriava o -wal a cada
+        # fechamento, e no Windows a reabertura esperava o lock do arquivo.
+        self._pool = pool_for(self.path, self._configure, timeout=5.0)
         with self._connect() as conn:
             self._init(conn)
             self._migrate_jsonl_once(conn)
+
+    def _configure(self, conn: sqlite3.Connection) -> None:
+        """Pragmas de uma conexão nova; roda uma vez por conexão do pool."""
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        wal_key = self._lock_key
+        if wal_key not in _SQLITE_WAL_READY:
+            with _sqlite_write_lock(wal_key):
+                mode = None
+                for attempt in range(12):
+                    try:
+                        mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+                        break
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc).lower() or attempt == 11:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+                if mode and str(mode[0]).lower() == "wal":
+                    _SQLITE_WAL_READY.add(wal_key)
+        conn.execute("PRAGMA synchronous = NORMAL")
 
     @contextmanager
     def _connect(self):
         from .snapshot import assert_runtime_writable
 
         assert_runtime_writable(self.root)
-        conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=5.0)
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout = 30000")
-            wal_key = str(self.path.resolve())
-            if wal_key not in _SQLITE_WAL_READY:
-                with _sqlite_write_lock(self.path):
-                    for attempt in range(12):
-                        try:
-                            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()
-                            break
-                        except sqlite3.OperationalError as exc:
-                            if "locked" not in str(exc).lower() or attempt == 11:
-                                raise
-                            time.sleep(0.05 * (attempt + 1))
-                    if mode and str(mode[0]).lower() == "wal":
-                        _SQLITE_WAL_READY.add(wal_key)
-            conn.execute("PRAGMA synchronous = NORMAL")
+        with self._pool.connection() as conn:
             yield conn
-        finally:
-            conn.close()
+
+    def close(self) -> None:
+        """Fecha as conexões deste processo para o arquivo do store.
+
+        Vale para todos os stores do mesmo arquivo no processo; um uso
+        seguinte reabre sob demanda. No Windows, é o que libera o arquivo para
+        ser apagado ou substituído.
+        """
+        self._pool.close()
 
     @contextmanager
     def _write(self, conn: sqlite3.Connection):
-        with _sqlite_write_lock(self.path):
+        with _sqlite_write_lock(self._lock_key):
             for attempt in range(12):
                 try:
                     conn.execute("BEGIN IMMEDIATE")
@@ -420,6 +441,23 @@ class SqliteStateStore:
 
 
 RuntimeStateStore = JsonlStateStore | SqliteStateStore
+
+
+def close_all_state_stores() -> None:
+    """Fecha todas as conexões SQLite reutilizadas do processo (testes, shutdown)."""
+    close_all_pools()
+
+
+def _reset_write_locks_after_fork() -> None:
+    # Um RLock copiado no estado "adquirido" por thread que não existe no filho
+    # travaria a primeira escrita do filho para sempre.
+    global _SQLITE_LOCK_GUARD
+    _SQLITE_LOCK_GUARD = threading.Lock()
+    _SQLITE_WRITE_LOCKS.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_write_locks_after_fork)
 
 
 class _StateTransaction:
