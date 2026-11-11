@@ -18,6 +18,12 @@ Cada arquivo ganha um ``SqliteConnectionPool`` por processo, com:
 
 ``close()`` fecha tudo (o pool continua utilizável e reabre sob demanda); o
 fechamento do processo (``atexit``) e o filho de ``fork`` são tratados aqui.
+
+Só os ``MAX_OPEN_POOLS`` arquivos usados mais recentemente ficam com conexões
+abertas: um processo longo que toca muitos bancos diferentes (o dispatcher do
+autopilot lê um ``autopilot_runtime/<run>`` novo por run) fecharia por LRU os
+pools ociosos mais antigos em vez de acumular descritores até o ``EMFILE`` ou,
+no Windows, travar a remoção desses diretórios.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import os
 import sqlite3
 import threading
 import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -38,6 +45,10 @@ Configure = Callable[[sqlite3.Connection], None]
 
 _REGISTRY_LOCK = threading.Lock()
 _POOLS: dict[str, SqliteConnectionPool] = {}
+#: Pools com âncora aberta, do uso mais antigo ao mais recente (LRU).
+_ACTIVE: OrderedDict[str, SqliteConnectionPool] = OrderedDict()
+#: Limite de arquivos com conexões abertas ao mesmo tempo no processo.
+MAX_OPEN_POOLS = 16
 # Conexões herdadas por um filho de fork: nunca são usadas nem fechadas no
 # filho (o SQLite proíbe levar conexão aberta através do fork; fechar poderia
 # mexer em locks e no -shm do pai). Ficam referenciadas só para o coletor não
@@ -74,6 +85,7 @@ class SqliteConnectionPool:
 
     def __init__(self, path: Path, configure: Configure, *, timeout: float = 5.0):
         self.path = path
+        self._key = os.path.normcase(str(path))
         self._configure = configure
         self._timeout = timeout
         self._lock = threading.Lock()
@@ -136,6 +148,7 @@ class SqliteConnectionPool:
             return
         if need_anchor:
             self._ensure_anchor(generation)
+        _touch(self)
         if entry is None:
             conn = self._open()
             entry = _Entry(weakref.ref(thread), conn, generation, depth=1)
@@ -216,6 +229,22 @@ class SqliteConnectionPool:
         with self._lock:
             self._close_locked()
 
+    def _close_if_idle(self) -> bool:
+        """Fecha tudo se nenhuma conexão estiver emprestada; diz se fechou."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if any(entry.depth > 0 for entry in self._entries.values()):
+                return False
+            self._close_locked()
+            return True
+        finally:
+            self._lock.release()
+
+    def _is_open(self) -> bool:
+        with self._lock:
+            return self._anchor is not None or bool(self._entries)
+
     def open_connections(self) -> int:
         with self._lock:
             return len(self._entries) + (1 if self._anchor is not None else 0)
@@ -236,6 +265,24 @@ class SqliteConnectionPool:
 
 def _key(path: Path) -> str:
     return os.path.normcase(str(path.resolve()))
+
+
+def _touch(pool: SqliteConnectionPool) -> None:
+    """Marca ``pool`` como o mais recente e fecha os ociosos além do limite."""
+    with _REGISTRY_LOCK:
+        _ACTIVE[pool._key] = pool
+        _ACTIVE.move_to_end(pool._key)
+        if len(_ACTIVE) <= MAX_OPEN_POOLS:
+            return
+        candidates = [item for item in _ACTIVE.items() if item[1] is not pool]
+        excess = len(_ACTIVE) - MAX_OPEN_POOLS
+        for key, other in candidates:
+            if excess <= 0:
+                break
+            # Fechado por close() explícito, ou fechado agora por estar ocioso.
+            if not other._is_open() or other._close_if_idle():
+                del _ACTIVE[key]
+                excess -= 1
 
 
 def pool_for(path: Path, configure: Configure, *, timeout: float = 5.0) -> SqliteConnectionPool:
@@ -271,6 +318,7 @@ def _after_fork_in_child() -> None:
     # não existe no filho; o registro é recriado vazio.
     global _REGISTRY_LOCK
     _REGISTRY_LOCK = threading.Lock()
+    _ACTIVE.clear()
     for pool in list(_POOLS.values()):
         pool._lock = threading.Lock()
         pool._forget_after_fork()

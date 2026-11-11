@@ -103,14 +103,22 @@ def run_benchmark_suite(
     suite.passed = sum(1 for item in suite.results if item.passed)
     suite.failed = suite.total - suite.passed
     suite.finished_at = datetime.now(UTC).isoformat()
-    SqliteStateStore(root).upsert("benchmark_reports", asdict(suite))
+    store = SqliteStateStore(root)
+    try:
+        store.upsert("benchmark_reports", asdict(suite))
+    finally:
+        store.close()
     return suite
 
 
 def list_benchmark_reports(runtime_root: str | Path, *, limit: int = 20) -> list[dict[str, Any]]:
     from ..runtime.state_store import SqliteStateStore
 
-    records = SqliteStateStore(runtime_root).list_latest("benchmark_reports")
+    store = SqliteStateStore(runtime_root)
+    try:
+        records = store.list_latest("benchmark_reports")
+    finally:
+        store.close()
     return list(reversed(records[-max(0, limit):]))
 
 

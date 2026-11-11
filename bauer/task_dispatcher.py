@@ -1271,7 +1271,13 @@ def _find_kernel_gate_attestation(
     try:
         from .core.runtime.state_store import SqliteStateStore
 
-        runs = SqliteStateStore(root).list_latest("runs")
+        store = SqliteStateStore(root)
+        try:
+            runs = store.list_latest("runs")
+        finally:
+            # Um diretório novo por run do autopilot: não manter conexões
+            # abertas para cada um num dispatcher de longa duração.
+            store.close()
     except Exception:
         return None
     for run in runs:

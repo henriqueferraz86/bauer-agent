@@ -148,10 +148,14 @@ def test_each_thread_uses_its_own_connection(tmp_path):
     store = SqliteStateStore(tmp_path / "runtime")
     owners: dict[int, set[int]] = {}
     guard = threading.Lock()
+    alive: list[sqlite3.Connection] = []
     real_insert = SqliteStateStore._insert
 
     def insert(conn, collection, record):
         with guard:
+            # Segura a conexão: sem isso, a de uma thread encerrada é coletada
+            # e outra conexão pode reaproveitar o mesmo id().
+            alive.append(conn)
             owners.setdefault(id(conn), set()).add(threading.get_ident())
         real_insert(conn, collection, record)
 
@@ -324,3 +328,56 @@ def test_process_exit_closes_connections(tmp_path):
     db = root / "runtime_state.sqlite3"
     assert db.exists()
     assert not Path(f"{db}-wal").exists()
+
+
+def test_many_distinct_databases_keep_bounded_open_pools(tmp_path, monkeypatch):
+    """Um processo longo que toca um banco novo por run não acumula conexões."""
+    monkeypatch.setattr(sqlite_connections, "MAX_OPEN_POOLS", 4)
+    stores = [SqliteStateStore(tmp_path / f"run{index}") for index in range(12)]
+    for store in stores:
+        store.append("runs", {"id": "r", "status": "completed"})
+    open_pools = [store for store in stores if store._pool.open_connections()]
+    assert len(open_pools) <= 4
+    # Os mais recentes continuam abertos; um evicto reabre sob demanda.
+    assert stores[-1]._pool.open_connections() > 0
+    assert stores[0].list_latest("runs")[0]["status"] == "completed"
+    assert stores[0]._pool.open_connections() > 0
+    assert sum(1 for store in stores if store._pool.open_connections()) <= 4
+
+
+def test_pool_in_use_by_another_thread_is_not_evicted(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite_connections, "MAX_OPEN_POOLS", 1)
+    busy = SqliteStateStore(tmp_path / "busy")
+    inside = threading.Event()
+    release = threading.Event()
+    seen: list[str] = []
+
+    def reader() -> None:
+        with busy._connect() as conn:
+            inside.set()
+            release.wait(ANTI_HANG)
+            seen.append(conn.execute("SELECT 'ok'").fetchone()[0])
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    assert inside.wait(ANTI_HANG)
+    other = SqliteStateStore(tmp_path / "other")
+    other.append("events", {"id": "1"})
+    assert busy._pool.open_connections() > 0
+    release.set()
+    thread.join(ANTI_HANG)
+    assert seen == ["ok"]
+
+
+def test_autopilot_attestation_lookup_releases_the_per_run_database(tmp_path):
+    from bauer.task_dispatcher import _find_kernel_gate_attestation
+
+    root = tmp_path / "autopilot_runtime" / "ws" / "run-1"
+    SqliteStateStore(root).append("runs", {"id": "x", "status": "running"})
+    sqlite_connections.close_all_pools()
+    assert _find_kernel_gate_attestation(
+        root, task_id="t", claim_id="c", dispatcher_run_id="run-1"
+    ) is None
+    assert sqlite_connections.pool_for(
+        root / "runtime_state.sqlite3", lambda conn: None
+    ).open_connections() == 0
