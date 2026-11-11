@@ -49,3 +49,21 @@ canal (nativo) entregando o objetivo uma vez, grupo recusado, bridge chamando
 `start_loop` com `update_id`, ponta a ponta com `start_loop` real até o
 relatório entregue, ponte de tools do Agno e repetição do mesmo objetivo em
 turnos diferentes.
+
+## Correções da revisão
+
+A primeira versão guardava o objetivo por sessão, e quem consumia era o
+próximo processamento da conversa. Isso abria três falhas: uma mensagem na
+fila podia tomar o pedido e perdê-lo; um turno que estourava o prazo deixava
+o pedido pendurado para qualquer mensagem posterior (inclusive `/new`)
+disparar; e um `/cancelar` logo depois da chamada da tool não impedia o
+loop. Agora:
+
+- o pedido é guardado por `(sessão, update_id)` da mensagem que o fez e só é
+  consumido pela thread que entrega a resposta dela;
+- só a primeira mensagem de um lote, sem prazo estourado, pode guardar
+  pedido. Num turno da fila ou atrasado, a resposta ganha um aviso de que o
+  trabalho autônomo não foi iniciado;
+- no consumo, o pedido é descartado se o turno foi cancelado ou estourou o
+  prazo depois de registrá-lo;
+- `/new` e `/clear` apagam pedidos pendentes da sessão.

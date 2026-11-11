@@ -289,5 +289,117 @@ def test_same_goal_in_a_later_turn_is_scheduled_again(tmp_path, monkeypatch):
     msg = _message()
     backend.process(msg)
     assert backend.pop_autonomous_handoff(msg) == GOAL
-    backend.process(_message(text="de novo"))
-    assert backend.pop_autonomous_handoff(msg) == GOAL
+    again = _message(text="de novo", update_id=502)
+    backend.process(again)
+    assert backend.pop_autonomous_handoff(again) == GOAL
+
+
+# ── revisão: o pedido pertence à mensagem que o fez ─────────────────────────
+
+def test_queued_message_cannot_take_the_handoff(tmp_path, monkeypatch):
+    import threading
+
+    backend = _backend(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def fake_turn(ctx, router, client, model, fallbacks=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            router.execute_native_call(TOOL_NAME, {"objetivo": GOAL})
+            entered.set()
+            assert release.wait(ANTI_HANG)
+        ctx.add_assistant("ok")
+        return "ok", []
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", fake_turn)
+    first, queued = _message(update_id=10), _message(text="e isso?", update_id=11)
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(reply=backend.process(first)))
+    worker.start()
+    assert entered.wait(ANTI_HANG)
+    assert "fila" in backend.process(queued)
+    assert backend.pop_autonomous_handoff(queued) is None  # não rouba nem perde
+    release.set()
+    worker.join(ANTI_HANG)
+    assert backend.pop_autonomous_handoff(first) == GOAL
+
+
+def test_handoff_from_a_queued_turn_is_dropped_with_a_notice(tmp_path, monkeypatch):
+    import threading
+
+    backend = _backend(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    calls, sent = [], []
+
+    def fake_turn(ctx, router, client, model, fallbacks=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(ANTI_HANG)
+        else:
+            router.execute_native_call(TOOL_NAME, {"objetivo": GOAL})
+        ctx.add_assistant("ok")
+        return "ok", []
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", fake_turn)
+    first, queued = _message(update_id=20), _message(text="faça tudo", update_id=21)
+    worker = threading.Thread(target=lambda: backend.process(first))
+    worker.start()
+    assert entered.wait(ANTI_HANG)
+    backend.process(queued, send_fn=sent.append)
+    release.set()
+    worker.join(ANTI_HANG)
+    assert backend.pop_autonomous_handoff(queued) is None
+    assert backend.pop_autonomous_handoff(first) is None
+    assert any("NÃO foi iniciado" in text for text in sent)
+
+
+def test_cancel_after_the_tool_call_prevents_the_loop(tmp_path, monkeypatch):
+    backend = _backend(tmp_path)
+    _turn_that_hands_off(monkeypatch)
+    msg = _message(update_id=30)
+    backend.process(msg)
+    (_goal, control, _batch), = backend._autonomous_handoffs.values()
+    control.cancel_event.set()  # /cancelar chegou entre o fim do turno e o consumo
+    assert backend.pop_autonomous_handoff(msg) is None
+
+
+def test_timed_out_turn_never_starts_a_loop_later(tmp_path, monkeypatch):
+    import bauer.channel_base as channel_base
+
+    backend = _backend(tmp_path)
+    monkeypatch.setattr(channel_base, "_TURN_TIMEOUT_SECONDS", 0.05)
+
+    def slow_turn(ctx, router, client, model, fallbacks=None, **kwargs):
+        router.execute_native_call(TOOL_NAME, {"objetivo": GOAL})
+        time.sleep(0.3)
+        ctx.add_assistant("ok")
+        return "ok", []
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", slow_turn)
+    msg = _message(update_id=40)
+    sent: list = []
+    reply = backend.process(msg, send_fn=sent.append)
+    assert "tempo" in reply.lower()
+    assert backend.pop_autonomous_handoff(msg) is None
+    deadline = time.monotonic() + ANTI_HANG
+    while backend._live_session_execution(backend.session_key(msg)) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.05)
+    assert backend.pop_autonomous_handoff(msg) is None
+    assert backend._autonomous_handoffs == {}
+    # Uma mensagem qualquer depois não dispara o pedido antigo.
+    _turn_that_hands_off(monkeypatch, call_tool=False)
+    later = _message(text="/status?", update_id=41)
+    backend.process(later)
+    assert backend.pop_autonomous_handoff(later) is None
+
+
+def test_new_conversation_drops_a_pending_handoff(tmp_path, monkeypatch):
+    backend = _backend(tmp_path)
+    _turn_that_hands_off(monkeypatch)
+    msg = _message(update_id=50)
+    backend.process(msg)
+    assert backend._clear_session(backend.session_key(msg))
+    assert backend.pop_autonomous_handoff(msg) is None
