@@ -36,6 +36,7 @@ from .channel_projects import (
     ChannelProjectContext, ChannelProjectError, ChannelProjectStore,
     context_key, operator_key, private_telegram,
 )
+from .channel_tool_honesty import unexecuted_tool_calls_note
 from .channel_execution import (
     ChannelExecution, ChannelExecutionRegistry, SessionWorker, governance_stop_reason,
 )
@@ -56,6 +57,15 @@ _MAX_PENDING_PER_SESSION = 5
 # mantém contexto, lock e custódia do Kernel até a saída real.
 _TURN_TIMEOUT_SECONDS = int(os.environ.get("BAUER_GATEWAY_TURN_TIMEOUT", "120"))
 
+
+
+def _append_to_last_assistant(ctx: Any, note: str) -> None:
+    """Grava o aviso no histórico, para o modelo não tomar a encenação como fato."""
+    messages = getattr(ctx, "messages", None)
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+        messages[-1]["content"] = f"{str(messages[-1].get('content') or '').rstrip()}\n\n{note}"
+    else:
+        ctx.add_assistant(note)
 
 class TurnTimeout(Exception):
     """Turno excedeu _TURN_TIMEOUT_SECONDS — vira resposta amigável ao usuário."""
@@ -1100,6 +1110,12 @@ class AgentBackend:
                 response, tool_log = run_one_turn_with_fallback(
                     ctx, self._effective_router(), client, model, self._fallback_clients,
                 )
+                note = unexecuted_tool_calls_note(
+                    response, tool_log, self._effective_router().available_tools(),
+                )
+                if note:
+                    response = f"{(response or '').rstrip()}\n\n{note}"
+                    _append_to_last_assistant(ctx, note)
             else:
                 response = self._run_chat_team(team_choice.team_id, text, key)
                 ctx.add_assistant(response)
@@ -1230,6 +1246,11 @@ class AgentBackend:
                 if isinstance(item, dict)
             ]
             response = str(result.get("output") or "")
+            note = unexecuted_tool_calls_note(
+                response, tool_log, request["agent_spec"]["tools"],
+            )
+            if note:
+                response = f"{response.rstrip()}\n\n{note}"
             # O adapter Agno não escreve em `ctx` (ao contrário de
             # `run_one_turn_with_fallback`, que já grava internamente) —
             # mesmo padrão dos sprints 38/39.
