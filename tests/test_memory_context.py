@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bauer.memory_context import prefetch_memory_context, sync_memory_after_turn
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +296,7 @@ class TestMemoryWorkerLimits:
         assert calls == {"decision": 1, "session": 0}
 
         release.set()
-        assert finished.wait(timeout=1)
+        assert finished.wait(timeout=ANTI_HANG)
         assert mc._MEMORY_WORKER_SLOTS.acquire(timeout=1)
         mc._MEMORY_WORKER_SLOTS.release()
         assert mc.prefetch_memory_context("third", workspace=tmp_path) is None

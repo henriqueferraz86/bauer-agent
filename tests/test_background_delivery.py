@@ -30,6 +30,7 @@ from bauer.runtime_ids import reset_runtime_ids, set_runtime_ids
 from bauer.shell_runner import ShellRunner
 from bauer.sqlite_session_store import SqliteSessionStore
 from bauer.tool_router import ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -167,7 +168,7 @@ def test_background_run_watcher_delivers_on_completion(router_shell):
         reset_runtime_ids(token)
 
     pid = re.search(r"PID (\d+)", out).group(1)
-    assert delivered.wait(timeout=5), "watcher não entregou a tempo"
+    assert delivered.wait(timeout=ANTI_HANG), "watcher não entregou a tempo"
     got_session_id, text = calls[0]
     assert got_session_id == session_id
     assert f"PID {pid}" in text
@@ -290,7 +291,7 @@ def test_end_to_end_background_task_delivers_without_asking_again(tmp_path, monk
     assert "PID" in reply
     assert "process(" in reply  # instrução original de poll ainda presente
 
-    assert delivered.wait(timeout=5), "entrega de background não chegou a tempo"
+    assert delivered.wait(timeout=ANTI_HANG), "entrega de background não chegou a tempo"
     session_id, text = received[0]
     assert session_id == "tg:42"
     assert "Resultado da tarefa em background" in text

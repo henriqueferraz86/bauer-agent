@@ -11,6 +11,7 @@ from bauer.server import create_app
 from bauer.shell_runner import CommandResult, ShellRunner, load_learned_commands
 from bauer.tool_router import ToolRouter
 from bauer.tools.base import ToolError
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.mark.parametrize('mode', ['bauer_native', 'agno'])
@@ -110,7 +111,7 @@ def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monk
 
         thread, result = send_async(client, 'rode fake-cli --version', sid='pending-session')
         try:
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + 30  # anti-travamento (conftest), não velocidade
             cards = []
             while time.monotonic() < deadline:
                 cards = client.get('/api/obs/approvals?status=pending').json()['approvals']
@@ -127,7 +128,7 @@ def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monk
             assert other.status_code == 200
             assert executed == [] and load_learned_commands() == set()
             assert client.post(f"/api/approvals/{cards[0]['id']}/approve", json={'scope': 'always'}).status_code == 200
-            thread.join(10)
+            thread.join(30)
             assert not thread.is_alive()
             response = result['response']
             assert response.status_code == 200, getattr(response, 'text', '')
@@ -141,7 +142,7 @@ def test_web_chat_asks_then_learns_only_explicit_session_approval(tmp_path, monk
         finally:
             for card in client.get('/api/obs/approvals?status=pending').json()['approvals']:
                 client.post(f"/api/approvals/{card['id']}/deny")
-            thread.join(10)
+            thread.join(30)
 
 
 def test_shell_flag_builds_the_actual_terminal(tmp_path):
@@ -179,7 +180,7 @@ def test_stream_timeout_does_not_make_hidden_worker_question_approvable(tmp_path
         invocations.append(True)
         if len(invocations) == 1:
             entered.set()
-            assert release.wait(5), 'test did not release background turn'
+            assert release.wait(timeout=ANTI_HANG), 'test did not release background turn'
             try:
                 active_router.execute_native_call('run_command', {'command': 'hidden-customtool --version'})
             except ToolError as exc:
@@ -208,7 +209,7 @@ def test_stream_timeout_does_not_make_hidden_worker_question_approvable(tmp_path
             response = client.get('/stream', params={'message': 'rode hidden-customtool --version', 'session_id': 'same'})
             # A 20ms stream timeout can win before a worker is scheduled on
             # loaded CI machines. Synchronize with the hidden worker itself.
-            assert entered.wait(2)
+            assert entered.wait(timeout=ANTI_HANG)
             assert 'conexão foi' in response.text
             assert 'Você autoriza' not in response.text
         finally:

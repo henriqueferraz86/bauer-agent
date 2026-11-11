@@ -15,6 +15,7 @@ from bauer.execution_control import ExecutionControl, ExecutionControlError, cur
 from bauer.openai_client import OpenAIClient, OpenAIClientError
 from bauer.provider_retry import ProviderRetryInterrupted
 from bauer.tool_router import ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 class Native(OpenAIClient):
@@ -243,8 +244,8 @@ def test_controlled_tool_timeout_keeps_owner_waiting_until_real_exit():
         returned.set()
     worker = threading.Thread(target=owner)
     worker.start()
-    assert entered.wait(2)
-    assert control.cancel_event.wait(2)
+    assert entered.wait(timeout=ANTI_HANG)
+    assert control.cancel_event.wait(timeout=ANTI_HANG)
     assert not returned.is_set()
     release.set()
     worker.join(2)

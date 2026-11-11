@@ -16,6 +16,7 @@ from bauer.cost_meter import cost_sink
 from bauer.execution_control import current_control
 from bauer.sqlite_session_store import SqliteSessionStore
 from bauer.tool_router import ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 def message(text="work", user="42", chat="42", private=True):
@@ -44,8 +45,35 @@ def backend_at(tmp_path, *, governed=True):
     return backend
 
 
+# Rede de segurança contra travamento, não asserção de velocidade (ver
+# DEADLINE_ANTI_TRAVAMENTO em conftest.py).
+_ANTI_HANG = 30.0
+
+
+def charge_generation_from(entered, monkeypatch):
+    """Start the gateway generation clock only once the turn body is running.
+
+    The timeout tests are about what happens when the clock expires *during*
+    a turn. Worker setup (Kernel composition, SQLite stores, first imports)
+    happens before the turn and is not under test; on the Windows runner it
+    alone took longer than the 0.4s budget, so the timeout fired before the
+    turn ever started and ``entered`` never got set. The real
+    ``wait_for_generation`` still runs with the patched budget.
+    """
+    from bauer.execution_control import ExecutionControl
+
+    original = ExecutionControl.wait_for_generation
+
+    def gated(self, done, timeout):
+        entered.wait(timeout=_ANTI_HANG)
+        return original(self, done, timeout)
+
+    monkeypatch.setattr(ExecutionControl, "wait_for_generation", gated)
+
+
 def start_blocked_turn(backend, monkeypatch, *, cost_before=0, cost_after=0):
     entered, release = threading.Event(), threading.Event()
+    charge_generation_from(entered, monkeypatch)
     seen = []
     output = {}
 
@@ -54,7 +82,7 @@ def start_blocked_turn(backend, monkeypatch, *, cost_before=0, cost_after=0):
         if cost_before:
             cost_sink.get()("openai", "controlled", {"prompt_tokens": 1}, cost_before)
         entered.set()
-        assert release.wait(timeout=5)
+        assert release.wait(timeout=_ANTI_HANG)
         if cost_after:
             cost_sink.get()("openai", "controlled", {"prompt_tokens": 1}, cost_after)
         ctx.add_assistant("partial result")
@@ -63,7 +91,7 @@ def start_blocked_turn(backend, monkeypatch, *, cost_before=0, cost_after=0):
     monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", turn)
     caller = threading.Thread(target=lambda: output.update(reply=backend.process(message())))
     caller.start()
-    assert entered.wait(timeout=5)
+    assert entered.wait(timeout=_ANTI_HANG)
     return caller, release, seen, output
 
 
@@ -86,7 +114,7 @@ def test_cancel_waits_for_real_worker_and_preserves_all_cost(tmp_path, monkeypat
         assert "não foi executada" in backend.process(message("another"))
     finally:
         release.set()
-        caller.join(timeout=5)
+        caller.join(timeout=_ANTI_HANG)
     assert not caller.is_alive()
     assert "cancelada" in output["reply"].lower()
     run = manager.get_run(run_id)
@@ -108,7 +136,7 @@ def test_timeout_keeps_same_context_and_kernel_custody(tmp_path, monkeypatch):
         backend, monkeypatch, cost_after=0.4,
     )
     try:
-        caller.join(timeout=2)
+        caller.join(timeout=_ANTI_HANG)
         assert not caller.is_alive()
         assert "interrupção solicitada" in output["reply"]
         job = backend._live_session_execution("tg:42")
@@ -123,7 +151,7 @@ def test_timeout_keeps_same_context_and_kernel_custody(tmp_path, monkeypatch):
         assert "ainda está trabalhando" in backend.process(message("/new"))
     finally:
         release.set()
-        assert job.batch.done.wait(timeout=5)
+        assert job.batch.done.wait(timeout=_ANTI_HANG)
     run = manager.get_run(job.control.run_id)
     assert run.status == "cancelled" and run.cost_estimate == pytest.approx(0.4)
     assert backend._get_session("tg:42")[0] is original
@@ -134,9 +162,11 @@ def test_human_approval_wait_pauses_gateway_generation_timeout(tmp_path, monkeyp
     import bauer.channel_base as cb
 
     backend = backend_at(tmp_path)
-    # Wall-clock budget must cover worker setup before the approval wait starts.
     monkeypatch.setattr(cb, "_TURN_TIMEOUT_SECONDS", 1.0)
     entered, release = threading.Event(), threading.Event()
+    # The clock starts once the turn is inside the approval wait; worker
+    # setup before that is not charged (see charge_generation_from).
+    charge_generation_from(entered, monkeypatch)
     output = {}
     controls = []
 
@@ -146,19 +176,19 @@ def test_human_approval_wait_pauses_gateway_generation_timeout(tmp_path, monkeyp
         assert control is not None
         assert control.begin_approval_wait("approval-1", "digest-1")
         entered.set()
-        assert release.wait(timeout=5)
+        assert release.wait(timeout=_ANTI_HANG)
         return "done", []
 
     monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", waiting_turn)
     caller = threading.Thread(target=lambda: output.update(reply=backend.process(message())))
     caller.start()
-    assert entered.wait(timeout=5)
+    assert entered.wait(timeout=_ANTI_HANG)
     try:
         time.sleep(1.3)
         assert caller.is_alive()
         assert controls[0] is not None and not controls[0].cancel_event.is_set()
         assert controls[0].end_approval_wait("approval-1")
-        caller.join(timeout=3)
+        caller.join(timeout=_ANTI_HANG)
         assert not caller.is_alive()
         assert "interrupção solicitada" in output["reply"]
     finally:
@@ -331,7 +361,7 @@ def test_cancel_during_quality_gate_reports_validation_without_false_stop(tmp_pa
 
         def check(self, *, request, result):
             entered.set()
-            assert release.wait(timeout=5)
+            assert release.wait(timeout=ANTI_HANG)
             return GateResult(self.name, True)
 
     kernel.evaluator = Evaluator([BlockingGate()], max_replans=0)
@@ -344,7 +374,7 @@ def test_cancel_during_quality_gate_reports_validation_without_false_stop(tmp_pa
     result = {}
     caller = threading.Thread(target=lambda: result.update(reply=backend.process(message())))
     caller.start()
-    assert entered.wait(timeout=5)
+    assert entered.wait(timeout=_ANTI_HANG)
     try:
         job = backend._live_session_execution("tg:42")
         assert job.phase == "evaluating"

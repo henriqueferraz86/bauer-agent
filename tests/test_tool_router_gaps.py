@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bauer.tool_router import SandboxError, ToolError, ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture
@@ -503,5 +504,5 @@ def test_timed_tool_returns_without_waiting_and_bounds_workers(ws: Path, monkeyp
         router.execute({"action": "slow_test", "args": {}})
 
     release.set()
-    assert finished.wait(timeout=1)
+    assert finished.wait(timeout=ANTI_HANG)
     assert router.execute({"action": "slow_test", "args": {}}) == "done"

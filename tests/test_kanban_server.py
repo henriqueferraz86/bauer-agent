@@ -31,14 +31,14 @@ def _server(workspace: Path):
 
 
 def _get_json(url: str) -> dict:
-    with urlopen(url, timeout=5) as resp:
+    with urlopen(url, timeout=30) as resp:  # anti-travamento (conftest)
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _post_json(url: str, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
     req = Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
-    with urlopen(req, timeout=5) as resp:
+    with urlopen(req, timeout=30) as resp:  # anti-travamento (conftest)
         return json.loads(resp.read().decode("utf-8"))
 
 

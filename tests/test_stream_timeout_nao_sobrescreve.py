@@ -30,6 +30,7 @@ import pytest
 from bauer.core.events.bus import EventBus
 from bauer.core.runtime.run_manager import TERMINAL_RUN_STATUSES, RunManager
 from bauer.core.runtime.state_store import JsonlStateStore
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 @pytest.fixture
@@ -130,7 +131,7 @@ def test_timeout_do_observador_preserva_custodia_do_worker(tmp_path, monkeypatch
 
     def turn(ctx, *_a, **_k):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(timeout=ANTI_HANG)
         ctx.add_assistant("final completo")
         return "final completo", []
 

@@ -12,6 +12,11 @@ from bauer.runtime_ids import get_runtime_ids
 from bauer.sqlite_session_store import SqliteSessionStore
 from bauer.tool_router import ToolRouter
 
+# Rede de segurança contra travamento, não asserção de velocidade (ver
+# DEADLINE_ANTI_TRAVAMENTO em conftest.py): no runner Windows o setup do
+# worker governado (Kernel, SQLite, SDK Agno) passou dos 3-5s de antes.
+ANTI_HANG = 30.0
+
 
 def setup_backend(tmp_path, monkeypatch):
     from bauer import projects_registry
@@ -153,7 +158,7 @@ def test_stop_after_native_request_prevents_tools_and_keeps_final_cost(tmp_path,
         def chat_with_tools(self, model, messages, **kwargs):
             self.calls += 1
             entered.set()
-            assert release.wait(5)
+            assert release.wait(ANTI_HANG)
             self.last_usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.25}
             return {"content": "", "tool_calls": [{"id": "write", "type": "function", "function": {
                 "name": "write_file", "arguments": json.dumps({"path": "forbidden.txt", "content": "NO"})}}]}
@@ -167,7 +172,7 @@ def test_stop_after_native_request_prevents_tools_and_keeps_final_cost(tmp_path,
     worker = threading.Thread(target=lambda: results.append(backend.process(msg)))
     worker.start()
     try:
-        assert entered.wait(3)
+        assert entered.wait(ANTI_HANG)
         if stop == "cancel":
             assert "solicitad" in backend.cancel_channel_execution(msg).lower()
         else:
@@ -177,7 +182,7 @@ def test_stop_after_native_request_prevents_tools_and_keeps_final_cost(tmp_path,
         assert live.status not in {"completed", "failed", "cancelled"}
     finally:
         release.set()
-        worker.join(timeout=10)
+        worker.join(timeout=ANTI_HANG)
     assert not worker.is_alive()
     assert results
     assert client.calls == 1

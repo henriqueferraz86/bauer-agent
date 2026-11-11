@@ -11,6 +11,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from bauer import server
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 def test_warmup_calls_ollama_generate_with_zero_predict():
@@ -27,7 +28,7 @@ def test_warmup_calls_ollama_generate_with_zero_predict():
 
     with patch("httpx.post", side_effect=fake_post):
         server._warmup_ollama_model("http://localhost:11434/", "qwen2.5:7b")
-        assert done.wait(timeout=5), "a thread de warmup não rodou"
+        assert done.wait(timeout=ANTI_HANG), "a thread de warmup não rodou"
 
     assert called["url"] == "http://localhost:11434/api/generate"  # barra final normalizada
     assert called["json"]["model"] == "qwen2.5:7b"
@@ -56,4 +57,4 @@ def test_warmup_returns_immediately():
     with patch("httpx.post", side_effect=slow_post):
         server._warmup_ollama_model("http://localhost:11434", "x")
         # se bloqueasse, isto só passaria após 10s; com background é imediato
-        assert slow_started.wait(timeout=5)
+        assert slow_started.wait(timeout=ANTI_HANG)

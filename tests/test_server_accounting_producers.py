@@ -35,9 +35,15 @@ def build_app(tmp_path, monkeypatch, turn, governed=True, replan=False):
                       sessions_dir=tmp_path / "sessions", config_path=config, rate_limit_requests=0)
 
 
+# Rede de segurança contra travamento (ver DEADLINE_ANTI_TRAVAMENTO em
+# conftest.py): o /loop com replan roda 4-6 turnos governados e passava dos 5s
+# no runner Windows. No caminho feliz o polling termina em milissegundos.
+ANTI_HANG = 30.0
+
+
 def terminal_run(tmp_path, run_id=None):
     manager = RunManager(root=tmp_path / "runtime")
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + ANTI_HANG
     while time.monotonic() < deadline:
         runs = manager.list_runs()
         run = manager.get_run(run_id) if run_id else (runs[0] if runs else None)
@@ -148,7 +154,7 @@ def test_session_save_failure_closes_run_and_preserves_consumption(tmp_path, mon
         assert response.status_code == (500 if transport in {"chat", "v1"} else 200)
         run = terminal_run(tmp_path)
         if transport == "loop":
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + ANTI_HANG
             while time.monotonic() < deadline:
                 state = client.get(f"/loop/{run.id}").json()
                 if state["state"] != "running":
@@ -212,7 +218,7 @@ def test_loop_replan_preserves_tools_in_run_and_live_status(tmp_path, monkeypatc
         response = client.post("/loop", json={"message": "controlled"})
         assert response.status_code == 200
         run = terminal_run(tmp_path)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + ANTI_HANG
         while time.monotonic() < deadline:
             state = client.get(f"/loop/{run.id}").json()
             if state["state"] != "running":

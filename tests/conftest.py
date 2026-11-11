@@ -77,6 +77,52 @@ for _k in [k for k in os.environ if k.startswith("MCP_SERVER_")]:
 # por monkeypatch (override por-teste continua funcionando).
 os.environ["BAUER_OLLAMA_URL"] = "http://127.0.0.1:1"
 
+# Mesma hermeticidade para o DIRETÓRIO ATUAL (sprint 64). Vários defaults do
+# runtime são relativos ao cwd (`memory/runtime` de RunManager/ApprovalManager/
+# BudgetManager/PolicyEngine, `memory/*.md` do MemoryManager, `runtime/`), e a
+# suíte roda da raiz do repo: todos os testes e todos os workers xdist
+# gravavam os MESMOS bancos SQLite dentro do checkout. O estado acumulava entre
+# testes e entre execuções (num checkout reaproveitado, o histórico Agno fez um
+# turno simples estourar o timeout), e no Windows os workers disputavam o lock
+# desses arquivos. Cada teste roda com o cwd num diretório temporário do
+# worker (a coleta continua na raiz: os argumentos do pytest são relativos a
+# ela); o guard `_repo_root_stays_clean` abaixo falha o teste que escrever no
+# checkout mesmo assim (ex.: caminho derivado de `__file__`).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_WORKER_CWD = Path(tempfile.mkdtemp(prefix="bauer-tests-cwd-"))
+#: Entradas que a própria ferramenta cria na raiz durante a suíte.
+_ROOT_TOOL_ENTRIES = {".pytest_cache", "__pycache__", ".coverage", "coverage.xml", ".hypothesis"}
+
+
+def _root_entries() -> set[str]:
+    try:
+        return {
+            name for name in os.listdir(REPO_ROOT)
+            if name not in _ROOT_TOOL_ENTRIES and not name.startswith(".coverage")
+        }
+    except OSError:
+        return set()
+
+
+@pytest.fixture(autouse=True)
+def _repo_root_stays_clean(monkeypatch):
+    """Roda o teste fora do checkout e falha se ele criar algo na raiz."""
+    before = _root_entries()
+    monkeypatch.chdir(_WORKER_CWD)
+    yield
+    created = _root_entries() - before
+    if created:
+        pytest.fail(
+            "o teste criou entradas na raiz do repositório (hermeticidade, "
+            f"ver tests/conftest.py): {sorted(created)}"
+        )
+# Mesma hermeticidade para o inventário Docker (sprint 64): todo `create_app`
+# monta o router desktop, que roda `docker ps -a` no boot e grava os containers
+# DO HOST no config do teste. No runner Windows o CLI do Docker existe e cada
+# chamada leva segundos — centenas por suíte, em paralelo, competindo com os
+# testes sensíveis a tempo. Testes do inventário passam `runner=` explícito.
+os.environ["BAUER_DOCKER_DISCOVERY"] = "0"
+
 
 @pytest.fixture(autouse=True)
 def _isolate_kanban_board(request, monkeypatch):

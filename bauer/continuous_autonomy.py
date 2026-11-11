@@ -41,6 +41,12 @@ def discover_docker_containers(
     ``None`` é diferente de uma lista vazia: quando o daemon não responde,
     não removemos alvos descobertos anteriormente do cadastro persistido.
     """
+    if runner is None and os.environ.get("BAUER_DOCKER_DISCOVERY", "").strip().lower() in {
+        "0", "false", "off", "no",
+    }:
+        # Desligado explicitamente (a suíte de testes faz isso): mesmo
+        # significado de daemon indisponível — nada é removido do cadastro.
+        return None
     run = runner or subprocess.run
     try:
         result = run(

@@ -17,6 +17,7 @@ import pytest
 
 from bauer.autonomous_budget import AutonomousBudget
 from bauer.serve_loop import LOOP_CONFIRM_NUDGE, run_loop_rounds
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 class _Ctx:
@@ -343,7 +344,7 @@ def test_loop_stop_cancels_between_rounds(tmp_path: Path):
     tc = TestClient(app)
 
     run_id = tc.post("/loop", json={"message": "tarefa longa"}).json()["run_id"]
-    assert started.wait(5.0)
+    assert started.wait(timeout=ANTI_HANG)
     resp = tc.post(f"/loop/{run_id}/stop")
     assert resp.status_code == 200
 

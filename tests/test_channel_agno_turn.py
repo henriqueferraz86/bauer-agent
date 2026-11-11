@@ -34,6 +34,11 @@ from bauer.execution_control import current_control
 from bauer.sqlite_session_store import SqliteSessionStore
 from bauer.tool_router import ToolRouter
 
+# Rede de segurança contra travamento, não asserção de velocidade (ver
+# DEADLINE_ANTI_TRAVAMENTO em conftest.py): no runner Windows o setup do
+# worker governado (Kernel, SQLite, SDK Agno) passou dos 3-5s de antes.
+ANTI_HANG = 30.0
+
 pytest.importorskip("agno")
 pytest.importorskip("sqlalchemy")
 
@@ -93,7 +98,7 @@ def start_blocked_agno_turn(backend, monkeypatch, *, cost_before=0, cost_after=0
         if cost_before:
             cost_sink.get()("openai", "controlled", {"prompt_tokens": 1}, cost_before)
         entered.set()
-        assert release.wait(timeout=5)
+        assert release.wait(timeout=ANTI_HANG)
         control = current_control()
         cancelled = control is not None and control.cancel_event.is_set()
         if cost_after:
@@ -118,7 +123,7 @@ def start_blocked_agno_turn(backend, monkeypatch, *, cost_before=0, cost_after=0
     )
     caller = threading.Thread(target=lambda: output.update(reply=backend.process(message())))
     caller.start()
-    assert entered.wait(timeout=5)
+    assert entered.wait(timeout=ANTI_HANG)
     return caller, release, seen, output
 
 
@@ -145,7 +150,7 @@ def test_cancel_waits_for_real_agno_worker_and_preserves_all_cost(tmp_path, monk
         assert not job.done.is_set()
     finally:
         release.set()
-        caller.join(timeout=5)
+        caller.join(timeout=ANTI_HANG)
     assert not caller.is_alive()
     assert "cancelada" in output["reply"].lower()
     run = manager.get_run(run_id)
@@ -174,7 +179,7 @@ def test_other_operator_cannot_cancel_agno_turn(tmp_path, monkeypatch):
         assert not seen[0].cancel_event.is_set()
     finally:
         release.set()
-        caller.join(timeout=5)
+        caller.join(timeout=ANTI_HANG)
 
 
 # ─── Caminho feliz: SDK Agno real, sem provider (mesmo padrão de
@@ -238,7 +243,7 @@ def test_agno_cancellation_during_tool_loop_loses_partial_llm_cost_confirmed_gap
         def execute_native_call(self, name, arguments):
             self.calls += 1
             self.approval_started.set()
-            assert self.approval_released.wait(timeout=5)
+            assert self.approval_released.wait(timeout=ANTI_HANG)
             checkpoint_execution()
             raise AssertionError("checkpoint deveria interromper antes do tool rodar")
 
@@ -280,7 +285,7 @@ def test_agno_cancellation_during_tool_loop_loses_partial_llm_cost_confirmed_gap
     token = cost_sink.set(lambda *args: reported.append(args))
 
     def cancel_after_approval_wait_starts():
-        assert router.approval_started.wait(timeout=5)
+        assert router.approval_started.wait(timeout=ANTI_HANG)
         control.request_cancel()
         router.approval_released.set()
 
@@ -298,7 +303,7 @@ def test_agno_cancellation_during_tool_loop_loses_partial_llm_cost_confirmed_gap
             })
     finally:
         cost_sink.reset(token)
-    canceller.join(timeout=5)
+    canceller.join(timeout=ANTI_HANG)
 
     assert not canceller.is_alive()
     assert result["status"] == "cancelled"
@@ -340,7 +345,7 @@ def test_agno_cancellation_with_lost_cost_logs_a_visible_warning(tmp_path, caplo
 
         def execute_native_call(self, name, arguments):
             self.approval_started.set()
-            assert self.approval_released.wait(timeout=5)
+            assert self.approval_released.wait(timeout=ANTI_HANG)
             checkpoint_execution()
             raise AssertionError("checkpoint deveria interromper antes do tool rodar")
 
@@ -377,7 +382,7 @@ def test_agno_cancellation_with_lost_cost_logs_a_visible_warning(tmp_path, caplo
     router = CancellingRouter()
 
     def cancel_after_approval_wait_starts():
-        assert router.approval_started.wait(timeout=5)
+        assert router.approval_started.wait(timeout=ANTI_HANG)
         control.request_cancel()
         router.approval_released.set()
 
@@ -393,7 +398,7 @@ def test_agno_cancellation_with_lost_cost_logs_a_visible_warning(tmp_path, caplo
                 "run_id": "cancel-warning", "session_id": "cancel-warning", "task": "call datetime",
                 "agent_spec": {"id": "cancel-warning-agent", "tools": ["datetime_now"], "agno_model": model},
             })
-    canceller.join(timeout=5)
+    canceller.join(timeout=ANTI_HANG)
 
     assert not canceller.is_alive()
     assert result["status"] == "cancelled"
@@ -451,7 +456,7 @@ def test_agno_cancellation_during_bare_llm_call_still_logs_the_warning(tmp_path,
 
         def invoke(self, *args, **kwargs):
             self.invoke_started.set()
-            assert self.release.wait(timeout=5)
+            assert self.release.wait(timeout=ANTI_HANG)
             checkpoint_execution()
             raise AssertionError("checkpoint deveria interromper antes do invoke retornar")
 
@@ -474,7 +479,7 @@ def test_agno_cancellation_during_bare_llm_call_still_logs_the_warning(tmp_path,
     control = ExecutionControl(run_id="bare-call-cancel", session_id="bare-call-cancel")
 
     def cancel_once_invoke_starts():
-        assert model.invoke_started.wait(timeout=5)
+        assert model.invoke_started.wait(timeout=ANTI_HANG)
         control.request_cancel()
         model.release.set()
 
@@ -487,7 +492,7 @@ def test_agno_cancellation_during_bare_llm_call_still_logs_the_warning(tmp_path,
                 "run_id": "bare-call-cancel", "session_id": "bare-call-cancel", "task": "hello",
                 "agent_spec": {"id": "bare-call-cancel-agent", "agno_model": model},
             })
-    canceller.join(timeout=5)
+    canceller.join(timeout=ANTI_HANG)
 
     assert not canceller.is_alive()
     assert result["status"] == "cancelled"

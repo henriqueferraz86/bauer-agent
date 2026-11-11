@@ -245,7 +245,9 @@ def test_stream_approval_is_visible_and_resumes_after_rest_api_decision(tmp_path
     thread.start()
     approval = None
     control = TestClient(app)
-    for _ in range(40):
+    # Anti-travamento, não asserção de velocidade (conftest.py).
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
         approvals = control.get("/api/obs/approvals?status=pending").json()["approvals"]
         if approvals:
             approval = approvals[0]
@@ -255,9 +257,18 @@ def test_stream_approval_is_visible_and_resumes_after_rest_api_decision(tmp_path
 
     decision = control.post(f"/api/approvals/{approval['id']}/approve")
     assert decision.status_code == 200
-    thread.join(timeout=5)
+    thread.join(timeout=30.0)
     assert not thread.is_alive()
-    assert "event: approval" in result["body"]
+    # Diagnóstico de uma falha vista só no Windows (stream recusado com a
+    # aprovação já persistida): registra o estado/trajetória real do run.
+    from bauer.core.events import EventBus
+    from bauer.core.runtime.run_manager import RunManager
+
+    runtime = tmp_path / "runtime"
+    run_states = [(r.id, r.status, r.error) for r in RunManager(root=runtime).list_runs()]
+    run_events = [(e.event_type, getattr(e, "status", None))
+                  for e in EventBus(root=runtime).list_events(run_id=approval["run_id"], limit=50)]
+    assert "event: approval" in result["body"], (run_states, run_events, approval)
     assert '"operation": "runtime.execute"' in result["body"]
     assert '"status": "approved"' in result["body"]
     assert "execução retomada" in result["body"]

@@ -14,6 +14,11 @@ from typing import Any
 
 _SQLITE_LOCK_GUARD = threading.Lock()
 _SQLITE_WRITE_LOCKS: dict[str, threading.RLock] = {}
+# journal_mode persiste no arquivo: basta trocar para WAL uma vez por processo.
+# Repetir o pragma a cada conexão, segurando o lock de escrita com busy_timeout
+# de 30s, fazia uma espera de lock no arquivo (no Windows, a recriação do WAL
+# depois do checkpoint de fechamento) congelar todas as threads do runtime.
+_SQLITE_WAL_READY: set[str] = set()
 
 
 def _sqlite_write_lock(path: Path) -> threading.RLock:
@@ -113,15 +118,19 @@ class SqliteStateStore:
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout = 30000")
-            with _sqlite_write_lock(self.path):
-                for attempt in range(12):
-                    try:
-                        conn.execute("PRAGMA journal_mode = WAL")
-                        break
-                    except sqlite3.OperationalError as exc:
-                        if "locked" not in str(exc).lower() or attempt == 11:
-                            raise
-                        time.sleep(0.05 * (attempt + 1))
+            wal_key = str(self.path.resolve())
+            if wal_key not in _SQLITE_WAL_READY:
+                with _sqlite_write_lock(self.path):
+                    for attempt in range(12):
+                        try:
+                            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+                            break
+                        except sqlite3.OperationalError as exc:
+                            if "locked" not in str(exc).lower() or attempt == 11:
+                                raise
+                            time.sleep(0.05 * (attempt + 1))
+                    if mode and str(mode[0]).lower() == "wal":
+                        _SQLITE_WAL_READY.add(wal_key)
             conn.execute("PRAGMA synchronous = NORMAL")
             yield conn
         finally:

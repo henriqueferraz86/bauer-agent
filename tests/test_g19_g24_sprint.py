@@ -396,7 +396,7 @@ def test_credential_pool_docstring_mentions_bitwarden():
 
 def test_skills_total_count_at_least_43():
     from pathlib import Path
-    skills_dir = Path("bauer/data/skills")
+    skills_dir = Path(__file__).resolve().parents[1] / "bauer" / "data" / "skills"
     all_skills = list(skills_dir.rglob("*.yaml"))
     assert len(all_skills) >= 43, f"Encontrados apenas {len(all_skills)} skills"
 
@@ -410,7 +410,7 @@ def test_skills_total_count_at_least_43():
 ])
 def test_new_skill_file_exists(skill_name):
     from pathlib import Path
-    skills_dir = Path("bauer/data/skills")
+    skills_dir = Path(__file__).resolve().parents[1] / "bauer" / "data" / "skills"
     matches = list(skills_dir.rglob(f"{skill_name}.yaml"))
     assert matches, f"Skill '{skill_name}' não encontrada"
 
@@ -424,7 +424,7 @@ def test_new_skill_file_exists(skill_name):
 def test_new_skill_has_required_fields(skill_name):
     import yaml
     from pathlib import Path
-    skills_dir = Path("bauer/data/skills")
+    skills_dir = Path(__file__).resolve().parents[1] / "bauer" / "data" / "skills"
     matches = list(skills_dir.rglob(f"{skill_name}.yaml"))
     assert matches
     data = yaml.safe_load(matches[0].read_text(encoding="utf-8"))
@@ -436,7 +436,7 @@ def test_new_skill_has_required_fields(skill_name):
 
 def test_skill_categories_covered():
     from pathlib import Path
-    skills_dir = Path("bauer/data/skills")
+    skills_dir = Path(__file__).resolve().parents[1] / "bauer" / "data" / "skills"
     categories = {p.parent.name for p in skills_dir.rglob("*.yaml")}
     expected = {"coding", "devops", "research", "productivity", "data-science", "sre", "writing", "finance"}
     assert expected <= categories
@@ -445,7 +445,7 @@ def test_skill_categories_covered():
 def test_no_duplicate_skill_names():
     import yaml
     from pathlib import Path
-    skills_dir = Path("bauer/data/skills")
+    skills_dir = Path(__file__).resolve().parents[1] / "bauer" / "data" / "skills"
     names = []
     for f in skills_dir.rglob("*.yaml"):
         try:

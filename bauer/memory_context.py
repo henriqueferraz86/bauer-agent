@@ -48,20 +48,26 @@ _MEMORY_WORKER_SLOTS = threading.BoundedSemaphore(_MEMORY_WORKER_LIMIT)
 
 def _start_memory_worker(target) -> threading.Thread | None:
     """Start *target* only when global memory capacity is immediately free."""
-    if not _MEMORY_WORKER_SLOTS.acquire(blocking=False):
+    # Release exactly the semaphore that was acquired. Looking the global up
+    # again at release time let a worker that outlived a reconfiguration of
+    # the slots (tests swap them; a reload would too) free a slot it never
+    # held, so a saturated pool silently admitted extra work (sprint 64: seen
+    # as a Windows-only flake, where workers outlive their test).
+    slots = _MEMORY_WORKER_SLOTS
+    if not slots.acquire(blocking=False):
         return None
 
     def _run() -> None:
         try:
             target()
         finally:
-            _MEMORY_WORKER_SLOTS.release()
+            slots.release()
 
     worker = threading.Thread(target=_run, daemon=True)
     try:
         worker.start()
     except Exception:
-        _MEMORY_WORKER_SLOTS.release()
+        slots.release()
         raise
     return worker
 

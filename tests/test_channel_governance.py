@@ -18,6 +18,7 @@ from bauer.core.runtime.autonomy import BudgetManager
 from bauer.cost_meter import cost_sink, report_llm_cost
 from bauer.runtime_ids import get_runtime_ids
 from bauer.tool_router import ToolRouter
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 def config(*, enabled=True, evaluate=False):
@@ -112,7 +113,7 @@ def test_context_copied_into_workers_isolated_and_restored(tmp_path):
                 return cost_sink.get()
 
             with ThreadPoolExecutor(max_workers=1) as pool:
-                assert pool.submit(ctx.run, child).result(timeout=10) is metrics
+                assert pool.submit(ctx.run, child).result(timeout=ANTI_HANG) is metrics
         assert get_runtime_ids() is None and cost_sink.get() is None
         return metrics.result()
 

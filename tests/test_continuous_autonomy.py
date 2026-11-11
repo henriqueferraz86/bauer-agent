@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import yaml
 
 import pytest
+from tests._deadlines import ANTI_HANG  # noqa: E402
 
 
 def _wait_for(manager, state: str, timeout: float = 2.0):
@@ -171,7 +172,7 @@ def test_start_reinicia_worker_antigo_ainda_vivo(tmp_path):
 
     manager.start()
     _wait_for(manager, "running")
-    assert old_finished.wait(1.0)
+    assert old_finished.wait(timeout=ANTI_HANG)
     manager.close()
     _wait_for(manager, "stopped")
 
