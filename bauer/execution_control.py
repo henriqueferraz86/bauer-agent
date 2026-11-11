@@ -51,6 +51,9 @@ class ExecutionControl:
         self._processes: dict[int, tuple[Any, Callable[[], None]]] = {}
         self._termination_threads: dict[int, threading.Thread] = {}
         self.max_tool_calls: int | None = None
+        #: Sprint 77: objetivo que o turno de canal pediu para virar /loop
+        #: (`channel_autonomous_handoff`); lido depois que o turno termina.
+        self.autonomous_goal: str | None = None
         self._tool_calls = 0
 
         # Optional channel identity is populated by ChannelExecution. These

@@ -39,6 +39,8 @@ MUTATING_TOOLS = frozenset({
     "video_analyze", "vision_analyze",
     "channel_send", "send_message", "social_post",
     "memory", "todo", "mcp_call", "http_request", "delegate_task",
+    # Sprint 77: um replay diria "agendado" sem agendar o /loop.
+    "iniciar_trabalho_autonomo",
 })
 
 _MAX_ENTRIES = 32

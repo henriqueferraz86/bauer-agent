@@ -218,6 +218,8 @@ _TOOL_SECURITY: dict[str, dict] = {
     # Canais do Bauer Gateway — outbound para humanos (outbox durável)
     "channel_send":   {"permission": "network", "risk": "medium", "approval": False},
     "channel_list":   {"permission": "read",    "risk": "low",    "approval": False},
+    # Sprint 77: só registra o pedido; a admissão do /loop passa pelo Kernel.
+    "iniciar_trabalho_autonomo": {"permission": "read", "risk": "low", "approval": False},
     "send_message":   {"permission": "network", "risk": "medium", "approval": False},
     "transcribe_audio": {"permission": "network", "risk": "low",  "approval": False},
     # Redes sociais (Postiz) — publicação é pública e praticamente irreversível
@@ -1111,6 +1113,17 @@ class ToolRouter(
                 "text": "str — texto da mensagem (obrigatorio)",
             },
         }
+        from .channel_autonomous_handoff import (
+            TOOL_ARGS as _HANDOFF_ARGS,
+            TOOL_DESCRIPTION as _HANDOFF_DESCRIPTION,
+            TOOL_NAME as _HANDOFF_TOOL,
+            request_handoff as _request_handoff,
+        )
+        self._tools[_HANDOFF_TOOL] = {
+            "fn": _request_handoff,
+            "description": _HANDOFF_DESCRIPTION,
+            "args": dict(_HANDOFF_ARGS),
+        }
         self._tools["channel_list"] = {
             "fn": self._channel_list,
             "description": "Lista os canais de notificacao configurados no Bauer Gateway.",
@@ -1300,6 +1313,11 @@ class ToolRouter(
         # qualquer contexto (não aparece no schema/prompt nem executa).
         if self._tool_allowlist and name not in self._tool_allowlist:
             return False
+        if name == "iniciar_trabalho_autonomo":
+            # Sprint 77: só dentro de um turno de conversa privada do Telegram.
+            from .channel_autonomous_handoff import handoff_available
+            if not handoff_available():
+                return False
         context = _normalize_tool_context(context or self.tool_context)
         if name in _CAPABILITY_TOOLS and name in self._tools:
             # Agno capability actions exist only on routers whose agent was

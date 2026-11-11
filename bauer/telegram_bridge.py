@@ -1554,6 +1554,28 @@ class TelegramBridge(BaseBridge):
         finally:
             if media_token is not None:
                 _MEDIA_CONTEXT.reset(media_token)
+        self._start_autonomous_handoff(msg)
+
+    def _start_autonomous_handoff(self, msg: ChannelMessage) -> None:
+        """Sprint 77: o modelo pediu trabalho autônomo; inicia o /loop agora.
+
+        Roda depois da resposta do turno ter sido entregue e da sessão ter
+        sido liberada. Usa o mesmo `start_loop` do comando `/loop`, então a
+        admissão no Kernel, a política, a aprovação e a idempotência por
+        `update_id` são as mesmas.
+        """
+        pop = getattr(self.backend, "pop_autonomous_handoff", None)
+        goal = pop(msg) if callable(pop) else None
+        if not goal:
+            return
+        try:
+            from . import telegram_loop
+            update_id = int((msg.raw or {}).get("update_id", 0) or 0)
+            response = telegram_loop.start_loop(self.backend, msg, update_id, goal)
+        except Exception:
+            logger.exception("Falha ao iniciar o trabalho autônomo pedido pelo agente")
+            response = "Não foi possível iniciar o trabalho autônomo. Nenhuma execução foi admitida."
+        self.send_text(msg.chat_id, response)
 
     def _process_scoped_message(self, msg: ChannelMessage, message: dict, context) -> None:
         media_text = self._ingest_media(message, msg.chat_id)

@@ -123,7 +123,10 @@ class TestMutacao:
             "kanban_create", "kanban_complete", "kanban_block", "kanban_unblock",
             "kanban_heartbeat", "kanban_comment", "kanban_link",
         }
-        fantasmas = MUTATING_TOOLS - set(router.available_tools()) - legados
+        # `_tools` inclui as registradas que só aparecem em certo contexto
+        # (ex.: iniciar_trabalho_autonomo, só em turno privado do Telegram).
+        catalogo = set(router.available_tools()) | set(router._tools)
+        fantasmas = MUTATING_TOOLS - catalogo - legados
         assert not fantasmas, f"nomes de tool que nao existem no catalogo: {fantasmas}"
 
     def test_run_command_nunca_e_dedupado(self):

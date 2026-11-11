@@ -36,6 +36,7 @@ from .channel_projects import (
     ChannelProjectContext, ChannelProjectError, ChannelProjectStore,
     context_key, operator_key, private_telegram,
 )
+from .channel_autonomous_handoff import take_goal_from
 from .channel_tool_honesty import unexecuted_tool_calls_note
 from .channel_execution import (
     ChannelExecution, ChannelExecutionRegistry, SessionWorker, governance_stop_reason,
@@ -209,6 +210,9 @@ class AgentBackend:
         # a thread ativa drena ao terminar o turno corrente.
         self._pending: dict[str, deque] = {}
         self._pending_lock = threading.RLock()
+        # Sprint 77: objetivo que o modelo pediu para virar /loop, por sessão;
+        # o bridge consome depois que o turno libera a sessão.
+        self._autonomous_handoffs: dict[str, str] = {}
         self._executions = ChannelExecutionRegistry()
         # Rastreia quando cada sessão adquiriu o lock (monotonic seconds).
         # Permite detectar turno travado e resetar automaticamente.
@@ -805,6 +809,10 @@ class AgentBackend:
                     except BaseException:
                         current.done.set()
                         raise
+                    goal = take_goal_from(current.control)
+                    if goal:
+                        with self._pending_lock:
+                            self._autonomous_handoffs[key] = goal
                     if first:
                         batch.response = response
                     elif current_send is not None:
@@ -882,6 +890,11 @@ class AgentBackend:
             session_key=key, workspace=Path(self._effective_router().workspace).resolve(),
             batch=batch, private_chat=private_telegram(msg),
         )
+
+    def pop_autonomous_handoff(self, msg: ChannelMessage) -> str | None:
+        """Objetivo que o último turno desta conversa pediu para virar /loop."""
+        with self._pending_lock:
+            return self._autonomous_handoffs.pop(self.session_key(msg), None)
 
     def _live_session_execution(self, key: str) -> ChannelExecution | None:
         return self._executions.active_for_session(key)

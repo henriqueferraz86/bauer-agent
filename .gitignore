@@ -167,3 +167,5 @@ graphify-out/
 !specs/sprint-75-agno-write-connectors/**
 !specs/sprint-76-runtime-sqlite-reuse/
 !specs/sprint-76-runtime-sqlite-reuse/**
+!specs/sprint-77-telegram-autonomous-handoff/
+!specs/sprint-77-telegram-autonomous-handoff/**

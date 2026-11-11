@@ -47,6 +47,8 @@ EFFECT_TOOLS: frozenset[str] = frozenset({
     "write_file", "append_file", "patch", "delete_file", "move_file", "create_dir",
     "run_command", "execute_code", "verify_app", "skill_manage", "app_factory_init",
     "kanban_write", "lsp_format", "lsp_rename", "mcp_call", "mcp_list_tools",
+    # Sprint 77: agenda um /loop para depois do turno.
+    "iniciar_trabalho_autonomo",
     "channel_send", "send_message", "social_post", "web_fetch", "http_request",
     "browser_navigate", "browser_click", "browser_type", "browser_press",
     "browser_dialog", "browser_cdp", "browser_back", "image_generate",
