@@ -237,3 +237,10 @@ def test_tools_max_tool_calls_defaults_to_unlimited(tmp_path: Path):
     p = tmp_path / "cfg.yaml"
     p.write_text(VALID_CONFIG, encoding="utf-8")
     assert load_config(p).tools.max_tool_calls == 0
+
+
+def test_tools_timeout_accepts_long_builds(tmp_path: Path):
+    # Sprint 83: um `docker compose build` não cabe nos 300 s que eram o teto.
+    p = tmp_path / "cfg.yaml"
+    p.write_text(VALID_CONFIG + "\ntools:\n  timeout_seconds: 900\n", encoding="utf-8")
+    assert load_config(p).tools.timeout_seconds == 900

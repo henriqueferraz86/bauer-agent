@@ -6,11 +6,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# gcc para compilar pacotes Python nativos
+# gcc para compilar pacotes Python nativos. docker-compose/buildx: sem o
+# plugin, `docker compose build` (rebuild de projeto registrado) não existe
+# no container mesmo com `docker` liberado em tools.extra_allowed_commands.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     docker.io \
     docker-cli \
+    docker-compose \
+    docker-buildx \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia o binário Ollama do estágio anterior

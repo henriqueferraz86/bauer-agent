@@ -778,7 +778,9 @@ class ToolsSection(_StrictSection):
     # Pesquisa web é parte do runtime padrão; não exige edição manual do config.
     web_enabled: bool = True
     safe_mode: bool = True
-    timeout_seconds: int = Field(ge=1, le=300, default=30)
+    # Teto de 1 h: um `docker compose build` ou uma suíte longa passa fácil
+    # dos 300 s que eram o máximo (sprint 83). O padrão continua 30 s.
+    timeout_seconds: int = Field(ge=1, le=3600, default=30)
     max_output_kb: int = Field(ge=1, le=1000, default=50)
     # Teto de tool calls por SESSÃO do ToolRouter. 0 = sem limite (sprint 80).
     max_tool_calls: int = Field(ge=0, default=0)

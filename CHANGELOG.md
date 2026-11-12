@@ -5,6 +5,13 @@ Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](htt
 
 ## [Unreleased]
 
+### Sprint 83 — rebuild Docker pelo agente
+
+- A imagem traz o plugin `docker compose` (e `buildx`); `tools.timeout_seconds`
+  aceita até 3600 s. Liberar `docker` segue opt-in em
+  `tools.extra_allowed_commands`. Ver
+  [specs/sprint-83-docker-compose-in-image](specs/sprint-83-docker-compose-in-image/SPEC.md).
+
 ### Sprint 82 — "parou" não é "cumpriu", gates fora de git, pytest na imagem
 
 - O /loop pede um veredito (`RESULTADO: CONCLUIDO|PENDENTE`). Loop que
