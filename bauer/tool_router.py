@@ -380,7 +380,7 @@ class ToolRouter(
         vision_client=None,
         model_name: str = "",
         dry_run: bool = False,
-        max_tool_calls: int = 500,
+        max_tool_calls: int | None = 0,
         max_retries: int = 3,
         audit_enabled: bool = True,
         session_id: str = "",
@@ -425,7 +425,10 @@ class ToolRouter(
         # setado/resetado pelo handler do /loop; None preserva o comportamento
         # atual (yolo=False, sem auto-aprovação) em todos os outros fluxos.
         self._approval_callback = None
-        self._max_tool_calls = max_tool_calls  # LIMITS-001: teto de chamadas por sessão
+        # LIMITS-001: teto de chamadas por sessão. 0/None = sem limite (sprint
+        # 80): o contador nunca é zerado entre turnos, então um teto fixo
+        # derrubava sessões longas de canal/serve depois de N chamadas somadas.
+        self._max_tool_calls = max_tool_calls or None
         self._max_retries = max_retries        # LIMITS-001: max tentativas por tool
         self._tool_call_count = 0              # contador redefenido por sessão
         self.tool_context = _normalize_tool_context(tool_context)
@@ -1851,7 +1854,7 @@ class ToolRouter(
         # governada já foi contada pela tool externa que a originou).
         if not _INNER_GOVERNED_CALL.get():
             self._tool_call_count += 1
-        if self._tool_call_count > self._max_tool_calls:
+        if self._max_tool_calls is not None and self._tool_call_count > self._max_tool_calls:
             raise ToolError(
                 f"Limite de {self._max_tool_calls} chamadas de tool por sessão atingido. "
                 "Use reset_call_count() para iniciar nova sessão ou aumente max_tool_calls."

@@ -5,6 +5,14 @@ Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](htt
 
 ## [Unreleased]
 
+### Sprint 80 — sem teto de tool calls por sessão
+
+- `tools.max_tool_calls` agora tem padrão `0` = sem limite. O contador do
+  `ToolRouter` nunca zerava entre turnos, e sessões longas de canal/serve
+  paravam após 500 chamadas somadas ("limite de chamadas de ferramentas").
+  O `AgnoAdapter` deixou de fixar 500. Ver
+  [specs/sprint-80-tool-router-unlimited](specs/sprint-80-tool-router-unlimited/SPEC.md).
+
 ### Harness — execução autônoma governada (S7–S14)
 
 Campanha de 2026-07-29 a 07-31. Objetivo: o agente não pode declarar sucesso sem

@@ -230,3 +230,10 @@ def test_validate_helper_bad(tmp_path: Path):
     ok, msg = validate_config_file(p)
     assert not ok
     assert "Config inválida" in msg
+
+
+def test_tools_max_tool_calls_defaults_to_unlimited(tmp_path: Path):
+    # Sprint 80: 0 = sem teto de tool calls por sessão, e é o padrão.
+    p = tmp_path / "cfg.yaml"
+    p.write_text(VALID_CONFIG, encoding="utf-8")
+    assert load_config(p).tools.max_tool_calls == 0

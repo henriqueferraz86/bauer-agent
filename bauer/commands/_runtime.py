@@ -770,7 +770,7 @@ def _build_router(cfg, workspace: Path, llm_client=None, session_id: str = "") -
         llm_client=llm_client,
         vision_client=vision_client,
         model_name=cfg.model.name if cfg is not None else "",
-        max_tool_calls=cfg.tools.max_tool_calls if cfg is not None else 500,
+        max_tool_calls=cfg.tools.max_tool_calls if cfg is not None else 0,
         session_id=session_id,
         tool_allowlist=_effective_tool_allowlist(cfg),
         postiz_api_key=postiz_api_key,
