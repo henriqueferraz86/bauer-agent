@@ -2635,15 +2635,11 @@ def _run_tool_loop_body(
 # /loop — modo autônomo (turno após turno, sem confirmação humana)
 # ---------------------------------------------------------------------------
 
-_LOOP_CONFIRM_NUDGE = (
-    "Você respondeu sem chamar nenhuma tool, o que normalmente indica que a "
-    "tarefa terminou. Se ela está REALMENTE completa, responda apenas "
-    "confirmando isso (sem chamar tools). Se ainda falta trabalho, continue "
-    "chamando as tools necessárias."
-)
+from .serve_loop import LOOP_CONFIRM_NUDGE as _LOOP_CONFIRM_NUDGE  # noqa: E402
 
 _LOOP_STOP_REASON_LABELS = {
     "completed": "tarefa concluída (confirmado pelo modelo)",
+    "objetivo_pendente": "o agente encerrou sem cumprir o objetivo",
     "budget_exhausted": "orçamento do /loop esgotado",
     "loop_hard_stop": "loop de tool calls repetidas detectado",
     "guardrail_halt": "guardrail de falhas acumuladas interrompeu",

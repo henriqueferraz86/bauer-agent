@@ -32,6 +32,10 @@ RUN (pip install --no-cache-dir ".[server]" --no-build-isolation 2>/dev/null || 
       fastapi "uvicorn[standard]" python-multipart argon2-cffi google-auth) && \
     pip install --no-cache-dir "agno[os]>=1.7"
 
+# pytest na imagem: o agente valida os projetos registrados rodando os testes
+# deles, e instalar na camada gravável some a cada rebuild/recreate (sprint 82).
+RUN pip install --no-cache-dir "pytest>=8,<10"
+
 # Instala Chromium e bibliotecas de sistema necessárias às browser tools.
 RUN python -m playwright install --with-deps chromium
 

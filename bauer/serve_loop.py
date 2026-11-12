@@ -17,6 +17,7 @@ Rodada com tools zera o candidato (o modelo ainda está trabalhando).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -25,14 +26,42 @@ from typing import Any, Callable
 
 logger = logging.getLogger("bauer.serve_loop")
 
-#: mesmo texto do /loop da CLI (agent._LOOP_CONFIRM_NUDGE) — mantido aqui para
-#: não importar agent.py (pesado) só pela string.
+#: mesmo texto do /loop da CLI (agent._LOOP_CONFIRM_NUDGE importa daqui).
+#: Sprint 82: pede um veredito explícito. "O loop parou" não é "o objetivo foi
+#: cumprido": sem a linha RESULTADO, um loop que encerrava dizendo "nenhuma
+#: tarefa foi concluída" era registrado como concluído.
 LOOP_CONFIRM_NUDGE = (
     "Você respondeu sem chamar nenhuma tool, o que normalmente indica que a "
     "tarefa terminou. Se ela está REALMENTE completa, responda apenas "
     "confirmando isso (sem chamar tools). Se ainda falta trabalho, continue "
-    "chamando as tools necessárias."
+    "chamando as tools necessárias. Se você não tem como continuar, explique "
+    "o bloqueio. Termine a resposta com uma linha exata: "
+    "`RESULTADO: CONCLUIDO` se o objetivo pedido foi cumprido e verificado, ou "
+    "`RESULTADO: PENDENTE` se ele não foi cumprido por inteiro."
 )
+
+_VERDICT_RE = re.compile(
+    r"RESULTADO\s*:\s*`?\s*(CONCLU[IÍ]D[OA]|PENDENTE)", re.IGNORECASE)
+
+
+def loop_verdict(text: str) -> "str | None":
+    """Veredito declarado pelo modelo: ``"done"``, ``"pending"`` ou ``None``.
+
+    ``None`` = o modelo não escreveu a linha; quem chama mantém o
+    comportamento antigo (conclusão natural). Vale a ÚLTIMA ocorrência.
+    """
+    found = _VERDICT_RE.findall(text or "")
+    if not found:
+        return None
+    return "pending" if found[-1].upper() == "PENDENTE" else "done"
+
+
+def strip_verdict(text: str) -> str:
+    """Remove a linha RESULTADO do texto mostrado ao usuário."""
+    lines = [ln for ln in (text or "").splitlines()
+             if not _VERDICT_RE.fullmatch(ln.strip().strip("`*_ .")) ]
+    return "\n".join(lines).strip()
+
 
 #: teto duro de rodadas — backstop acima de qualquer orçamento (um loop
 #: saudável termina por conclusão ou por budget muito antes disto).
@@ -337,7 +366,10 @@ def run_loop_rounds(
                 break
             # Sinal natural genuíno (mesma regra da CLI): rodada só-texto.
             if confirm_pending:
-                stop_reason = "completed"
+                # O modelo confirmou que parou; o veredito diz se cumpriu.
+                stop_reason = ("objetivo_pendente"
+                               if loop_verdict(text) == "pending" else "completed")
+                last_text = strip_verdict(last_text) or last_text
                 break
             confirm_pending = True
             ctx.add_user(confirm_nudge)

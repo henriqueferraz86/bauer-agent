@@ -5,6 +5,17 @@ Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](htt
 
 ## [Unreleased]
 
+### Sprint 82 — "parou" não é "cumpriu", gates fora de git, pytest na imagem
+
+- O /loop pede um veredito (`RESULTADO: CONCLUIDO|PENDENTE`). Loop que
+  encerra sem cumprir o objetivo vira `objetivo_pendente` (run `failed`), não
+  mais `completed` com ✅.
+- O gate `tests` passa a funcionar em workspace sem git (loops informam
+  `tools_usadas`) e com o projeto numa subpasta; o pytest não herda mais a
+  config de um diretório pai.
+- A imagem Docker traz `pytest`. Ver
+  [specs/sprint-82-loop-verdict-and-gates](specs/sprint-82-loop-verdict-and-gates/SPEC.md).
+
 ### Sprint 81 — custo real e sem "ponto de reflexão" no /loop do Telegram
 
 - O /loop do Telegram passou a medir custo e chamadas ao modelo: os runs
