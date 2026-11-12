@@ -161,6 +161,16 @@ _TIMEOUT_PATTERNS = [
     "connect timeout",
     "remotedisconnected",
     "incompleteread",
+    # Conexão derrubada no meio da resposta (httpx RemoteProtocolError e
+    # afins). Visto na Beelink em 2026-11-12: "peer closed connection without
+    # sending complete message body (incomplete chunked read)".
+    "incomplete chunked read",
+    "peer closed connection",
+    "server disconnected",
+    "connection closed",
+    "connection aborted",
+    "broken pipe",
+    "unexpected eof",
 ]
 
 _TRANSPORT_ERROR_TYPES = frozenset({
@@ -255,6 +265,17 @@ def _matches_any(msg: str, patterns: list[str]) -> bool:
 # Classificador principal
 # ---------------------------------------------------------------------------
 
+def _cause_type_names(error: BaseException, depth: int = 5) -> set[str]:
+    """Nomes de tipo da cadeia ``__cause__``/``__context__`` (sem o próprio erro)."""
+    names: set[str] = set()
+    current = error.__cause__ or error.__context__
+    while current is not None and depth > 0:
+        names.add(type(current).__name__)
+        current = current.__cause__ or current.__context__
+        depth -= 1
+    return names
+
+
 def classify_api_error(
     error: Exception,
     *,
@@ -275,6 +296,10 @@ def classify_api_error(
     status = _extract_status_code(error)
     msg = _build_error_msg(error)
     error_type = type(error).__name__
+    # O cliente embrulha erros de transporte (ex.: OpenAIClientError("Erro
+    # HTTP: ...") a partir de httpx.RemoteProtocolError): a causa original
+    # decide se a falha é de transporte.
+    cause_types = _cause_type_names(error)
 
     def _result(
         reason: FailReason,
@@ -342,7 +367,8 @@ def classify_api_error(
         return _result(FailReason.PROVIDER_DOWN, retryable=True, fallback=True)
 
     # 5. Tipo de exceção transport/timeout
-    if error_type in _TRANSPORT_ERROR_TYPES or _matches_any(msg, _TIMEOUT_PATTERNS):
+    if (error_type in _TRANSPORT_ERROR_TYPES or cause_types & _TRANSPORT_ERROR_TYPES
+            or _matches_any(msg, _TIMEOUT_PATTERNS)):
         return _result(FailReason.TIMEOUT, retryable=True)
 
     # 6. Context overflow por token count heurístico
