@@ -5,6 +5,15 @@ Segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e [SemVer](htt
 
 ## [Unreleased]
 
+### Sprint 81 — custo real e sem "ponto de reflexão" no /loop do Telegram
+
+- O /loop do Telegram passou a medir custo e chamadas ao modelo: os runs
+  saíam com custo `null` e `llm_calls_count: 0`, e `loop.max_cost_usd` nunca
+  era aplicado. O relatório final mostra o custo.
+- O "ponto de reflexão" a cada 6 tools não é mais injetado em turno
+  autônomo (/loop); ele fazia o loop desistir no meio da tarefa. Ver
+  [specs/sprint-81-telegram-loop-accounting](specs/sprint-81-telegram-loop-accounting/SPEC.md).
+
 ### Sprint 80 — sem teto de tool calls por sessão
 
 - `tools.max_tool_calls` agora tem padrão `0` = sem limite. O contador do

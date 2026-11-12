@@ -430,7 +430,26 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
                 return "budget_exhausted"
             return None
 
+        # Custo/chamadas ao modelo do run inteiro. Um TurnMetrics por
+        # invocação do executor (replan incluso), como nos turnos normais do
+        # canal; sem isto o run saía com custo None e llm_calls 0, e
+        # `loop.max_cost_usd` nunca era aplicado no Telegram (sprint 81).
+        metrics_box: list[Any] = []
+        synced_cost = [0.0]
+
+        def _sync_cost() -> None:
+            if not metrics_box:
+                return
+            total = metrics_box[-1].total_usd
+            delta, synced_cost[0] = total - synced_cost[0], total
+            try:
+                if delta > 0:
+                    budget.consume_cost(delta)
+            except Exception as exc:  # noqa: BLE001 — esgotou: o laço encerra
+                logger.debug("loop budget consume: %s", exc)
+
         def _on_round(_n: int, _text: str, _tool_log: list) -> None:
+            _sync_cost()
             # Persiste a cada rodada (não só ao final) — um crash no meio do
             # loop não perde as rodadas já concluídas, mesmo padrão de
             # `_start_loop_impl`.
@@ -445,21 +464,27 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
             if feedback:
                 ctx.add_user(f"A validação reprovou o resultado anterior: {feedback}\n"
                              f"Corrija isso e conclua.")
+            from .channel_governance import TurnMetrics
+            metrics = TurnMetrics()
+            metrics_box.append(metrics)
+            synced_cost[0] = 0.0
             try:
-                stop_reason, rounds_done, last_text, all_tools = run_loop_rounds(
-                    goal=goal, ctx=ctx, turn_fn=_turn, budget=budget,
-                    should_stop=_should_stop, on_round=_on_round,
-                    max_rounds=limits.max_rounds,
-                )
+                with metrics.context(delivery_session_id, run_id):
+                    stop_reason, rounds_done, last_text, all_tools = run_loop_rounds(
+                        goal=goal, ctx=ctx, turn_fn=_turn, budget=budget,
+                        should_stop=_should_stop, on_round=_on_round,
+                        max_rounds=limits.max_rounds,
+                    )
             except Exception as exc:  # noqa: BLE001
                 stop_reason = "error"
                 last_text = redact_text(str(exc))
                 all_tools = getattr(exc, "partial_tool_log", [])
+            _sync_cost()
             try:
                 backend._store.save(session_key, ctx.messages)
             except Exception:  # noqa: BLE001
                 logger.warning("Falha ao persistir sessão do /loop (run %s)", run_id)
-            out = {"output": last_text, "tool_calls_count": len(all_tools)}
+            out = metrics.result(last_text, all_tools)
             if stop_reason in ("kill_switch", "cancelled"):
                 return {**out, "status": "cancelled",
                         "error": ("runtime kill switch ativo" if stop_reason == "kill_switch"
@@ -500,6 +525,7 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
                 run_id=run_id, goal=goal, stop_reason=stop_reason, last_text=last_text,
                 tool_calls=len(all_tools), rounds=rounds_done,
                 validacao_reprovou=validacao_reprovou,
+                cost_usd=(sum(m.total_usd for m in metrics_box) if metrics_box else None),
             )
             delivered = deliver_with_retry(delivery_session_id, text)
             if delivered:
@@ -510,15 +536,12 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
 
 def _terminal_report_text(*, run_id: str, goal: str, stop_reason: str, last_text: str,
                           tool_calls: int, rounds: int = 0,
-                          validacao_reprovou: bool = False) -> str:
+                          validacao_reprovou: bool = False,
+                          cost_usd: float | None = None) -> str:
     """Relatório final — reflete o `stop_reason` real, nunca um texto
     genérico de sucesso (critério de aceite do SPEC).
 
-    Sem custo em USD: o recorder de custo por turno (`_TurnCostRecorder`) é
-    uma classe privada aninhada em `server.py:create_app` (não pensada para
-    reuso fora da instância do serve) — reproduzi-lo aqui exigiria extrair
-    esse acoplamento, fora do escopo desta sprint. `rounds`/`tool_calls` já
-    dão o sinal de "quanto trabalho" sem isso.
+    `cost_usd` é o custo medido do run (sprint 81); `None` omite a linha.
     """
     headline = {
         "completed": "✅ /loop concluído",
@@ -536,6 +559,8 @@ def _terminal_report_text(*, run_id: str, goal: str, stop_reason: str, last_text
         f"objetivo: {goal[:200]}",
         f"stop_reason={stop_reason}  rodadas={rounds}  tool_calls={tool_calls}",
     ]
+    if cost_usd is not None:
+        lines.append(f"custo estimado: US$ {cost_usd:.4f}")
     if last_text.strip():
         lines.append("")
         lines.append(last_text.strip()[:3500])

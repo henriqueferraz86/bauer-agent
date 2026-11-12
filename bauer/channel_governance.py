@@ -92,6 +92,11 @@ class TurnMetrics:
                 local or (valid_cost and (bool(usage) or cost > 0))
             )
 
+    @property
+    def total_usd(self) -> float:
+        with self._lock:
+            return self._total_usd
+
     @contextmanager
     def context(self, session_id: str, run_id: str | None) -> Iterator[None]:
         """Install IDs/accounting in the current worker; always restore them."""

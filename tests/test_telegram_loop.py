@@ -555,3 +555,68 @@ def test_provider_error_detail_reaches_the_run_error(tmp_path, monkeypatch):
     assert run.status == "failed"
     assert run.error.startswith("loop parou: provider_error — RuntimeError: 401")
     assert "token expirado" in received[0][1]
+
+
+# ── sprint 81: custo e chamadas ao modelo do /loop chegam ao run ─────────────
+
+def test_loop_reports_cost_and_llm_calls_to_the_kernel(tmp_path, monkeypatch):
+    from bauer.cost_meter import cost_sink
+
+    backend = backend_at(tmp_path)
+    kernel = FakeKernel()
+    install_kernel(backend, kernel)
+
+    def _turn(ctx, router, client, model, fallback_clients=None, **kwargs):
+        sink = cost_sink.get()
+        assert sink is not None, "o /loop precisa instalar o medidor de custo"
+        sink("openai", "gpt-fake", {"input_tokens": 10, "output_tokens": 5}, 0.25)
+        ctx.add_assistant("Feito.")
+        return "Feito.", []
+
+    monkeypatch.setattr("bauer.agent.run_one_turn_with_fallback", _turn)
+
+    results: list[dict] = []
+    original = kernel.continue_run
+
+    def _capture(run_id, *, extra_input=None, executor):
+        def _wrapped(payload):
+            result = executor(payload)
+            results.append(result)
+            return result
+        return original(run_id, extra_input=extra_input, executor=_wrapped)
+
+    kernel.continue_run = _capture
+
+    received: list[tuple[str, str]] = []
+    channel_execution.register_delivery_channel(
+        "tg:", lambda sid, text: received.append((sid, text)) or True,
+    )
+    telegram_loop.start_loop(backend, message(), update_id=81, goal="faça algo")
+    wait_for_delivery(received)
+
+    assert results, "o executor do loop não rodou"
+    # Duas rodadas só-texto encerram o loop: duas chamadas ao modelo.
+    assert results[0]["llm_calls_count"] == 2
+    assert results[0]["cost_estimate"] == pytest.approx(0.5)
+    assert results[0]["usage_known"] is True
+    assert "custo estimado: US$ 0.5000" in received[0][1]
+
+
+def test_reflection_nudge_is_skipped_in_autonomous_turns():
+    from bauer.agent_turn_policy import REFLECT_EVERY, maybe_reflect
+
+    class Ctx:
+        def __init__(self):
+            self.added = []
+
+        def add_user(self, text):
+            self.added.append(text)
+
+    class LoopBudget:
+        def remaining_tool_calls(self):
+            return 10
+
+    chat, loop = Ctx(), Ctx()
+    maybe_reflect(chat, REFLECT_EVERY)
+    maybe_reflect(loop, REFLECT_EVERY, LoopBudget())
+    assert chat.added and not loop.added

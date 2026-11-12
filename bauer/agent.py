@@ -1529,7 +1529,7 @@ def _run_one_turn(
 
             if result is not None:
                 return result, tool_log
-            _maybe_reflect(ctx, len(tool_log))
+            _maybe_reflect(ctx, len(tool_log), budget)
             # Detecção de loop após cada rodada de tool calls (native path)
             loop_warn, hard_stop = _detect_loop(tool_log)
             if loop_warn:
@@ -1676,7 +1676,7 @@ def _run_one_turn(
 
             if combined_parts:
                 ctx.add_user("\n\n".join(combined_parts))
-            _maybe_reflect(ctx, len(tool_log))
+            _maybe_reflect(ctx, len(tool_log), budget)
             # Detecção de loop após cada batch de tool calls (Tool Bridge path)
             loop_warn, hard_stop = _detect_loop(tool_log)
             if loop_warn:
@@ -2209,7 +2209,7 @@ def _run_tool_loop_body(
                         return _TurnOutcome(kind="guardrail_halt", display=_ntext or "", tool_log=cli_tool_log)
                     if _nkind == "continue":
                         tool_turns = len(cli_tool_log)
-                        _maybe_reflect(ctx, tool_turns)
+                        _maybe_reflect(ctx, tool_turns, budget)
                         loop_warn, hard_stop = _detect_loop(cli_tool_log)
                         if loop_warn:
                             ctx.add_user(loop_warn)
@@ -2524,7 +2524,7 @@ def _run_tool_loop_body(
             if _guard_halted:
                 return _TurnOutcome(kind="guardrail_halt", tool_log=cli_tool_log)
 
-            _maybe_reflect(ctx, tool_turns)
+            _maybe_reflect(ctx, tool_turns, budget)
             # Detecção de loop após cada batch de tool calls (CLI path)
             loop_warn, hard_stop = _detect_loop(cli_tool_log)
             if loop_warn:
