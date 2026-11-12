@@ -84,11 +84,32 @@ def resolve_loop_config(overrides: dict[str, Any]) -> LoopSection:
     return LoopSection(**data)
 
 
-def resolve_max_tool_turns() -> int:
-    """Lê ``tools.max_tool_turns`` sem deixar falha de config quebrar a sessão."""
+#: Teto efetivo quando ``tools.max_tool_turns: 0`` (sem limite, sprint 79).
+#: Inteiro para não mudar a aritmética de quem usa ``MAX_TOOL_TURNS``.
+UNLIMITED_TOOL_TURNS = 10**9
+
+
+def resolve_max_tool_turns(config_path: "str | None" = None) -> int:
+    """Lê ``tools.max_tool_turns`` sem deixar falha de config quebrar a sessão.
+
+    ``0`` significa sem limite de iterações por turno.
+    """
     try:
         from .config_loader import load_config
 
-        return load_config().tools.max_tool_turns
+        configured = (load_config(config_path) if config_path else load_config()).tools.max_tool_turns
     except Exception:  # noqa: BLE001 - mesmo default de ToolsSection
         return 150
+    return int(configured) if configured and configured > 0 else UNLIMITED_TOOL_TURNS
+
+
+def apply_max_tool_turns(config_path: "str | None" = None) -> int:
+    """Aplica ``tools.max_tool_turns`` ao motor (gateway e serve, sprint 79).
+
+    Antes só o ``bauer agent`` interativo aplicava o config; o gateway do
+    Telegram e o ``serve`` ficavam com o teto fixo de 150 do código.
+    """
+    from . import agent as _agent
+
+    _agent.MAX_TOOL_TURNS = resolve_max_tool_turns(config_path)
+    return _agent.MAX_TOOL_TURNS

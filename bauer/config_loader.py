@@ -786,7 +786,7 @@ class ToolsSection(_StrictSection):
     # max_tool_calls acima, que é o teto por SESSÃO inteira do ToolRouter.
     # Mensagem de erro quando estoura: "Limite de N tool calls atingido
     # neste turno."
-    max_tool_turns: int = Field(ge=1, default=150)
+    max_tool_turns: int = Field(ge=0, default=150)  # 0 = sem limite (sprint 79)
     # Toolset enxuto: se não-vazio, SÓ estas tools são expostas ao modelo.
     # Encolhe o prompt (as 79 tools = ~14k tokens) — essencial p/ modelos locais
     # em CPU. Vazio = todas as tools. Ex.: [web_search, web_fetch, read_file,
@@ -835,12 +835,16 @@ class LoopSection(_StrictSection):
 
     NB: max_tool_calls é o orçamento do LOOP INTEIRO e precisa ser
     confortavelmente MAIOR que tools.max_tool_turns (teto por rodada, default
-    150). O default operacional é deliberadamente muito alto; ainda existem
-    limites internos de chamadas LLM/tokens no AutonomousBudget.
+    150). O default operacional é deliberadamente muito alto. Desde a sprint
+    79, ``0`` em ``max_minutes``, ``max_tool_calls``, ``max_cost_usd`` ou
+    ``max_rounds`` significa sem limite, e o loop não tem mais teto escondido
+    de chamadas ao modelo ou de tokens de saída.
     """
-    max_minutes: int = Field(ge=1, default=525_600)
-    max_tool_calls: int = Field(ge=1, default=100_000_000)
+    # 0 = sem limite (sprint 79), nos quatro campos abaixo.
+    max_minutes: int = Field(ge=0, default=525_600)
+    max_tool_calls: int = Field(ge=0, default=100_000_000)
     max_cost_usd: float = Field(ge=0.0, default=1_000_000.0)
+    max_rounds: int = Field(ge=0, default=0)
     approval_mode: Literal["threshold", "deny_all", "yolo"] = "threshold"
     approval_risk_threshold: float = Field(ge=0.0, le=1.0, default=0.4)
 

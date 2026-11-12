@@ -342,13 +342,8 @@ def run(
 
     _banner(ws, model_name, provider_efetivo, limits, kernel is not None)
 
-    from ..autonomous_budget import AutonomousBudget
     from ..serve_loop import run_loop_rounds
-    budget = AutonomousBudget(
-        max_cost_usd=limits.max_cost_usd,
-        max_wall_seconds=limits.max_minutes * 60,
-        max_tool_calls=limits.max_tool_calls,
-    )
+    budget = limits.budget()
 
     kill_control = None
     if kernel is not None:
@@ -449,6 +444,7 @@ def run(
             stop_reason, rounds, last_text, _tool_log = run_loop_rounds(
                 goal=task, ctx=ctx, turn_fn=_turn_fn, budget=budget,
                 should_stop=_should_stop, on_round=_on_round,
+                max_rounds=limits.max_rounds,
             )
         except KeyboardInterrupt as exc:
             stop_reason = "interrupted"
@@ -545,14 +541,18 @@ def _banner(ws: Path, model: str, provider: str, limits, governed: bool) -> None
 def _print_round(n: int, budget, tool_log: list) -> None:
     from ..ui import progress_line
 
+    from ..autonomous_budget import describe_limit, limit_or_none
+
     snap = budget.snapshot()
     mins, secs = divmod(int(snap.elapsed_seconds), 60)
+    wall = limit_or_none(budget.max_wall_seconds)
+    cost_cap = limit_or_none(snap.max_cost_usd)
     console.print(progress_line(
         n,
         tools=snap.tool_calls,
-        tools_limit=snap.max_tool_calls,
-        elapsed=f"{mins}m{secs:02d}s/{budget.max_wall_seconds // 60}m",
-        cost=f"~US$ {snap.cost_usd:.3f}/{snap.max_cost_usd:.2f}",
+        tools_limit=limit_or_none(snap.max_tool_calls),
+        elapsed=f"{mins}m{secs:02d}s/{describe_limit(None if wall is None else int(wall // 60), 'm')}",
+        cost=f"~US$ {snap.cost_usd:.3f}/{'sem limite' if cost_cap is None else f'{cost_cap:.2f}'}",
     ))
 
 

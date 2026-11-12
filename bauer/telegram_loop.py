@@ -401,7 +401,6 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
                        client: Any, model: str, fallback_clients: list, goal: str,
                        limits: Any) -> None:
     def _worker() -> None:
-        from .autonomous_budget import AutonomousBudget
         from .agent import run_one_turn_with_fallback
         from .channel_execution import claim_delivery, deliver_with_retry
         from .core.kernel import continue_governed
@@ -410,11 +409,7 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
 
         store.update(update_id, state="running")
         kernel = backend._resolver_kernel(workspace=workspace)
-        budget = AutonomousBudget(
-            max_cost_usd=limits.max_cost_usd,
-            max_wall_seconds=limits.max_minutes * 60,
-            max_tool_calls=limits.max_tool_calls,
-        )
+        budget = limits.budget()
         all_tools: list[dict] = []
         stop_reason, last_text, rounds_done = "error", "", 0
 
@@ -454,6 +449,7 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
                 stop_reason, rounds_done, last_text, all_tools = run_loop_rounds(
                     goal=goal, ctx=ctx, turn_fn=_turn, budget=budget,
                     should_stop=_should_stop, on_round=_on_round,
+                    max_rounds=limits.max_rounds,
                 )
             except Exception as exc:  # noqa: BLE001
                 stop_reason = "error"

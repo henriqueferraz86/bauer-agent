@@ -225,6 +225,12 @@ def create_app(
         bootstrap_key: str = Field(default="", max_length=4096)
         link: bool = False
 
+    try:
+        from .agent_loop_config import apply_max_tool_turns
+        apply_max_tool_turns(str(config_path) if config_path else None)  # sprint 79
+    except Exception as _turns_exc:  # noqa: BLE001 — mantém o default do motor
+        _log.debug("max_tool_turns não aplicado: %s", _turns_exc)
+
     app = FastAPI(
         title="Bauer Agent Server",
         version="0.1.0",
@@ -2434,14 +2440,14 @@ def create_app(
             # Limites inválidos vindos do request (max_minutes<=0, custo negativo…)
             # são erro do cliente — 422, não 500 com stacktrace.
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # JSON histórico do endpoint: só as 3 chaves numéricas (sem approval).
+        # JSON histórico do endpoint: as chaves numéricas (sem approval).
+        # None = sem limite (sprint 79).
         return {"max_minutes": limits.max_minutes, "max_tool_calls": limits.max_tool_calls,
-                "max_cost_usd": limits.max_cost_usd}
+                "max_cost_usd": limits.max_cost_usd, "max_rounds": limits.max_rounds}
 
     def _start_loop_impl(req: LoopStartRequest, _workspace_override: Path | None = None):
         import threading as _threading
 
-        from .autonomous_budget import AutonomousBudget
         from .serve_loop import LoopState, loop_registry, run_loop_rounds
 
         sid = req.session_id or store.new_id()
@@ -2495,10 +2501,10 @@ def create_app(
         _turn_client, _turn_model, _route = _resolve_turn_model(req.message, sid)
         _publish_route(run.id, sid, request_agent_id, _route)
 
-        budget = AutonomousBudget(
+        from .autonomous_budget import loop_budget
+        budget = loop_budget(
+            max_minutes=limits["max_minutes"], max_tool_calls=limits["max_tool_calls"],
             max_cost_usd=limits["max_cost_usd"],
-            max_wall_seconds=limits["max_minutes"] * 60,
-            max_tool_calls=limits["max_tool_calls"],
         )
         state_obj = LoopState(run_id=run.id, session_id=sid,
                               goal=req.message[:400], limits=limits)
@@ -2622,6 +2628,7 @@ def create_app(
                     stop_reason, _r, last_text, all_tools = run_loop_rounds(
                         goal=req.message, ctx=ctx, turn_fn=_turn, budget=budget,
                         should_stop=_should_stop, on_round=_on_round,
+                        max_rounds=limits.get("max_rounds"),
                     )
                 except Exception as exc:
                     stop_reason, last_text, all_tools = "error", redact_text(str(exc)), getattr(exc, "partial_tool_log", [])

@@ -45,23 +45,39 @@ class ResolvedLoopLimits:
     config (``loop:``) e os overrides do caller. Imutável de propósito — é o
     contrato que o motor e o banner consomem, um lugar só para a verdade."""
 
-    max_minutes: int
-    max_tool_calls: int
-    max_cost_usd: float
+    # None = sem limite (sprint 79; `0` no config).
+    max_minutes: int | None
+    max_tool_calls: int | None
+    max_cost_usd: float | None
     approval_mode: str = "threshold"
+    max_rounds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"max_minutes": self.max_minutes, "max_tool_calls": self.max_tool_calls,
-                "max_cost_usd": self.max_cost_usd, "approval_mode": self.approval_mode}
+                "max_cost_usd": self.max_cost_usd, "approval_mode": self.approval_mode,
+                "max_rounds": self.max_rounds}
+
+    def budget(self) -> Any:
+        """AutonomousBudget deste loop (sem teto escondido de chamadas/tokens)."""
+        from .autonomous_budget import loop_budget
+        return loop_budget(max_minutes=self.max_minutes, max_tool_calls=self.max_tool_calls,
+                           max_cost_usd=self.max_cost_usd)
 
     def banner_pt(self) -> str:
         """Frase única em PT com os guardrails — usada pela CLI e pela UI. O
         custo é ESTIMADO (depende de usage + tabela de preços); tempo e nº de
         tools são os guardrails primários."""
+        if all(v is None for v in (self.max_minutes, self.max_tool_calls,
+                                   self.max_cost_usd, self.max_rounds)):
+            return ("sem limite de tempo, de ferramentas, de rodadas nem de custo — "
+                    "roda até concluir ou até /cancelar")
+        cost = "sem limite" if self.max_cost_usd is None else f"~US$ {self.max_cost_usd:.2f}"
+        minutes = "sem limite" if self.max_minutes is None else f"{self.max_minutes} min"
+        tools = "sem limite" if self.max_tool_calls is None else str(self.max_tool_calls)
+        rounds = "" if self.max_rounds is None else f" OU {self.max_rounds} rodadas"
         return (
-            f"trabalho até {self.max_minutes} min OU {self.max_tool_calls} "
-            f"chamadas de ferramenta OU ~US$ {self.max_cost_usd:.2f} de custo "
-            f"ESTIMADO — o que vier primeiro"
+            f"tempo: {minutes} · ferramentas: {tools} · custo ESTIMADO: {cost}"
+            f"{rounds} — o que vier primeiro"
         )
 
 
@@ -78,27 +94,36 @@ def resolve_loop_limits(loop_section: Any, overrides: "dict[str, Any] | None" = 
     ``overrides`` aceita as chaves max_minutes / max_tool_calls / max_cost_usd /
     approval_mode; valores None/ausentes herdam o config. Valida positividade.
     """
-    base_minutes = int(getattr(loop_section, "max_minutes", 30) or 30)
-    base_tools = int(getattr(loop_section, "max_tool_calls", 120) or 120)
-    base_cost = float(getattr(loop_section, "max_cost_usd", 2.0) or 2.0)
+    def _base(name: str, default: Any, kind: type) -> Any:
+        raw = getattr(loop_section, name, default)
+        if raw is None or kind(raw) == 0:
+            return None  # 0 no config = sem limite (sprint 79)
+        return kind(raw)
+
+    base_minutes = _base("max_minutes", 30, int)
+    base_tools = _base("max_tool_calls", 120, int)
+    base_cost = _base("max_cost_usd", 2.0, float)
+    base_rounds = _base("max_rounds", 0, int)
     approval = str(getattr(loop_section, "approval_mode", "threshold") or "threshold")
 
     ov = overrides or {}
 
-    def _pick(key: str, base, floor):
+    def _pick(key: str, base, floor, kind: type):
         raw = ov.get(key)
         if raw is None:
             return base
-        val = type(base)(raw)
+        val = kind(raw)
         if val <= floor and not (floor == 0.0 and key == "max_cost_usd"):
             raise ValueError(f"{key} deve ser > {floor}")
         if key == "max_cost_usd" and val < 0:
             raise ValueError("max_cost_usd não pode ser negativo")
-        return min(val, base) if clamp_to_config else val
+        if not clamp_to_config or base is None:
+            return val
+        return min(val, base)
 
-    minutes = _pick("max_minutes", base_minutes, 0)
-    tools = _pick("max_tool_calls", base_tools, 0)
-    cost = _pick("max_cost_usd", base_cost, -0.0000001)
+    minutes = _pick("max_minutes", base_minutes, 0, int)
+    tools = _pick("max_tool_calls", base_tools, 0, int)
+    cost = _pick("max_cost_usd", base_cost, -0.0000001, float)
     ov_approval = ov.get("approval_mode")
     if ov_approval is not None:
         if ov_approval not in ("threshold", "deny_all", "yolo"):
@@ -106,7 +131,8 @@ def resolve_loop_limits(loop_section: Any, overrides: "dict[str, Any] | None" = 
         approval = ov_approval
 
     return ResolvedLoopLimits(max_minutes=minutes, max_tool_calls=tools,
-                              max_cost_usd=cost, approval_mode=approval)
+                              max_cost_usd=cost, approval_mode=approval,
+                              max_rounds=base_rounds)
 
 
 @dataclass
@@ -203,7 +229,7 @@ def run_loop_rounds(
     should_stop: "Callable[[], str | None] | None" = None,
     on_round: "Callable[[int, str, list[dict]], None] | None" = None,
     confirm_nudge: str = LOOP_CONFIRM_NUDGE,
-    max_rounds: int = MAX_ROUNDS_HARD_CAP,
+    max_rounds: int | None = MAX_ROUNDS_HARD_CAP,
 ) -> "tuple[str, int, str, list[dict]]":
     """Roda o laço de rodadas até concluir/orçamento/parada externa.
 
@@ -248,7 +274,7 @@ def run_loop_rounds(
         if getattr(budget, "is_exhausted", False):
             stop_reason = "budget_exhausted"
             break
-        if round_num >= max_rounds:
+        if max_rounds is not None and round_num >= max_rounds:
             stop_reason = "max_rounds"
             break
 

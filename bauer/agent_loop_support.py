@@ -101,6 +101,7 @@ def print_loop_summary(
 
         from rich.panel import Panel
 
+        from .autonomous_budget import describe_limit, limit_or_none
         from .usage_pricing import format_cost as format_cost
 
         snap = budget.snapshot()
@@ -109,9 +110,10 @@ def print_loop_summary(
             f"[bold]Motivo:[/bold] {label}",
             f"[bold]Rodadas:[/bold] {round_num}",
             f"[bold]Duração:[/bold] {int(snap.elapsed_seconds)}s",
-            f"[bold]Tool calls:[/bold] {snap.tool_calls}/{snap.max_tool_calls}",
-            f"[bold]LLM calls:[/bold] {snap.llm_calls}/{snap.max_llm_calls}",
-            f"[bold]Custo:[/bold] {format_cost(snap.cost_usd)}/{format_cost(snap.max_cost_usd)}",
+            f"[bold]Tool calls:[/bold] {snap.tool_calls}/{describe_limit(limit_or_none(snap.max_tool_calls))}",
+            f"[bold]LLM calls:[/bold] {snap.llm_calls}/{describe_limit(limit_or_none(snap.max_llm_calls))}",
+            f"[bold]Custo:[/bold] {format_cost(snap.cost_usd)}/"
+            f"{'sem limite' if limit_or_none(snap.max_cost_usd) is None else format_cost(snap.max_cost_usd)}",
         ]
         tool_counts = Counter(entry.get("tool", "?") for entry in all_tool_log)
         if tool_counts:

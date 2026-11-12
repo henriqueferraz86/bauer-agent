@@ -370,7 +370,7 @@ def test_loop_endpoint_runs_to_completion(tmp_path: Path):
     body = resp.json()
     assert body["status"] == "running" and body["run_id"]
     # limites vieram do config (teto)
-    assert body["limits"] == {"max_minutes": 5, "max_tool_calls": 50, "max_cost_usd": 1.0}
+    assert body["limits"] == {"max_minutes": 5, "max_tool_calls": 50, "max_cost_usd": 1.0, "max_rounds": None}
 
     final = _wait_done(tc, body["run_id"])
     assert final["state"] == "completed" and final["stop_reason"] == "completed"
@@ -449,7 +449,7 @@ def test_loop_request_can_only_tighten_limits(tmp_path: Path):
         "message": "x", "max_minutes": 999, "max_tool_calls": 5, "max_cost_usd": 99.0,
     }).json()
     # 999 > teto(5) → clampa no teto; 5 < teto(50) → aceita; 99 > 1.0 → teto
-    assert body["limits"] == {"max_minutes": 5, "max_tool_calls": 5, "max_cost_usd": 1.0}
+    assert body["limits"] == {"max_minutes": 5, "max_tool_calls": 5, "max_cost_usd": 1.0, "max_rounds": None}
 
 
 def test_loop_invalid_limits_returns_422_not_500(tmp_path: Path):
@@ -603,3 +603,58 @@ def test_loop_projects_playwright_card_and_resumes_only_after_decision(tmp_path,
         assert final["approvals"][0]["status"] == ("approved" if decision == "approve" else "denied")
     finally:
         tc.post(f"/loop/{run_id}/stop")
+
+
+# ─── sprint 79: sem limite de iterações nem de custo ─────────────────────────
+
+def test_zero_in_config_means_unlimited_loop():
+    from types import SimpleNamespace
+
+    from bauer.serve_loop import resolve_loop_limits
+
+    section = SimpleNamespace(max_minutes=0, max_tool_calls=0, max_cost_usd=0.0,
+                              max_rounds=0, approval_mode="threshold")
+    limits = resolve_loop_limits(section, {}, clamp_to_config=True)
+    assert (limits.max_minutes, limits.max_tool_calls, limits.max_cost_usd,
+            limits.max_rounds) == (None, None, None, None)
+    assert "sem limite" in limits.banner_pt()
+    # Um cliente remoto pode pedir MENOS que "sem limite".
+    tight = resolve_loop_limits(section, {"max_tool_calls": 7}, clamp_to_config=True)
+    assert tight.max_tool_calls == 7 and tight.max_minutes is None
+    budget = limits.budget()
+    for _ in range(1000):  # muito além dos antigos 200 chamadas / 500 mil tokens
+        budget.consume_llm_call(cost_usd=50.0, output_tokens=10_000)
+        budget.consume_tool_call()
+    assert not budget.is_exhausted
+    assert budget.to_dict()["max_llm_calls"] is None
+
+
+def test_loop_budget_has_no_hidden_llm_call_cap():
+    """Na Beelink um loop parou com "[Limite de iterações atingido]" porque o
+    AutonomousBudget herdava max_llm_calls=200, fora do config."""
+    from bauer.serve_loop import ResolvedLoopLimits
+
+    limits = ResolvedLoopLimits(max_minutes=525_600, max_tool_calls=100_000_000,
+                                max_cost_usd=1_000_000.0)
+    budget = limits.budget()
+    for _ in range(201):
+        budget.consume_llm_call(output_tokens=5_000)
+    assert not budget.is_exhausted
+
+
+def test_unlimited_rounds_go_past_the_old_hard_cap():
+    from bauer.serve_loop import MAX_ROUNDS_HARD_CAP
+
+    ctx = _Ctx()
+    calls = {"n": 0}
+
+    def _turn():
+        calls["n"] += 1
+        if calls["n"] > MAX_ROUNDS_HARD_CAP + 5:
+            return ("terminei", [])
+        return ("trabalhando", [{"tool": "read_file", "budget_accounted": True}])
+
+    stop, rounds, _, _ = run_loop_rounds(goal="x", ctx=ctx, turn_fn=_turn,
+                                         budget=_budget(tools=10**9, secs=10**9),
+                                         max_rounds=None)
+    assert stop == "completed" and rounds > MAX_ROUNDS_HARD_CAP

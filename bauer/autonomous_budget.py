@@ -31,6 +31,7 @@ call from multiple threads, wrap accesses in a ``threading.Lock``.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -67,16 +68,16 @@ class BudgetSnapshot:
     max_cost_usd: float
 
     elapsed_seconds: float
-    max_wall_seconds: int
+    max_wall_seconds: float
 
     llm_calls: int
-    max_llm_calls: int
+    max_llm_calls: float
 
     tool_calls: int
-    max_tool_calls: int
+    max_tool_calls: float
 
     output_tokens: int
-    max_output_tokens: int
+    max_output_tokens: float
 
     status: BudgetStatus
 
@@ -132,10 +133,10 @@ class AutonomousBudget:
     """
 
     max_cost_usd: float = 5.0
-    max_wall_seconds: int = 3600
-    max_llm_calls: int = 200
-    max_tool_calls: int = 500
-    max_output_tokens: int = 500_000
+    max_wall_seconds: float = 3600
+    max_llm_calls: float = 200
+    max_tool_calls: float = 500
+    max_output_tokens: float = 500_000
 
     warn_at_cost_pct: float = 0.80
     warn_at_time_pct: float = 0.80
@@ -235,10 +236,10 @@ class AutonomousBudget:
     def remaining_seconds(self) -> float:
         return max(0.0, self.max_wall_seconds - self.elapsed_seconds)
 
-    def remaining_llm_calls(self) -> int:
+    def remaining_llm_calls(self) -> float:
         return max(0, self.max_llm_calls - self._llm_calls)
 
-    def remaining_tool_calls(self) -> int:
+    def remaining_tool_calls(self) -> float:
         return max(0, self.max_tool_calls - self._tool_calls)
 
     def snapshot(self) -> BudgetSnapshot:
@@ -264,18 +265,20 @@ class AutonomousBudget:
     def to_dict(self) -> dict[str, Any]:
         """Serialisable dict for persistence / logging."""
         snap = self.snapshot()
+        # "Sem limite" é infinito aqui dentro e None para fora: JSON não tem
+        # Infinity, e o painel recusaria a resposta.
         return {
             "status": snap.status.value,
             "cost_usd": snap.cost_usd,
-            "max_cost_usd": snap.max_cost_usd,
+            "max_cost_usd": limit_or_none(snap.max_cost_usd),
             "elapsed_seconds": round(snap.elapsed_seconds, 1),
-            "max_wall_seconds": snap.max_wall_seconds,
+            "max_wall_seconds": limit_or_none(snap.max_wall_seconds),
             "llm_calls": snap.llm_calls,
-            "max_llm_calls": snap.max_llm_calls,
+            "max_llm_calls": limit_or_none(snap.max_llm_calls),
             "tool_calls": snap.tool_calls,
-            "max_tool_calls": snap.max_tool_calls,
+            "max_tool_calls": limit_or_none(snap.max_tool_calls),
             "output_tokens": snap.output_tokens,
-            "max_output_tokens": snap.max_output_tokens,
+            "max_output_tokens": limit_or_none(snap.max_output_tokens),
         }
 
     # ------------------------------------------------------------------
@@ -339,4 +342,49 @@ def make_budget(
         max_output_tokens=output_tokens,
         warn_at_cost_pct=warn_pct,
         warn_at_time_pct=warn_pct,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sem limite (sprint 79)
+# ---------------------------------------------------------------------------
+
+UNLIMITED = math.inf
+
+
+def unlimited_if_none(value: "float | None") -> float:
+    """``None`` vira ``UNLIMITED``; qualquer número é mantido como está."""
+    return UNLIMITED if value is None else value
+
+
+def limit_or_none(value: float) -> "float | None":
+    """Inverso para fora do processo (JSON, painel): infinito vira ``None``."""
+    return None if math.isinf(value) else value
+
+
+def describe_limit(value: "float | None", unit: str = "") -> str:
+    """Texto curto para banners: ``sem limite`` ou o valor com unidade."""
+    if value is None or math.isinf(value):
+        return "sem limite"
+    number = f"{value:g}" if isinstance(value, float) else str(value)
+    return f"{number}{unit}"
+
+
+def loop_budget(*, max_minutes: "float | None", max_tool_calls: "float | None",
+                max_cost_usd: "float | None") -> AutonomousBudget:
+    """Orçamento de um /loop (Telegram, web, CLI).
+
+    ``None`` em tempo, ferramentas ou custo significa sem limite. Chamadas ao
+    modelo e tokens de saída não têm teto no loop: até a sprint 79 eles
+    herdavam os padrões escondidos de 200 chamadas e 500 mil tokens, e um loop
+    na Beelink parou com "[Limite de iterações atingido]" mesmo com o config
+    pedindo limites altíssimos. Os limites que o operador controla ficam no
+    ``loop:`` do config.
+    """
+    return AutonomousBudget(
+        max_cost_usd=unlimited_if_none(max_cost_usd),
+        max_wall_seconds=unlimited_if_none(None if max_minutes is None else max_minutes * 60),
+        max_tool_calls=unlimited_if_none(max_tool_calls),
+        max_llm_calls=UNLIMITED,
+        max_output_tokens=UNLIMITED,
     )
