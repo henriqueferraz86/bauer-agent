@@ -470,7 +470,11 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
                                   else "cancelado pelo usuário")}
             if stop_reason in ("completed", "budget_exhausted", "max_rounds"):
                 return out
-            return {**out, "status": "failed", "error": f"loop parou: {stop_reason}"}
+            error = f"loop parou: {stop_reason}"
+            if stop_reason == "provider_error" and last_text.strip():
+                # Sprint 78: o motivo real aparece no run (painel), não só no relatório.
+                error = f"{error} — {last_text.strip()[:300]}"
+            return {**out, "status": "failed", "error": error}
 
         validacao_reprovou = False
         try:

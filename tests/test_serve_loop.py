@@ -143,15 +143,80 @@ def test_should_stop_interrupts_between_rounds():
     assert stop == "kill_switch" and rounds == 2  # parou ANTES da 3ª rodada
 
 
-def test_turn_exception_stops_as_provider_error():
+@pytest.fixture
+def no_retry_wait(monkeypatch):
+    import bauer.serve_loop as serve_loop
+
+    waits: list[float] = []
+    monkeypatch.setattr(serve_loop, "_sleep", waits.append)
+    monkeypatch.setattr(serve_loop.time, "monotonic", _fake_clock(waits))
+    return waits
+
+
+def _fake_clock(waits):
+    def now():
+        return sum(waits)
+    return now
+
+
+def test_turn_exception_stops_as_provider_error(no_retry_wait):
     ctx = _Ctx()
+    calls = []
 
     def _boom():
+        calls.append(1)
         raise RuntimeError("429 rate limited")
 
     stop, rounds, last, _ = run_loop_rounds(
         goal="x", ctx=ctx, turn_fn=_boom, budget=_budget())
     assert stop == "provider_error" and "429" in last
+    assert len(calls) == 4  # 1 + 3 tentativas para erro transitório
+    assert rounds == 1
+
+
+def test_transient_provider_error_is_retried_and_the_loop_continues(no_retry_wait):
+    """Sprint 78: na Beelink um /loop morreu em 2 s na 1ª rodada por um erro
+    passageiro; repetido logo depois, rodou sem erro."""
+    ctx = _Ctx()
+    outcomes = iter([RuntimeError("503 Service Unavailable"), ("feito", []), ("confirmo", [])])
+
+    def _turn():
+        item = next(outcomes)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    stop, rounds, last, _ = run_loop_rounds(goal="x", ctx=ctx, turn_fn=_turn, budget=_budget())
+    assert stop == "completed" and rounds == 2 and last == "confirmo"
+    assert sum(no_retry_wait) == pytest.approx(5.0)
+
+
+def test_permanent_provider_error_is_not_retried(no_retry_wait):
+    ctx = _Ctx()
+    calls = []
+
+    def _turn():
+        calls.append(1)
+        raise RuntimeError("401 Unauthorized: invalid api key")
+
+    stop, _, last, _ = run_loop_rounds(goal="x", ctx=ctx, turn_fn=_turn, budget=_budget())
+    assert stop == "provider_error" and len(calls) == 1
+    assert "RuntimeError" in last and "401" in last
+    assert no_retry_wait == []
+
+
+def test_stop_during_retry_wait_ends_the_loop(no_retry_wait):
+    ctx = _Ctx()
+
+    def _turn():
+        raise RuntimeError("503 Service Unavailable")
+
+    def _should_stop():
+        return "cancelled" if no_retry_wait else None
+
+    stop, _, _, _ = run_loop_rounds(
+        goal="x", ctx=ctx, turn_fn=_turn, budget=_budget(), should_stop=_should_stop)
+    assert stop == "cancelled"
 
 
 def test_empty_response_stops():

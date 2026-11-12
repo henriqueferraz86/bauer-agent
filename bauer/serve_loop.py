@@ -16,10 +16,14 @@ Rodada com tools zera o candidato (o modelo ainda está trabalhando).
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable
+
+logger = logging.getLogger("bauer.serve_loop")
 
 #: mesmo texto do /loop da CLI (agent._LOOP_CONFIRM_NUDGE) — mantido aqui para
 #: não importar agent.py (pesado) só pela string.
@@ -156,6 +160,40 @@ def loop_registry() -> LoopRegistry:
     return _REGISTRY
 
 
+#: Esperas antes de repetir uma rodada que falhou por erro TRANSITÓRIO do
+#: provider (sprint 78). Na Beelink, em 2026-11-11, um /loop pedido pelo
+#: agente morreu em 2 s na 1ª rodada com `provider_error`; o mesmo loop,
+#: reproduzido logo depois, rodou 40 rodadas sem erro.
+ROUND_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 45.0)
+_sleep = time.sleep
+
+
+def _transient_provider_failure(exc: Exception) -> str | None:
+    """Motivo, se a falha é passageira (limite de taxa, 5xx, timeout, queda)."""
+    try:
+        from .error_classifier import FailReason, classify_api_error
+        reason = classify_api_error(exc).reason
+    except Exception:  # noqa: BLE001 — sem classificação, não repete
+        return None
+    transient = {FailReason.RATE_LIMIT, FailReason.SERVER_ERROR,
+                 FailReason.PROVIDER_DOWN, FailReason.TIMEOUT}
+    return reason.value if reason in transient else None
+
+
+def _wait_unless_stopped(delay: float, should_stop: "Callable[[], str | None] | None") -> str | None:
+    """Espera ``delay`` segundos em passos curtos; devolve o motivo se pararam o loop."""
+    deadline = time.monotonic() + delay
+    while True:
+        if should_stop is not None:
+            external = should_stop()
+            if external:
+                return external
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        _sleep(min(1.0, remaining))
+
+
 def run_loop_rounds(
     *,
     goal: str,
@@ -176,6 +214,7 @@ def run_loop_rounds(
     ctx.add_user(goal)
 
     round_num = 0
+    retries = 0
     confirm_pending = False
     stop_reason = "completed"
     last_text = ""
@@ -231,9 +270,28 @@ def run_loop_rounds(
                         "kill_switch": "Execução interrompida pelo kill-switch.",
                     }[exc.reason]
                 break
+            from .privacy import redact_text
+            detail = redact_text(f"{type(exc).__name__}: {exc}")[:500]
+            transient = _transient_provider_failure(exc)
+            if transient is not None and retries < len(ROUND_RETRY_DELAYS):
+                delay = ROUND_RETRY_DELAYS[retries]
+                retries += 1
+                round_num -= 1  # a rodada que falhou não conta
+                logger.warning(
+                    "loop: rodada falhou por erro transitório do provider (%s); "
+                    "tentativa %d/%d em %.0fs — %s",
+                    transient, retries, len(ROUND_RETRY_DELAYS), delay, detail,
+                )
+                external = _wait_unless_stopped(delay, should_stop)
+                if external:
+                    stop_reason = external
+                    break
+                continue
+            logger.warning("loop: parou por erro do provider — %s", detail)
             stop_reason = "provider_error"
-            last_text = str(exc)
+            last_text = detail
             break
+        retries = 0
 
         text = text or ""
         tool_log = tool_log or []
