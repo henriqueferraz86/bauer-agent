@@ -780,7 +780,8 @@ class ToolsSection(_StrictSection):
     safe_mode: bool = True
     timeout_seconds: int = Field(ge=1, le=300, default=30)
     max_output_kb: int = Field(ge=1, le=1000, default=50)
-    max_tool_calls: int = Field(ge=1, default=500)
+    # Teto de tool calls por SESSÃO do ToolRouter. 0 = sem limite (sprint 80).
+    max_tool_calls: int = Field(ge=0, default=0)
     # Cap de tool calls DENTRO DE UM ÚNICO TURNO do chat interativo (proteção
     # anti-loop de bauer/agent.py::MAX_TOOL_TURNS) — diferente de
     # max_tool_calls acima, que é o teto por SESSÃO inteira do ToolRouter.

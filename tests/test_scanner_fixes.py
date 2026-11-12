@@ -257,9 +257,18 @@ class TestLimitsToolCalls:
         result = router.execute({"action": "list_dir", "args": {"path": "."}})
         assert isinstance(result, str)
 
-    def test_default_max_tool_calls_generoso(self, ws):
+    def test_default_max_tool_calls_sem_limite(self, ws):
+        # Sprint 80: o contador não zera entre turnos; teto padrão derrubava
+        # sessões longas. Padrão agora é sem limite.
         router = ToolRouter(workspace=ws)
-        assert router._max_tool_calls == 500  # aumentado para suportar tarefas de ~1h
+        assert router._max_tool_calls is None
+        router._tool_call_count = 10_000
+        assert isinstance(router.execute({"action": "list_dir", "args": {"path": "."}}), str)
+
+    def test_max_tool_calls_zero_significa_sem_limite(self, ws):
+        router = ToolRouter(workspace=ws, max_tool_calls=0)
+        router._tool_call_count = 10_000
+        assert isinstance(router.execute({"action": "list_dir", "args": {"path": "."}}), str)
 
     def test_contador_incrementa_a_cada_execute(self, ws):
         router = ToolRouter(workspace=ws, max_tool_calls=100)

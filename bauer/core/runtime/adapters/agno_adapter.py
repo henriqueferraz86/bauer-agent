@@ -1322,7 +1322,7 @@ class AgnoRuntimeAdapter:
             workspace=self.workspace,
             shell_runner=shell_runner,
             web_enabled=True,
-            max_tool_calls=500,
+            max_tool_calls=int(self.adapter_config.get("max_tool_calls", 0) or 0),
             tool_context=self.tool_context,
             tool_policy_path=self.tool_policy_path,
             policy_enabled=True,
