@@ -11,6 +11,15 @@ REFLECT_NUDGE = (
 )
 
 
-def maybe_reflect(context, calls: int) -> None:
+def maybe_reflect(context, calls: int, budget=None) -> None:
+    """Injeta o ponto de reflexão, exceto em turno autônomo.
+
+    Um orçamento compartilhado (``remaining_tool_calls``) marca o /loop: ali o
+    usuário pediu trabalho longo e sem supervisão, e "responda agora com o que
+    tem" a cada 6 tools fazia o loop desistir no meio da tarefa (sprint 81).
+    O detector de chamadas repetidas continua valendo nos dois modos.
+    """
+    if hasattr(budget, "remaining_tool_calls"):
+        return
     if calls > 0 and calls % REFLECT_EVERY == 0:
         context.add_user(REFLECT_NUDGE.format(n=calls))
