@@ -492,6 +492,8 @@ def _spawn_loop_thread(*, backend: Any, store: TelegramLoopStore, update_id: int
             if stop_reason in ("completed", "budget_exhausted", "max_rounds"):
                 return out
             error = f"loop parou: {stop_reason}"
+            if stop_reason == "objetivo_pendente":
+                error = "o agente encerrou sem cumprir o objetivo"
             if stop_reason == "provider_error" and last_text.strip():
                 # Sprint 78: o motivo real aparece no run (painel), não só no relatório.
                 error = f"{error} — {last_text.strip()[:300]}"
@@ -550,6 +552,7 @@ def _terminal_report_text(*, run_id: str, goal: str, stop_reason: str, last_text
         "cancelled": "🛑 /loop cancelado",
         "kill_switch": "🛑 /loop interrompido pelo kill-switch",
         "validacao_reprovou": "⚠️ /loop encerrou mas a validação reprovou o resultado",
+        "objetivo_pendente": "⚠️ /loop encerrou sem cumprir o objetivo",
         "provider_error": "⚠️ /loop interrompido por erro do provedor",
         "empty_response": "⚠️ /loop interrompido — resposta vazia do modelo",
     }.get(stop_reason, "⚠️ /loop encerrou com falha")

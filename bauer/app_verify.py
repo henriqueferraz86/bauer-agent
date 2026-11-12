@@ -17,6 +17,7 @@ Design:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -208,6 +209,18 @@ def _candidatos_python(root: Path) -> List[str]:
         cand = root / rel
         if cand.is_file():
             cands.append(str(cand))
+    # Venvs com sufixo (``.venv-bauer``, ``.venv312``...). Um projeto montado
+    # num container costuma ter o ``.venv`` do HOST, cujo ``python`` é um
+    # symlink quebrado ali dentro (``is_file()`` falso) — o venv que funciona
+    # é outro, criado com o Python do container.
+    try:
+        extras = sorted(d for d in root.glob(".venv?*") if d.is_dir())
+    except OSError:
+        extras = []
+    for venv in extras:
+        for rel in (Path("bin") / "python", Path("Scripts") / "python.exe"):
+            if (venv / rel).is_file():
+                cands.append(str(venv / rel))
     # PATH ANTES de sys.executable: quando o Bauer roda via pipx, sys.executable
     # é o venv ISOLADO do Bauer — que por definição não tem pytest nem as
     # dependências de projeto nenhum.
@@ -255,6 +268,59 @@ def python_exe(root: Path, *, precisa: Optional[str] = None) -> str:
             if _tem_modulo(c, precisa):
                 return c
     return cands[0]
+
+
+def _tem_config_pytest(pasta: Path) -> bool:
+    if any((pasta / nome).is_file() for nome in ("pytest.ini", "tox.ini", "setup.cfg")):
+        return True
+    pyproject = pasta / "pyproject.toml"
+    try:
+        return pyproject.is_file() and "[tool.pytest" in pyproject.read_text(
+            encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
+def _pytest_isolado(root: Path) -> List[str]:
+    """Args que impedem o pytest de herdar config de um diretório PAI.
+
+    Projeto sem config própria montado sob outro projeto (ex.:
+    ``/app/registered-projects/x`` dentro do checkout do Bauer em ``/app``):
+    o pytest sobe a árvore, acha o ``pyproject.toml`` de cima e herda os
+    ``addopts`` dele — com ``-n`` do xdist, nem inicia. Só interfere quando o
+    projeto não tem config e algum pai tem ``[tool.pytest`` no pyproject ou um
+    ``pytest.ini``.
+    """
+    if _tem_config_pytest(root):
+        return []
+    try:
+        pais = list(root.resolve().parents)
+    except OSError:
+        return []
+    if not any(_tem_config_pytest(pai) for pai in pais):
+        return []
+    return ["--rootdir", ".", "-c", os.devnull]
+
+
+def _raiz_do_projeto(root: Path) -> Path:
+    """A raiz verificável: ``root``, ou a ÚNICA subpasta com marker de stack.
+
+    Workspace de canal costuma ser a pasta de trabalho do agente (Kanban,
+    memória, sessões) com o projeto de verdade numa subpasta. Sem isto o
+    gate de testes respondia "stack não detectada" e passava sem rodar nada.
+    Com zero ou mais de uma candidata, não adivinha: devolve ``root``.
+    """
+    markers = ("package.json", "pyproject.toml", "requirements.txt", "go.mod", "Cargo.toml")
+    if any((root / m).is_file() for m in markers):
+        return root
+    try:
+        subs = [d for d in sorted(root.iterdir())
+                if d.is_dir() and not d.name.startswith((".", "_"))
+                and d.name not in ("node_modules", "memory", "sessions", "data")
+                and any((d / m).is_file() for m in markers)]
+    except OSError:
+        return root
+    return subs[0] if len(subs) == 1 else root
 
 
 def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, List[str]]]]:
@@ -308,7 +374,8 @@ def plan_verification(project_dir: Path | str) -> Tuple[str, List[Tuple[str, Lis
             # projeto real: a verificação reprovava por erro de coleta, não pelo
             # código — falso negativo, e do tipo que faria o gate rejeitar todo
             # projeto Python de layout plano.
-            steps.append(("test", [python_exe(root, precisa="pytest"), "-m", "pytest", "-q"]))
+            steps.append(("test", [python_exe(root, precisa="pytest"), "-m", "pytest", "-q",
+                                   *_pytest_isolado(root)]))
         else:
             # smoke mínimo: compila tudo (pega SyntaxError sem rodar nada).
             steps.append(("smoke", [python_exe(root), "-m", "compileall", "-q", "."]))
@@ -417,6 +484,7 @@ def verify_project(
     if not root.is_dir():
         return VerifyResult(rel, "unknown", False, [], f"Projeto não encontrado: {root}")
 
+    root = _raiz_do_projeto(root)
     stack, plan = plan_verification(root)
     if stack == "unknown" or not plan:
         return VerifyResult(

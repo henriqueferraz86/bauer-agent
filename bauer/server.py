@@ -2639,7 +2639,9 @@ def create_app(
                     session_manager.touch_session(sid, state={"last_run_id": run.id})
                 except Exception as exc:  # noqa: BLE001 - persistence belongs to executor
                     stop_reason, last_text = "error", redact_text(str(exc))
+                from .channel_governance import tools_usadas as _tools_usadas
                 out = {"output": last_text, "tool_calls_count": len(all_tools),
+                       "tools_usadas": _tools_usadas(all_tools),
                        "cost_estimate": round(cost.total_usd - before_cost, 6),
                        "llm_calls_count": cost.calls - before_calls,
                        "usage_known": cost.calls > before_calls and cost.usage_known}
@@ -2657,6 +2659,8 @@ def create_app(
                     # UI usa para dizer "limite atingido", não "falhou").
                     return out
                 error = f"loop parou: {stop_reason}"
+                if stop_reason == "objetivo_pendente":
+                    error = "o agente encerrou sem cumprir o objetivo"
                 if stop_reason == "provider_error" and last_text.strip():
                     # Sprint 78: o motivo real aparece no run (painel), não só no relatório.
                     error = f"{error} — {last_text.strip()[:300]}"

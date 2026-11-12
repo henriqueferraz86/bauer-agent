@@ -124,8 +124,17 @@ class TurnMetrics:
                 "usage_known": self._calls > 0 and self._usage_known,
                 "tool_calls_count": (self._tool_calls if tool_log is None else len(tool_log)),
             }
+        if tool_log is not None:
+            # Evidência de mudança para o TestsGate fora de repo git.
+            result["tools_usadas"] = tools_usadas(tool_log)
         if status is not None:
             result["status"] = status
         if error is not None:
             result["error"] = error
         return result
+
+
+def tools_usadas(tool_log: "list[dict] | None") -> list[str]:
+    """Nomes distintos das tools de um tool_log (contrato do ``TestsGate``)."""
+    return sorted({str(e.get("tool")) for e in (tool_log or [])
+                   if isinstance(e, dict) and e.get("tool")})
