@@ -45,16 +45,22 @@ def run_loop_mode(
         console.print(f"[red]{exc}[/red]")
         return
 
-    from .autonomous_budget import AutonomousBudget
+    from .autonomous_budget import describe_limit, limit_or_none, loop_budget
     from .headless_approval import HeadlessApprovalConfig, HeadlessApprovalEngine
     from .tool_guardrails import ToolCallGuardrailController
     from .usage_pricing import format_cost
 
-    budget = AutonomousBudget(
-        max_cost_usd=loop_cfg.max_cost_usd,
-        max_wall_seconds=loop_cfg.max_minutes * 60,
-        max_tool_calls=loop_cfg.max_tool_calls,
+    # 0 no config = sem limite (sprint 79).
+    budget = loop_budget(
+        max_minutes=loop_cfg.max_minutes or None,
+        max_tool_calls=loop_cfg.max_tool_calls or None,
+        max_cost_usd=loop_cfg.max_cost_usd or None,
     )
+
+    def _cost_cap(value: float) -> str:
+        cap = limit_or_none(value)
+        return "sem limite" if cap is None else format_cost(cap)
+
     guardrail = ToolCallGuardrailController(bus=bus, session_id=str(session_id or ""))
     engine = HeadlessApprovalEngine(
         HeadlessApprovalConfig(
@@ -65,8 +71,9 @@ def run_loop_mode(
 
     console.print(
         f"[cyan]▶ /loop iniciado[/cyan] [dim]| aprovação: {loop_cfg.approval_mode} | "
-        f"até {loop_cfg.max_minutes}m / {loop_cfg.max_tool_calls} tool calls / "
-        f"{format_cost(loop_cfg.max_cost_usd)}. Ctrl+C interrompe.[/dim]"
+        f"tempo: {describe_limit(loop_cfg.max_minutes or None, 'm')} / "
+        f"tools: {describe_limit(loop_cfg.max_tool_calls or None)} / "
+        f"custo: {_cost_cap(budget.max_cost_usd)}. Ctrl+C interrompe.[/dim]"
     )
 
     router._approval_callback = engine.make_approval_callback()
@@ -107,9 +114,9 @@ def run_loop_mode(
             minutes, seconds = divmod(int(snap.elapsed_seconds), 60)
             console.print(
                 f"[dim][loop] rodada {round_num} | {snap.tool_calls} tool calls "
-                f"({snap.tool_calls}/{snap.max_tool_calls}) | {minutes}m{seconds:02d}s/"
-                f"{loop_cfg.max_minutes}m | {format_cost(snap.cost_usd)}/"
-                f"{format_cost(snap.max_cost_usd)}[/dim]"
+                f"({snap.tool_calls}/{describe_limit(limit_or_none(snap.max_tool_calls))}) | "
+                f"{minutes}m{seconds:02d}s/{describe_limit(loop_cfg.max_minutes or None, 'm')} | "
+                f"{format_cost(snap.cost_usd)}/{_cost_cap(snap.max_cost_usd)}[/dim]"
             )
             if not warned_80 and budget.is_warning:
                 console.print("[yellow]⚠ /loop perto do limite de orçamento (≥80%).[/yellow]")

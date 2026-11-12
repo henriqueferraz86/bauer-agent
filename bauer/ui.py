@@ -286,11 +286,13 @@ def agent_hud_header(
     )
 
 
-def progress_line(round_number: int, *, tools: int, tools_limit: int, elapsed: str, cost: str) -> Text:
+def progress_line(round_number: int, *, tools: int, tools_limit: "int | float | None",
+                  elapsed: str, cost: str) -> Text:
     """Progresso de execução autônoma, sempre com os mesmos campos e ordem."""
+    limit = "sem limite" if tools_limit is None else f"{tools_limit:g}" if isinstance(tools_limit, float) else str(tools_limit)
     return status_line(
         f"rodada {round_number}",
-        f"{tools}/{tools_limit} tools · {elapsed} · {cost}",
+        f"{tools}/{limit} tools · {elapsed} · {cost}",
         kind="running",
     )
 

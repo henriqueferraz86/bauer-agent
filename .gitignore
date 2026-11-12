@@ -171,3 +171,5 @@ graphify-out/
 !specs/sprint-77-telegram-autonomous-handoff/**
 !specs/sprint-78-loop-transient-provider-errors/
 !specs/sprint-78-loop-transient-provider-errors/**
+!specs/sprint-79-unlimited-loop/
+!specs/sprint-79-unlimited-loop/**

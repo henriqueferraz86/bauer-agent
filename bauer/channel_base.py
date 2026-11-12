@@ -493,6 +493,8 @@ class AgentBackend:
 
             try:
                 cfg = load_config(self.config_path)
+                from .agent_loop_config import apply_max_tool_turns
+                apply_max_tool_turns(str(self.config_path))  # sprint 79: 0 = sem limite
                 self._client = self._build_client_fn()(cfg)
                 self._model_name = cfg.model.name
                 self._provider = cfg.model.provider

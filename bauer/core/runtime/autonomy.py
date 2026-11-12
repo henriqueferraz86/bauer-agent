@@ -17,7 +17,7 @@ AUTONOMY_MODES = {"manual", "supervised", "autonomous", "locked"}
 @dataclass(slots=True)
 class AutonomyProfile:
     mode: str = "supervised"
-    daily_budget_usd: float = 2.0
+    daily_budget_usd: float | None = 2.0  # None = sem limite (sprint 79)
     weekly_budget_usd: float | None = None
     monthly_budget_usd: float | None = None
     max_tool_calls_per_run: int = 100
@@ -31,7 +31,7 @@ class AutonomyProfile:
     def validate(self) -> None:
         if self.mode not in AUTONOMY_MODES:
             raise ValueError(f"invalid autonomy mode: {self.mode}")
-        if self.daily_budget_usd < 0:
+        if self.daily_budget_usd is not None and self.daily_budget_usd < 0:
             raise ValueError("daily_budget_usd must be non-negative")
         if self.max_tool_calls_per_run < 0:
             raise ValueError("max_tool_calls_per_run must be non-negative")
