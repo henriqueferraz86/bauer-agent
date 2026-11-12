@@ -364,7 +364,13 @@ class FsToolsMixin:
                 rel = m.relative_to(self.workspace)
             except ValueError:
                 rel = m
-            suffix = "/" if m.is_dir() else f"  ({m.stat().st_size} bytes)"
+            try:
+                suffix = "/" if m.is_dir() else f"  ({m.stat().st_size} bytes)"
+            except OSError:
+                # Link quebrado (ex.: .venv/bin/python apontando para um Python
+                # do host, inexistente no container) ou entrada inacessível:
+                # não derruba a busca inteira.
+                suffix = "  (link quebrado)" if m.is_symlink() else "  (inacessivel)"
             lines.append(f"  {rel}{suffix}")
         result = f"Encontrados {len(matches)} arquivo(s) — padrao '{pattern}':\n" + "\n".join(lines)
         if len(matches) > 200:

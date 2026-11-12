@@ -35,3 +35,29 @@ A falha foi passageira, mas tinha dois agravantes:
 
 - Descobrir a causa exata da falha das 23:20: ela não ficou registrada em
   lugar nenhum do servidor, e é isso que esta sprint corrige.
+
+## Causa real das falhas da Beelink (achada depois do merge do PR #176)
+
+Um segundo /loop (`run-4e070f33…`, 23:46) falhou do mesmo jeito, então
+reproduzi o loop **com as ferramentas reais** numa cópia isolada do estado:
+
+- com `list_dir`, o loop concluiu;
+- explorando o projeto, ele morreu na 9ª rodada com
+  `FileNotFoundError: …/investimentos-os/.venv/bin/python`.
+
+`glob_files` chamava `stat()` em cada resultado. O `.venv/bin/python` do
+projeto é um link para um Python do host, que não existe no container. A
+exceção não era `ToolError`, então `run_native_turn` a relançava, o turno
+caía e `run_loop_rounds` a rotulava como `provider_error`.
+
+Correções:
+
+- `glob_files` lista link quebrado como `(link quebrado)` e entrada
+  inacessível como `(inacessivel)`, em vez de falhar;
+- `run_native_turn` converte `OSError` de qualquer tool em resultado de
+  erro para o modelo (`[Erro: Tipo: mensagem]`) e segue o turno. Outras
+  exceções inesperadas continuam propagando, assim como as de controle
+  (cancelamento, governança).
+
+Testes: `tests/test_sprint78_tool_oserror.py`. Os dois primeiros falham no
+código anterior.

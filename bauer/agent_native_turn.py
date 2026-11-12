@@ -143,9 +143,15 @@ def run_native_turn(
                             span.end(output=str(result)[:500], level="WARNING" if timed_out else "DEFAULT")
                     except Exception as exc:
                         from .tool_router import SandboxError, ToolError
-                        if not isinstance(exc, (ToolError, SandboxError)):
+                        if isinstance(exc, (ToolError, SandboxError)):
+                            result = f"[Erro: {exc}]"
+                        elif isinstance(exc, OSError):
+                            # Sprint 78: erro de sistema de arquivos de uma tool
+                            # vira resultado para o modelo. Antes, derrubava o
+                            # turno e o /loop o reportava como "erro do provedor".
+                            result = f"[Erro: {type(exc).__name__}: {exc}]"
+                        else:
                             raise
-                        result = f"[Erro: {exc}]"
                         failed = True
                         if span is not None:
                             span.end(output=result, level="ERROR")
