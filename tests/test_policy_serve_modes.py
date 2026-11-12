@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._deadlines import ANTI_HANG
+
 from bauer.core.events import EventBus
 from bauer.tool_router import ToolRouter, reset_runtime_ids, set_runtime_ids
 
@@ -160,7 +162,9 @@ def test_serve_enforce_tool_approval_is_streamed_and_resumes(tmp_path):
     assert approval is not None
     decision = control.post(f"/api/approvals/{approval['id']}/approve")
     assert decision.status_code == 200
-    thread.join(timeout=5)
+    # Prazo anti-travamento compartilhado (sprint 64): 5 s fixos falharam
+    # no runner Windows nos PRs #175 e #177.
+    thread.join(timeout=ANTI_HANG)
     assert not thread.is_alive()
     assert not target.exists()
     assert "event: approval" in result["body"]
