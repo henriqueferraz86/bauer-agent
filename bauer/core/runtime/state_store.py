@@ -168,11 +168,38 @@ class SqliteStateStore:
                     if "locked" not in str(exc).lower() or attempt == 11:
                         raise
                     time.sleep(0.05 * (attempt + 1))
+            conn.execute("SAVEPOINT runtime_write")
             try:
                 yield
+                conn.execute("RELEASE SAVEPOINT runtime_write")
                 conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
+            except Exception as exc:
+                # A denied terminal transition must not commit unrelated
+                # writes from its transaction. Roll them back to the savepoint
+                # and persist the stop while retaining the SQLite writer lock.
+                from .run_manager import EffectBarrierPending
+
+                if isinstance(exc, EffectBarrierPending) and exc.run_id and exc.reason:
+                    from ...tool_gateway_endpoint import ToolCallLedger
+
+                    try:
+                        conn.execute("ROLLBACK TO SAVEPOINT runtime_write")
+                        conn.execute("RELEASE SAVEPOINT runtime_write")
+                        marker = conn.execute(
+                            "SELECT value FROM runtime_meta WHERE key='tool_gateway_guard_v1'"
+                        ).fetchone()
+                        identity = conn.execute(
+                            "SELECT value FROM tool_gateway_meta WHERE key='ledger_id'"
+                        ).fetchone()
+                        if not marker or not identity or marker[0] != identity[0]:
+                            raise ValueError("barrier identity mismatch")
+                        ToolCallLedger.request_stop_in_transaction(conn, run_id=exc.run_id, reason=exc.reason)
+                        conn.execute("COMMIT")
+                    except Exception:
+                        conn.execute("ROLLBACK")
+                        raise
+                else:
+                    conn.execute("ROLLBACK")
                 raise
 
     @staticmethod
@@ -222,6 +249,8 @@ class SqliteStateStore:
         from ...privacy import redact_data
 
         record = redact_data(record)
+        if collection == "runs":
+            SqliteStateStore._guard_tool_gateway_transition(conn, record)
         conn.execute(
             "INSERT INTO runtime_records(collection, record_id, payload) VALUES (?, ?, ?)",
             (
@@ -230,6 +259,86 @@ class SqliteStateStore:
                 json.dumps(record, ensure_ascii=False, sort_keys=True),
             ),
         )
+
+    @staticmethod
+    def _guard_tool_gateway_transition(conn: sqlite3.Connection, record: dict[str, Any]) -> None:
+        """Fail closed for AgentOS terminals when the canonical barrier exists.
+
+        Run state and tool-call ledger share this connection and writer lock.
+        If an effect is in flight unrelated writes roll back to a savepoint;
+        stop intent is persisted while retaining the same writer lock.
+        """
+        database = conn.execute("PRAGMA database_list").fetchone()
+        if not database or not database[2]:
+            return
+        enabled = conn.execute("SELECT value FROM runtime_meta WHERE key='tool_gateway_guard_v1'").fetchone()
+        if enabled is None:
+            return  # Explicit activation is persisted in the authoritative store.
+        run_id = str(record.get("id") or "")
+        row = conn.execute(
+            "SELECT payload FROM runtime_records WHERE collection='runs' AND record_id=? "
+            "ORDER BY sequence DESC LIMIT 1", (run_id,),
+        ).fetchone()
+        if row is None:
+            return
+        previous = json.loads(row[0])
+        if previous.get("runtime_adapter") != "agentos_http":
+            return
+        if record.get("runtime_adapter") != "agentos_http":
+            raise ValueError("AgentOS HTTP runs cannot change runtime adapter")
+        terminal = {"completed", "failed", "cancelled"}
+        status = record.get("status")
+        if status not in terminal or previous.get("status") in terminal:
+            return
+        from ...tool_gateway_endpoint import ToolCallLedger
+        from .run_manager import EffectBarrierPending
+
+        try:
+            ledger_id = conn.execute("SELECT value FROM tool_gateway_meta WHERE key='ledger_id'").fetchone()
+            if not ledger_id or ledger_id[0] != enabled[0]:
+                raise ValueError("barrier identity mismatch")
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise EffectBarrierPending("remote tool barrier is unavailable") from exc
+        reason = "cancel" if status == "cancelled" else "terminal"
+        if not ToolCallLedger.request_stop_in_transaction(conn, run_id=run_id, reason=reason):
+            raise EffectBarrierPending("remote tool outcome is not yet settled", run_id=run_id, reason=reason)
+
+    def activate_tool_gateway_guard(self, ledger_path: Path) -> None:
+        """Persist activation so other processes fail closed if the ledger disappears."""
+        if not isinstance(ledger_path, Path) or ledger_path.resolve() != self.path.resolve():
+            raise ValueError("invalid Tool Gateway ledger path")
+        if not ledger_path.is_file():
+            raise ValueError("Tool Gateway ledger does not exist")
+        from ...tool_gateway_endpoint import ToolCallLedger
+
+        ledger_id = ToolCallLedger(ledger_path, create=False).ledger_id
+        with self._connect() as conn, self._write(conn):
+            existing = conn.execute("SELECT value FROM runtime_meta WHERE key='tool_gateway_guard_v1'").fetchone()
+            if existing is not None and existing[0] != ledger_id:
+                raise ValueError("Tool Gateway ledger identity changed")
+            conn.execute("INSERT OR IGNORE INTO runtime_meta(key, value) VALUES ('tool_gateway_guard_v1', ?)",
+                         (ledger_id,))
+
+    def tool_gateway_barrier(self):
+        """Return the activated barrier, or None when never enabled.
+
+        Once activated, a missing ledger is an error, never an implicit opt-out.
+        """
+        with self._connect() as conn:
+            enabled = conn.execute("SELECT value FROM runtime_meta WHERE key='tool_gateway_guard_v1'").fetchone()
+        if enabled is None:
+            return None
+        path = self.path.resolve()
+        from ...tool_gateway_endpoint import ToolCallLedger
+        from .run_manager import EffectBarrierPending
+
+        try:
+            ledger = ToolCallLedger(path, create=False)
+            if ledger.ledger_id != enabled[0]:
+                raise ValueError("barrier identity mismatch")
+            return ledger
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise EffectBarrierPending("remote tool barrier is unavailable") from exc
 
     def append(self, collection: str, record: Any) -> dict[str, Any]:
         from ...privacy import redact_data

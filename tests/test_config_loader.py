@@ -49,6 +49,43 @@ def test_load_valid_config(tmp_path: Path):
     assert cfg.memory.semantic_indexing_batch_size == 16
 
 
+@pytest.mark.parametrize("value", ["Agno", " AGNO "])
+def test_telegram_default_adapter_normalizes_before_literal_validation(tmp_path: Path, value: str):
+    p = tmp_path / "config.yaml"
+    config = VALID_CONFIG.replace(
+        "runtime:\n", f"runtime:\n  telegram_default_adapter: {value!r}\n", 1,
+    )
+    p.write_text(config, encoding="utf-8")
+
+    cfg = load_config(p)
+
+    assert cfg.runtime.telegram_default_adapter == value.strip().lower()
+
+
+def test_agentos_http_adapter_name_normalizes_with_required_config(tmp_path: Path):
+    p = tmp_path / "config.yaml"
+    p.write_text(VALID_CONFIG.replace(
+        "runtime:\n",
+        "runtime:\n  telegram_default_adapter: ' AgentOS_HTTP '\n  adapters:\n"
+        "    agentos_http:\n      enabled: true\n      experimental_read_only: true\n"
+        "      base_url: http://127.0.0.1:7787\n      agent_id: bauer.dev\n"
+        "      jwt_issuer: gateway\n      jwt_audience: agentos\n",
+        1,
+    ), encoding="utf-8")
+
+    assert load_config(p).runtime.telegram_default_adapter == "agentos_http"
+
+
+def test_telegram_default_adapter_stays_strict_after_normalization(tmp_path: Path):
+    p = tmp_path / "config.yaml"
+    p.write_text(VALID_CONFIG.replace(
+        "runtime:\n", "runtime:\n  telegram_default_adapter: not-a-channel\n", 1,
+    ), encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
 def test_autopilot_has_safe_defaults_and_defers_runtime_mission_validation(tmp_path: Path):
     p = tmp_path / "config.yaml"
     p.write_text(VALID_CONFIG, encoding="utf-8")

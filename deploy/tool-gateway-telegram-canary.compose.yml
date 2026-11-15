@@ -1,0 +1,117 @@
+name: bauer-tool-gateway-telegram-canary
+
+# Live Telegram read-only canary. The poller is deliberately not part of the
+# container command: start it manually only after both HTTP services pass the
+# signed-profile checks and the production poller is stopped.
+services:
+  prepare:
+    image: ${BAUER_LIVE_CANARY_IMAGE:?Provide the tested local candidate image}
+    pull_policy: never
+    user: "1000:1000"
+    profiles: [prepare]
+    network_mode: none
+    entrypoint: ["python", "/prep/tool-gateway-telegram-canary-setup.py"]
+    volumes:
+      - ./:/prep
+      - ./workspace:/app/workspace
+      - ./memory:/app/memory
+      - ./agentos-workspace:/app/agentos-workspace
+      - ./agentos-memory:/app/agentos-memory
+
+  bauer:
+    image: ${BAUER_LIVE_CANARY_IMAGE:?Provide the tested local candidate image}
+    pull_policy: never
+    user: "1000:1000"
+    command:
+      - python
+      - -m
+      - bauer.cli
+      - serve
+      - --config
+      - /app/config.yaml
+      - --models
+      - /app/models.yaml
+      - --workspace
+      - /app/workspace
+      - --state-file
+      - /app/memory/runtime_state.json
+      - --sessions-dir
+      - /app/memory/sessions
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8000"
+    env_file:
+      - path: ./.env.bauer-canary
+        required: false
+    environment:
+      PYTHONUNBUFFERED: "1"
+      OLLAMA_HOST: http://bauer-ollama:11434
+      BAUER_HOME: /app/memory/bauer-home
+      BAUER_TOOL_GATEWAY_ENABLED: "true"
+      BAUER_TOOL_GATEWAY_URL: http://127.0.0.1:8000
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./models.yaml:/app/models.yaml:ro
+      - ./workspace:/app/workspace
+      - ./memory:/app/memory
+      - ./logs:/app/logs
+    networks: [bauer-production]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  agentos-channel:
+    image: ${BAUER_LIVE_CANARY_IMAGE:?Provide the tested local candidate image}
+    pull_policy: never
+    user: "1000:1000"
+    network_mode: service:bauer
+    depends_on:
+      bauer:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - bauer.agentos_app
+      - --config
+      - /app/agentos-config.yaml
+      - --workspace
+      - /app/agentos-workspace
+      - --runtime-root
+      - /app/agentos-memory/runtime
+      - --host
+      - 127.0.0.1
+      - --port
+      - "7787"
+    env_file:
+      - path: ./.env.agentos-canary
+        required: false
+    environment:
+      BAUER_CONFIG: /app/agentos-config.yaml
+      BAUER_HOME: /app/agentos-memory/bauer-home
+      BAUER_RUNTIME_ROOT: /app/agentos-memory/runtime
+      BAUER_WORKSPACE: /app/agentos-workspace
+      BAUER_AGENTOS_CHANNEL_BOUNDARY: "true"
+      BAUER_AGENTOS_JWT_ISOLATION: "true"
+      BAUER_AGENTOS_EXTERNAL_READ_TOOLS: "true"
+    volumes:
+      - ./agentos-config.yaml:/app/agentos-config.yaml:ro
+      - ./agents.yaml:/app/agents.yaml:ro
+      - ./agentos-workspace:/app/agentos-workspace
+      - ./agentos-memory:/app/agentos-memory
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7787/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  bauer-production:
+    external: true
+    name: ${BAUER_LIVE_CANARY_NETWORK:-bauer-agent_default}

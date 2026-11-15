@@ -19,9 +19,13 @@ def test_agentos_app_builds_from_empty_catalog(tmp_path):
         team_roots=[tmp_path / "teams"],
     )
 
-    paths = {route.path for route in app.routes}
-    assert "/docs" in paths
-    assert "/health" in paths or "/config" in paths
+    # Test the exposed surface instead of assuming every entry in app.routes
+    # has a .path. Newer FastAPI versions keep included routers nested.
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        assert client.get("/docs").status_code == 200
+        assert client.get("/health").status_code == 200
 
 
 def test_agentos_app_does_not_start_at_import():

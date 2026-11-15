@@ -739,8 +739,26 @@ class RuntimeSection(_StrictSection):
     # painel web (toggle de `/api/runtime/mode`) seria o mesmo erro que o
     # sprint 37 corrigiu para a CLI. Default `bauer_native`: esta sprint só
     # entrega a capacidade testada, atrás de opt-in explícito do operador.
-    telegram_default_adapter: str = "bauer_native"
+    telegram_default_adapter: Literal["bauer_native", "agno", "agentos_http"] = "bauer_native"
     adapters: dict[str, dict[str, Any]] = Field(default_factory=_adapters_padrao)
+
+    @field_validator("telegram_default_adapter", mode="before")
+    @classmethod
+    def _normalize_telegram_default_adapter(cls, value: Any) -> Any:
+        # Preserve the channel selector's case/whitespace tolerance while
+        # keeping Literal validation strict after normalization.
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _validate_telegram_agentos(self) -> "RuntimeSection":
+        if self.telegram_default_adapter != "agentos_http":
+            return self
+        adapter = self.adapters.get("agentos_http", {})
+        required = ("base_url", "agent_id", "jwt_issuer", "jwt_audience")
+        if (adapter.get("enabled") is not True or adapter.get("experimental_read_only") is not True
+                or any(not isinstance(adapter.get(key), str) or not adapter[key].strip() for key in required)):
+            raise ValueError("agentos_http exige enabled, experimental_read_only, base_url, agent_id, jwt_issuer e jwt_audience")
+        return self
 
 
 class RouterSection(_StrictSection):

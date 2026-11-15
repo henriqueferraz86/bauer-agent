@@ -33,13 +33,14 @@ class ExecutionControl:
                  cancel_event: threading.Event | None = None,
                  channel: str | None = None, owner: str | None = None,
                  chat_id: str | None = None, project_id: str | None = None,
-                 private_chat: bool = False) -> None:
+                 private_chat: bool = False, effect_barrier: Any | None = None) -> None:
         self.run_id = run_id
         self.session_id = session_id
         self.workspace = workspace
         self.check_callback = check_callback
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._reason: str | None = None
+        self.effect_barrier = effect_barrier
         self._lock = threading.Lock()
         self._wait_condition = threading.Condition(self._lock)
         self._approval_wait_id: str | None = None
@@ -197,6 +198,13 @@ class ExecutionControl:
 
     def request_cancel(self, reason: str = "cancelled") -> None:
         normalized = reason if reason in {"kill_switch", "budget_exhausted"} else "cancelled"
+        barrier_error = None
+        if self.effect_barrier is not None and self.run_id:
+            barrier_reason = normalized if normalized in {"kill_switch", "budget_exhausted"} else "cancel"
+            try:
+                self.effect_barrier.request_stop(run_id=self.run_id, reason=barrier_reason)
+            except Exception as exc:  # noqa: BLE001 - signal local stop even if persistence is unavailable
+                barrier_error = exc
         with self._lock:
             if self._reason is None:
                 self._reason = normalized
@@ -205,6 +213,8 @@ class ExecutionControl:
             self._wait_condition.notify_all()
         for process, terminate in processes:
             self._start_termination(process, terminate)
+        if barrier_error is not None:
+            raise ExecutionControlError("Could not persist remote tool stop intent") from barrier_error
 
     def _start_termination(self, process: Any, terminate: Callable[[], None]) -> None:
         with self._lock:
@@ -228,6 +238,15 @@ class ExecutionControl:
         if self.cancel_event.is_set():
             with self._lock:
                 return self._reason or "cancelled"
+        if self.effect_barrier is not None and self.run_id:
+            try:
+                barrier_reason = self.effect_barrier.stop_reason(self.run_id)
+            except Exception as exc:  # noqa: BLE001 - an activated guard must fail closed
+                raise ExecutionControlError("Execution barrier is unavailable") from exc
+            if barrier_reason:
+                self.request_cancel(barrier_reason)
+                with self._lock:
+                    return self._reason or "cancelled"
         if self.check_callback is not None:
             try:
                 reason = self.check_callback()

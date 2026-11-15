@@ -71,7 +71,7 @@ class TestCronjobShellDenylist:
             router._cronjob({"action": "run", "name": "injeta"})
 
     def test_comando_seguro_nao_bloqueado(self, router):
-        self._create_job(router, "lista", "echo hello")
+        self._create_job(router, "lista", "python -c \"print('hello')\"")
         # Deve executar sem levantar ToolError de denylist
         result = router._cronjob({"action": "run", "name": "lista"})
         assert isinstance(result, str)

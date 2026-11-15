@@ -15,6 +15,7 @@ import pytest
 
 from bauer.channel_base import AgentBackend, ChannelMessage
 from bauer.telegram_bridge import (
+    MAX_MESSAGE_CHARS,
     TelegramBridge,
     _StreamingDraft,
     _TypingHeartbeat,
@@ -394,3 +395,28 @@ class TestStreamingDraft:
         draft.on_tool("shell")
         assert draft.finish("") is True
         assert deleted, "draft órfão deveria ser apagado"
+
+    @pytest.mark.parametrize("fail_at", [1, 2])
+    def test_falha_em_chunk_posterior_nao_reenvia_resposta_inteira(self, tmp_path, fail_at):
+        bridge, _sent, _edited, _deleted = self._draft_bridge(tmp_path)
+        full_text = "trecho " * (MAX_MESSAGE_CHARS * 3)
+        assert len(chunk_text_fenced(full_text, MAX_MESSAGE_CHARS)) > fail_at + 1
+        attempts = []
+        fallback = []
+
+        def send_extra(_chat_id, _text):
+            attempts.append(1)
+            if len(attempts) == fail_at:
+                raise OSError("delivery outcome unknown")
+            return True
+
+        bridge.send_text_result = send_extra
+        bridge.send_text = lambda chat, text: fallback.append((chat, text))
+        bridge.handle_message = lambda _msg, on_delta=None: (
+            on_delta.on_delta("Resposta parcial suficientemente longa para exibir") or full_text
+        )
+
+        bridge._process_scoped_message(ChannelMessage("telegram", "42", "42", "pergunta"), {}, None)
+
+        assert len(attempts) == fail_at
+        assert fallback == []

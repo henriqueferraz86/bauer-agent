@@ -1,0 +1,41 @@
+# Overlay for tool-gateway-staging.compose.yml only.
+services:
+  bauer:
+    command: ["python", "/app/tool-gateway-canary.py", "bauer"]
+    restart: unless-stopped
+    environment:
+      BAUER_CONFIG: /app/staging-config.yaml
+      BAUER_HOME: /app/memory/bauer-home
+      BAUER_TOOL_GATEWAY_ENABLED: "true"
+      BAUER_TOOL_GATEWAY_URL: http://127.0.0.1:8000
+      BAUER_TOOL_GATEWAY_PUBLIC_KEY_FILE: /app/memory/bauer-home/gateway-public.pem
+      BAUER_TOOL_GATEWAY_PRIVATE_KEY_FILE: /app/memory/bauer-home/gateway-private.pem
+      BAUER_TOOL_GATEWAY_ISSUER: bauer-tool-gateway-canary
+      BAUER_TOOL_GATEWAY_AUDIENCE: tool-gateway-canary
+      BAUER_TOOL_GATEWAY_SERVICE_KEY: ${BAUER_STAGING_SERVICE_KEY:?Provide a synthetic staging service key}
+      BAUER_AGENTOS_JWT_ISSUER: bauer-staging
+      BAUER_AGENTOS_JWT_AUDIENCE: agentos-channel-staging
+      BAUER_AGENTOS_JWT_KEY: ${BAUER_STAGING_JWT_KEY:?Provide a synthetic staging JWT key}
+      BAUER_TOOL_GATEWAY_REQUIREMENT_KEY: ${BAUER_STAGING_REQUIREMENT_KEY:?Provide a synthetic staging requirement key}
+      BAUER_TOOL_GATEWAY_CONTINUATION_KEY: ${BAUER_STAGING_CONTINUATION_KEY:?Provide a synthetic staging continuation key}
+    configs:
+      - source: staging_config
+        target: /app/staging-config.yaml
+      - source: canary_program
+        target: /app/tool-gateway-canary.py
+    healthcheck:
+      test: ["CMD", "python", "/app/tool-gateway-canary.py", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  agentos-channel:
+    command: ["python", "/app/tool-gateway-canary.py", "agentos"]
+    restart: unless-stopped
+    configs:
+      - source: canary_program
+        target: /app/tool-gateway-canary.py
+
+configs:
+  canary_program:
+    file: tool-gateway-canary.py

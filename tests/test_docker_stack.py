@@ -32,7 +32,7 @@ def test_compose_exposes_the_four_bauer_surfaces_without_exposing_ollama():
 
     assert {"ollama", "ollama-init", "bauer", "agentos", "agent-ui"} <= services.keys()
     assert services["bauer"]["ports"] == ["8000:8000", "127.0.0.1:1455:1455"]
-    assert services["agentos"]["ports"] == ["7777:7777"]
+    assert services["agentos"]["ports"] == ["${AGENT_OS_BIND_ADDRESS:-127.0.0.1}:7777:7777"]
     assert services["agent-ui"]["ports"] == ["3000:3000"]
     assert "ports" not in services["ollama"]
 

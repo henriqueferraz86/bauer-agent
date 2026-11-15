@@ -1374,7 +1374,7 @@ def _assinatura(result: dict[str, Any]) -> str:
 
 def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
                  workspace: str = "workspace", with_policy: bool = True,
-                 bus: Any = None) -> BauerKernel:
+                 bus: Any = None, effect_barrier: Any = None) -> BauerKernel:
     """Composição padrão do Kernel com os componentes existentes (produção).
 
     ``bus`` opcional: reaproveita um EventBus já criado pelo caller. Serve a
@@ -1393,7 +1393,7 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
 
     store = getattr(bus, "store", None) or SqliteStateStore(root)
     bus = bus or EventBus(store=store)
-    runs = RunManager(store=store, event_bus=bus)
+    runs = RunManager(store=store, event_bus=bus, effect_barrier=effect_barrier)
     policy = None
     if with_policy:
         from ..policy.engine import PolicyEngine
@@ -1419,5 +1419,5 @@ def build_kernel(cfg: Any | None = None, *, root: str = "memory/runtime",
         control=RuntimeControl(store=store),
         approvals=ApprovalManager(root=root, event_bus=bus),
         budget=BudgetManager(root=root),
-        recovery=RuntimeRecovery(store=store),
+        recovery=RuntimeRecovery(store=store, effect_barrier=effect_barrier),
     )
