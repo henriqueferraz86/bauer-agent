@@ -141,6 +141,7 @@ class ChannelMessage:
     raw: dict = field(default_factory=dict)
     project_snapshot: Any = field(default=None, repr=False)
     project_snapshot_captured: bool = False
+    durable_update: bool = False
 
     @property
     def session_key(self) -> str:
@@ -203,6 +204,8 @@ class AgentBackend:
         self._kernel_workspace: Path | None = None
         self._kernel_lock = threading.Lock()
         self._workspace_kernels: OrderedDict[Path, Any] = OrderedDict()
+        # Experimental injection only; no configuration currently enables it.
+        self._tool_effect_barrier: Any = None
         # Injetável (testes / embedding): callable(cfg) -> client.
         # Default None → usa bauer.cli._build_client (import tardio).
         self._client_builder: Any = None
@@ -797,6 +800,8 @@ class AgentBackend:
 
         ctx, lock = self._get_session(key)
         if not lock.acquire(blocking=False):
+            if msg.durable_update:
+                return "⏳ A conversa está ocupada; esta mensagem não foi executada. Reenvie quando terminar."
             with self._pending_lock:
                 active = self._live_session_execution(key)
                 if active is not None and active.batch.stop_queue.is_set():
@@ -916,11 +921,15 @@ class AgentBackend:
     def _new_channel_execution(self, msg: ChannelMessage, key: str,
                                batch: SessionWorker) -> ChannelExecution:
         project = self._active_project()
+        raw_update_id = (msg.raw or {}).get("update_id")
         return ChannelExecution(
             owner=operator_key(msg), channel=msg.channel, chat_id=msg.chat_id,
             project_id=project.project_id if project is not None else None,
             session_key=key, workspace=Path(self._effective_router().workspace).resolve(),
             batch=batch, private_chat=private_telegram(msg),
+            update_id=(str(raw_update_id) if isinstance(raw_update_id, int)
+                       and not isinstance(raw_update_id, bool) and raw_update_id >= 0 else None),
+            inbox_persisted=msg.durable_update,
         )
 
     def pop_autonomous_handoff(self, msg: ChannelMessage) -> str | None:
@@ -1025,7 +1034,9 @@ class AgentBackend:
             event_bus = self._configure_channel_router(self._effective_router())
             kernel = build_channel_kernel(cfg, workspace=workspace,
                                           sessions_dir=self.sessions_dir,
-                                          event_bus=event_bus)
+                                          event_bus=event_bus,
+                                          **({"effect_barrier": self._tool_effect_barrier}
+                                             if self._tool_effect_barrier is not None else {}))
             self._workspace_kernels[workspace] = kernel
             while len(self._workspace_kernels) > 8:
                 self._workspace_kernels.popitem(last=False)
@@ -1056,7 +1067,16 @@ class AgentBackend:
         # adapter, sprint 37) — não cacheado na vida do processo, pra o
         # operador poder trocar `runtime.telegram_default_adapter` sem
         # reiniciar o gateway.
-        turno = self._turno_agno if self._resolve_telegram_runtime_adapter() == "agno" else self._turno_cru
+        adapter_mode = self._resolve_telegram_runtime_adapter() or "bauer_native"
+        if execution is not None and getattr(execution, "inbox_persisted", False) and adapter_mode != "agentos_http":
+            raise ValueError("Adapter alterado durante a mensagem; execução bloqueada sem fallback.")
+        if adapter_mode == "agentos_http" and execution is not None and canal != "telegram":
+            adapter_mode = "bauer_native"
+        if adapter_mode not in {"bauer_native", "agno", "agentos_http"}:
+            raise ValueError("Adapter Telegram desconhecido; execução bloqueada.")
+        if adapter_mode == "agentos_http" and (kernel is None or execution is None or canal != "telegram"):
+            raise ValueError("AgentOS HTTP requer Kernel e execução Telegram autenticada.")
+        turno = self._turno_agno if adapter_mode == "agno" else self._turno_cru
 
         def _executar(_payload):
             metrics = TurnMetrics()
@@ -1066,6 +1086,8 @@ class AgentBackend:
             before_tools = control.tool_calls if control is not None else 0
             if control is not None:
                 control.run_id = _payload.get("run_id")
+                if adapter_mode == "agentos_http" and kernel is not None:
+                    control.effect_barrier = getattr(kernel.runs, "effect_barrier", None)
                 profile = kernel.budget.get_profile() if kernel is not None and kernel.budget is not None else None
                 if profile is not None:
                     control.max_tool_calls = profile.max_tool_calls_per_run or None
@@ -1091,7 +1113,17 @@ class AgentBackend:
                 policy_wait_token = set_policy_approval_wait(True)
             try:
                 with metrics.context(key, _payload.get("run_id")):
-                    if control is None:
+                    if adapter_mode == "agentos_http":
+                        from .config_loader import load_config
+                        from .telegram_agentos_http import execute_http_turn
+
+                        cfg = load_config(self.config_path)
+                        output = execute_http_turn(
+                            settings=cfg.runtime.adapters.get("agentos_http", {}),
+                            execution=execution, gateway_run_id=_payload["run_id"], text=text,
+                            state_dir=self.sessions_dir, on_delta=on_delta, kernel=kernel,
+                        )
+                    elif control is None:
                         output = turno(ctx, key, client, model, text, on_delta,
                                        metrics=metrics)
                     else:
@@ -1126,7 +1158,7 @@ class AgentBackend:
         gov = run_governed(
             kernel, _executar,
             agent_id=f"channel.{canal}", task=text, session_id=key,
-            runtime_adapter="bauer_native",
+            runtime_adapter=adapter_mode,
             input={"endpoint": f"canal:{canal}", "session": key,
                    "project_id": project.project_id if project is not None else None,
                    "workspace": str(self._effective_router().workspace),
@@ -1139,6 +1171,8 @@ class AgentBackend:
         texto = str(gov.output if gov.output is not None
                     else (gov.result or {}).get("output") or "")
         if not gov.ok and gov.governed:
+            if adapter_mode == "agentos_http":
+                return "⚠️ A execução remota não passou pela validação do Kernel."
             # gate reprovou: o texto ainda vale mais que um erro genérico para
             # quem está do outro lado do chat
             return texto or f"⚠ {gov.error or 'não consegui concluir'}"
@@ -1204,14 +1238,17 @@ class AgentBackend:
         (sprint 37) — o Telegram roda como processo de gateway próprio, nem
         sempre o mesmo processo do `bauer serve`; herdar silenciosamente outro
         toggle seria o mesmo erro que o sprint 37 corrigiu para a CLI.
-        Best-effort: qualquer falha de leitura nunca quebra o turno, só
-        mantém o default `bauer_native`.
+        Se o arquivo existe, erro de leitura bloqueia execução: não é seguro
+        trocar silenciosamente uma execução remota por Native.
         """
         try:
             from .config_loader import load_config
             cfg = load_config(self.config_path)
             return str(getattr(cfg.runtime, "telegram_default_adapter", "") or "").strip().lower()
-        except Exception:
+        except Exception as exc:
+            if self.config_path.exists():
+                from .core.kernel import KernelWiringError
+                raise KernelWiringError("Não consegui validar o adapter Telegram; execução bloqueada.") from exc
             return ""
 
     def _turno_agno(self, ctx: Any, key: str, client: Any, model: str,

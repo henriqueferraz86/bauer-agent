@@ -64,6 +64,20 @@ def test_control_identity_scope_and_fail_closed_governance():
     assert isinstance(error.value.__cause__, OSError)
 
 
+def test_checkpoint_observes_stop_requested_by_another_process(tmp_path):
+    from bauer.tool_gateway_endpoint import ToolCallLedger
+
+    ledger = ToolCallLedger(tmp_path / "gateway.db")
+    assert ledger.claim("token", "digest", run_id="run", remote_run_id="remote", tool_call_id="call")
+    assert not ledger.request_stop(run_id="run", reason="cancel")
+    control = ExecutionControl(run_id="run", effect_barrier=ledger)
+
+    with pytest.raises(ProviderRetryInterrupted) as raised:
+        control.checkpoint()
+
+    assert raised.value.reason == "cancelled"
+
+
 @pytest.mark.parametrize("reason", ["cancelled", "kill_switch", "budget_exhausted"])
 def test_stop_reason_never_turns_into_tool_error(reason, tmp_path):
     control = ExecutionControl(check_callback=lambda: reason)

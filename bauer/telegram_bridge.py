@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+import sqlite3
 import logging
 import re
 import secrets
@@ -54,6 +55,14 @@ from .channel_projects import private_telegram
 from .privacy import redact_text
 
 logger = logging.getLogger("bauer.telegram")
+
+
+class TelegramAPIError(RuntimeError):
+    """Bot API rejection with a structured code for retry decisions."""
+
+    def __init__(self, method: str, description: str, error_code: int | None):
+        super().__init__(f"Telegram API {method}: {description}")
+        self.error_code = error_code
 
 TELEGRAM_API = "https://api.telegram.org"
 MAX_MESSAGE_CHARS = 4096
@@ -269,6 +278,7 @@ class _StreamingDraft:
         self._msg_id: int | None = None
         self._last_edit = 0.0
         self._dead = False
+        self._segment_content_visible = False
         self._status_mode = False  # True = draft mostra "🔧 executando…"
         # Tool Bridge: a "resposta" pode ser JSON de tool call — segura a
         # exibição até dar para distinguir texto de JSON (rodada silenciosa).
@@ -303,6 +313,7 @@ class _StreamingDraft:
                     )
                     self._msg_id = int(result["message_id"])
                     self._last_edit = now
+                    self._segment_content_visible = True
                 elif self._status_mode or now - self._last_edit >= self._interval:
                     # status_mode: primeiro token substitui o "🔧 executando…"
                     self._bridge._api(
@@ -311,6 +322,7 @@ class _StreamingDraft:
                         text=text[:MAX_MESSAGE_CHARS - 4] + self.CURSOR,
                     )
                     self._last_edit = now
+                    self._segment_content_visible = True
                 self._status_mode = False
             except Exception as exc:  # noqa: BLE001 — streaming é best-effort
                 logger.debug("Streaming draft desativado: %s", exc)
@@ -325,6 +337,7 @@ class _StreamingDraft:
                 self._finalize_segment("".join(self._buffer).strip())
                 self._msg_id = None
             self._buffer = []
+            self._segment_content_visible = False
             self._status_mode = False
             self._silent_round = False
             self._display_decided = False
@@ -346,6 +359,7 @@ class _StreamingDraft:
                     self._finalize_segment("".join(self._buffer).strip())
                     self._buffer = []
                     self._msg_id = None
+                    self._segment_content_visible = False
                 if self._msg_id is None:
                     result = self._bridge._api(
                         "sendMessage", chat_id=self._chat_id, text=status,
@@ -362,9 +376,9 @@ class _StreamingDraft:
                 logger.debug("Tool progress desativado: %s", exc)
                 self._dead = True
 
-    def _finalize_segment(self, text: str) -> None:
+    def _finalize_segment(self, text: str) -> bool:
         if not text or self._msg_id is None:
-            return
+            return False
         try:
             self._bridge._api(
                 "editMessageText", chat_id=self._chat_id,
@@ -372,20 +386,24 @@ class _StreamingDraft:
                 text=md_to_telegram_html(text[:MAX_MESSAGE_CHARS - 16]),
                 parse_mode="HTML",
             )
+            self._segment_content_visible = True
+            return True
         except Exception:  # noqa: BLE001
             try:
                 self._bridge._api(
                     "editMessageText", chat_id=self._chat_id,
                     message_id=self._msg_id, text=text[:MAX_MESSAGE_CHARS],
                 )
+                self._segment_content_visible = True
+                return True
             except Exception:  # noqa: BLE001
-                pass
+                return False
 
     def finish(self, final_text: str) -> bool:
         """Edição final formatada. True = entregue via streaming (não reenviar)."""
         with self._lock:
             if self._dead or self._msg_id is None:
-                return False
+                return self._segment_content_visible
             text = (final_text or "").strip()
             if not text:
                 # nada para mostrar — apaga o draft órfão
@@ -396,9 +414,18 @@ class _StreamingDraft:
                     pass
                 return True
             chunks = chunk_text_fenced(text, MAX_MESSAGE_CHARS)
-            self._finalize_segment(chunks[0])
+            if not self._finalize_segment(chunks[0]):
+                return self._segment_content_visible
             for extra in chunks[1:]:
-                self._bridge.send_text(self._chat_id, extra)
+                try:
+                    if self._bridge.send_text_result(self._chat_id, extra) is False:
+                        raise OSError("Telegram did not confirm a response chunk")
+                except Exception:  # noqa: BLE001
+                    # The first segment is already visible. Re-sending the
+                    # entire answer would duplicate it and could duplicate a
+                    # chunk whose delivery response was lost.
+                    logger.warning("Telegram response was only partially delivered; suppressing full resend")
+                    return True
             return True
 
 
@@ -417,6 +444,7 @@ class TelegramBridge(BaseBridge):
         max_msgs_per_minute: int = 20,
         state_dir: str | Path = "workspace/.bauer_gateway",
         model_allowlist: list[str] | None = None,
+        agentos_http_enabled: bool = False,
     ) -> None:
         super().__init__(backend, RateLimiter(max_msgs_per_minute))
         self.token = token
@@ -447,6 +475,18 @@ class TelegramBridge(BaseBridge):
         self._activity_watch_state: dict[str, dict] = {}
         # Filtro de modelos visíveis no /model — lista vazia = sem filtro
         self._model_allowlist: list[str] = list(model_allowlist or [])
+        self._agentos_inbox = None
+        self._agentos_reconciled = False
+        self._agentos_locks: dict[tuple[str, str, str], threading.Lock] = {}
+        self._agentos_locks_guard = threading.Lock()
+        self._agentos_recovery_lock = threading.Lock()
+        self._agentos_recovery_active: set[str] = set()
+        self._agentos_recovery_last: dict[str, float] = {}
+        if agentos_http_enabled:
+            if self.allow_all or not self.allowed_users:
+                raise ValueError("AgentOS HTTP exige allowlist explícita de usuários Telegram")
+            from .telegram_inbox import TelegramInbox
+            self._agentos_inbox = TelegramInbox(Path(self.backend.sessions_dir) / "telegram-agentos.sqlite3")
         # Sprint 46 (plano 061, Etapa 4): aprovação exata de tool. Estado
         # próprio — tokens opacos só em memória, geração invalidada em
         # stop/reset e um lock de HTTP que serializa envio/edição de cartão
@@ -534,9 +574,10 @@ class TelegramBridge(BaseBridge):
                     )
                 data = resp.json()
                 if not data.get("ok"):
-                    raise RuntimeError(
-                        f"Telegram API {method}: {data.get('description')}"
-                    )
+                    code = data.get("error_code")
+                    if not isinstance(code, int) or isinstance(code, bool):
+                        code = resp.status_code if resp.status_code >= 400 else None
+                    raise TelegramAPIError(method, str(data.get("description") or "request failed"), code)
                 return data.get("result")
             except (httpx.HTTPError,) as exc:
                 last_exc = exc
@@ -1367,6 +1408,14 @@ class TelegramBridge(BaseBridge):
         logger.info("Telegram bridge online como @%s", me.get("username"))
         self.register_commands()  # menu "/" no cliente Telegram
 
+        if self._agentos_inbox is not None and not self._agentos_reconciled:
+            self._agentos_reconciled = True
+            for item in self._agentos_inbox.recoverable():
+                if item.state == "RECEIVED":
+                    self._executor.submit(self._process_agentos_inbox, item.update_id)
+                elif item.state in {"CLAIMED", "UNKNOWN"}:
+                    self._schedule_agentos_recovery(item, force=True)
+
         # Sprint 44 (plano 061, Etapa 5): um restart mata a thread de QUALQUER
         # /loop em andamento (threads não sobrevivem a processo). Sem isto um
         # run ficaria "running" pra sempre e o usuário nunca saberia — nunca
@@ -1389,11 +1438,17 @@ class TelegramBridge(BaseBridge):
                 )
                 backoff = 2.0
                 for update in updates or []:
-                    self._offset = max(self._offset, int(update.get("update_id", 0)))
                     self._handle_update(update)
+                    self._offset = max(self._offset, int(update.get("update_id", 0)))
                 if updates:
                     self._save_offset()
-            except (httpx.HTTPError, RuntimeError) as exc:
+                if self._agentos_inbox is not None:
+                    for pending in self._agentos_inbox.recoverable():
+                        if pending.state == "RECEIVED":
+                            self._executor.submit(self._process_agentos_inbox, pending.update_id)
+                        elif pending.state in {"CLAIMED", "UNKNOWN"}:
+                            self._schedule_agentos_recovery(pending)
+            except (httpx.HTTPError, RuntimeError, sqlite3.Error, ValueError) as exc:
                 if self.stopped:
                     break
                 self.last_error = str(exc)
@@ -1443,7 +1498,9 @@ class TelegramBridge(BaseBridge):
             or message.get("photo") or message.get("document")
         )
         text = message.get("text", "")
-        if not text and not has_media:
+        if not isinstance(text, str):
+            text = ""
+        if not text.strip() and not has_media:
             return
 
         msg = ChannelMessage(
@@ -1461,6 +1518,41 @@ class TelegramBridge(BaseBridge):
             return
 
         command = text.split(None, 1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if self._agentos_inbox is not None:
+            if (message.get("chat") or {}).get("type") != "private":
+                self.send_text(chat_id, "Use AgentOS HTTP em uma conversa privada autorizada.")
+                return
+            update_id = update.get("update_id")
+            if isinstance(update_id, bool) or not isinstance(update_id, int) or update_id < 0:
+                raise ValueError("update_id Telegram inválido")
+            media = None
+            if has_media:
+                from .telegram_agentos_media import AgentOSMediaError, validate_text_document
+
+                try:
+                    media = validate_text_document(message)
+                except AgentOSMediaError as exc:
+                    self.send_text(chat_id, f"⚠️ {exc}")
+                    return
+                # Persist only validated metadata before ACK; download happens
+                # in the worker, not in the polling thread.
+                text = "[Documento de texto recebido]"
+                msg.text = text
+                command = ""
+            if command in {"/loop", "/model"}:
+                self.send_text(chat_id, "Este comando ainda não está disponível no AgentOS HTTP.")
+                return
+            if not command or command in {"/cancelar", "/status", "/new", "/clear"}:
+                context = self.backend.capture_project_context(msg)
+                self._agentos_inbox.put(
+                    channel="telegram", update_id=str(update_id), user_id=msg.user_id,
+                    chat_id=msg.chat_id, text=text,
+                    project_id=context.project_id if context is not None else "",
+                    workspace=str(context.workspace) if context is not None else "",
+                    media=media,
+                )
+                self._executor.submit(self._process_agentos_inbox, str(update_id))
+                return
         if command == "/cancelar":
             if (message.get("chat") or {}).get("type") != "private":
                 self.send_text(chat_id, "Cancele tarefas em uma conversa privada autorizada com o bot.")
@@ -1530,6 +1622,262 @@ class TelegramBridge(BaseBridge):
             self._handle_callback(cq)
         except Exception as exc:  # noqa: BLE001
             logger.error("Erro no callback do picker: %s", exc)
+
+    def _inbox_message(self, item) -> ChannelMessage:
+        scope = self._agentos_inbox.scope(channel="telegram", update_id=item.update_id)
+        if scope is None:
+            raise ValueError("Escopo do projeto não persistido")
+        msg = ChannelMessage(channel="telegram", user_id=item.user_id, chat_id=item.chat_id,
+                             text=item.text, raw={"update_id": int(item.update_id),
+                                                  "message": {"chat": {"type": "private"}}},
+                             durable_update=True)
+        project_id, workspace = scope
+        if project_id:
+            if not self.backend.is_ready:
+                self.backend.initialize()
+            msg.project_snapshot = self.backend._resolve_project(msg, project_id, workspace)
+        msg.project_snapshot_captured = True
+        return msg
+
+    def _process_agentos_inbox(self, update_id: str) -> None:
+        inbox = self._agentos_inbox
+        item = inbox.get(channel="telegram", update_id=update_id)
+        if item is None or item.state != "RECEIVED":
+            return
+        try:
+            msg = self._inbox_message(item)
+            command = msg.text.split(maxsplit=1)[0].split("@")[0].lower() if msg.text.startswith("/") else ""
+            if command in {"/cancelar", "/status"}:
+                item = inbox.claim(channel="telegram", update_id=update_id)
+                if item is None:
+                    return
+                if not self._is_authorized(msg):
+                    inbox.settle(channel="telegram", update_id=update_id, state="FINISHED")
+                    return
+                response = self._agentos_command(msg, command)
+                inbox.save_result(channel="telegram", update_id=update_id, response=response, settled=True)
+                self._deliver_agentos_inbox(item)
+                return
+            with self._agentos_lock(msg):
+                project = msg.project_snapshot.project_id if msg.project_snapshot is not None else ""
+                earlier = [other for other in inbox.recoverable() if (
+                    other.state in {"RECEIVED", "CLAIMED", "UNKNOWN"} and int(other.update_id) < int(update_id)
+                    and other.user_id == item.user_id and other.chat_id == item.chat_id
+                    and (inbox.scope(channel="telegram", update_id=other.update_id) or (None,))[0] == project
+                    and not other.text.lower().startswith(("/cancelar", "/status"))
+                )]
+                if earlier:
+                    if any(other.state in {"CLAIMED", "UNKNOWN"} for other in earlier):
+                        for other in earlier:
+                            if other.state in {"CLAIMED", "UNKNOWN"}:
+                                self._schedule_agentos_recovery(other)
+                        claimed = inbox.claim(channel="telegram", update_id=update_id)
+                        if claimed is not None:
+                            inbox.save_result(channel="telegram", update_id=update_id, settled=True,
+                                              response="⏳ Uma mensagem anterior não foi reconciliada; esta não foi executada.")
+                            self._deliver_agentos_inbox(claimed)
+                        return
+                    # A media download may be waiting for a transient network
+                    # failure; retry on the next poll rather than busy-loop.
+                    if not any((inbox.media(channel="telegram", update_id=other.update_id) or (None, "done"))[1] is None
+                               for other in earlier):
+                        self._executor.submit(self._process_agentos_inbox, update_id)
+                    return
+                item = inbox.claim(channel="telegram", update_id=update_id)
+                if item is None:
+                    return
+                if not self._is_authorized(msg):
+                    inbox.settle(channel="telegram", update_id=update_id, state="FINISHED")
+                    return
+                if command in {"/new", "/clear"}:
+                    response = self._agentos_command(msg, command)
+                    inbox.save_result(channel="telegram", update_id=update_id, response=response, settled=True)
+                    self._deliver_agentos_inbox(item)
+                    return
+                media = inbox.media(channel="telegram", update_id=update_id)
+                if media is not None:
+                    from .telegram_agentos_media import AgentOSMediaError, AgentOSMediaTransient, extract_text_document
+
+                    descriptor, content = media
+                    if content is None:
+                        try:
+                            content = extract_text_document(
+                                descriptor, get_file=lambda file_id: self._api("getFile", file_id=file_id),
+                                http_client=self._http, bot_token=self.token,
+                            )
+                        except AgentOSMediaTransient:
+                            inbox.rearm_if_unsubmitted(channel="telegram", update_id=update_id)
+                            return
+                        except AgentOSMediaError as exc:
+                            inbox.save_result(channel="telegram", update_id=update_id,
+                                              response=f"⚠️ {exc}", settled=True)
+                            self._deliver_agentos_inbox(item)
+                            return
+                        inbox.save_media_text(channel="telegram", update_id=update_id, text=content)
+                    msg.text = content
+                with _TypingHeartbeat(self, msg.chat_id):
+                    response = self.handle_message(msg) or "⚠️ Não consegui executar esta mensagem."
+                from .telegram_agentos_http import remote_update_state
+                state = remote_update_state(self.backend.config_path, self.backend.sessions_dir, msg)
+                settled = state in {None, "COMPLETED", "CANCELLED", "ERROR"}
+                inbox.save_result(channel="telegram", update_id=update_id, response=response, settled=settled)
+                self._deliver_agentos_inbox(item)
+        except Exception:  # noqa: BLE001 — retain claimed state for reconciliation
+            logger.warning("Falha no processamento durável AgentOS", exc_info=True)
+
+    def _agentos_lock(self, msg: ChannelMessage) -> threading.Lock:
+        project = msg.project_snapshot.project_id if msg.project_snapshot is not None else ""
+        key = (msg.user_id, msg.chat_id, project)
+        with self._agentos_locks_guard:
+            return self._agentos_locks.setdefault(key, threading.Lock())
+
+    def _agentos_command(self, msg: ChannelMessage, command: str) -> str:
+        try:
+            from .telegram_agentos_http import cancel_remote_session, rotate_remote_session
+            project = msg.project_snapshot.project_id if msg.project_snapshot is not None else ""
+            update_id = str((msg.raw or {}).get("update_id", ""))
+            if command in {"/cancelar", "/status"}:
+                parts = msg.text.split(maxsplit=1)
+                run_id = parts[1].strip() if len(parts) == 2 else None
+                local_cancel = None
+                if command == "/cancelar":
+                    # Signal the in-process worker before contacting AgentOS;
+                    # its next checkpoint must not continue a paused run.
+                    cancel_local = getattr(self.backend, "cancel_channel_execution", None)
+                    if callable(cancel_local):
+                        local_cancel = cancel_local(msg, run_id)
+                response = cancel_remote_session(self.backend.config_path, self.backend.sessions_dir, msg, run_id,
+                                                 request_cancel=command == "/cancelar")
+                if (command == "/cancelar" and local_cancel
+                        and response.startswith("Nenhuma execução remota")):
+                    response = local_cancel
+            else:
+                response = ""
+            self._recover_agentos_pending_for_command(msg, project, update_id)
+            if command in {"/status", "/cancelar"}:
+                uncertain = self._agentos_inbox.uncertain_deliveries(
+                    channel="telegram", user_id=msg.user_id, chat_id=msg.chat_id,
+                    project_id=project, before_update_id=update_id,
+                )
+                if uncertain:
+                    response += ("\n⚠️ A entrega de uma resposta anterior é incerta; ela não foi reenviada "
+                                 "para evitar duplicação. A mensagem anterior foi reconciliada e esta conversa está liberada.")
+                pending = [item for item in self._agentos_inbox.recoverable()
+                           if int(item.update_id) < int(update_id)
+                           and item.user_id == msg.user_id and item.chat_id == msg.chat_id
+                           and item.state in {"CLAIMED", "UNKNOWN"}
+                           and (self._agentos_inbox.scope(channel="telegram", update_id=item.update_id)
+                                or (None,))[0] == project]
+                if pending:
+                    response += ("\n⏳ Uma execução anterior ainda não chegou a um estado terminal; "
+                                 "nenhuma mensagem será reenviada automaticamente.")
+            else:
+                outstanding = [item for item in self._agentos_inbox.recoverable()
+                               if int(item.update_id) < int(update_id)
+                               and item.user_id == msg.user_id and item.chat_id == msg.chat_id
+                               and (self._agentos_inbox.scope(channel="telegram", update_id=item.update_id)
+                                    or (None,))[0] == project]
+                if outstanding:
+                    response = "⏳ Há uma mensagem ainda não reconciliada; aguarde antes de /new."
+                else:
+                    rotate_remote_session(self.backend.config_path, self.backend.sessions_dir, msg)
+                    response = "🧹 Nova conversa AgentOS iniciada."
+            return response
+        except Exception:  # noqa: BLE001 — never claim cancellation/rotation succeeded
+            logger.warning("Comando AgentOS não confirmado", exc_info=True)
+            return "⚠️ Não foi possível confirmar o comando AgentOS. Consulte /status."
+
+    def _recover_agentos_pending_for_command(self, msg: ChannelMessage, project: str, update_id: str) -> None:
+        """Reconcile earlier same-chat updates before status/cancel/new answers."""
+        for item in self._agentos_inbox.recoverable():
+            if (int(item.update_id) < int(update_id) and item.user_id == msg.user_id
+                    and item.chat_id == msg.chat_id and item.state in {"CLAIMED", "UNKNOWN"}
+                    and (self._agentos_inbox.scope(channel="telegram", update_id=item.update_id)
+                         or (None,))[0] == project):
+                self._recover_agentos_inbox(item)
+
+    def _deliver_agentos_inbox(self, item, *, streamer=None) -> None:
+        result = self._agentos_inbox.get_result(channel="telegram", update_id=item.update_id)
+        if result is None:
+            return
+        response, settled = result
+        if not self._agentos_inbox.begin_delivery(channel="telegram", update_id=item.update_id):
+            return
+        for chunk in chunk_text_fenced(response, MAX_MESSAGE_CHARS):
+            self._api("sendMessage", _retries=1, chat_id=item.chat_id, text=chunk)
+        self._agentos_inbox.finish_delivery(channel="telegram", update_id=item.update_id, settled=settled)
+
+    def _schedule_agentos_recovery(self, item, *, force: bool = False) -> None:
+        inbox = self._agentos_inbox
+        if inbox is None or item.state not in {"CLAIMED", "UNKNOWN"}:
+            return
+        key = f"{item.channel}:{item.update_id}"
+        now = time.monotonic()
+        with self._agentos_recovery_lock:
+            if key in self._agentos_recovery_active:
+                return
+            last = self._agentos_recovery_last.get(key, 0.0)
+            if not force and now - last < 15.0:
+                return
+            self._agentos_recovery_active.add(key)
+            self._agentos_recovery_last[key] = now
+
+        def reconcile() -> None:
+            try:
+                self._recover_agentos_inbox(item)
+            finally:
+                with self._agentos_recovery_lock:
+                    self._agentos_recovery_active.discard(key)
+
+        try:
+            self._executor.submit(reconcile)
+        except RuntimeError:
+            with self._agentos_recovery_lock:
+                self._agentos_recovery_active.discard(key)
+            logger.debug("AgentOS inbox recovery skipped during shutdown")
+
+    def _recover_agentos_inbox(self, item) -> None:
+        try:
+            msg = self._inbox_message(item)
+            if not self._is_authorized(msg):
+                return
+            previous = self._agentos_inbox.get_result(channel="telegram", update_id=item.update_id)
+            attempted = self._agentos_inbox.delivery_attempted(channel="telegram", update_id=item.update_id)
+            if previous is not None and previous[1]:
+                if attempted:
+                    if item.state == "UNKNOWN":
+                        self._agentos_inbox.finish_reconciled(channel="telegram", update_id=item.update_id)
+                    else:
+                        self._agentos_inbox.settle(channel="telegram", update_id=item.update_id, state="FINISHED")
+                    return
+                self._deliver_agentos_inbox(item)
+                return
+            if previous is None or not previous[1]:
+                from .telegram_agentos_http import recover_remote_update
+                with self.backend.project_scope(msg):
+                    workspace = (msg.project_snapshot.workspace if msg.project_snapshot is not None
+                                 else Path(self.backend._effective_router().workspace).resolve())
+                    kernel = self.backend._resolver_kernel(workspace=workspace)
+                    response = recover_remote_update(self.backend.config_path, self.backend.sessions_dir, msg,
+                                                     kernel=kernel, session_key=self.backend.session_key(msg),
+                                                     workspace=workspace)
+                if response is None:
+                    if previous is None and item.state == "CLAIMED" and self._agentos_inbox.rearm_if_unsubmitted(
+                        channel="telegram", update_id=item.update_id
+                    ):
+                        self._executor.submit(self._process_agentos_inbox, item.update_id)
+                    return
+                self._agentos_inbox.save_reconciled_result(channel="telegram", update_id=item.update_id,
+                                                           response=response)
+                if attempted:
+                    if item.state == "UNKNOWN":
+                        self._agentos_inbox.finish_reconciled(channel="telegram", update_id=item.update_id)
+                    else:
+                        self._agentos_inbox.settle(channel="telegram", update_id=item.update_id, state="FINISHED")
+                    return
+            self._deliver_agentos_inbox(item)
+        except Exception:  # noqa: BLE001 — retain claim for explicit reconciliation
+            logger.warning("Falha ao recuperar resposta AgentOS", exc_info=True)
 
     def _safe_process(self, msg: ChannelMessage, message: dict) -> None:
         try:
@@ -1660,6 +2008,7 @@ def build_bridge_from_config(cfg, backend: AgentBackend | None = None) -> Telegr
         max_msgs_per_minute=cfg.telegram.max_msgs_per_minute,
         state_dir=workspace / ".bauer_gateway",
         model_allowlist=cfg.telegram.model_allowlist or [],
+        agentos_http_enabled=cfg.runtime.telegram_default_adapter == "agentos_http",
     )
 
 

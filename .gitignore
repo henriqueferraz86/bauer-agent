@@ -173,3 +173,5 @@ graphify-out/
 !specs/sprint-78-loop-transient-provider-errors/**
 !specs/sprint-79-unlimited-loop/
 !specs/sprint-79-unlimited-loop/**
+!specs/telegram-agentos-http/
+!specs/telegram-agentos-http/**

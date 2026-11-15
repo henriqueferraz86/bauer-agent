@@ -139,7 +139,7 @@ services:
       - bauer_memory:/app/memory
       - bauer_logs:/app/logs
     ports:
-      - "7777:7777"
+      - "${AGENT_OS_BIND_ADDRESS:-127.0.0.1}:7777:7777"
     environment:
       - PYTHONUNBUFFERED=1
       - OLLAMA_HOST=http://ollama:11434

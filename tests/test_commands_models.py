@@ -85,7 +85,7 @@ def test_models_list_empty_models(tmp_path: Path):
 # ─── models test (requer conexão Ollama — usa mock) ───────────────────────────
 
 
-def test_models_test_offline(cfg_path: Path, models_path: Path):
+def test_models_test_offline(cfg_path: Path, models_path: Path, monkeypatch):
     """models test deve reportar Ollama offline sem travar (mock is_alive=False)."""
     from unittest.mock import patch, MagicMock
 
@@ -93,7 +93,10 @@ def test_models_test_offline(cfg_path: Path, models_path: Path):
     mock_client.is_alive.return_value = (False, "Connection refused")
     mock_client.has_model.return_value = False
 
-    with patch("bauer.commands._runtime._build_client", return_value=mock_client):
+    # Rich can report a one-line terminal in the Windows test capture.
+    monkeypatch.setenv("LINES", "100")
+    # Patch the symbol looked up by the command, imported at module load.
+    with patch("bauer.commands.models_cmd._build_client", return_value=mock_client):
         result = runner.invoke(app, [
             "models", "test", "qwen2.5:3b",
             "--config", str(cfg_path),

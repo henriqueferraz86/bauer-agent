@@ -32,7 +32,7 @@ RUN (pip install --no-cache-dir ".[server]" --no-build-isolation 2>/dev/null || 
     pip install --no-cache-dir \
       typer rich pydantic pyyaml httpx psutil prompt-toolkit cryptography \
       ddgs beautifulsoup4 sqlalchemy openai playwright pillow keyring \
-      websockets "agno[os]>=1.7" \
+      websockets "agno[os]>=1.7" "PyJWT>=2.8" \
       fastapi "uvicorn[standard]" python-multipart argon2-cffi google-auth) && \
     pip install --no-cache-dir "agno[os]>=1.7"
 

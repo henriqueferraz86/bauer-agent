@@ -48,6 +48,8 @@ class ChannelExecution:
     workspace: Path
     batch: SessionWorker
     private_chat: bool = False
+    update_id: str | None = None
+    inbox_persisted: bool = False
     job_id: str = field(default_factory=lambda: f"job-{uuid4().hex[:16]}")
     started_at: float = field(default_factory=time.monotonic)
     done: threading.Event = field(default_factory=threading.Event)

@@ -1,0 +1,76 @@
+name: bauer-tool-gateway-staging
+
+# Standalone file. Run with this file alone so no production services, mounts,
+# provider credentials or Telegram polling can be inherited from the stack.
+services:
+  bauer:
+    image: ${BAUER_STAGING_IMAGE:?Provide the tested Bauer candidate image}
+    pull_policy: never
+    network_mode: none
+    command: ["python", "-c", "import threading; threading.Event().wait()"]
+    volumes:
+      - staging_bauer_workspace:/app/workspace
+      - staging_bauer_memory:/app/memory
+      - staging_bauer_logs:/app/logs
+      - staging_bauer_models:/root/.ollama
+
+  agentos-channel:
+    image: ${BAUER_STAGING_IMAGE:?Provide the tested Bauer candidate image}
+    pull_policy: never
+    network_mode: service:bauer
+    depends_on:
+      - bauer
+    command:
+      - python
+      - -m
+      - bauer.agentos_app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "7787"
+    environment:
+      BAUER_CONFIG: /app/staging-config.yaml
+      BAUER_HOME: /app/memory/bauer-home
+      BAUER_RUNTIME_ROOT: /app/memory/runtime
+      BAUER_AGENTOS_CHANNEL_BOUNDARY: "true"
+      BAUER_AGENTOS_JWT_ISOLATION: "true"
+      BAUER_AGENTOS_EXTERNAL_READ_TOOLS: "true"
+      BAUER_AGENTOS_JWT_ISSUER: bauer-staging
+      BAUER_AGENTOS_JWT_AUDIENCE: agentos-channel-staging
+      BAUER_AGENTOS_JWT_KEY: ${BAUER_STAGING_JWT_KEY:?Provide a synthetic staging JWT key}
+      BAUER_TOOL_GATEWAY_REQUIREMENT_KEY: ${BAUER_STAGING_REQUIREMENT_KEY:?Provide a synthetic staging requirement key}
+      BAUER_TOOL_GATEWAY_CONTINUATION_KEY: ${BAUER_STAGING_CONTINUATION_KEY:?Provide a synthetic staging continuation key}
+    configs:
+      - source: staging_config
+        target: /app/staging-config.yaml
+      - source: staging_model_selection
+        target: /app/memory/runtime/serve-model-state.json
+    volumes:
+      - staging_agentos_workspace:/app/workspace
+      - staging_agentos_memory:/app/memory
+      - staging_agentos_logs:/app/logs
+      - staging_agentos_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7787/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+configs:
+  staging_config:
+    content: |
+      model:
+        provider: ollama
+        name: offline-echo
+  staging_model_selection:
+    content: '{"provider":"offline","model":"offline-echo"}'
+
+volumes:
+  staging_bauer_workspace:
+  staging_bauer_memory:
+  staging_bauer_logs:
+  staging_bauer_models:
+  staging_agentos_workspace:
+  staging_agentos_memory:
+  staging_agentos_logs:
+  staging_agentos_models:

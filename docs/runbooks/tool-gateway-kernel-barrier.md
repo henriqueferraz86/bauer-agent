@@ -1,0 +1,16 @@
+# Sequenciamento de efeitos e estados do Kernel
+
+O Tool Gateway continua experimental e seu router não está registrado. A barreira opt-in guarda runs e chamadas no mesmo `runtime_state.sqlite3`; a reserva verifica a run sob o mesmo lock usado por transições terminais. Testes de concorrência e de recovery passam, mas isso ainda não integra aprovações humanas ou todos os caminhos operacionais exigidos para liberar ferramentas.
+
+O estado por run deve ficar em um único SQLite autoritativo no processo Gateway, usado por todas as instâncias. A sequência necessária é:
+
+1. Antes de uma tool, validar JWT, owner, binding, projeto, workspace, policy, requirement/digest e run; fazer claim de `(gateway_run_id, remote_run_id, tool_call_id)` sob a barreira. Revalidar antes do efeito. O mesmo call_id jamais pode ser novamente reivindicado com outro token ou digest.
+2. Cancelamento, kill-switch, timeout, budget e qualquer transição terminal devem gravar intenção de parada sob a mesma barreira **antes** de anunciar término ou alterar a run. Se há efeito em voo, preservar a intenção e negar novas tools; aguardar o efeito acabar. Resultado incerto deve manter a run sem confirmação terminal até reconciliação explícita.
+3. Todas as alterações terminais do Kernel devem passar pelo guard central da persistência (`RunManager.update_run` e qualquer caminho direto de `SqliteStateStore`), incluindo recovery, aprovação, retry e chamadas de outros processos. Não fazer uma integração restrita apenas a `/cancelar` e presumir que timeout e kill-switch já obedecem.
+4. Ao terminar efeito, registrar resultado conhecido ou UNKNOWN antes de liberar a barreira. Após crash em CLAIMED/UNKNOWN, não repetir o efeito. Reconciliação não pode reabrir uma run terminal nem apagar evidência necessária à idempotência.
+
+Quando um efeito está em voo, as alterações da transação são revertidas a um savepoint e a intenção de parada é persistida sem soltar o lock de escrita, antes de devolver erro ao chamador. Isso desfaz as demais alterações da transação e impede novos claims; uma falha no registro da intenção também deve ser tratada como erro, nunca como cancelamento confirmado. O guard é opt-in e a integração de todos os caminhos precisa ser comprovada antes da ativação.
+
+Uma cópia SQLite consistente contém a run e seu ledger no mesmo snapshot; não restaure tabelas separadamente. Restaurar **todo** o banco a um instante anterior pode, ainda assim, apagar evidências de efeitos já realizados em serviços externos. Para eles, use uma chave idempotente aceita pelo destino ou uma fonte durável independente; sem isso, após restauração mantenha o resultado como desconhecido e reconcilie antes de permitir nova execução.
+
+Além dos testes unitários da barreira, validar processo separado para: cancelamento/kill/timeout antes, durante e depois da tool; queda após o efeito e antes do commit; corrida entre dois workers e múltiplos motivos de parada; autorização expirada; replay com token novo e mesmo tool_call_id; nenhuma tool após terminal confirmado; policy negada antes de qualquer efeito; retomada do Gateway e do AgentOS. O endpoint continua fechado até essas provas e a conexão de aprovação humana ao `ToolRouter` real.

@@ -45,19 +45,25 @@ def configure_router(router: Any, *, sessions_dir: str | Path,
 
 def build_channel_kernel(cfg: Any, *, workspace: str | Path,
                          sessions_dir: str | Path,
-                         event_bus: EventBus | None = None) -> Any:
+                         event_bus: EventBus | None = None,
+                         effect_barrier: Any = None) -> Any:
     """Compose fail-closed governance using this project's policy and gates."""
     from .core.kernel import build_kernel, require_kernel
 
     if not isinstance(workspace, (str, Path)):
         raise TypeError("workspace must be a path")
     effective_workspace = Path(workspace).resolve()
+    if effect_barrier is not None:
+        barrier_path = getattr(effect_barrier, "path", None)
+        if not isinstance(barrier_path, Path) or barrier_path.resolve().parent != runtime_root(sessions_dir):
+            raise ValueError("channel effect barrier must share its runtime root")
 
     def build():
         bus = _runtime_bus(sessions_dir, event_bus)
         return build_kernel(
             cfg, root=str(runtime_root(sessions_dir)),
             workspace=str(effective_workspace), bus=bus,
+            **({"effect_barrier": effect_barrier} if effect_barrier is not None else {}),
         )
 
     return require_kernel(cfg, build, label="channel worker")

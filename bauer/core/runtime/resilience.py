@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .run_manager import RECOVERABLE_RUN_STATUSES, RunManager
+from .run_manager import EffectBarrierPending, RECOVERABLE_RUN_STATUSES, RunManager
 from .state_store import RuntimeStateStore, SqliteStateStore
 
 #: Intervalo entre batidas do pulso de um run. Tem de ser MUITO menor que o
@@ -163,9 +163,10 @@ class RuntimeControl:
 
 
 class RuntimeRecovery:
-    def __init__(self, *, root: str | Path = "memory/runtime", store: RuntimeStateStore | None = None):
+    def __init__(self, *, root: str | Path = "memory/runtime", store: RuntimeStateStore | None = None,
+                 effect_barrier: Any | None = None):
         self.store = store or SqliteStateStore(root)
-        self.run_manager = RunManager(store=self.store)
+        self.run_manager = RunManager(store=self.store, effect_barrier=effect_barrier)
         self.heartbeats = RunHeartbeat(store=self.store)
 
     def recover_stuck_runs(self, *, max_age_s: int = 900) -> list[dict[str, Any]]:
@@ -195,7 +196,12 @@ class RuntimeRecovery:
             # `fail_run_se_nao_terminal`: entre o list_runs() acima e esta linha
             # o dono do run pode ter concluído. Um fail_run cru apagaria o
             # desfecho — mesma corrida que o /stream já pagou.
-            failed = self.run_manager.fail_run_se_nao_terminal(run.id, mensagem)
+            try:
+                failed = self.run_manager.fail_run_se_nao_terminal(run.id, mensagem)
+            except EffectBarrierPending:
+                # A remote tool may still be in flight. Leave this run open and
+                # continue recovering unrelated stale runs.
+                continue
             if failed.error != mensagem:
                 continue  # outro escritor chegou ao terminal primeiro
             recovered.append({"run_id": failed.id, "status": failed.status, "error": failed.error})

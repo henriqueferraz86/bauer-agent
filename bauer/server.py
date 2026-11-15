@@ -331,6 +331,13 @@ def create_app(
 
         _kernel = require_kernel(_kcfg, _compose_serve_kernel, label="bauer serve")
 
+    from .tool_gateway_wiring import install_tool_gateway
+
+    install_tool_gateway(
+        app, sessions_dir=sessions_dir, run_manager=run_manager, kernel=_kernel,
+        policy_rules_path=getattr(router, "_policy_rules_path", None),
+    )
+
     def _wire_router_to_serve(r) -> None:
         """Aponta o EventBus/policy_root de um ToolRouter para os DESTE serve.
 

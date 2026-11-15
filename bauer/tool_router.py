@@ -339,6 +339,10 @@ class ToolRouter(
         result = router.execute('{"action": "list_dir", "args": {"path": "."}}')
 
     P4: tools por categoria vivem em mixins (bauer/tools/*.py) herdados aqui.
+
+    ``restricted_builtin_only`` exige allowlist explícita e autorização pela
+    policy, dispensa extensões e hooks e grava somente metadados. O caller
+    escolhe as operações permitidas ao definir a allowlist.
     """
 
     # `_runtime_session_id`/`_runtime_run_id` são properties (não atributos
@@ -394,6 +398,9 @@ class ToolRouter(
         postiz_api_key: str = "",
         postiz_api_url: str = "",
         mcp_config=None,
+        event_bus=None,
+        audit_logs_dir: str | Path | None = None,
+        restricted_builtin_only: bool = False,
     ):
         self.workspace = Path(workspace).resolve()
         self._postiz_api_key = postiz_api_key
@@ -411,6 +418,9 @@ class ToolRouter(
         # o prompt drasticamente — essencial para modelos locais (Ollama/CPU) onde
         # avaliar ~14k tokens das 79 tools leva ~100s. Vazio/None = todas as tools.
         self._tool_allowlist: set[str] = set(tool_allowlist or ())
+        self._restricted_builtin_only = restricted_builtin_only
+        if restricted_builtin_only and not self._tool_allowlist:
+            raise ValueError("restricted builtin mode requires an explicit tool allowlist")
         # Guardado como atributo: a tool `process` (start) valida o comando com
         # o MESMO gate do run_command (allowlist/denylist/safe_mode) via
         # shell_runner.validate() — sem runner, process start é negado.
@@ -451,16 +461,23 @@ class ToolRouter(
         self._policy_root = Path(policy_root)
         self._runtime_session_id = session_id or None
         self._runtime_run_id = run_id or None
-        self._event_bus = None
-        try:
-            from .core.events import EventBus
-            self._event_bus = EventBus(root=Path(workspace).resolve().parent / "runtime")
-        except Exception:
-            self._event_bus = None
+        self._event_bus = event_bus
+        if self._event_bus is None:
+            try:
+                from .core.events import EventBus
+
+                event_root = self._policy_root if restricted_builtin_only else self.workspace.parent / "runtime"
+                self._event_bus = EventBus(root=event_root)
+            except Exception as exc:
+                if restricted_builtin_only:
+                    raise ToolError("restricted builtin audit unavailable") from exc
+                self._event_bus = None
         # SEG-3: audit logger
         if audit_enabled:
             from .audit_logger import AuditLogger
-            logs_dir = Path(workspace).resolve().parent / "logs"
+            if audit_logs_dir is not None and not isinstance(audit_logs_dir, (str, Path)):
+                raise ValueError("audit_logs_dir must be a filesystem path")
+            logs_dir = Path(audit_logs_dir) if audit_logs_dir is not None else Path(workspace).resolve().parent / "logs"
             self._audit: "AuditLogger | None" = AuditLogger(logs_dir, session_id)
         else:
             self._audit = None
@@ -1334,6 +1351,9 @@ class ToolRouter(
         return self._tool_policy.allowed_contexts(name)
 
     def _record_tool_denied(self, name: str, args: dict) -> None:
+        if getattr(self, "_restricted_builtin_only", False):
+            self._publish_tool_event("tool.denied", name, {}, status="denied")
+            return
         # O deny ia SÓ para o KanbanStore. Informação preservada, sink errado:
         # quem audita um run lê o EventBus (é dele que saem AuditLog e
         # RunTraceStore), e ali a recusa simplesmente não existia. Justamente o
@@ -1384,34 +1404,43 @@ class ToolRouter(
     def available_tools(self) -> list[str]:
         """Retorna união de tools built-in e tools registradas externamente (ToolRegistry)."""
         built_in = set(self._tools.keys())
-        try:
-            from .tool_registry import ToolRegistry as _ToolRegistry
-            external = set(_ToolRegistry.get().list_names())
-        except ImportError:
-            external = set()
+        external: set[str] = set()
+        if not self._restricted_builtin_only:
+            try:
+                from .tool_registry import ToolRegistry as _ToolRegistry
+                external = set(_ToolRegistry.get().list_names())
+            except ImportError:
+                pass
         return sorted(name for name in (built_in | external) if self._is_tool_allowed_in_context(name))
+
+    def _external_tool(self, name: str):
+        if self._restricted_builtin_only:
+            return None
+        try:
+            from .tool_registry import ToolRegistry
+
+            return ToolRegistry.get().get_tool(name)
+        except ImportError:
+            return None
 
     def tool_info(self, name: str) -> dict:
         # Verifica registry externo primeiro
-        try:
-            from .tool_registry import ToolRegistry as _ToolRegistry
-            ext_def = _ToolRegistry.get().get_tool(name)
-            if ext_def is not None:
-                return {
-                    "name": name,
-                    "description": ext_def.description,
-                    "args": ext_def.args,
-                    "permission_level": self.tool_security(name)["permission"],
-                    "risk_level": self.tool_security(name)["risk"],
-                    "requires_approval": self.tool_security(name)["approval"],
-                    "side_effects": ext_def.side_effects,
-                    "source": "external",
-                    "allowed_contexts": self._allowed_contexts_for_tool(name),
-                    "context_allowed": self._is_tool_allowed_in_context(name),
-                    "policy_source": self._tool_policy.source,
-                }
-        except ImportError:
-            pass
+        ext_def = self._external_tool(name)
+        if ext_def is not None:
+            sec = self.tool_security(name)
+            return {
+                "name": name,
+                "description": ext_def.description,
+                "args": ext_def.args,
+                "permission_level": sec["permission"],
+                "risk_level": sec["risk"],
+                "requires_approval": sec["approval"],
+                "side_effects": ext_def.side_effects,
+                "source": "external",
+                "allowed_contexts": self._allowed_contexts_for_tool(name),
+                "context_allowed": self._is_tool_allowed_in_context(name),
+                "policy_source": self._tool_policy.source,
+            }
 
         if name not in self._tools:
             raise ToolError(f"Tool desconhecida: '{name}'")
@@ -1437,6 +1466,8 @@ class ToolRouter(
         built-in nunca rebaixa: vale o maior nível de cada campo e a aprovação
         de qualquer um dos dois.
         """
+        if self._restricted_builtin_only:
+            return dict(_TOOL_SECURITY.get(name, _DEFAULT_SECURITY))
         return _effective_security(name)
 
     def has_capability_tool(self, name: str) -> bool:
@@ -1466,6 +1497,8 @@ class ToolRouter(
         timeouts and events apply unchanged. Telemetry for these tools carries
         only argument names, never values or results (plano 057, invariante 6).
         """
+        if self._restricted_builtin_only:
+            raise ToolError("restricted builtin mode does not accept capability tools")
         if name in self._tools and name not in _CAPABILITY_TOOLS:
             raise ToolError(f"capability tool '{name}' colide com tool existente")
         known = _CAPABILITY_TOOLS.get(name)
@@ -1548,15 +1581,18 @@ class ToolRouter(
             and getattr(control, "channel", None) == "telegram"
             and getattr(control, "private_chat", False) is True
         )
-        operation = _policy_operation_for_tool(tool_name) or _extension_approval_operation(tool_name)
+        operation = _policy_operation_for_tool(tool_name)
+        if operation is None and not self._restricted_builtin_only:
+            operation = _extension_approval_operation(tool_name)
         if operation is None:
+            if self._restricted_builtin_only:
+                raise ToolError("restricted builtin has no runtime policy operation")
             return
         approval_id = str(args.get("approval_id") or "")
         try:
             from .core.policy import ApprovalManager, PolicyEngine
 
             root = self._policy_root
-            approvals = ApprovalManager(root=root, event_bus=self._event_bus)
             engine = PolicyEngine(workspace=self.workspace, rules_path=self._policy_rules_path,
                                   runtime_root=root)
             policy_payload = _runtime_policy_payload(self, operation, tool_name, args)
@@ -1568,13 +1604,18 @@ class ToolRouter(
                     session_id=self._runtime_session_id,
                     tool_name=tool_name,
                     status=decision.action,
-                    message=decision.reason,
+                    message=None if self._restricted_builtin_only else decision.reason,
                     data={
                         "operation": operation,
                         "risk_level": decision.risk_level,
                         "matched_rules": decision.matched_rules,
                     },
                 )
+            if self._restricted_builtin_only:
+                if decision.action != "allow" or "approval_id" in args:
+                    raise ToolError("restricted builtin requires an allow policy decision")
+                return None
+            approvals = ApprovalManager(root=root, event_bus=self._event_bus)
             if decision.action == "deny":
                 if self._event_bus is not None:
                     self._event_bus.publish(
@@ -1786,15 +1827,8 @@ class ToolRouter(
             )
 
         # Resolve função — registry externo tem prioridade sobre built-ins
-        _ext_fn = None
-        _ext_def = None
-        try:
-            from .tool_registry import ToolRegistry as _ToolRegistry
-            _ext_def = _ToolRegistry.get().get_tool(name)
-            if _ext_def is not None:
-                _ext_fn = _ext_def.fn
-        except ImportError:
-            pass
+        _ext_def = self._external_tool(name)
+        _ext_fn = _ext_def.fn if _ext_def is not None else None
 
         if _ext_fn is None and name not in self._tools:
             available = ", ".join(self.available_tools())
@@ -1842,7 +1876,7 @@ class ToolRouter(
         # current execution via ContextVar. Do not mutate this shared router:
         # other concurrent channels and direct CLI callers keep their own
         # configured policy behavior.
-        if self._policy_enabled or _POLICY_APPROVAL_WAIT.get():
+        if self._restricted_builtin_only or self._policy_enabled or _POLICY_APPROVAL_WAIT.get():
             approved_call = self._evaluate_runtime_policy(name, args) is True
         checkpoint_execution()
         approved_shell_tool = name == "run_command" or (
@@ -1955,13 +1989,7 @@ class ToolRouter(
             except Exception:
                 pass  # approval nunca bloqueia por erro técnico
 
-        # Plugin hooks — pre_tool_call
-        try:
-            from .plugin_hooks import hooks as _hooks
-            _hooks.ensure_plugins_loaded()
-            _hooks.emit("pre_tool_call", action=name, args=args)
-        except Exception:
-            pass  # hooks nunca bloqueiam execução
+        self._emit_tool_hook("pre_tool_call", action=name, args=args)
 
         # SEG-3: audit com medição de tempo
         import time as _time
@@ -2050,12 +2078,17 @@ class ToolRouter(
         except Exception as _exc:
             _audit_error = _exc
             _duration_ms = (_time.monotonic() - _t0) * 1000
+            error_message = type(_exc).__name__ if self._restricted_builtin_only else str(_exc)[:300]
+            if not self._restricted_builtin_only and name in _CAPABILITY_TOOLS:
+                audit_error_message = type_only_error(str(_exc))
+            else:
+                audit_error_message = error_message
             if self._audit is not None:
                 self._audit.log_tool_call(
-                    name, _telemetry_args(name, args),
+                    name, {} if self._restricted_builtin_only else _telemetry_args(name, args),
                     status="error",
                     duration_ms=_duration_ms,
-                    error_msg=type_only_error(str(_exc)) if name in _CAPABILITY_TOOLS else str(_exc)[:300],
+                    error_msg=audit_error_message,
                 )
             # Plugin hooks — post_tool_call (erro)
             self._publish_tool_event(
@@ -2064,13 +2097,9 @@ class ToolRouter(
                 args,
                 status="failed",
                 duration_ms=_duration_ms,
-                error=str(_exc)[:300],
+                error=error_message,
             )
-            try:
-                from .plugin_hooks import hooks as _hooks
-                _hooks.emit("post_tool_call", action=name, args=args, result=None, error=_exc)
-            except Exception:
-                pass
+            self._emit_tool_hook("post_tool_call", action=name, args=args, result=None, error=_exc)
             raise
 
         _duration_ms = (_time.monotonic() - _t0) * 1000
@@ -2112,14 +2141,13 @@ class ToolRouter(
             pass  # scanner nunca bloqueia execução
 
         # SEG-3: audit de sucesso
+        preview = result[:200] if isinstance(result, str) and not self._restricted_builtin_only else None
         if self._audit is not None:
             self._audit.log_tool_call(
-                name, _telemetry_args(name, args),
+                name, {} if self._restricted_builtin_only else _telemetry_args(name, args),
                 status="ok",
                 duration_ms=_duration_ms,
-                result_preview=(
-                    result[:200] if isinstance(result, str) and name not in _CAPABILITY_TOOLS else None
-                ),
+                result_preview=preview if name not in _CAPABILITY_TOOLS else None,
             )
 
         # Plugin hooks — post_tool_call (sucesso)
@@ -2129,15 +2157,24 @@ class ToolRouter(
             args,
             status="completed",
             duration_ms=_duration_ms,
-            result_preview=result[:200] if isinstance(result, str) else None,
+            result_preview=preview,
         )
+        self._emit_tool_hook("post_tool_call", action=name, args=args, result=result, error=None)
+
+        return result
+
+    def _emit_tool_hook(self, event: str, **kwargs) -> None:
+        if self._restricted_builtin_only:
+            return
         try:
             from .plugin_hooks import hooks as _hooks
-            _hooks.emit("post_tool_call", action=name, args=args, result=result, error=None)
+
+            if event == "pre_tool_call":
+                _hooks.ensure_plugins_loaded()
+            _hooks.emit(event, **kwargs)
         except Exception:
             pass  # hooks nunca bloqueiam execução
 
-        return result
     def _publish_tool_event(
         self,
         event_type: str,
@@ -2153,10 +2190,11 @@ class ToolRouter(
             return
         _security = self.tool_security(tool_name)
         data = {
-            "args": _telemetry_args(tool_name, args),
             "permission": _security.get("permission"),
             "risk": _security.get("risk"),
         }
+        if not self._restricted_builtin_only:
+            data["args"] = _telemetry_args(tool_name, args)
         capability_meta = _CAPABILITY_TOOLS.get(tool_name)
         if capability_meta is not None:
             data["capability"] = capability_meta["capability"]
@@ -2178,8 +2216,9 @@ class ToolRouter(
                 message=error,
                 data=data,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            if self._restricted_builtin_only:
+                raise ToolError("restricted builtin audit unavailable") from exc
 
     # --- sandbox ---------------------------------------------------------------
 

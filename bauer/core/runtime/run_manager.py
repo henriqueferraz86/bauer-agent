@@ -36,6 +36,16 @@ RUN_STATUSES: tuple[str, ...] = (
     "cancelled",
 )
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+
+class EffectBarrierPending(RuntimeError):
+    """A terminal transition is deferred while a remote tool effect may run."""
+
+    def __init__(self, message: str, *, run_id: str | None = None, reason: str | None = None):
+        super().__init__(message)
+        self.run_id = run_id
+        self.reason = reason
+
 # Estados de espera INTENCIONAL — um run parado nesses estados não está
 # "travado", está aguardando um humano (aprovação) ou foi pausado de propósito.
 # O runtime recovery NÃO deve matá-los por idade (senão descarta aprovações
@@ -76,10 +86,18 @@ class RunManager:
         root: str | Path = "memory/runtime",
         event_bus: EventBus | None = None,
         agent_registry: Any | None = None,
+        effect_barrier: Any | None = None,
     ):
         self.store = store or SqliteStateStore(root)
         self.event_bus = event_bus or EventBus(store=self.store)
         self.agent_registry = agent_registry
+        # Optional until every channel, recovery and terminal path shares the
+        # same durable barrier. It is deliberately never inferred from config.
+        self.effect_barrier = effect_barrier
+        if effect_barrier is not None:
+            if not isinstance(self.store, SqliteStateStore):
+                raise ValueError("effect barrier requires a SQLite runtime store")
+            self.store.activate_tool_gateway_guard(effect_barrier.path)
 
     def create_run(
         self,
