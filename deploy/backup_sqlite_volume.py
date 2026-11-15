@@ -25,7 +25,7 @@ def main() -> None:
         relative = source_path.relative_to(SOURCE)
         target_path = DESTINATION / relative
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        uri = source_path.resolve().as_uri()
+        uri = f"{source_path.resolve().as_uri()}?mode=ro"
         try:
             with closing(sqlite3.connect(uri, uri=True, timeout=30)) as source_db:
                 source_db.execute("PRAGMA query_only=ON")
