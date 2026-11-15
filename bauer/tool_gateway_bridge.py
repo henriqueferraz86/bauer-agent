@@ -93,10 +93,12 @@ class ToolGatewayBridge:
         if not isinstance(attested, dict):
             raise ToolGatewayDenied("tool request denied")
         statement, proof = attested.get("statement"), attested.get("proof")
+        if not isinstance(statement, dict) or not isinstance(proof, str):
+            raise ToolGatewayDenied("tool request denied")
         capability = self.issuer.issue_for_requirement(authenticated_user_id=authenticated_user_id,
             gateway_run_id=gateway_run_id, challenge=challenge, statement=statement, proof=proof)
         # Issuer verifies the signed statement and the local ownership mapping.
-        if not isinstance(statement, dict) or statement.get("action") != "read_file":
+        if statement.get("action") != "read_file":
             raise ToolGatewayDenied("tool request denied")
         digest = call_digest(statement["action"], statement["args"])
         result = self.invoke(capability, statement["action"], statement["args"])

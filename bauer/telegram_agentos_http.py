@@ -37,7 +37,8 @@ def _identity(config_path: Path, user_id: str) -> tuple[dict[str, Any], str, str
     settings = cfg.runtime.adapters["agentos_http"]
     from .tool_gateway_bridge import secure_service_url
 
-    if not secure_service_url(settings.get("base_url")):
+    base_url = settings.get("base_url")
+    if not isinstance(base_url, str) or not secure_service_url(base_url):
         raise TelegramAgentOSError("AgentOS HTTP exige HTTPS verificado ou endereço loopback literal.")
     agent_id = settings["agent_id"]
     scopes = [f"agents:{agent_id}:run", f"agents:{agent_id}:read"]
@@ -216,10 +217,10 @@ def execute_http_turn(*, settings: dict[str, Any], execution: Any, gateway_run_i
         runs = RemoteRunStore(path, require_managed_session=True)
         session = sessions.current(channel="telegram", owner_id=owner, chat_id=execution.chat_id,
                                    project_id=execution.project_id or "")
-        secure_options = {"trust_env": False, "token_factory": issue_identity_token}
         with AgentOSHttpClient(base_url, token,
                                connect_timeout_s=float(settings.get("connect_timeout_s", 5)),
-                               read_timeout_s=float(settings.get("read_timeout_s", 180)), **secure_options) as client:
+                               read_timeout_s=float(settings.get("read_timeout_s", 180)),
+                               trust_env=False, token_factory=issue_identity_token) as client:
             _verify_profile(client, settings, token)
             gateway_client = None
             on_pause = None

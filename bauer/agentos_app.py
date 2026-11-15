@@ -314,6 +314,8 @@ def build_agentos_app(
                 from .agentos_requirement_api import build_requirement_router
                 from .agentos_requirement_attestation import RequirementAttestor
 
+                if approvals is None:
+                    raise AgentOSBuildError("tools externas requerem o store de aprovação autenticado.")
                 agent_map = {str(item.id): item for item in agents}
                 allowed = {agent_id: {"read_file"} for agent_id in agent_map}
                 reader = ExternalRequirementReader(agents=agent_map, allowed_tools=allowed)

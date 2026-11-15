@@ -156,6 +156,9 @@ class StartedEventTracker:
         if (payload.get(id_field) != self.entity_id or payload.get("session_id") != self.session_id
                 or payload.get("parent_run_id")):
             raise ValueError("start event context mismatch")
-        self.registry.record(run_id=payload.get("run_id"), owner=self.owner, entity_type=self.entity_type,
+        run_id = payload.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("start event has no run identity")
+        self.registry.record(run_id=run_id, owner=self.owner, entity_type=self.entity_type,
                              entity_id=self.entity_id, session_id=self.session_id)
-        self._run_id = payload["run_id"]
+        self._run_id = run_id

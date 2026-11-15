@@ -113,8 +113,11 @@ class ToolGatewayAuthorizer:
                 or run.input.get("endpoint") != "canal:telegram"
                 or run.input.get("project_id") != claims["project_id"]):
             raise ToolGatewayDenied("tool request denied")
-        operator = run.input.get("operator")
-        operator_parts = operator.split(":") if isinstance(operator, str) else []
+        operator_value = run.input.get("operator")
+        if not isinstance(operator_value, str):
+            raise ToolGatewayDenied("tool request denied")
+        operator = operator_value
+        operator_parts = operator.split(":")
         if (len(operator_parts) != 3 or operator_parts[0] != "telegram"
                 or not operator_parts[1].isascii() or not operator_parts[1].isdecimal()
                 or operator_parts[1] != operator_parts[2] or int(operator_parts[1]) <= 0
@@ -126,8 +129,10 @@ class ToolGatewayAuthorizer:
         if not hmac.compare_digest(claims["sub"], f"tg-{digest}"):
             raise ToolGatewayDenied("tool request denied")
         remote = self._remote_runs.get(run.id, owner_id=claims["sub"])
+        remote_run_id = remote.remote_run_id
         if (remote.channel != "telegram" or remote.state not in {"RUNNING", "PAUSED"} or remote.entity_type != "agent"
-                or remote.remote_run_id != claims["remote_run_id"] or remote.session_id != claims["remote_session_id"]
+                or not isinstance(remote_run_id, str) or remote_run_id != claims["remote_run_id"]
+                or remote.session_id != claims["remote_session_id"]
                 or remote.entity_id != claims["agent_id"]):
             raise ToolGatewayDenied("tool request denied")
         binding = self._bindings.binding(operator)
@@ -144,7 +149,7 @@ class ToolGatewayAuthorizer:
         return AuthorizedToolContext(
             owner_subject=claims["sub"], operator=operator, gateway_run_id=run.id,
             gateway_session_id=run.session_id, project_id=claims["project_id"], workspace=workspace,
-            remote_run_id=remote.remote_run_id, remote_session_id=remote.session_id,
+            remote_run_id=remote_run_id, remote_session_id=remote.session_id,
             agent_id=remote.entity_id, token_id=claims["jti"], tool_call_id=claims["tool_call_id"],
             call_digest=claims["call_digest"],
         )
